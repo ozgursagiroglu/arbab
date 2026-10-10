@@ -1,0 +1,8 @@
+{
+  "name": "m3-fix-reuse",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-reuse.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 12
+}

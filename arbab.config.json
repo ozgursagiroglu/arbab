@@ -1,0 +1,75 @@
+{
+  "baseBranch": "main",
+  "instructions": [
+    "CLAUDE.md"
+  ],
+  "dependencies": {
+    "strategy": "command",
+    "command": [
+      "pnpm",
+      "install",
+      "--offline",
+      "--frozen-lockfile"
+    ]
+  },
+  "commands": {
+    "implementer": [
+      "pnpm test",
+      "pnpm typecheck",
+      "pnpm build",
+      "pnpm exec vitest run",
+      "pnpm exec tsc --noEmit"
+    ],
+    "verifier": [
+      "pnpm test",
+      "pnpm typecheck",
+      "pnpm build",
+      "pnpm exec vitest run",
+      "pnpm exec tsc --noEmit"
+    ],
+    "reviewer": [
+      "pnpm test",
+      "pnpm typecheck",
+      "pnpm build",
+      "pnpm exec vitest run"
+    ]
+  },
+  "env": {
+    "pnpm_config_verify_deps_before_run": "false",
+    "npm_config_update_notifier": "false",
+    "CI": "1"
+  },
+  "gates": [
+    [
+      "pnpm",
+      "typecheck"
+    ],
+    [
+      "pnpm",
+      "test"
+    ],
+    [
+      "pnpm",
+      "build"
+    ]
+  ],
+  "preflight": {
+    "steps": [
+      [
+        "pnpm",
+        "typecheck"
+      ],
+      [
+        "pnpm",
+        "test"
+      ]
+    ]
+  },
+  "maxParallel": 6,
+  "quota": {
+    "holdAbove": {
+      "fiveHour": 0.95,
+      "sevenDay": 1
+    }
+  }
+}

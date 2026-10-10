@@ -1,0 +1,11 @@
+{
+  "name": "arbab",
+  "owner": { "name": "Diojen" },
+  "plugins": [
+    {
+      "name": "arbab",
+      "source": "./plugin",
+      "description": "Run fenced headless Claude Code workers from an interactive session: narrow briefs, one worktree per lane, quota-aware launches, usage-limit resume and measured reports."
+    }
+  ]
+}

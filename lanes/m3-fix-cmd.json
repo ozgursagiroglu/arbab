@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-cmd",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-cmd.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 12,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m3-fix-git` owns src/run/git.ts, src/run/checkpoint.ts, src/shepherd/merge.ts, src/integrate/**, src/config/lane.ts and src/plan/**."
+}

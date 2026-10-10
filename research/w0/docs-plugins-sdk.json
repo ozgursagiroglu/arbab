@@ -1,0 +1,356 @@
+{
+  "facts": [
+    {
+      "question": "Q1",
+      "claim": "The plugin manifest is optional and lives at .claude-plugin/plugin.json. Every other plugin file goes at the plugin root.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "The manifest is optional. Without it, Claude Code loads the components it finds in the standard layout. ... Save the manifest at `.claude-plugin/plugin.json` under the plugin root. Put every other plugin file at the plugin root, not inside `.claude-plugin/`."
+    },
+    {
+      "question": "Q1",
+      "claim": "`name` is the only required field. Other plugin.json fields: $schema, displayName, version, description, author{name,email,url}, homepage, repository, license, keywords, metadata, icon, documentationUrl, supportUrl, privacyPolicyUrl, termsOfServiceUrl, defaultEnabled, dependencies, settings, userConfig, types, channels, skills, commands, agents, hooks, mcpServers, lspServers, outputStyles, workflows, and experimental.{themes,monitors,evals}. Unknown top-level keys are stripped and produce a warning.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "The table lists the top-level keys in `plugin.json`. `name` is the only required key."
+    },
+    {
+      "question": "Q1",
+      "claim": "The name must be kebab-case. Names starting with claude-, anthropic- or cc-plugin- are reserved and fail validation, so arbab's name is fine.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "Starts with `claude-`, `anthropic-`, `anthropics-`, or `cc-plugin-` | Error"
+    },
+    {
+      "question": "Q1",
+      "claim": "Standard layout: skills/<name>/SKILL.md, commands/, agents/, hooks/hooks.json, .mcp.json, .lsp.json, output-styles/, workflows/, themes/, monitors/monitors.json, bin/, settings.json. scripts/ is a convention that hooks call; it is not a component type.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "A plugin that uses every default location, plus a `scripts/` folder that its hooks call, is laid out like this"
+    },
+    {
+      "question": "Q1",
+      "claim": "Files in a plugin's bin/ are on the Bash tool's PATH while the plugin is enabled. They come after the user's own PATH entries. claude.ai and Cowork won't install a plugin that has a top-level bin/.",
+      "source": "https://code.claude.com/docs/en/plugins/components",
+      "confidence": "high",
+      "quote": "Files in `bin/` at the plugin root are on the `PATH` of the Bash tool's shell while the plugin is enabled, so Claude can run them as bare commands. ... Plugin `bin/` directories come after the user's own `PATH` entries, so a plugin can't shadow `git`, `ls`, or another system command."
+    },
+    {
+      "question": "Q1",
+      "claim": "bin/ is on PATH only inside Claude Code's Bash tool, not in the user's own shell. The docs tell authors to chmod +x the files.",
+      "source": "https://code.claude.com/docs/en/plugins/components",
+      "confidence": "medium",
+      "quote": "Make it executable with `chmod +x bin/hello-plugin` and load the plugin."
+    },
+    {
+      "question": "Q1",
+      "claim": "${CLAUDE_PLUGIN_ROOT} is the absolute path of the installed version and changes on every update. ${CLAUDE_PLUGIN_DATA} (~/.claude/plugins/data/<id>/) survives updates and is meant for node_modules and state.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "`${CLAUDE_PLUGIN_ROOT}` changes when the plugin updates, so don't write state there."
+    },
+    {
+      "question": "Q1",
+      "claim": "The plugin variables are not set in the environment of Bash tool commands. In skill, command and agent content, Claude Code substitutes ${...} inline in the Markdown body.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "The variables aren't present in the environment of commands Claude runs through the Bash tool, in the main session or in a subagent. In skill, command, and agent content, write the `${...}` reference in the Markdown body instead, and Claude Code substitutes the path inline when it loads the content."
+    },
+    {
+      "question": "Q1",
+      "claim": "Hook processes receive CLAUDE_PLUGIN_ROOT, CLAUDE_PLUGIN_DATA, CLAUDE_PROJECT_DIR and CLAUDE_PLUGIN_OPTION_<KEY>. The documented hook form is a quoted \"${CLAUDE_PLUGIN_ROOT}\"/scripts/x.sh.",
+      "source": "https://code.claude.com/docs/en/plugins-reference",
+      "confidence": "high",
+      "quote": "Hook commands | Anywhere in `command` and `args` | `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA`, `CLAUDE_PROJECT_DIR`, and `CLAUDE_PLUGIN_OPTION_<KEY>`"
+    },
+    {
+      "question": "Q1",
+      "claim": "In a plugin skill, ${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_PLUGIN_DATA} and ${CLAUDE_SKILL_DIR} are substituted both in the SKILL.md body and in Bash rules in allowed-tools. Using the same path in both lets the skill run a bundled script without a permission prompt.",
+      "source": "https://code.claude.com/docs/en/skills",
+      "confidence": "high",
+      "quote": "`${CLAUDE_PLUGIN_ROOT}` | The plugin's installation directory. Substituted only in plugin skills. Use this to reference scripts or files bundled anywhere in the plugin"
+    },
+    {
+      "question": "Q1",
+      "claim": "SKILL.md frontmatter fields: name, description (recommended; combined with when_to_use and cut at 1,536 chars), when_to_use, argument-hint, arguments, disable-model-invocation, user-invocable, allowed-tools, disallowed-tools, model, effort, context (fork), agent, background, hooks, paths, shell, metadata, license, compatibility.",
+      "source": "https://code.claude.com/docs/en/skills",
+      "confidence": "high",
+      "quote": "`allowed-tools` | No | Tools Claude can use without asking permission during the turn that invokes this skill. The grant clears when you send your next message."
+    },
+    {
+      "question": "Q1",
+      "claim": "Plugin skills are invoked as /<plugin>:<skill-dir>.",
+      "source": "https://code.claude.com/docs/en/plugins/components",
+      "confidence": "high",
+      "quote": "**Command name**: `/<plugin>:<directory>`, so `skills/review/SKILL.md` in `my-plugin` is `/my-plugin:review`."
+    },
+    {
+      "question": "Q1",
+      "claim": "marketplace.json lives at .claude-plugin/marketplace.json and requires name, owner{name} and plugins[]. Optional fields: $schema, description, version, metadata.{description,version,pluginRoot}, forceRemoveDeletedPlugins, allowCrossMarketplaceDependenciesOn, renames. Each plugin entry needs name and source, and may also set description, version, category, tags, strict, relevance, dependencies, defaultEnabled, displayName, metadata, headers, headersHelper, plus most plugin.json fields.",
+      "source": "https://code.claude.com/docs/en/plugins/marketplace-reference",
+      "confidence": "high",
+      "quote": "The table lists every key Claude Code reads from `marketplace.json`. `name`, `owner`, and `plugins` are required."
+    },
+    {
+      "question": "Q1",
+      "claim": "Plugin source types: relative path ('./...'), github{repo,ref,sha}, url{url,ref,sha}, git-subdir{url,path,ref,sha}, npm{package,version,registry}, archive{url,sha256}, command{command,timeout,mode}.",
+      "source": "https://code.claude.com/docs/en/plugins/marketplace-reference",
+      "confidence": "high",
+      "quote": "`npm` | `package`, `version`, `registry` | npm registry package or tarball link, fetched with your npm client and unpacked without running install scripts"
+    },
+    {
+      "question": "Q1",
+      "claim": "Install and update commands: `claude plugin marketplace add <owner/repo|url|path>`, `claude plugin install <plugin>@<marketplace> [--scope user|project|local]`, `claude plugin update <plugin>@<marketplace>`, `claude plugin marketplace update <name>`, enable/disable/uninstall, and `claude plugin validate`. v2.1.292+ adds `claude plugin install <plugin> --marketplace <source>`. Inside a session the equivalents are /plugin install and /reload-plugins.",
+      "source": "https://code.claude.com/docs/en/plugins/install",
+      "confidence": "high",
+      "quote": "To update one plugin, open it on the **Installed** tab in `/plugin` during a session and select **Update now**, or run `claude plugin update <plugin>@<marketplace>` in your shell."
+    },
+    {
+      "question": "Q1",
+      "claim": "Auto-update is off by default for third-party marketplaces, so users of the arbab marketplace must update manually or turn auto-update on.",
+      "source": "https://code.claude.com/docs/en/plugins/install",
+      "confidence": "high",
+      "quote": "**Off by default**: every other marketplace, including the community marketplace, third-party marketplaces, and local development marketplaces."
+    },
+    {
+      "question": "Q1",
+      "claim": "How the version is resolved: plugin.json version first, then the marketplace entry's version, otherwise the 12-character commit SHA for github/url/git-subdir sources. A pinned version keeps users on that copy until the string changes.",
+      "source": "https://code.claude.com/docs/en/plugins/loading",
+      "confidence": "high",
+      "quote": "Because the manifest comes first, a manifest that pins `\"version\": \"1.0.0\"` keeps every user on the cached copy until its author changes the string, however many commits they push."
+    },
+    {
+      "question": "Q1",
+      "claim": "Marketplace plugins are copied to ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/. Files outside the plugin directory aren't copied. Old versions are deleted 14 days after being orphaned.",
+      "source": "https://code.claude.com/docs/en/plugins/loading",
+      "confidence": "high",
+      "quote": "Claude Code copies the plugin into `cache/<marketplace>/<plugin>/<version>/` at install and loads that copy. Files outside the plugin directory aren't copied"
+    },
+    {
+      "question": "Q1",
+      "claim": "Claude Code installs a plugin's node_modules into the cached copy, but only when the plugin root has a package.json plus a lockfile (npm v2/v3 or bun.lock). Constraints: registry-only deps, --ignore-scripts, 60 s timeout. The install is skipped for in-place local-path plugins and link-mode plugins; a failed install leaves the plugin loaded but broken.",
+      "source": "https://code.claude.com/docs/en/plugins/loading",
+      "confidence": "high",
+      "quote": "The install runs only when the plugin's root directory contains both a `package.json` and a supported lockfile."
+    },
+    {
+      "question": "Q1",
+      "claim": "Because install scripts never run, native modules won't compile during the dependency install.",
+      "source": "https://code.claude.com/docs/en/plugins/loading",
+      "confidence": "high",
+      "quote": "**No lifecycle scripts**: `--ignore-scripts` keeps `preinstall`, `install`, and `postinstall` scripts from running, so dependencies that build native modules in those scripts download but don't compile during this install"
+    },
+    {
+      "question": "Q1",
+      "claim": "Several community-mirrored GitHub issues (most closed Mar–May 2026) report that the plugin cache dropped the executable bit (100755 became 644) on hook scripts. The official docs don't say whether the mode is preserved.",
+      "source": "https://claudeissues.com/issue/39203-plugin-cache-loses-execute-permissions-on-hook-scripts-sh-files-become-644-inste",
+      "confidence": "low",
+      "quote": "Shell scripts that are 100755 in the source Git repository become 100644 (non-executable) in the local cache."
+    },
+    {
+      "question": "Q1",
+      "claim": "Plugins installed earlier do load under `claude -p`, but /plugin doesn't run there. Plugin monitors never start in -p.",
+      "source": "https://code.claude.com/docs/en/plugins/install",
+      "confidence": "high",
+      "quote": "`claude -p` and other non-interactive runs**: `/plugin` doesn't run, and Claude replies `/plugin isn't available in this environment.` Plugins you already installed do load."
+    },
+    {
+      "question": "Q2",
+      "claim": "sandbox-runtime (srt) enforces filesystem and network restrictions on arbitrary processes at the OS level, without a container. It is a beta research preview.",
+      "source": "https://github.com/anthropic-experimental/sandbox-runtime",
+      "confidence": "high",
+      "quote": "A lightweight sandboxing tool for enforcing filesystem and network restrictions on arbitrary processes at the OS level, without requiring a container."
+    },
+    {
+      "question": "Q2",
+      "claim": "Install it with `npm install -g @anthropic-ai/sandbox-runtime`. CLI usage: `srt \"<cmd>\"`, `srt --debug ...`, `srt --settings <file> <cmd>`.",
+      "source": "https://github.com/anthropic-experimental/sandbox-runtime",
+      "confidence": "high",
+      "quote": "npm install -g @anthropic-ai/sandbox-runtime"
+    },
+    {
+      "question": "Q2",
+      "claim": "Config is JSON at ~/.srt-settings.json or a file passed with --settings. Shape: {network:{allowedDomains,deniedDomains,allowLocalBinding}, filesystem:{denyRead,allowRead,allowWrite,denyWrite}}. Network is deny-by-default, writes are deny-by-default, reads are allowed by default. A file that exists but is invalid is a hard error.",
+      "source": "https://github.com/anthropic-experimental/sandbox-runtime",
+      "confidence": "high",
+      "quote": "By default, the sandbox runtime looks for configuration at `~/.srt-settings.json`."
+    },
+    {
+      "question": "Q2",
+      "claim": "Mechanisms: macOS uses sandbox-exec with generated Seatbelt profiles. Linux uses bubblewrap with network-namespace isolation plus a seccomp filter that blocks AF_UNIX sockets. Windows support is alpha.",
+      "source": "https://github.com/anthropic-experimental/sandbox-runtime",
+      "confidence": "high",
+      "quote": "`srt` uses native OS sandboxing primitives (`sandbox-exec` on macOS, `bubblewrap` on Linux) and proxy-based network filtering."
+    },
+    {
+      "question": "Q2",
+      "claim": "Network traffic goes through an HTTP/HTTPS proxy and a SOCKS5 proxy that enforce the domain allow and deny lists.",
+      "source": "https://github.com/anthropic-experimental/sandbox-runtime",
+      "confidence": "high",
+      "quote": "Both HTTP/HTTPS (via HTTP proxy) and other TCP traffic (via SOCKS5 proxy) are mediated by these proxies, which enforce your domain allowlists and denylists."
+    },
+    {
+      "question": "Q2",
+      "claim": "srt can wrap the whole Claude Code process, which also confines file tools, MCP servers and hooks. The documented launch command is `npx @anthropic-ai/sandbox-runtime claude`.",
+      "source": "https://code.claude.com/docs/en/sandbox-environments",
+      "confidence": "high",
+      "quote": "Running Claude Code through the runtime constrains the session's tools, hooks, and MCP servers as well as shell commands."
+    },
+    {
+      "question": "Q2",
+      "claim": "Required srt config for Claude Code: write access to the project directory, ~/.claude, ~/.claude.json and /tmp (/private/tmp on macOS). Network access to api.anthropic.com, plus claude.ai and platform.claude.com when using OAuth. On Linux and WSL2: bubblewrap, socat and ripgrep, and the write paths must already exist.",
+      "source": "https://code.claude.com/docs/en/sandbox-environments",
+      "confidence": "high",
+      "quote": "`claude.ai` and `platform.claude.com`, which OAuth sign-in and token refresh require. Runs authenticated with an API key can drop these two."
+    },
+    {
+      "question": "Q2",
+      "claim": "Claude Code's built-in sandbox covers shell commands only, not file tools, MCP servers or hooks.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "The sandbox covers shell commands only. Claude's file tools, MCP servers, and hooks run outside it."
+    },
+    {
+      "question": "Q2",
+      "claim": "Known srt limitations:\n- On Linux, mandatory write-denies such as .git/hooks are computed once at launch and don't cover files created later.\n- Without a settings file, srt starts silently with defaults.\n- Seccomp works only on x64/arm64.\n- Inherited Unix socket fds are not blocked.\n- Ubuntu 24.04+ may need an apparmor userns tweak.\n- Writable Claude config paths can be used to persist unsandboxed hooks.",
+      "source": "https://code.claude.com/docs/en/sandbox-environments",
+      "confidence": "high",
+      "quote": "On Linux and WSL2, the runtime builds the deny list once at launch. It reliably covers the project root, makes a best-effort shallow scan for nested copies that exist at that point, and does not cover anything the session creates later"
+    },
+    {
+      "question": "Q3",
+      "claim": "The Agent SDK bundles a native Claude Code binary as an optional dependency and runs it as a subprocess. pathToClaudeCodeExecutable overrides which binary it uses.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/typescript",
+      "confidence": "high",
+      "quote": "The SDK bundles a native Claude Code binary for your platform as an optional dependency such as `@anthropic-ai/claude-agent-sdk-darwin-arm64`. Most installs need no separate Claude Code install."
+    },
+    {
+      "question": "Q3",
+      "claim": "Option semantics:\n- allowedTools auto-approves listed tools but doesn't restrict to them.\n- disallowedTools removes or denies tools.\n- settingSources [] disables user, project and local settings.\n- env replaces process.env rather than merging.\n- maxBudgetUsd is a client-side estimate.\n- outputFormat carries the JSON schema.\n- effort accepts low|medium|high|xhigh|max.\n- Also available: resume, sessionId, forkSession, sandbox, permissionMode, plugins.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/typescript",
+      "confidence": "high",
+      "quote": "Environment variables. When set, this replaces the subprocess environment instead of merging with `process.env`, so pass `{ ...process.env, YOUR_VAR: 'value' }` to keep inherited variables like `PATH`."
+    },
+    {
+      "question": "Q3",
+      "claim": "The SDK reference lists the options and the CLI headless page lists the flags (--allowedTools, --permission-mode, --json-schema, --max-budget-usd, --resume, --setting-sources, --plugin-dir). No official table mapping each option to a CLI flag was found.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "medium"
+    },
+    {
+      "question": "Q3",
+      "claim": "Anthropic's docs say third-party developers may not offer claude.ai login or rate limits in their products, including Agent SDK agents, unless previously approved. They should use API keys.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/overview",
+      "confidence": "high",
+      "quote": "Unless previously approved, Anthropic does not allow third party developers to offer claude.ai login or rate limits for their products, including agents built on the Claude Agent SDK. Use the API key authentication methods described in the Quickstart instead."
+    },
+    {
+      "question": "Q3",
+      "claim": "SDKMessage is a union that includes SDKAssistantMessage, SDKUserMessage, SDKUserMessageReplay, SDKResultMessage, SDKSystemMessage, SDKPartialAssistantMessage, SDKCompactBoundaryMessage, SDKStatusMessage, hook started/progress/response, SDKPluginInstallMessage, SDKToolProgressMessage, SDKAuthStatusMessage, task messages, SDKRateLimitEvent, SDKPermissionDeniedMessage, SDKAPIRetryMessage, SDKInformationalMessage, and more.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/typescript",
+      "confidence": "high",
+      "quote": "type SDKMessage =\n  | SDKAssistantMessage\n  | SDKUserMessage\n  | SDKUserMessageReplay\n  | SDKResultMessage\n  | SDKSystemMessage"
+    },
+    {
+      "question": "Q3",
+      "claim": "SDKResultMessage has type 'result' and subtype 'success' | 'error_max_turns' | 'error_during_execution' | 'error_max_budget_usd' | 'error_max_structured_output_retries'. Fields: uuid, session_id, duration_ms, duration_api_ms, is_error, num_turns, result (success only), stop_reason, total_cost_usd, usage, modelUsage, permission_denials, structured_output?, errors[] (error variants only), terminal_reason?.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/typescript",
+      "confidence": "high",
+      "quote": "subtype:\n        | \"error_max_turns\"\n        | \"error_during_execution\"\n        | \"error_max_budget_usd\"\n        | \"error_max_structured_output_retries\";"
+    },
+    {
+      "question": "Q3",
+      "claim": "The system/init message has session_id, apiKeySource, claude_code_version, cwd, tools, mcp_servers[{name,status}], model, permissionMode, slash_commands, skills, plugins[{name,path}], plugin_errors?, effort?, capabilities?. It is normally the first stream-json event.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/typescript",
+      "confidence": "high",
+      "quote": "plugins: { name: string; path: string }[];"
+    },
+    {
+      "question": "Q4",
+      "claim": "`claude --bg \"<prompt>\"` (or --background) starts a session straight in the background, hosted by a per-user supervisor. Manage it with claude attach, logs, stop and respawn.",
+      "source": "https://code.claude.com/docs/en/agent-view",
+      "confidence": "high",
+      "quote": "Pass `--bg` or its long form `--background` to start a session that goes straight to the background"
+    },
+    {
+      "question": "Q4",
+      "claim": "--bg cannot be combined with -p/--print. Claude Code rejects the combination before creating a session.",
+      "source": "https://code.claude.com/docs/en/agent-view",
+      "confidence": "high",
+      "quote": "Claude Code rejects `--bg` combined with `-p` or `--print` before any session is created, because `--print` never starts the interactive session that `claude agents` attaches to."
+    },
+    {
+      "question": "Q4",
+      "claim": "`claude agents --json [--all] [--cwd <path>]` prints a JSON array with these fields:\n- always: cwd, kind (interactive|background), startedAt (ms)\n- background sessions: id, state (working|blocked|done|failed|stopped)\n- while the process is alive: pid, status (busy|waiting|idle)\n- when waiting: waitingFor\n- when set: sessionId, name\nThe files under ~/.claude/jobs are not a stable interface.",
+      "source": "https://code.claude.com/docs/en/agent-view",
+      "confidence": "high",
+      "quote": "`claude agents --json` prints active sessions as a JSON array and exits: every live session, plus background sessions that are still working or blocked even when their process has exited."
+    },
+    {
+      "question": "Q5",
+      "claim": "Advertised Pro and Max limits assume ordinary, individual use of Claude Code and the Agent SDK. OAuth is for subscription purchasers' ordinary use of Claude Code and native Anthropic apps. Third-party developers may not offer Claude.ai login or route requests through Pro or Max credentials on behalf of users. Users may still sign in to the unmodified Claude Code binary with their own subscription.",
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "confidence": "high",
+      "quote": "Advertised usage limits for Pro and Max plans assume ordinary, individual usage of Claude Code and the Agent SDK."
+    },
+    {
+      "question": "Q5",
+      "claim": "Developers building products, including on the Agent SDK, should use API keys, and must not collect or intermediate Claude.ai credentials.",
+      "source": "https://code.claude.com/docs/en/legal-and-compliance",
+      "confidence": "high",
+      "quote": "Anthropic does not permit third-party developers to offer Claude.ai login into their own applications, or to route requests through Free, Pro, or Max plan credentials on behalf of their users."
+    },
+    {
+      "question": "Q5",
+      "claim": "Help Center (paraphrased by the fetch tool, not verbatim): the June 15, 2026 change that would have moved SDK and -p usage to a separate credit was paused. Agent SDK, claude -p and third-party apps still draw from subscription limits. An Oct 7, 2026 update adds monthly API credits to Max and Team plans covering the SDK, -p, the API and Managed Agents.",
+      "source": "https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan",
+      "confidence": "medium",
+      "quote": "We've paused the previously-announced changes to Claude Agent SDK usage."
+    },
+    {
+      "question": "Q5",
+      "claim": "--bare is recommended for scripted and SDK calls and is planned to become the default for -p, with no date given. Bare mode never reads OAuth or the keychain, so it needs ANTHROPIC_API_KEY or an apiKeyHelper. It also skips hooks, skills, plugins, MCP and CLAUDE.md unless they are passed with flags.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "`--bare` is the recommended mode for scripted and SDK calls, and will become the default for `-p` in a future release."
+    },
+    {
+      "question": "Q5",
+      "claim": "Without --bare, `claude -p` runs a project's hooks and .mcp.json servers without a trust dialog.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "Without `--bare`, a `-p` session runs the hooks in a project's `.claude/settings.json` and connects the servers in its `.mcp.json`, even in a folder you've never trusted."
+    },
+    {
+      "question": "Q5",
+      "claim": "No hard cap on parallel sessions is documented. Background sessions use subscription quota proportionally.",
+      "source": "https://code.claude.com/docs/en/agent-view",
+      "confidence": "medium",
+      "quote": "Rate limits apply: background sessions consume your subscription usage the same as interactive sessions, so running ten agents in parallel uses quota roughly ten times as fast as running one."
+    }
+  ],
+  "not_found": [
+    "Official docs statement on whether the plugin install/cache preserves the executable bit (only community-mirrored GitHub issues, mostly closed, report it being stripped)",
+    "A way for a plugin to put an executable on the user's own shell PATH. bin/ is documented only for the Bash tool's PATH inside Claude Code",
+    "An official table mapping each Agent SDK option to its CLI flag",
+    "Verbatim text of the support.claude.com Oct 7 2026 update (the fetch tool only gave short quoted phrases), and how the new monthly API credits interact with subscription limits",
+    "A date for --bare becoming the default for -p",
+    "Any documented numeric limit on concurrent claude -p or background sessions",
+    "SDKAssistantMessage/SDKUserMessage field definitions (truncated in fetch)",
+    "The full `claude plugin` CLI reference (fetch returned too much to read)"
+  ],
+  "recommendations": [
+    "Ship the runner as a single bundled JS file run as `node \"${CLAUDE_PLUGIN_ROOT}/scripts/arbab.mjs\"` from the skill body, and pre-approve it with a matching `allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/arbab.mjs *)`, so it works without an executable bit, without bin/ PATH, and without a dependency install.",
+    "Avoid runtime npm dependencies, or commit a bundled build: the automatic node_modules install needs a lockfile, skips install scripts, has a 60 s timeout, and doesn't run for local-path installs.",
+    "Leave `version` out of plugin.json while iterating, so users track commits. Pin semver for releases, and tell users that third-party marketplaces don't auto-update by default.",
+    "Keep worker state in ${CLAUDE_PLUGIN_DATA} or the project, never in ${CLAUDE_PLUGIN_ROOT}, which changes on every update.",
+    "Launch workers with `claude -p --output-format stream-json --verbose` and parse the system/init and result events, failing a worker on is_error, non-success subtypes, or non-empty plugin_errors/mcp_server_errors.",
+    "Pass --setting-sources, --permission-mode (dontAsk or explicit) and --permission-prompts none explicitly. Don't rely on defaults, which can start in auto mode and will change when --bare becomes the -p default.",
+    "Make bare mode opt-in, because it ignores OAuth. Workers that use the user's subscription need non-bare mode, and bare mode needs ANTHROPIC_API_KEY.",
+    "Use the user's own unmodified claude binary and their own login; never collect, store or proxy Claude.ai credentials, so arbab stays within the legal-and-compliance terms.",
+    "Offer an optional srt wrapper (`srt --settings <file> claude -p ...`) that allows writes to the project, ~/.claude, ~/.claude.json and /tmp (/private/tmp on macOS), and network to api.anthropic.com plus claude.ai and platform.claude.com. Document that the built-in /sandbox covers only Bash.",
+    "Don't build on --bg for workers, because it rejects -p. If you show workers in agent view, poll `claude agents --json --all` and not ~/.claude/jobs.",
+    "Default parallelism to a small number and warn that each parallel worker uses subscription quota proportionally, since no hard cap is documented.",
+    "Validate the plugin and marketplace in CI with `claude plugin validate --strict`."
+  ]
+}

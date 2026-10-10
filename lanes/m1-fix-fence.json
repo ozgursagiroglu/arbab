@@ -1,0 +1,8 @@
+{
+  "name": "m1-fix-fence",
+  "role": "implementer",
+  "brief": "lanes/m1-fix-fence.md",
+  "base": "integrate/m1",
+  "budgetUsd": 15,
+  "coordination": "- `m1-fix-lifecycle` owns `src/shepherd/**`, `src/run/**`, `src/stream/**`, `src/registry/**`, `src/quota/**` and\n  `src/commands/wait.ts`. It passes `gitCommonDir` into `ProfileInput`.\n- `m1-fix-cli` owns the rest of `src/commands/**` and `src/cli.ts`. It passes `gitCommonDir` where commands\n  compile profiles (lint, preflight)."
+}

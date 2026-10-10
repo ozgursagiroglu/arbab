@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-git",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-git.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 10,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m3-fix-cmd` owns src/commands/**, src/verify/**, src/readiness/**, src/stream digest export tests and test/e2e/**."
+}

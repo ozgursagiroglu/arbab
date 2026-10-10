@@ -1,0 +1,7 @@
+{
+  "name": "m2-wire",
+  "role": "implementer",
+  "brief": "lanes/m2-wire.md",
+  "base": "integrate/m2",
+  "budgetUsd": 15
+}

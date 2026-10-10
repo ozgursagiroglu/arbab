@@ -1,0 +1,7 @@
+{
+  "name": "m1-e2e",
+  "role": "implementer",
+  "brief": "lanes/m1-e2e.md",
+  "base": "integrate/m1",
+  "budgetUsd": 12
+}

@@ -1,0 +1,8 @@
+{
+  "name": "m1-fix-lifecycle",
+  "role": "implementer",
+  "brief": "lanes/m1-fix-lifecycle.md",
+  "base": "integrate/m1",
+  "budgetUsd": 15,
+  "coordination": "- `m1-fix-fence` owns `src/profile/**`, `src/config/**`, `src/report/**`, `src/brief/**` and\n  `src/util/env-policy.ts`. It makes `compileProfile` turn `gitCommonDir` into the denyWrite and deny rules.\n  Pass the value; do not depend on what the profile does with it.\n- `m1-fix-cli` owns `src/commands/**` except `wait.ts`, and `src/cli.ts`. If you change a registry or shepherd\n  export that a command other than wait uses, keep the old signature working."
+}

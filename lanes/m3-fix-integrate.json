@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-integrate",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-integrate.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 12,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m3-fix-generated` owns src/shepherd/merge.ts, src/commands/integration.ts, src/commands/generated.ts, src/commands/verify.ts, src/commands/review.ts, src/verify/**, src/review/** and test/e2e/**.\n- `m3-fix-quota` owns src/quota/**, src/commands/quota.ts, src/shepherd/lifecycle.ts, src/shepherd/index.ts, src/readiness/** and src/commands/readiness.ts."
+}

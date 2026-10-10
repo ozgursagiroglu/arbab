@@ -1,0 +1,8 @@
+{
+  "name": "m1-fix-cli",
+  "role": "implementer",
+  "brief": "lanes/m1-fix-cli.md",
+  "base": "integrate/m1",
+  "budgetUsd": 15,
+  "coordination": "- `m1-fix-lifecycle` owns `src/shepherd/**`, `src/run/**`, `src/stream/**`, `src/registry/**`, `src/quota/**` and\n  `src/commands/wait.ts`. It will make the shepherd read `mode.promptFile`, and it changes `FinishedItem`\n  (nullable `attempt` and `summary`, new `endState` and `reason`). Do not use `FinishedItem` outside `wait.ts`.\n- `m1-fix-fence` owns `src/profile/**`, `src/config/**`, `src/report/**`, `src/brief/**` and changes the probe\n  report schema to steps `{n, command, exit_code, output}`. Preflight already uses that shape in its own schema;\n  keep it."
+}

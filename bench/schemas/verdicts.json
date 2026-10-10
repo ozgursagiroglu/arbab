@@ -1,0 +1,20 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdicts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "refuted": { "type": "boolean" },
+          "corrected_severity": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW", "NONE"] },
+          "reasoning": { "type": "string" }
+        },
+        "required": ["id", "refuted", "corrected_severity", "reasoning"]
+      }
+    }
+  },
+  "required": ["verdicts"]
+}

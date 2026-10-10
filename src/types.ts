@@ -1,0 +1,592 @@
+// Contracts shared by arbab's modules (DESIGN.md §2–§10). A change here is a cross-module change: lanes do not edit
+// this file; they report the change they need in their report's open_questions.
+
+export type Role = "implementer" | "verifier" | "reviewer" | "researcher" | "probe";
+export const ROLES: readonly Role[] = ["implementer", "verifier", "reviewer", "researcher", "probe"];
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"];
+
+/** strict: allowlist + sandbox (default). sandbox-auto: sandboxed Bash is auto-allowed; the sandbox is the only wall. */
+export type FenceLevel = "strict" | "sandbox-auto";
+
+// ---------------------------------------------------------------------------------------------------------------
+// Inputs written by people (or the orchestrating session)
+
+/** A lane file, e.g. lanes/<name>.json. Paths are relative to the project root. */
+export interface LaneSpec {
+  name: string;
+  role: Role;
+  /** The brief source (Markdown with ## Task, ## Scope, ## Acceptance, …). */
+  brief: string;
+  /** Branch or commit the worktree starts from; defaults to config.baseBranch. */
+  base?: string;
+  /** Work in another lane's worktree (a verifier after its builder) instead of a new one. */
+  worktree?: string;
+  /**
+   * Narrows the role's tools to these; never widens them. A lane that must not write keeps only the tools it needs
+   * (the generated verify lane: Read and Bash), and a tool left out does not exist for the worker (`--tools`).
+   */
+  tools?: string[];
+  model?: string;
+  effort?: Effort;
+  budgetUsd?: number;
+  wallMin?: number;
+  idleMin?: number;
+  fence?: FenceLevel;
+  /** Extra permission allow rules for this lane (linted). */
+  allow?: string[];
+  /** Report schema (JSON Schema subset); defaults to the role's schema. */
+  schema?: string;
+  /** Resource leases, by type: {"port": 2}. */
+  resources?: Record<string, number>;
+  semaphores?: string[];
+  checkpoint?: boolean;
+  autoResume?: boolean;
+  maxAttempts?: number;
+  /** Sibling lanes and their scopes (M2 generates this from the plan). */
+  coordination?: string;
+  /** Lanes whose reports are inlined into this brief (M2). */
+  upstream?: string[];
+  /**
+   * Branches merged into a newly created worktree before the worker starts (a plan phase's dependencies). A conflict
+   * is a setup failure the orchestrator resolves (DESIGN.md §16).
+   */
+  mergeBranches?: string[];
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Plans (src/plan, DESIGN.md §16)
+
+/** The lane fields a phase may set, besides its name and brief; all optional (role defaults to implementer). */
+export type PhaseLaneFields = Partial<Pick<
+  LaneSpec,
+  | "role"
+  | "model"
+  | "effort"
+  | "budgetUsd"
+  | "wallMin"
+  | "idleMin"
+  | "fence"
+  | "allow"
+  | "schema"
+  | "resources"
+  | "semaphores"
+  | "worktree"
+  | "checkpoint"
+  | "autoResume"
+  | "maxAttempts"
+  >
+>;
+
+export interface PlanPhase extends PhaseLaneFields {
+  /** The lane name. */
+  name: string;
+  brief: string;
+  /** Write globs, relative to the project root; required, and disjoint from every phase not ordered with this one. */
+  scope: string[];
+  dependsOn?: string[];
+}
+
+/** plans/<name>.json. */
+export interface PlanSpec {
+  name: string;
+  /** Branch or commit the first wave starts from; defaults to config.baseBranch. */
+  base?: string;
+  defaults?: PhaseLaneFields;
+  phases: PlanPhase[];
+}
+
+/** arbab.config.json after defaults are applied (src/config fills every field). */
+export interface ProjectConfig {
+  baseBranch: string;
+  worktreeRoot: string;
+  runsRoot: string;
+  /** Files inlined into every brief as project rules (workers do not load CLAUDE.md). */
+  instructions: string[];
+  dependencies: DependencyStrategy;
+  /** Command prefixes each role may run, e.g. "pnpm test" → Bash(pnpm test) and Bash(pnpm test *). */
+  commands: Partial<Record<Role, string[]>>;
+  /** Extra environment for workers (values are not secrets). */
+  env: Record<string, string>;
+  /** Names of host environment variables passed through to workers. */
+  passEnv: string[];
+  /** Extra credential paths denied on top of the built-in list (Read/Edit rule syntax). */
+  credentialPaths: string[];
+  resources: Record<string, { range: [number, number] }>;
+  semaphores: Record<string, number>;
+  /** Repository gates for verify and landing, as argv arrays. */
+  gates: string[][];
+  preflight: { steps: string[][] };
+  maxParallel: number;
+  quota: { holdAbove: { fiveHour: number; sevenDay: number } };
+  /** Per-role overrides of the built-in presets. */
+  roles: Partial<Record<Role, Partial<RoleDefaults>>>;
+  /** Oldest claude CLI version arbab accepts, e.g. "2.1.290". */
+  minClaudeVersion: string;
+  /** `arbab verify` runs this smoke argv after the gates (DESIGN.md §17); null = none. */
+  verify: { smoke: string[] | null };
+  /** Review lenses besides the built-in correctness, security and contracts: name → what to look for. */
+  review: { lenses: Record<string, string> };
+  /** The risk tier readiness checks against when a command names none. */
+  landing: { tier: Tier };
+}
+
+/** Where every integration's records live, relative to the project root (DESIGN.md §17). */
+export const INTEGRATIONS_DIR = ".arbab/integrations";
+
+export type Tier = "low" | "medium" | "high";
+export const TIERS: readonly Tier[] = ["low", "medium", "high"];
+
+export type DependencyStrategy = { strategy: "none" } | { strategy: "command"; command: string[] };
+
+export interface RoleDefaults {
+  tools: string[];
+  model: string;
+  effort: Effort;
+  budgetUsd: number;
+  wallMin: number;
+  idleMin: number;
+  /** Allow listening on and connecting to loopback (sandbox network.allowLocalBinding). */
+  loopback: boolean;
+  checkpoint: boolean;
+  autoResume: boolean;
+  maxAttempts: number;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The fence (src/profile)
+
+/** The file passed with --settings. */
+export interface ClaudeSettings {
+  sandbox: {
+    enabled: true;
+    failIfUnavailable: boolean;
+    autoAllowBashIfSandboxed: boolean;
+    allowUnsandboxedCommands: boolean;
+    network: { allowLocalBinding: boolean };
+    /** Absolute paths no sandboxed command may write: the repository's shared git directory (measured, M1 review). */
+    filesystem?: { denyWrite: string[] };
+  };
+  env: Record<string, string>;
+  permissions: { allow: string[]; deny: string[] };
+}
+
+export interface ProfileInput {
+  role: Role;
+  fence: FenceLevel;
+  tools: string[];
+  loopback: boolean;
+  /** Project command prefixes for this role (config.commands[role]). */
+  commands: string[];
+  laneAllow: string[];
+  /** config.credentialPaths, added to the built-in list. */
+  credentialPaths: string[];
+  /** config.env plus lease variables; merged into settings.env. */
+  env: Record<string, string>;
+  /** Absolute worktree path (XDG_CONFIG_HOME lives under it). */
+  worktree: string;
+  /**
+   * Absolute path of the repository's shared git directory (`git rev-parse --git-common-dir`). Claude Code's sandbox
+   * lets a worktree's worker write there, refs and objects included, so the fence denies it (M1 review, measured).
+   */
+  gitCommonDir?: string;
+}
+
+export interface CompiledProfile {
+  tools: string[];
+  settings: ClaudeSettings;
+}
+
+export type SessionMode = { kind: "new"; id: string } | { kind: "resume"; id: string };
+
+export interface ClaudeArgsInput {
+  model: string;
+  effort: Effort;
+  tools: string[];
+  settingsPath: string;
+  budgetUsd: number;
+  name: string;
+  session: SessionMode;
+  schema: JsonSchema | null;
+}
+
+export type LintSeverity = "error" | "warning";
+
+export interface LintIssue {
+  severity: LintSeverity;
+  /** Stable, kebab-case, e.g. "any-code-allow". */
+  code: string;
+  message: string;
+  /** The rule, section or field the issue is about. */
+  where?: string;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Briefs (src/brief) and reports (src/report)
+
+export type BriefSectionName = "Task" | "Scope" | "Acceptance" | "Facts" | "Unverified" | "Notes";
+
+export interface BriefSource {
+  title: string;
+  sections: Partial<Record<BriefSectionName, string>>;
+}
+
+export interface BriefContext {
+  lane: string;
+  role: Role;
+  branch: string;
+  worktree: string;
+  profile: CompiledProfile;
+  leases: Lease[];
+  instructions: Array<{ path: string; content: string }>;
+  coordination: string | null;
+  upstream: Array<{ lane: string; summary: string }>;
+  schema: JsonSchema | null;
+  /** BASH_MAX_TIMEOUT_MS in minutes, named in the tool belt. */
+  bashMaxTimeoutMin: number;
+}
+
+/** The JSON Schema subset arbab validates (and Claude Code's --json-schema enforces). */
+export interface JsonSchema {
+  type?: "object" | "array" | "string" | "integer" | "number" | "boolean" | "null";
+  description?: string;
+  properties?: Record<string, JsonSchema>;
+  required?: string[];
+  additionalProperties?: boolean;
+  items?: JsonSchema;
+  minItems?: number;
+  enum?: ReadonlyArray<string | number | boolean | null>;
+}
+
+export interface ValidationError {
+  /** JSON-pointer-like path, e.g. "/checks/0/exit_code". */
+  path: string;
+  message: string;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Runs on disk (src/run, src/registry) and what the stream says (src/stream)
+
+export interface BinaryInfo {
+  path: string;
+  version: string;
+}
+
+export type KillReason = "wall" | "idle" | "hang-after-result" | "hang-after-error" | "stopped";
+
+export type EndState =
+  | "running"
+  | "success"
+  | "failed"
+  | "usage-limit"
+  | "unsupported-cli"
+  | "budget"
+  | "max-turns"
+  | "invalid-report"
+  | "no-result"
+  | `killed:${KillReason}`;
+
+export type FailureCause =
+  | "dontAsk"
+  | "deny-rule"
+  | "scope"
+  | "subcommand"
+  | "denied-other"
+  | "analyzer"
+  | "needs-approval"
+  | "sleep-guard"
+  | "input"
+  | "sandbox"
+  | "real";
+
+export interface Lease {
+  type: string;
+  value: number;
+  lane: string;
+  project: string;
+  pid: number;
+  createdAt: string;
+}
+
+export interface AttemptStarted {
+  lane: string;
+  attempt: number;
+  resume: boolean;
+  sessionId: string;
+  pid: number;
+  binary: BinaryInfo;
+  cwd: string;
+  startedAt: string;
+  /** The exact argv, with the --json-schema value replaced by "<schema>". */
+  args: string[];
+  /** Names only; values are never recorded. */
+  envKeys: string[];
+  leases: Lease[];
+  /** The branches merged into the worktree before this run's first attempt, with their head SHAs (M2). */
+  merged?: Array<{ branch: string; sha: string }>;
+}
+
+export interface AttemptExit {
+  exitCode: number | null;
+  signal: string | null;
+  killedBy: KillReason | null;
+  finishedAt: string;
+  wallMs: number;
+  reaped: number[];
+  checkpoint: string | null;
+  checkpointError: string | null;
+}
+
+/** Epoch seconds for resetsAt, 0–1 for utilization, as rate_limit_event reports them. */
+export interface QuotaWindow {
+  utilization: number;
+  resetsAt: number;
+}
+
+export interface RateLimitSnapshot {
+  /** When arbab saw the event (ISO). */
+  observedAt: string;
+  status: string | null;
+  type: string | null;
+  fiveHour: QuotaWindow | null;
+  sevenDay: QuotaWindow | null;
+}
+
+export interface InitFacts {
+  tools: string[];
+  permissionMode: string | null;
+  version: string | null;
+  model: string | null;
+  apiKeySource: string | null;
+  mcpServers: unknown[];
+  plugins: string[];
+  skills: number;
+  memoryPaths: boolean;
+  messagingSocket: boolean;
+  entrypoint: string | null;
+}
+
+export interface ResultFacts {
+  subtype: string | null;
+  isError: boolean;
+  terminalReason: string | null;
+  apiErrorStatus: number | null;
+  numTurns: number | null;
+  durationMs: number | null;
+  /** Session-cumulative, client-side estimate. */
+  totalCostUsd: number | null;
+  resultText: string | null;
+  structuredOutput: unknown;
+}
+
+/** Everything src/stream derives from one attempt's stream.jsonl. */
+export interface StreamDigest {
+  sessionId: string | null;
+  init: InitFacts | null;
+  /** Every result event, in order (a run with background work can have several). */
+  results: ResultFacts[];
+  final: ResultFacts | null;
+  toolCalls: Record<string, number>;
+  /** Failed tool results, keyed "<tool>:<cause>". */
+  failedByCause: Record<string, number>;
+  permissionDenied: number;
+  /** Distinct assistant message ids. */
+  turns: number;
+  lastTool: string | null;
+  rateLimit: RateLimitSnapshot | null;
+  /** Lines that did not parse (a truncated last line of a live stream is normal). */
+  unparsedLines: number;
+}
+
+export interface AttemptSummary {
+  lane: string;
+  attempt: number;
+  role: Role;
+  state: EndState;
+  sessionId: string | null;
+  binary: BinaryInfo | null;
+  model: string | null;
+  requestedEffort: Effort | null;
+  /** Effort per assistant entry from the transcript, e.g. {"high": 104}; null when the transcript was not found. */
+  measuredEffort: Record<string, number> | null;
+  wallMs: number | null;
+  turns: number;
+  toolCalls: Record<string, number>;
+  toolCallTotal: number;
+  /** The last tool the worker called (StructuredOutput excluded). */
+  lastTool: string | null;
+  failedByCause: Record<string, number>;
+  failedTotal: number;
+  permissionDenied: number;
+  /** Session-cumulative cost after this attempt. */
+  costUsd: number | null;
+  /** This attempt's share: costUsd minus the previous attempt's costUsd. */
+  costDeltaUsd: number | null;
+  resultEvents: number;
+  final: ResultFacts | null;
+  rateLimit: RateLimitSnapshot | null;
+  init: InitFacts | null;
+  /** kind/entrypoint/name from ~/.claude/sessions/<pid>.json, when it was seen. */
+  registration: { kind: string | null; entrypoint: string | null; name: string | null } | null;
+  /** null when the lane has no schema. */
+  reportValid: boolean | null;
+  reportErrors: ValidationError[];
+}
+
+export type LaneState = "queued" | "held" | "preparing" | "running" | "waiting-reset" | "finished" | "orphaned";
+
+/** <runs>/<lane>/state.json, written atomically by the shepherd. */
+export interface LaneStateRecord {
+  lane: string;
+  state: LaneState;
+  attempt: number;
+  since: string;
+  shepherdPid: number;
+  reason?: string;
+  /** Epoch seconds a held or waiting lane will re-check at. */
+  until?: number;
+  endState?: EndState;
+}
+
+export interface HoldDecision {
+  hold: boolean;
+  reason: string | null;
+  /** Epoch seconds to re-check at (a window's resetsAt), or null. */
+  until: number | null;
+}
+
+export interface StatusRow {
+  lane: string;
+  state: LaneState;
+  attempt: number;
+  endState: EndState | null;
+  elapsedMs: number | null;
+  turns: number;
+  toolCalls: number;
+  lastTool: string | null;
+  effort: string | null;
+  failedTotal: number;
+  costUsd: number | null;
+  costDeltaUsd: number | null;
+  fiveHour: QuotaWindow | null;
+  sevenDay: QuotaWindow | null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Integration, verification, review, readiness and landing (src/integrate, src/verify, src/review, src/readiness;
+// DESIGN.md §17). Every record lives in .arbab/integrations/<name>/.
+
+/** integration.json */
+export interface IntegrationRecord {
+  name: string;
+  /** integrate/<name> */
+  branch: string;
+  /** Absolute path of .arbab/worktrees/integrate-<name>. */
+  worktree: string;
+  base: string;
+  baseSha: string;
+  /**
+   * One entry per lane, in the order first integrated. `sha` is the lane commit integrated last; `manifests` lists the
+   * dependency manifests the lane changed (DESIGN.md §16).
+   */
+  merged: Array<{ lane: string; branch: string; sha: string; manifests: string[] }>;
+  /**
+   * The dependency manifests that differ between baseSha and headSha, whoever committed the change: an arbab merge, a
+   * hand commit in the integration worktree, or a merge whose record was lost.
+   */
+  manifests: string[];
+  /**
+   * The head at which a human reviewed the changed manifests and installed the dependencies (`integrate
+   * --deps-installed`); null when none did, or when a manifest changed after it.
+   */
+  depsConfirmedAt: string | null;
+  /** No manifest changed, or a human confirmed them at depsConfirmedAt. */
+  depsConfirmed: boolean;
+  headSha: string;
+  updatedAt: string;
+}
+
+export interface GateResult {
+  kind: "gate" | "smoke";
+  argv: string[];
+  /** The exact command line the verify lane ran. */
+  command: string;
+  /** From the stream's tool result; null when the call was not found (counts as a failure). */
+  exitCode: number | null;
+}
+
+/** verify.json */
+export interface VerifyRecord {
+  name: string;
+  lane: string;
+  attempt: number | null;
+  /** The integration head that was verified. */
+  headSha: string;
+  results: GateResult[];
+  passed: boolean;
+  /** Why verify failed although the commands may have exited 0 (the lane ran on other code, or left changes). */
+  reason?: string;
+  finishedAt: string;
+}
+
+export type FindingVerdict = "confirmed" | "refuted" | "unverified";
+
+export interface ReviewFinding {
+  /** <lens>-<n>, stable within one review. */
+  id: string;
+  lens: string;
+  title: string;
+  severity: "HIGH" | "MEDIUM" | "LOW";
+  file: string;
+  line?: number;
+  failureScenario: string;
+  evidence: string;
+  suggestedFix?: string;
+  /** LOW findings get no skeptic pass and stay "unverified". */
+  verdict: FindingVerdict;
+  verdictReason?: string;
+}
+
+/** review.json */
+export interface ReviewRecord {
+  name: string;
+  headSha: string;
+  lenses: Array<{ lens: string; lane: string; endState: EndState | null; coverage: string | null; pathsChecked: number }>;
+  skeptics: Array<{ lens: string; lane: string; endState: EndState | null }>;
+  findings: ReviewFinding[];
+  finishedAt: string;
+}
+
+/**
+ * A line of the readiness report. Skipped items carry stable ids a human may waive: "review", "review:<lens>",
+ * "skeptic", "smoke", "deps" ("verify" is listed but cannot be waived: land needs it passed). Verified items and risks
+ * carry ids too ("verify:<command>", "finding:<id>", "manifest:<path>", "report:<lane>", "stale:verify", …).
+ */
+export interface ReadinessItem {
+  id: string;
+  text: string;
+}
+
+/** readiness.json (readiness.md is its rendering) */
+export interface ReadinessReport {
+  name: string;
+  tier: Tier;
+  headSha: string;
+  verified: ReadinessItem[];
+  skipped: Array<ReadinessItem & { waived: boolean }>;
+  risks: ReadinessItem[];
+  /** Verify passed for this head and every skipped item is waived. */
+  ready: boolean;
+  createdAt: string;
+}
+
+/** landing.json */
+export interface LandingRecord {
+  name: string;
+  into: string;
+  integrationHead: string;
+  mergeSha: string;
+  landedAt: string;
+  pushed: false;
+}

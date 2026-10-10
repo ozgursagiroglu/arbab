@@ -1,0 +1,7 @@
+{
+  "name": "m1-review-lifecycle",
+  "role": "reviewer",
+  "brief": "lanes/m1-review-lifecycle.md",
+  "base": "integrate/m1",
+  "budgetUsd": 8
+}

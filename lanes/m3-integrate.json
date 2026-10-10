@@ -1,0 +1,9 @@
+{
+  "name": "m3-integrate",
+  "role": "implementer",
+  "brief": "lanes/m3-integrate.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 10,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m3-verify` owns src/verify/**.\n- `m3-review` owns src/review/**.\n- `m3-readiness` owns src/readiness/**."
+}

@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "severity": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "failure_scenario": { "type": "string" },
+          "evidence": { "type": "string" },
+          "suggested_fix": { "type": "string" }
+        },
+        "required": ["title", "severity", "file", "failure_scenario", "evidence"]
+      }
+    },
+    "coverage": { "type": "string" },
+    "paths_checked": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["findings", "coverage", "paths_checked"]
+}

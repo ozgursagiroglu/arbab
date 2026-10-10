@@ -1,0 +1,14 @@
+# Private research evidence: client project internals and absolute paths. Never publish.
+evidence/
+# Machine reports name credential files, their locations and project internals. Never publish.
+research/feedback-*.md
+.DS_Store
+# Local tool state (Serena's project memories can hold private notes)
+.serena/
+# arbab runtime state: runs, lanes, worktrees
+.arbab/
+.arbab-tmp/
+node_modules/
+coverage/
+# The bundle at the root; plugin/dist/ is shipped and tracked.
+/dist/

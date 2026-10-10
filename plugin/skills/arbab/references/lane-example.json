@@ -1,0 +1,10 @@
+{
+  "name": "w2-ratelimit",
+  "role": "implementer",
+  "brief": "lanes/w2-ratelimit.md",
+  "base": "main",
+  "effort": "high",
+  "budgetUsd": 8,
+  "wallMin": 45,
+  "coordination": "w2-quota-ui owns src/web/** and reads the 429 body shape. w2-billing-sync owns src/billing/**."
+}

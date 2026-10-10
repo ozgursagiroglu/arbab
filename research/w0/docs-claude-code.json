@@ -1,0 +1,367 @@
+{
+  "facts": [
+    {
+      "question": "Q1",
+      "claim": "By default, sandboxed commands can write to the working directory, a per-user temp directory and any added directories, while protected paths stay write-denied. They can read most of the machine, including credential files.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Writes | The working directory, a per-user temp directory, and directories you've added. Protected paths stay write-denied ... Reads | Most of the machine, including credential files such as `~/.ssh` and `~/.aws/credentials`"
+    },
+    {
+      "question": "Q1",
+      "claim": "Claude Code points $TMPDIR at the per-user temp directory for sandboxed commands. Unsandboxed commands inherit the shell's $TMPDIR, so the two can see different temp directories. The docs say to pass temp files between them through the working directory. They do not say that /tmp itself is writable.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "A per-user temp directory is writable inside the sandbox by default, alongside the working directory. Unless you disable filesystem isolation, Claude Code sets `$TMPDIR` to this directory for sandboxed commands ... To pass temporary files between the two, write them under the working directory instead."
+    },
+    {
+      "question": "Q1",
+      "claim": "Network: a sandboxed command has no direct route out. Everything goes through a local proxy that checks each host against allowedDomains, and that list starts empty.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Network | No direct route out. Connections go through a proxy on your machine that checks each host against your allowed domains, which start empty. Your permission mode decides what happens to other hosts"
+    },
+    {
+      "question": "Q1",
+      "claim": "In dontAsk mode, a connection to a host outside the allowed domains is refused. In bypassPermissions mode it is allowed unless strictAllowlist or allowManagedDomainsOnly is on.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "| `dontAsk` mode | Refused | ... In `bypassPermissions` mode, hosts outside your allowed domains are allowed unless one of them is on."
+    },
+    {
+      "question": "Q1",
+      "claim": "Loopback: the proxy refuses an allowed hostname that resolves only to local addresses, although localhost and *.localhost may resolve to loopback. A direct connection to a server on the host's localhost is blocked by default. On macOS, network.allowLocalBinding opens it. On Linux/WSL2, localhost is private to the command and allowLocalBinding has no effect.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "By default, a sandboxed command can't connect directly to a server that's running on your machine outside the sandbox ... Linux and WSL2: a sandboxed command's `localhost` is private to that command ... `allowLocalBinding` has no effect."
+    },
+    {
+      "question": "Q1",
+      "claim": "Permission rules feed into the sandbox config. Edit allow rules grant write access the same way allowWrite does. Read/Edit deny rules block paths. WebFetch(domain:...) allow/deny rules control domain access. Paths and domains from both sources are merged.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "`Edit` allow rules | Grant write access to specific paths, the same way `sandbox.filesystem.allowWrite` does | `Read` and `Edit` deny rules | Block access to specific files or directories | `WebFetch(domain:...)` allow and deny rules | Control domain access ... Paths and domains from both sandbox settings and permission rules are merged into the final sandbox configuration."
+    },
+    {
+      "question": "Q1",
+      "claim": "Only the domain: form of a WebFetch rule changes the sandbox allowlist. A bare WebFetch allow rule does not.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "only the `domain:` form also adds its domain to the sandbox's allowed or denied domain list"
+    },
+    {
+      "question": "Q1",
+      "claim": "If you exclude a settings source with --setting-sources, Claude Code also drops that source's sandbox.filesystem entries, Edit rules and Read deny rules from the sandbox configuration (v2.1.246+).",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "If you exclude a source with `--setting-sources` on the CLI ... Claude Code ignores its `sandbox.filesystem` entries, its `Edit` permission rules, and its `Read` deny rules when building the sandbox configuration. Requires Claude Code v2.1.246 or later."
+    },
+    {
+      "question": "Q1",
+      "claim": "Sandbox filesystem paths use normal conventions: /tmp/build is absolute and ~/ is home. Read/Edit rules are different: // means absolute and / means relative to the settings source.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Sandbox filesystem paths use standard conventions: `/tmp/build` is absolute and `~/.kube` is relative to your home directory. This differs from Read and Edit permission rules, which use `//path` for absolute and `/path` for project-relative."
+    },
+    {
+      "question": "Q1",
+      "claim": "autoAllowBashIfSandboxed defaults to true.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "When you enable sandboxing and leave `autoAllowBashIfSandboxed` at its default of `true`, sandboxed Bash commands run without prompting even if your permissions include a bare `Bash` ask rule"
+    },
+    {
+      "question": "Q1",
+      "claim": "If the sandbox cannot start, Claude Code runs commands unsandboxed by default. Setting sandbox.failIfUnavailable makes it exit at startup instead.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "By default, if the sandbox can't start because a dependency is missing or the platform is unsupported, Claude Code runs commands without sandboxing. To make Claude Code exit at startup instead, set `sandbox.failIfUnavailable` to `true`."
+    },
+    {
+      "question": "Q1",
+      "claim": "Several keys weaken the sandbox: enableWeakerNestedSandbox, enableWeakerNetworkIsolation, network.allowAllUnixSockets, network.allowLocalBinding and allowAppleEvents. enableWeakerNestedSandbox bind-mounts the container's existing /proc and is meant for unprivileged containers.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Set `enableWeakerNestedSandbox` to `true` so the sandbox bind-mounts the container's existing `/proc` instead. Only use this setting when the outer container already provides the isolation boundary you need"
+    },
+    {
+      "question": "Q1",
+      "claim": "Other sandbox keys named in the docs: filesystem.allowWrite/denyWrite/denyRead/allowRead/disabled, credentials.files/envVars (deny|mask), network.allowedDomains/deniedDomains/strictAllowlist/allowManagedDomainsOnly/allowUnixSockets/allowAllUnixSockets/allowMachLookup/httpProxyPort/socksProxyPort/tlsTerminate, ignoreViolations, failIfUnavailable, allowManagedReadPathsOnly.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "medium",
+      "quote": "`excludedCommands`, `ignoreViolations`, `network.allowedDomains`, `network.allowUnixSockets`, `network.allowMachLookup`, `network.httpProxyPort`, `network.socksProxyPort` | Every entry"
+    },
+    {
+      "question": "Q1",
+      "claim": "Some paths stay write-denied even inside writable directories: .claude settings/skills/agents/commands/hooks, .mcp.json, shell rc files, .git/hooks and .git/config, and most of ~/.claude or CLAUDE_CONFIG_DIR. No allowWrite entry or Edit allow rule can lift this.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "There is no way to exempt one of these paths: an `allowWrite` entry or an `Edit` allow rule that covers the path doesn't lift the protection."
+    },
+    {
+      "question": "Q2",
+      "claim": "The sandbox covers only shell commands (Bash, PowerShell, Monitor) and their child processes. File tools, WebFetch/WebSearch, hooks, MCP servers, LSP servers, the status line and apiKeyHelper all run outside it.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "The sandbox covers shell commands only. Claude's file tools, MCP servers, and hooks run outside it. ... A `denyRead` entry doesn't stop the Read tool, and `allowedDomains` doesn't limit WebFetch"
+    },
+    {
+      "question": "Q2",
+      "claim": "Subagents use the parent session's sandbox configuration.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Bash commands inside a subagent are sandboxed when sandboxing is enabled in the parent session."
+    },
+    {
+      "question": "Q2",
+      "claim": "Claude may retry a failed command with dangerouslyDisableSandbox. In dontAsk mode that retry is denied. A matching allow rule also approves the retry, so the command runs unsandboxed with no prompt.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Claude analyzes the failure and may retry the command with the `dangerouslyDisableSandbox` parameter. ... `dontAsk` mode: Claude Code denies the retry ... if an allow rule such as `Bash(curl *)` matches the command, it also approves the retry, so the command runs outside the sandbox with no prompt"
+    },
+    {
+      "question": "Q2",
+      "claim": "Setting allowUnsandboxedCommands:false turns the retry off, because Claude Code then ignores dangerouslyDisableSandbox. Setting it through --settings also makes the sandbox admin-required, so repository settings that loosen it (including excludedCommands) are ignored.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "With the retry disabled, Claude Code ignores the `dangerouslyDisableSandbox` parameter. ... If you or your administrator disable the retry in managed settings or with the `--settings` flag, the sandbox becomes admin-required."
+    },
+    {
+      "question": "Q2",
+      "claim": "An ask rule for Bash(dangerouslyDisableSandbox:true) forces a prompt on retries and takes precedence over allow rules.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "add an ask rule for `Bash(dangerouslyDisableSandbox:true)` to be prompted on Bash retries ... the rule takes precedence over a matching allow rule"
+    },
+    {
+      "question": "Q2",
+      "claim": "excludedCommands only applies when every command in the call matches. A redirect, a cd or $(...) keeps the whole call sandboxed.",
+      "source": "https://code.claude.com/docs/en/sandboxing",
+      "confidence": "high",
+      "quote": "Every command in the call has to match ... a redirect to a file, a `cd`, or a command substitution such as `$(...)` keeps the whole call sandboxed."
+    },
+    {
+      "question": "Q3",
+      "claim": "`:*` is an equivalent trailing wildcard, so Bash(ls:*) equals Bash(ls *). It is recognized only at the end of a pattern. The space before a trailing * matters.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "The `:*` suffix is an equivalent way to write a trailing wildcard, so `Bash(ls:*)` matches the same commands as `Bash(ls *)`. ... The `:*` form is only recognized at the end of a pattern."
+    },
+    {
+      "question": "Q3",
+      "claim": "Compound commands are split on &&, ||, ;, |, |&, & and newlines. An allow rule has to match every subcommand. A deny or ask rule applies if any subcommand matches, including inside subshells, command substitutions and for loops.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "The recognized command separators are `&&`, `||`, `;`, `|`, `|&`, `&`, and newlines. A rule must match each subcommand independently. Deny and ask rules apply when any subcommand matches them, including a command nested inside a subshell, a command substitution, or a control-flow body such as a `for` loop."
+    },
+    {
+      "question": "Q3",
+      "claim": "Before matching, Claude Code strips wrappers (timeout, time, nice, nohup, stdbuf, command, builtin, noglob, and bare xargs). So Bash(npm test *) matches `timeout 30 npm test`.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "Before matching Bash rules, Claude Code strips a fixed set of wrappers, so a rule like `Bash(npm test *)` also matches `timeout 30 npm test`. The stripped wrappers are `timeout`, `time`, `nice`, `nohup`, and `stdbuf`..."
+    },
+    {
+      "question": "Q3",
+      "claim": "Deny and ask rules can also match a top-level input parameter using Tool(param:value), with * as a wildcard. An omitted parameter never matches. Primary content fields such as Bash `command` cannot be matched this way. As a result, a deny rule written `Bash(timeout:*)` could be read as a parameter rule on the Bash tool's `timeout` input; the docs do not say which reading wins.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "medium",
+      "quote": "Deny and ask rules can match a top-level input parameter on any built-in tool with `Tool(param:value)`. ... The value supports `*` as a wildcard ... A parameter the model omits is never matched"
+    },
+    {
+      "question": "Q3",
+      "claim": "Rules are evaluated deny first, then ask, then allow. The first match wins, and specificity does not change the order. A deny at any settings level cannot be overridden by an allow at any other level, including --allowedTools.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "Rules are evaluated in order: deny, then ask, then allow. The first match in that order determines the outcome, and rule specificity doesn't change the order."
+    },
+    {
+      "question": "Q3",
+      "claim": "Read/Edit path syntax (gitignore-style): //path is absolute, ~/path is under home, /path is relative to the settings source (--settings file dir, ~/.claude for user settings, cwd for CLI flags), and path or ./path is relative to cwd. Allow rules of the form src/** match only cwd/src, while deny/ask rules match at any depth.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "| `//path` | Absolute path from filesystem root ... | `/path` | Path relative to the settings source ... | `path` or `./path` | Path relative to current directory"
+    },
+    {
+      "question": "Q3",
+      "claim": "Read/Edit deny rules apply to the file tools and to recognized Bash file commands and redirections. Arbitrary subprocesses are not covered unless the sandbox is on.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "They don't apply to ... arbitrary subprocesses that read or write files indirectly, like a Python or Node script that opens files itself. For OS-level enforcement that blocks all processes from accessing a path, enable the sandbox."
+    },
+    {
+      "question": "Q4",
+      "claim": "--tools limits which built-in tools are available (\"\" disables all of them, \"default\" gives the default set) and does not affect MCP tools. --allowedTools only auto-approves tools.",
+      "source": "https://code.claude.com/docs/en/cli-reference",
+      "confidence": "high",
+      "quote": "`--tools` | Restrict which built-in tools Claude can use. Use `\"\"` to disable all, `\"default\"` for the default set ... The flag doesn't affect MCP tools; to deny those too, use `--disallowedTools \"mcp__*\"`."
+    },
+    {
+      "question": "Q4",
+      "claim": "--restricted (v2.1.248+) removes command/code-running built-in tools and WebFetch unless they are named in --tools. It also confines the file tools to the working directories, loads only managed settings and --settings, and refuses bypassPermissions.",
+      "source": "https://code.claude.com/docs/en/cli-reference",
+      "confidence": "high",
+      "quote": "Claude Code removes the built-in tools that run commands or code, and WebFetch, unless you name them individually in `--tools` ... confines the built-in file tools to the working directories, loads only managed settings and `--settings`, refuses `bypassPermissions`"
+    },
+    {
+      "question": "Q4",
+      "claim": "--setting-sources takes a comma-separated list of user, project and local. Passing `--setting-sources user` stops a -p run from reading the project's settings files and .mcp.json.",
+      "source": "https://code.claude.com/docs/en/permissions",
+      "confidence": "high",
+      "quote": "Pass `--setting-sources user`, or set the SDK's `settingSources` without project settings, so Claude Code reads neither the project's settings files nor its `.mcp.json`"
+    },
+    {
+      "question": "Q4",
+      "claim": "--permission-prompts none (v2.1.259+) denies any prompt that a PermissionRequest hook does not resolve, tells Claude not to retry, and removes AskUserQuestion. Denials show up as permission_denied system messages and in the result's permission_denials.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "With `--output-format stream-json`, denials appear as `permission_denied` system messages, and the final result message lists them in `permission_denials`."
+    },
+    {
+      "question": "Q4",
+      "claim": "dontAsk denies every call that would otherwise prompt. File reads in the working directories, read-only commands and allow-rule matches still run. AskUserQuestion is denied even when allowed.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "`dontAsk`: Claude Code denies every call that would otherwise prompt, which is useful for locked-down CI runs."
+    },
+    {
+      "question": "Q4",
+      "claim": "A -p run with no permission mode set starts in the built-in starting mode, which can be auto.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "A run where nothing sets a permission mode takes the built-in starting permission mode, which can be `auto`, so pass the one you want"
+    },
+    {
+      "question": "Q4",
+      "claim": "With --json-schema, the result appears in the `structured_output` field of the json result. An invalid schema causes an exit with an error (v2.1.205+).",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "The response includes metadata about the request (session ID, usage, etc.) with the structured output in the `structured_output` field."
+    },
+    {
+      "question": "Q4",
+      "claim": "Output that fails validation is re-prompted. Once the retry limit is reached, the result subtype is error_max_structured_output_retries. A result can also be `success` with no structured_output, which should be treated as a failure.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/structured-outputs",
+      "confidence": "high",
+      "quote": "the SDK validates the output against it, re-prompting on mismatch. If validation does not succeed within the retry limit, the result is an error instead of structured data"
+    },
+    {
+      "question": "Q4",
+      "claim": "--max-budget-usd stops the run once estimated spend reaches the cap. Spend can go past the cap, and subagent spend counts toward it. On --resume/--continue, totals restored from earlier runs do not count toward the cap, but total_cost_usd reports the whole conversation's total.",
+      "source": "https://code.claude.com/docs/en/cli-reference",
+      "confidence": "high",
+      "quote": "Spend can pass the cap, so leave headroom. When you return to a conversation with `--continue` or `--resume`, totals restored from earlier runs don't count toward it."
+    },
+    {
+      "question": "Q4",
+      "claim": "When a conversation is continued, total_cost_usd in the json output covers the whole conversation, earlier runs included, and is a client-side estimate.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "When you continue an earlier conversation with `--continue` or `--resume`, the run reports the conversation's whole total, earlier runs' spend included. Both figures are client-side estimates"
+    },
+    {
+      "question": "Q4",
+      "claim": "--session-id must be a valid UUID. --fork-session creates a new session ID when used with --resume/--continue. --resume accepts an ID, a name or an absolute .jsonl path, and finds the session from any project directory (v2.1.223+).",
+      "source": "https://code.claude.com/docs/en/cli-reference",
+      "confidence": "high",
+      "quote": "`--session-id` | Use a specific session ID for the conversation (must be a valid UUID) ... `--fork-session` | When resuming, create a new session ID instead of reusing the original"
+    },
+    {
+      "question": "Q4",
+      "claim": "--bare skips hooks, skills, commands, subagents, plugins, MCP, auto memory and CLAUDE.md. It never reads OAuth or the keychain, so it needs ANTHROPIC_API_KEY or apiKeyHelper. It is planned to become the default for -p.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "`--bare` is the recommended mode for scripted and SDK calls, and will become the default for `-p` in a future release."
+    },
+    {
+      "question": "Q4",
+      "claim": "Without --bare, a -p run executes the project's hooks and connects its .mcp.json servers even in an untrusted folder. Project permissions.allow rules are not applied there.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "Without `--bare`, a `-p` session runs the hooks in a project's `.claude/settings.json` and connects the servers in its `.mcp.json`, even in a folder you've never trusted."
+    },
+    {
+      "question": "Q4",
+      "claim": "SIGTERM makes a -p run exit with code 143 and leaves the turn unfinished with no result. Background work is capped at a 10-minute idle wait (CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS).",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "If you stop a `claude -p` run with SIGTERM ... Claude Code exits with code 143."
+    },
+    {
+      "question": "Q5",
+      "claim": "BASH_DEFAULT_TIMEOUT_MS defaults to 120000 ms and BASH_MAX_TIMEOUT_MS defaults to 600000 ms. These come from search snippets of the official env-vars page.",
+      "source": "https://code.claude.com/docs/en/env-vars",
+      "confidence": "medium",
+      "quote": "BASH_DEFAULT_TIMEOUT_MS | Default timeout for long-running bash commands (default: 120000, or 2 minutes) ... BASH_MAX_TIMEOUT_MS | Maximum timeout the model can set for long-running bash commands (default: 600000, or 10 minutes)"
+    },
+    {
+      "question": "Q5",
+      "claim": "DISABLE_AUTOUPDATER=1 disables auto-updates. CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC bundles DISABLE_AUTOUPDATER, DISABLE_BUG_COMMAND, DISABLE_ERROR_REPORTING and DISABLE_TELEMETRY. Source is an older settings page seen through search snippets.",
+      "source": "https://docs.anthropic.com/en/docs/claude-code/settings",
+      "confidence": "medium",
+      "quote": "DISABLE_AUTOUPDATER | Set to 1 to disable automatic updates. This takes precedence over the autoUpdates configuration setting."
+    },
+    {
+      "question": "Q5",
+      "claim": "CLAUDE_CONFIG_DIR moves the config directory, including settings, session history, credentials and the keychain entry key.",
+      "source": "https://code.claude.com/docs/en/authentication",
+      "confidence": "high",
+      "quote": "Each directory has its own settings, session history, and claude.ai login or API key."
+    },
+    {
+      "question": "Q5",
+      "claim": "Auto memory can reportedly be disabled with CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 or the setting autoMemoryEnabled:false. Only third-party guides say so; this was not verified in official docs. --bare and --safe-mode do skip auto memory (official).",
+      "source": "https://www.engineerscodex.com/claude-code-auto-memory",
+      "confidence": "low"
+    },
+    {
+      "question": "Q6",
+      "claim": "stream-json events documented on the headless page: system/init (model, tools, mcp_servers, mcp_server_errors, plugins, plugin_errors, capabilities), system/api_retry (attempt, max_retries, retry_delay_ms, error_status, error category), system/plugin_install, hook_started/hook_progress/hook_response, stream_event (with --include-partial-messages), assistant/user with parent_tool_use_id, permission_denied, and a final result line.",
+      "source": "https://code.claude.com/docs/en/headless",
+      "confidence": "high",
+      "quote": "The last line of the stream is a `result` message with the final response text, cost, and session metadata."
+    },
+    {
+      "question": "Q6",
+      "claim": "Known result subtypes include success and error_max_structured_output_retries. The result also carries structured_output, total_cost_usd, session_id, permission_denials and an errors list.",
+      "source": "https://code.claude.com/docs/en/agent-sdk/structured-outputs",
+      "confidence": "medium",
+      "quote": "| `success` | Output was generated and validated successfully | `error_max_structured_output_retries` | No valid output remained after multiple attempts"
+    },
+    {
+      "question": "Q6",
+      "claim": "terminal_reason values reportedly include completed, max_turns, aborted_streaming and aborted_tools. This comes from a third-party relay of the Python SDK release notes, not official docs.",
+      "source": "https://newreleases.io/project/github/anthropics/claude-agent-sdk-python/release/v0.2.126",
+      "confidence": "low"
+    },
+    {
+      "question": "Q6",
+      "claim": "rate_limit_event is a CLI message type that carries SDKRateLimitInfo (utilization, reset times, overage) and was added around v2.1.45. Sources are third-party issue mirrors.",
+      "source": "https://claudeissues.com/issue/26392-docs-agent-sdk-missing-sdkratelimitinfo-and-sdkratelimitevent-type-documentation",
+      "confidence": "low"
+    }
+  ],
+  "not_found": [
+    "Q1: No official settings-reference text was retrieved giving every sandbox key's default (enabled, allowUnsandboxedCommands, allowLocalBinding, etc.). The settings-reference page was not read; only the sandboxing and permissions pages were.",
+    "Q1: Whether /tmp itself (as opposed to the per-user temp directory) is writable inside the sandbox.",
+    "Q3: Whether a deny rule `Bash(timeout:*)` is parsed as the trailing-wildcard command form or as a parameter rule on the Bash `timeout` input. The docs support both readings. They also don't say whether a rule naming a wrapper (e.g. Bash(timeout *)) still matches after wrapper stripping.",
+    "Q4: What an empty `--setting-sources \"\"` does, and whether CLAUDE.md and auto memory still load when sources are excluded.",
+    "Q5: Official env-vars entries for CLAUDE_CODE_DISABLE_AUTO_MEMORY / autoMemoryEnabled, the session entrypoint (CLAUDE_CODE_ENTRYPOINT), cross-session messaging controls, and the ~/.claude/sessions registry. The env-vars page was not read in full.",
+    "Q6: Official definitions for terminal_reason values, api_error_status, is_error semantics, the full result subtype list (error_max_turns, error_during_execution, error_max_budget_usd?), the rate_limit_event shape, task_started/task_notification and tool_progress. The agent-sdk/typescript reference page was not read."
+  ],
+  "recommendations": [
+    "Launch workers with `--settings '{\"sandbox\":{\"enabled\":true,\"failIfUnavailable\":true,\"allowUnsandboxedCommands\":false}}'` so the dangerouslyDisableSandbox retry is ignored, the sandbox becomes admin-required, and repo settings can't loosen it.",
+    "Have workers write scratch files under the working directory or $TMPDIR (the per-user temp dir), not a hard-coded /tmp, and don't share temp files between sandboxed and unsandboxed commands through $TMPDIR.",
+    "Expect a sandboxed worker to have no network unless you add allowedDomains or WebFetch(domain:...) allow rules. Under dontAsk, unlisted hosts are refused, and on Linux localhost servers on the host are unreachable.",
+    "Don't treat the sandbox as covering hooks, MCP servers or file tools. Use `--bare` or `--setting-sources user` so untrusted repo hooks and .mcp.json servers don't run in -p workers.",
+    "Use the space form `Bash(cmd *)` in generated rules, and don't rely on `Bash(timeout:*)` to block the Bash timeout parameter; it is ambiguous, and wrapper stripping means `timeout` prefixes are already removed before matching.",
+    "Use `//` for absolute paths in Read/Edit rules (a single `/` is relative to the settings source, which for a --settings file is that file's directory).",
+    "Use `--tools` to limit which tools exist and `--allowedTools` only for auto-approval, and add `--disallowedTools \"mcp__*\"` if MCP tools must be excluded too.",
+    "Always pass an explicit `--permission-mode` (e.g. dontAsk) together with `--permission-prompts none`, because a -p run's default mode can be auto.",
+    "Read `structured_output` from the result and treat anything other than subtype `success` with structured_output present as a failure (including error_max_structured_output_retries).",
+    "Track budgets per invocation: --max-budget-usd ignores restored totals on --resume while total_cost_usd reports the cumulative conversation total, so arbab should compute deltas itself.",
+    "Pass a UUID via `--session-id` so arbab knows the ID up front, and use `--fork-session` when resuming in a way that shouldn't extend the original transcript.",
+    "Plan for `--bare` becoming the -p default: test workers with --bare now and supply auth through ANTHROPIC_API_KEY or apiKeyHelper, since bare mode skips OAuth and the keychain.",
+    "Before depending on rate_limit_event, terminal_reason, api_error_status or auto-memory env vars, check them against the official agent-sdk/typescript and env-vars pages, and parse unknown event types tolerantly."
+  ]
+}

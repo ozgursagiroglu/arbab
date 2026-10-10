@@ -1,0 +1,9 @@
+{
+  "name": "m3-package",
+  "role": "implementer",
+  "brief": "lanes/m3-package.md",
+  "base": "integrate/m3",
+  "effort": "medium",
+  "budgetUsd": 6,
+  "coordination": "Another lane runs at the same time; do not edit its scope:\n- `m3-land-cleanup` owns src/commands/cleanup.ts, src/commands/land.ts, src/commands/generated.ts, the help text in src/commands/index.ts and test/e2e/**."
+}

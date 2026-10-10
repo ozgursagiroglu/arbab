@@ -1,0 +1,7 @@
+{
+  "name": "m1-probe-gitwrite3",
+  "role": "probe",
+  "brief": "lanes/m1-probe-gitwrite3.md",
+  "base": "integrate/m1",
+  "allow": ["Bash(node probe.mjs)"]
+}

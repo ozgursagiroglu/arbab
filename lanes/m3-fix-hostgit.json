@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-hostgit",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-hostgit.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 12,
+  "coordination": "Another lane runs at the same time; do not edit its scope:\n- `m3-fix-borrowers` owns src/commands/readiness.ts and src/readiness/**."
+}

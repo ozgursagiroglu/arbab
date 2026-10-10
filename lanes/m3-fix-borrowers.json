@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-borrowers",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-borrowers.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 6,
+  "coordination": "Another lane runs at the same time; do not edit its scope:\n- `m3-fix-hostgit` owns src/run/**, refuseDirtyLanes in src/integrate/integrate.ts, src/commands/verify.ts, src/commands/cleanup.ts, src/commands/land.ts, src/shepherd/merge.ts and createWorktree call sites in src/shepherd/lifecycle.ts."
+}

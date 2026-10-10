@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-verify",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-verify.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 10,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m3-fix-cleanup` owns src/commands/cleanup.ts, src/commands/land.ts and src/commands/generated.ts.\n- `m3-fix-records` owns src/integrate/**, src/commands/integrate.ts and src/plan/**."
+}

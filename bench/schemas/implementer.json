@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "string", "enum": ["done", "partial", "blocked"] },
+    "summary": { "type": "string" },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "result": { "type": "string" }
+        },
+        "required": ["command", "exit_code", "result"]
+      }
+    },
+    "decisions": { "type": "array", "items": { "type": "string" } },
+    "open_questions": { "type": "array", "items": { "type": "string" } },
+    "not_verified": { "type": "array", "items": { "type": "string" } },
+    "notes_for_reviewer": { "type": "string" }
+  },
+  "required": ["status", "summary", "files_changed", "checks", "decisions", "open_questions", "not_verified"]
+}

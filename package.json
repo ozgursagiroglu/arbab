@@ -1,0 +1,50 @@
+{
+  "name": "arbab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Claude Code plugin that runs fenced headless Claude Code workers from your interactive session: one git worktree per lane, sandboxed role fences, quota-aware launches, usage-limit auto-resume, and a verify, review, readiness and land pipeline that never runs worker code on your host.",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "claude",
+    "anthropic",
+    "ai-agents",
+    "multi-agent",
+    "agent-orchestration",
+    "headless",
+    "git-worktree",
+    "sandbox",
+    "code-review",
+    "developer-tools"
+  ],
+  "homepage": "https://github.com/ozgursagiroglu/arbab#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ozgursagiroglu/arbab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ozgursagiroglu/arbab/issues"
+  },
+  "author": "Özgür Sağıroğlu (https://github.com/ozgursagiroglu)",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@12.10.1",
+  "bin": {
+    "arbab": "dist/arbab.mjs"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

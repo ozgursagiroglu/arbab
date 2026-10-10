@@ -1,0 +1,664 @@
+# arbab — design
+
+Date: 2026-10-09 · Status: decided for M1; M2–M4 sketched · Inputs: [REQUIREMENTS.md](REQUIREMENTS.md), the analysis
+wave w0 ([research/native-claude-code.md](research/native-claude-code.md) §"Measured in w0", [research/w0/](research/w0/))
+
+arbab is a Claude Code plugin: a **skill** that carries the method, and a **runner** CLI that does the mechanics. The
+interactive session stays the brain (plans, writes briefs, reads reports, lands); the runner launches and supervises
+headless `claude -p` workers and records everything on disk.
+
+## 1. Decisions
+
+| Question | Decision | Why |
+| --- | --- | --- |
+| Q-form | Plugin = skill + bundled runner | REQUIREMENTS §10 |
+| Q-runtime | TypeScript, Node ≥ 20, **zero runtime dependencies**, bundled into one ESM file `dist/arbab.mjs` | The plugin cache installs `node_modules` only for npm/bun lockfiles, skips install scripts and may drop the executable bit (w0 research). `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs"` needs none of that. `dist/` is ignored during development (every lane builds it, so a committed bundle would conflict on every merge); release commits add it with `git add -f`. |
+| CLI vs Agent SDK | Spawn the user's own `claude` binary | The SDK ships its own binary; the terms reserve subscription login for the unmodified Claude Code binary (w0 research). |
+| Q-sandbox | Claude Code's sandbox + `--restricted` by default; `srt` whole-process mode is an M4 option | Measured in w0: the built-in sandbox blocks writes outside the worktree, credential reads and the network; `--restricted` confines the file tools. srt adds MCP/hooks coverage, which workers do not use (no MCP, no settings sources). |
+| Q-supervisor | **No daemon.** One detached *shepherd* process per lane supervises its attempts; machine-wide state (quota, slots, leases, locks) lives in `~/.arbab/` | A daemon is one more thing to keep alive. A shepherd survives the orchestrator (own process group), tracks only its own pids, and the registry is rebuilt from disk. |
+| Q-auth | Defaults target a Pro/Max subscription; API keys work unchanged | Owner decision (2026-10-09). arbab never reads, stores or proxies credentials. |
+| Q-settings-cut | Answered in w0: with `--setting-sources ""` neither the project's nor the user's CLAUDE.md loads; auto-memory and messaging stay **on** unless `--restricted` is passed | Transcript evidence (no CLAUDE.md content; `memory_paths` and `messaging_socket_path` only without `--restricted`). So the brief inlines project rules, and `--restricted` is mandatory. |
+| Background Bash | Denied for every worker with the parameter rule `Bash(run_in_background:true)` | Measured in w0 (denied, `decision_reason_type: rule`). Removes the last-turn-only result and the hung-child problems at the source. Long commands use the Bash `timeout` parameter (up to `BASH_MAX_TIMEOUT_MS`). |
+
+## 2. Process model
+
+```
+interactive session (orchestrator)
+  │ arbab launch lanes/x.json   ── validates, lints, writes attempt dir, spawns ──┐  (returns at once)
+  │ arbab wait --any            (run_in_background → task notification)          │
+  │ arbab status / resume / stop                                                  ▼
+  │                                                             shepherd (detached, own process group)
+  │                                                               acquire slot → quota check → worktree →
+  │                                                               dependencies → leases → writer lock →
+  │                                                               spawn worker ──────────────┐
+  │                                                               watch: stream, descendants, │
+  │                                                               wall / idle / hang timers   ▼
+  │                                                                              claude -p (own process group,
+  │                                                                              scrubbed env, fenced)
+  │                                                               on exit: reap tree, release, checkpoint,
+  │                                                               summarize, classify → done | auto-resume
+  ▼
+reads <run dir>/summary.json and the report, never the stream
+```
+
+**Lane states** (`state.json`, written atomically by the shepherd): `queued` → `held` (no slot, or quota above the
+hold threshold) → `preparing` (worktree, dependencies, leases) → `running` → `waiting-reset` (usage limit, sleeping
+until `resetsAt`) → `running` (resumed attempt) … → `finished`. `finished` carries the lane run's end state and, when it ended before or between attempts, the reason (a setup failure, a stop, a refused lint).
+A shepherd that dies is detected by `status` (pid gone, state not `finished`) and shown as `orphaned`.
+
+**Kill rules** (shepherd): wall clock (`wallMin`), idle (no stream growth for `idleMin`), hang after a result
+(15 min without new events after a `result`), hang after an error result (2 min), `arbab stop`. Killing sends
+SIGTERM to the worker's process group and to every recorded descendant, then SIGKILL after 10 s.
+
+**Auto-resume**: only for end state `usage-limit`, at most `maxAttempts` attempts per lane, after `resetsAt` + 60–120 s
+jitter and a fresh quota check, with the same session id, the same binary and the standard continuation prompt.
+Every other end state stops the lane and is the orchestrator's decision. The wait ends early only after `arbab quota
+--reset` run after the limited attempt began (an account switch, recorded with its time in `~/.arbab/quota-reset.json`;
+a reset while the attempt was still finishing counts). A newer snapshot alone does not
+end it: snapshots carry only the five-hour and seven-day windows, so another lane's events can look fine while this
+lane's own limit (a model's weekly limit, say) still holds (M3 review, round 2).
+
+## 3. On disk
+
+Project (git-ignored; arbab adds both entries to the repository's `info/exclude` and verifies them with
+`git check-ignore`):
+
+```
+.arbab/
+  runs/<lane>/
+    lane.json                     the lane as launched
+    shepherd.json                 {pid, startedAt}; state.json (live)
+    attempt-<n>/                  never overwritten (created with mkdir, files with O_EXCL)
+      brief.md                    the assembled prompt that was sent
+      settings.json  args.json    the compiled fence and the exact argv (schema elided)
+      started.json                session id, pid, binary {path, version}, leases, env keys (never values)
+      stream.jsonl  stderr.log    raw worker output
+      registration.json           kind/entrypoint from ~/.claude/sessions/<pid>.json, if present
+      exit.json                   exit code, signal, killedBy, wall ms, reaped pids, checkpoint sha
+      summary.json                classification and metrics (§7)
+      report.json                 the validated structured output, when present
+    acked.json                    the lane run (shepherd pid + finish time) `arbab wait` last reported, so a run
+                                  that failed before its first attempt is still reported exactly once
+    launch.lock                   held from `launch`/`resume` until the new shepherd writes its first state
+    resume-prompt-<n>.md          a `resume --prompt` text, passed to the shepherd by path
+    generated.json                on lanes `verify`/`review` generate: the integration and head that own the name
+                                  (launch and resume refuse such a lane)
+    worktree-used                 written before the first attempt runs: the worktree is no longer arbab's own
+  preflight/<lane>/               the generated probe lanes of `arbab preflight` (never in the project's lanes/)
+  integrations/<name>/            integration.json, verify.json, review.json, readiness.json + .md, landing.json,
+                                  lanes/ (generated lane files); superseded records keep their own file (§17)
+  worktrees/<lane>/               one git worktree per lane, branch arbab/<lane>
+  worktrees/integrate-<name>/     the integration worktree, branch integrate/<name> (no worker runs there)
+<worktree>/.arbab-tmp/            per-worker config home (XDG_CONFIG_HOME); ignored
+```
+
+Repository build output (git-ignored): `dist/arbab.mjs` (the bundle) and `plugin/` (what a marketplace installs, §17).
+
+Machine (`~/.arbab/`, never writable from a worker's sandbox):
+
+```
+quota.json                        newest account-wide rate-limit snapshot (newer observation wins)
+quota-reset.json                  {resetAt}: the last `arbab quota --reset` (an account switch, §2)
+slots/<i>.json                    maxParallel workers across all projects
+semaphores/<name>/<i>.json        shared external resources (config semaphores)
+leases/<type>/<value>.json        port, redis-db, database, custom
+locks/<sha1(worktree)>/0.json     one writer per worktree
+```
+
+Every entry is an O_EXCL file holding `{pid, lane, project, createdAt}`, one generic pool for all four kinds. An entry
+whose holder pid is dead is reclaimed by renaming it to a tomb file first, so two reclaimers cannot both win; an
+entry that does not parse is treated as held (its creator may be between open and write) and left to `cleanup`.
+
+Writes are atomic (temp file + rename) or exclusive (O_EXCL). Names that become paths (lane names, resource types)
+must match `^[a-z0-9][a-z0-9-]{0,47}$`; every path is resolved and checked to stay under its root.
+
+## 4. The fence
+
+### What w0 measured (CLI 2.1.295, macOS)
+
+| Check | Result |
+| --- | --- |
+| Write outside the worktree (`~`, `/private/tmp`) | EPERM (sandbox) |
+| `cat .env` with `Read(**/.env*)` denied | refused by the permission layer (`subcommandResults`) and EPERM in the sandbox |
+| Read tool on `.env` | refused ("denied by your permission settings") |
+| `curl https://example.com`, Node `fetch` | refused (sandbox proxy, no allowed domains) |
+| Listen on 127.0.0.1 with `allowLocalBinding` | allowed |
+| `run_in_background: true` with `Bash(run_in_background:true)` denied | refused (`rule`) |
+| Bash `timeout` parameter | allowed |
+| `--restricted` | `memory_paths` and `messaging_socket_path` absent; without it both present |
+| Scrubbed env | worker entrypoint `sdk-cli` (Bash children see `CLAUDE_CODE_ENTRYPOINT=sdk-cli`), not `claude-vscode` |
+| `--tools "Read,Bash,Monitor,ToolSearch,Agent,TodoWrite"` | init tools: Task, Bash, Monitor, Read, ToolSearch (Agent is `Task`; TodoWrite is not a tool in this version) |
+| Sandboxed `$TMPDIR` | `/tmp/claude-<uid>`, set by Claude Code; shared by every session of the user and writable from every sandbox |
+| Code a worktree's worker runs, writing the repository's shared `.git` (M1 review probe) | new files and **loose refs** writable, as are the worktree's own git dir (`HEAD`, `commondir`); `.git/config`, `.git/hooks` and the worktree's `.git` pointer EPERM |
+| The same with `sandbox.filesystem.denyWrite: [<repo>/.git]` | every write EPERM; `git status`, `log` and `diff` still work |
+| Allowlisted `touch`/`cp`/`ls` on paths outside the working directory, in dontAsk | refused by the permission layer before the sandbox is reached |
+
+### Compiled flags (every role)
+
+```
+claude -p --output-format stream-json --verbose
+  --model <m> --effort <e>
+  --permission-mode dontAsk --permission-prompts none
+  --strict-mcp-config --setting-sources "" --restricted
+  --tools <role tools>
+  --settings <attempt>/settings.json
+  --max-budget-usd <per-attempt budget>
+  -n <lane> (--session-id <uuid> | --resume <uuid>)
+  [--json-schema <report schema>]
+```
+
+Environment: built from scratch, never inherited — `HOME USER LOGNAME LANG LC_ALL SHELL`, a computed `PATH` (node,
+pnpm, system dirs), `TERM=dumb`, `DISABLE_AUTOUPDATER=1`, the names listed in config `passEnv`, and the leases.
+
+### Settings template
+
+```json
+{
+  "sandbox": {
+    "enabled": true, "failIfUnavailable": true,
+    "autoAllowBashIfSandboxed": false, "allowUnsandboxedCommands": false,
+    "network": { "allowLocalBinding": <role.loopback> },
+    "filesystem": { "denyWrite": [<the repository's shared git dir>] }
+  },
+  "env": { "BASH_DEFAULT_TIMEOUT_MS": "300000", "BASH_MAX_TIMEOUT_MS": "900000",
+           "XDG_CONFIG_HOME": "<worktree>/.arbab-tmp/xdg-config", <config.env>, <leases> },
+  "permissions": { "allow": [<role base>, <config commands>, <lane allow>], "deny": [<credential denies>, <role denies>] }
+}
+```
+
+`autoAllowBashIfSandboxed` defaults to **true** and must be set; `allowUnsandboxedCommands: false` stops an allow rule
+from silently approving an unsandboxed retry; `failIfUnavailable` makes a missing sandbox fatal instead of silent.
+`filesystem.denyWrite` closes the shared git directory, which Claude Code's sandbox otherwise opens to a worktree's
+worker: without it, code the worker runs could rewrite another branch's ref or point its worktree's `commondir` at
+hooks the runner would later execute. Workers never need to write there; the runner commits.
+
+The runner's own git calls on a worker's worktree (the checkpoint) pass `--git-dir` and `--work-tree` explicitly and
+first check that the worktree's `HEAD` and `commondir` are the ones arbab created; the dependency command runs only
+when the shepherd has just created the worktree, never on one a worker has already changed.
+
+### Role presets
+
+| Role | Tools | Model / effort | Budget / wall / idle | Loopback | Writes |
+| --- | --- | --- | --- | --- | --- |
+| implementer | Read Edit Write Glob Grep Bash | opus / high | $10 / 60 / 20 min | yes | worktree |
+| verifier | Read Edit Write Glob Grep Bash | opus / high | $10 / 60 / 20 min | yes | worktree (after the builder, same writer lock) |
+| reviewer | Read Glob Grep Bash | opus / high | $5 / 30 / 15 min | no | none (`Edit`, `Write` denied) |
+| researcher | WebSearch WebFetch | opus / medium | $5 / 40 / 15 min | n/a | none (no local tools at all) |
+| probe | Read Write Bash | haiku / low | $0.5 / 10 / 5 min | yes | worktree |
+
+Base allow rules: implementer, verifier and reviewer get the read-only git verbs (`status diff log show ls-files
+blame`; not `grep`, whose `-O` option runs a program — workers have the Grep tool), `ls cat head tail wc` and `pwd`; implementer and verifier also get `mkdir cp mv rm touch`, whose writes the
+sandbox confines to the worktree (wave 1 of arbab's own build lost a turn to a refused `rm` and left a misnamed file);
+researchers get `WebSearch WebFetch`; the probe gets `Write`, `git rev-parse`, `git status` and `ls`. Project commands come
+from config `commands.<role>` as prefixes, compiled to `Bash(<cmd>)` and `Bash(<cmd> *)`.
+
+Role denies: `Bash(run_in_background:true)`; git writes (`commit push reset checkout switch restore rebase merge
+cherry-pick stash clean branch worktree tag config update-ref remote`); `WebFetch WebSearch` (all but researcher);
+`Edit Write NotebookEdit` (reviewer). Credential denies, as `Read(…)` and `Edit(…)` rules: `~/.ssh ~/.aws ~/.azure
+~/.config ~/.docker ~/.kube ~/.gnupg ~/.claude ~/.claude.json ~/.netrc ~/.npmrc ~/.pypirc ~/.git-credentials
+~/Library/Keychains ~/Library/Cookies`, `**/.env* **/*.pem **/*.key **/*.p12 **/*.pfx **/id_rsa* **/id_ed25519*
+**/*.tfstate`, plus config `credentialPaths`. (`XDG_CONFIG_HOME` keeps git and other tools off the denied `~/.config`,
+which otherwise prints an EPERM warning on every git command.)
+
+Fence levels: `strict` (above, the default) and `sandbox-auto` (opt-in per lane: `autoAllowBashIfSandboxed: true`,
+no Bash allowlist — the sandbox is the only wall; lower denial tax, broader command surface).
+
+### Profile lint (deterministic; launch refuses on errors)
+
+- **Error**: a bare `Bash` or `Bash(*)` allow; an "any code" allow prefix (`node`, `npx`, `pnpm`, `pnpm exec`,
+  `pnpm dlx`, `npm`, `yarn`, `bun`, `deno`, `python`, `python3`, `ruby`, `perl`, `sh`, `bash`, `zsh`, `env`, `eval`,
+  `xargs`, `find`, `awk`, `sed`, `make` without a further anchoring word); a deny or allow rule of the form
+  `Bash(<p>:…)` where `<p>` is a Bash input parameter (`timeout`, `description`, `run_in_background`,
+  `dangerouslyDisableSandbox`) other than arbab's own `run_in_background:true`; a Read/Edit rule with a single
+  leading `/` (relative to the settings file — use `//`); sandbox disabled, `failIfUnavailable` false,
+  `allowUnsandboxedCommands` true, or `autoAllowBashIfSandboxed` true outside `sandbox-auto`; a tool set containing
+  `Task`/`Agent` without a nested-agent budget.
+- **Warning**: `:*` form (generated rules use the space form); allow rules shadowed by a deny.
+
+## 5. Brief contract
+
+The orchestrator writes a **brief source** (Markdown); arbab assembles the prompt.
+
+Brief source sections (`##` headings, in any order): `Task` (required), `Scope` (required: the paths this lane owns),
+`Acceptance` (required), `Facts` (measured, with sources), `Unverified`, `Notes`.
+
+Assembled prompt, in this order:
+
+1. **Role and isolation** — generated from the profile: headless, nobody answers; the worktree and branch; what the
+   fence blocks; no commits (the runner commits); no background processes; long commands use the `timeout`
+   parameter.
+2. **Project rules** — the files listed in config `instructions` (for example `CLAUDE.md`), inlined, because workers
+   do not load CLAUDE.md.
+3. Task, Scope, Facts, Unverified, Acceptance, Notes — from the source.
+4. **Tool belt** — generated: the allowed commands; "one command per call, foreground"; the refused shapes (`cd`,
+   `&&`, `;`, `$(…)`, `| tail`, `sleep N`, `echo $?`); leased resources and their env names; the do-not-try list.
+5. **Coordination** — sibling lanes and their scopes (lane field `coordination`; generated from the plan in M2).
+6. **Upstream reports** — summaries of the lanes named in `upstream` (M2).
+7. **Report** — generated from the schema: what the final JSON must contain.
+
+Brief lint: required sections present; inline code that looks like a command must match the allowlist; forbidden
+shapes in commands are errors; `Scope` paths must not overlap another running lane's scope (warning in M1, error in
+M2 with the plan).
+
+## 6. Reports
+
+Each role has a default JSON schema; a lane may name its own. Validation uses a small built-in validator (type,
+properties, required, items, enum, additionalProperties, minItems) — the same subset Claude Code's `--json-schema`
+enforces. A `success` result without `structured_output`, or one that fails validation, ends as `invalid-report`.
+
+Implementer and verifier: `status` (done | partial | blocked), `summary`, `files_changed[]`, `checks[]` ({command,
+exit_code, result}), `decisions[]`, `open_questions[]`, `not_verified[]`, `notes_for_reviewer`. Reviewer:
+`findings[]` ({title, severity HIGH|MEDIUM|LOW, file, line, failure_scenario, evidence}), `coverage` (required),
+`paths_checked[]`. Researcher: `facts[]` ({question, claim, source, quote, confidence}), `not_found[]`,
+`recommendations[]`. Probe: `steps[]`.
+
+## 7. Stream accounting
+
+The summary is computed from **every** event of `stream.jsonl` (never from the last `result` alone), the attempt
+files and the transcript (`~/.claude/projects/*/<session>.jsonl`, located by session id):
+
+- **End state**: `killed:<reason>` (exit.json) › no `result` → `no-result` (or `running` while alive) ›
+  `is_error` with `api_error_status` 429 → `usage-limit` › 400 with "does not support this model" / "or newer is
+  required" → `unsupported-cli` › subtype `error_max_budget_usd` → `budget` › `error_max_turns` → `max-turns` ›
+  `error_max_structured_output_retries`, or schema required and `structured_output` missing/invalid →
+  `invalid-report` › other errors → `failed` › `success`. Never from `subtype` alone, never from the exit code.
+- **Failed tool results by cause**: `permission_denied` events by `decision_reason_type` (`mode` → dontAsk, `rule` →
+  deny-rule, `other` → scope, `subcommandResults` → subcommand), then by text: analyzer, needs-approval,
+  sleep-guard, input, sandbox (EPERM, "Operation not permitted", network-outbound), real.
+- **Metrics**: tool calls by tool; turns (distinct assistant message ids); wall clock (exit.json); cost =
+  last `total_cost_usd` (session-cumulative) and the delta against the previous attempt; measured effort (transcript
+  `effort` per assistant entry); model; binary; last rate-limit snapshot; init facts (tools, permission mode,
+  memory/messaging flags, MCP servers).
+- **Quota**: every `rate_limit_event` updates `~/.arbab/quota.json` when newer.
+
+## 8. Quota and parallelism
+
+Hold a launch (state `held`) while any is true: the newest snapshot says `rejected` and its `resetsAt` is in the
+future; five-hour utilisation ≥ `quota.holdAbove.fiveHour` (default 0.85) before its reset; seven-day utilisation ≥
+`quota.holdAbove.sevenDay` (default 0.95) before its reset. The margin below 1.0 is the orchestrator's headroom.
+Snapshots are lower bounds (other sessions keep spending), so a held lane re-checks every minute and after each
+reset. `maxParallel` (default 4) bounds concurrent workers machine-wide through `~/.arbab/slots/`.
+
+## 9. Worktrees and resources
+
+- Worktree: `git worktree add -b arbab/<lane> .arbab/worktrees/<lane> <base>`; reused when it exists (resume,
+  verifier). The root must be ignored (checked); arbab never removes a worktree with uncommitted changes.
+- **Install points** (M3 review, round 5): the dependency command runs on the host, so it runs only on a trusted
+  commit: one contained in `baseBranch`, or an integration head a human confirmed (`depsConfirmedAt`). A lane whose
+  `base` is worker-written (a fix round on `integrate/<name>`, a lane continuing `arbab/<other>`) gets its worktree
+  at the trusted ancestor of its base closest to it (a confirmed head, else `git merge-base <base> <baseBranch>`),
+  installs there, and has its base merged first, by sha, through `mergeBranches` (fast-forward; a manifest change
+  is refused). A worktree no worker has run in (a setup that failed before any attempt) is never reused: the next
+  launch of its owner rebuilds it from the plan (round 6), but only when it holds nothing arbab could not rebuild, a
+  clean tree on a branch whose every commit comes from a source; otherwise (uncommitted files, a hand-made commit or
+  merge) the launch is refused and nothing is removed (round 9). A lane that borrows such a worktree is refused until
+  the owner has run there (round 8). Worktrees are created, checked and prepared under their writer lock (round 7).
+- **arbab's state never travels in a branch** (round 9): the checkpoint never stages `.arbab/` or `.arbab-tmp/`, even
+  when a worker un-ignores them, and an integration record that git tracks vouches for nothing: arbab writes its
+  records untracked, so a tracked one came in through a merge. Both match without case (round 10): on a
+  case-insensitive disk `.ARBAB/` is the same directory.
+- A relaunch after a setup that already made a merge commit is refused (that commit is not a source), and the setup
+  error says so: remove the worktree and its branch first.
+  `prepare()` also refuses to install in a worktree whose head is not a trusted install point.
+- Dependencies (config `dependencies.strategy`): `none`; `command` (an argv run in the worktree before the worker
+  starts, outside the sandbox, e.g. `pnpm install --offline --frozen-lockfile`); `clone` (M4: APFS clone). Never a
+  symlink to the main checkout's `node_modules`.
+- Leases: config `resources.<type>` = `{ "range": [lo, hi] }`; a lane asks `resources: {"port": 2}`; the shepherd
+  takes the lowest free values (ports are also probed with a listen), exports `ARBAB_<TYPE>_<i>` and lists them in
+  the tool belt; released on exit. Semaphores (config `semaphores.<name>` = capacity) serialise shared external
+  resources.
+- Writer lock: one per worktree path, held for the attempt; a verifier on a builder's worktree waits for it.
+
+## 10. CLI (M1)
+
+```
+arbab doctor                         binary, version, node, git, sandbox availability, config, ignored roots
+arbab lint <lane.json>               profile + brief + config lint; exit 1 on errors
+arbab launch <lane.json>             lint, take the lane's launch lock, start the shepherd, print the lane, its run dir
+                                     and the shepherd pid (the shepherd creates the attempt and the session later)
+arbab status [--json] [lane…]        one row per lane: state, attempt, elapsed, turns, calls, last tool, effort,
+                                     failed, cost Δ, quota (failures by cause are in summary.json)
+arbab wait [--any|--all] [lane…] [--timeout-min N] [--json]
+                                     level-triggered: prints the finished lane runs not yet acked (end state, reason,
+                                     attempt and report when there is one), acks each run; blocks until one finishes;
+                                     exit 0, or 3 on timeout
+arbab resume <lane> [--prompt f]     a new attempt resuming the same session (manual); the prompt goes to a file in
+                                     the run dir, never into the shepherd's argv
+arbab stop <lane>                    kill the worker (no auto-resume)
+arbab preflight <lane.json>          a probe attempt with the lane's binary, flags and profile; asserts §11 checks
+arbab quota [--reset] [--json]       the account snapshot and hold decision; --reset after an account switch
+arbab cleanup [--worktrees]          reap orphans, release stale slots/leases/locks; remove finished lanes' merged
+                                     clean worktrees, and landed integrations' worktrees and branches
+arbab plan check|next|status <plan>  M2 (§16)
+arbab integrate <name> (--lanes a,b | --plan p | --deps-installed <sha>)
+arbab verify <name>  arbab review <name> [--lenses a,b]  arbab readiness <name> [--tier t] [--waive ids]
+arbab land <name> [--keep-worktrees] M3 (§17)
+arbab __shepherd <root> <lane> <mode-json>
+                                     internal
+```
+
+Exit codes: 0 ok, 1 usage or lint error, 2 runtime error, 3 wait timeout. `--json` output is stable and documented.
+
+## 11. Preflight
+
+Two probe lanes, written under `.arbab/preflight/<lane>/`, use the lane's tools and fence: one on `haiku` runs the
+project's `preflight.steps` (e.g. `pnpm typecheck`) as single foreground commands, in the lane's worktree when it
+already exists; one on the lane's own model runs `git rev-parse --short HEAD` and answers `OK <sha>`. Lanes and probes
+are held like any other lane while the quota is above its threshold (measured: arbab held its own first preflight
+until the five-hour reset, then both probes passed every check). It passes only if: the init event shows the expected tools, `dontAsk`, no MCP
+servers, no `memory_paths`, no `messaging_socket_path`, the pinned version; stderr has no "has not been trusted" or
+"Ignoring" warning; the registration (when present) is not `claude-vscode`; at least one real tool call ran and the
+sha matches; every step exited 0.
+
+## 12. Landing and the readiness gate (M3, method in M1)
+
+A fast run tends to skip checks silently (owner's example, 2026-10-09: no independent review, an eval not re-run, a
+page never opened in a browser, a narrow sample). Landing therefore produces a **readiness report** with three
+lists, and a human decision:
+
+- **verified** — each gate with its command and exit code, review verdicts, smoke tests, evals;
+- **skipped** — every check the risk tier requires that did not run, each needing an explicit human waiver;
+- **risks** — open questions, `not_verified` items from worker reports, and facts found in live data (read-only
+  production queries are written by workers and run by the orchestrator, never by workers).
+
+Push and deploy stay human actions. In M1 the skill teaches this as a manual checklist; M3 automates the report.
+
+## 13. Module ownership (M1 lanes)
+
+| Module | Owns | Depends on |
+| --- | --- | --- |
+| `src/types.ts`, `src/util/*` | the contracts and shared helpers — written by the orchestrator before wave 1 | — |
+| `src/stream/` | parse, classify, failure causes, metrics, transcript lookup, rate-limit snapshot | types, util |
+| `src/profile/` | role presets, compile (flags, settings), the scrubbed worker environment, profile lint | types, util |
+| `src/config/`, `src/binary/`, `src/report/` | config load/defaults/validation; binary resolve/pin/version; JSON-schema subset validator and default schemas | types, util |
+| `src/brief/` | brief source parse, assembly, brief lint | types, util (profile via its exported types only) |
+| `src/run/` | worktree, dependencies, leases, locks, slots, spawn, descendant tracking, kill/reap, checkpoint | types, util |
+| `src/registry/`, `src/quota/` | run-dir layout, attempt records, state, status rows, wait/ack; account snapshot and hold decision | types, util |
+| `src/shepherd/`, `src/cli.ts`, `src/commands/`, `scripts/build.mjs`, `test/fake-claude/` | wave 2: lifecycle wiring, auto-resume, commands, bundle, end-to-end tests | all |
+| `skills/arbab/`, `.claude-plugin/` | wave 2: the method and the plugin manifests | the CLI surface (§10) |
+
+## 14. Testing
+
+- Unit tests next to the code (`src/**/*.test.ts`, vitest), for every exported function, including failure paths.
+- Fixtures in `test/fixtures/stream/`: sanitized real w0 streams (paths replaced, skill and plugin lists trimmed) and
+  synthetic ones for usage-limit, unsupported-cli, budget, structured-output retries, background-task multi-result
+  and truncated streams.
+- `test/fake-claude/`: an executable that replays a fixture with timing, honours `--session-id`/`--resume`, can hang
+  or spawn a child, so the shepherd's lifecycle (timeouts, reaping, auto-resume, quota hold) is tested without
+  spending quota.
+- A real end-to-end test behind `ARBAB_E2E_REAL=1` (haiku, cents).
+- Gates: `pnpm typecheck`, `pnpm test`, `pnpm build`; the preflight against this repository before each wave.
+
+## 15. Security notes
+
+- No shell strings: every subprocess is `execFile`/`spawn` with an argv array.
+- Paths from lane files and config are resolved and confined to their roots; names are validated (§3).
+- Env values are never written to disk; only their names.
+- Locks and leases are O_EXCL files whose holder pid is checked; stale entries are reclaimed only when the holder
+  is dead.
+- Nothing arbab trusts lives in the per-user temp dir that every sandbox can write (`/tmp/claude-<uid>`); helpers
+  and fences live in `.arbab/` and `~/.arbab/`, outside every worker's writable set. The skill tells orchestrators
+  not to keep executable helpers in their scratchpad while workers run.
+- Fixtures contain no private paths, prompts or customer data.
+
+## 16. M2 — plans, digests, sharper lint
+
+### Plan format (`plans/<name>.json`, FR-9)
+
+```json
+{
+  "name": "m2",
+  "base": "main",
+  "defaults": { "role": "implementer", "effort": "high", "budgetUsd": 10 },
+  "phases": [
+    { "name": "m2-plan", "brief": "lanes/m2-plan.md", "scope": ["src/plan/**"] },
+    { "name": "m2-wire", "brief": "lanes/m2-wire.md", "scope": ["src/commands/plan*.ts", "src/shepherd/**"],
+      "dependsOn": ["m2-plan"], "effort": "high" }
+  ]
+}
+```
+
+- A phase is a lane: `name`, `brief`, optional `role`, `model`, `effort`, `budgetUsd`, `wallMin`, `idleMin`, `fence`,
+  `allow`, `schema`, `resources`, `semaphores`, `worktree`; plus `scope` (write globs, required) and `dependsOn`.
+- `checkPlan` refuses: duplicate or invalid names, unknown dependencies, cycles, a phase without scope, and
+  **overlapping write scopes between phases that are not ordered by a dependency**. Two globs overlap when the fixed
+  path before their first wildcard of one is a path prefix of the other's (conservative).
+- Waves are the topological levels. `compilePhase` turns a phase into a `LaneSpec` with:
+  - `upstream` = its dependencies (their reports are inlined, DESIGN.md §5);
+  - `mergeBranches` = their branches (`arbab/<dep>`);
+  - `coordination` = the other phases of the same wave and their scopes.
+- The shepherd prepares a worktree no worker has run in yet (created now, or no attempt has ever started there, as
+  recorded by `<runs>/<owner>/worktree-used`, checked under the writer lock) in this order:
+  1. the dependency command on the **trusted base**;
+  2. each `mergeBranches` entry, resolved once to a sha and merged as that sha (`git merge --ff`: a fast-forward
+     when the worktree has nothing of its own yet, a merge commit otherwise).
+- A merged branch that changes a dependency manifest (`package.json`, lockfiles including `npm-shrinkwrap.json`,
+  `.npmrc`, `.yarnrc*`, `.pnpmfile.*`, `pnpm-workspace.yaml`) is refused before merging. Installing after such a
+  merge would run an upstream worker's code on the host (M2 review R1). The orchestrator reviews and lands the
+  dependency change first.
+- A conflict or a missing branch aborts the merge and fails setup, naming the paths. Nothing is left to resolve in
+  the worktree: fix the branches and relaunch the phase. No worker has run there, so the shepherd rebuilds the
+  worktree from its install point and merges again (§9).
+- Commands:
+  - `arbab plan check <plan>`: validate the plan, lint every phase's lane, print the waves.
+  - `arbab plan next <plan>`: launch every phase whose dependencies all finished `success` with their work on
+    their branch (a checkpoint commit, or nothing to commit) and that has not run. It is idempotent: phases already
+    launched are left alone; blocked dependencies are listed, and a dependency that failed, was orphaned or whose
+    checkpoint failed is reported as failed upstream. A phase others depend on must checkpoint (`checkPlan`).
+  - `arbab plan status <plan>`: one row per phase, with its wave, its dependencies and the lane's state.
+
+  The orchestrator calls `plan next` after each `wait` notification; there is no plan daemon.
+- The skill converts a design document (for example `/sc:design` output) into a plan and briefs.
+
+### Digest seeding (FR-19)
+
+- `renderDigest(events, opts)` turns an attempt's stream into a bounded Markdown digest. Every item body sits in a
+  `text` fence one backtick longer than any run inside it, so stream content can never open a heading or a brief
+  section (M2 review R4):
+  - `### CALL <tool>`, with input ≤ 400 chars;
+  - `### RESULT`, ≤ 1,500 chars, errors kept;
+  - `### NOTE` for assistant text, ≤ 2,000 chars;
+  - the final report, when there is one;
+  - a total cap (default 60,000 chars) that drops the oldest items first and says how many were dropped.
+- `arbab resume <lane> --digest` starts a **fresh** session in the lane's worktree. Its brief has a `## Head start`
+  section, inserted after `Notes`: the digest of the latest attempt, introduced by "this is what a previous attempt
+  did; verify the worktree with `git log` and `git status` before relying on it".
+- Use it for a long attempt stopped long ago (cold cache: a cold resume re-pays the whole context), or when a
+  session went wrong.
+
+### Brief lint: command spans only
+
+Inline code is checked for denied commands and forbidden shapes only when it is a **command span**:
+- inline code in the `Acceptance` section;
+- any line of a shell fence;
+- inline code that a line introduces as something to run: the text before it ends with "run", "runs", "execute",
+  "call", "with the command" or "Bash:", case-insensitive.
+
+A paragraph introduces its spans (lines are joined), and spans following a command span in the same sentence ("and",
+"then", a comma) are command spans too. Shell fences are recognised case-insensitively and every line is checked for
+denied commands and forbidden shapes. Before matching, leading `NAME=value` assignments and `env` are dropped and a
+path in the first word becomes its basename; `bash -c`/`sh -c`/`zsh -c` is a forbidden shape.
+
+Descriptive code elsewhere (a parameter name, a command named as an example) is not a command. M1's briefs hit
+these false positives six times.
+
+## 17. M3 — integrate, verify, review, readiness, land
+
+M1 and M2 were integrated by hand: merge lane branches into an integration worktree, run the gates, run reviewer
+lanes, write a readiness report, ask the owner, merge into `main`. M3 makes those steps commands. One rule changes on
+the way. **Verification runs worker-written code (tests), so it runs inside the fence**, not on the host as the
+orchestrator did by hand in M1–M2.
+
+All of an integration's records live in `.arbab/integrations/<name>/`: `integration.json`, `verify.json`,
+`review.json`, `readiness.json` + `readiness.md`, `landing.json`.
+
+Rules the M3 review added (`arbab review m3`, 10 confirmed findings):
+- **No worker-written hooks on the host.**
+  - A repository's relative `core.hooksPath` (husky's `.husky`) resolves inside a work tree that workers write.
+  - So every git command arbab runs on the host in such a tree goes through one helper (`untrustedTree()`): the
+    checkpoint, the shepherd's dependency merges, the integration merges, dirty checks, verify's clean check,
+    cleanup and the landing merge. It sets `-c core.hooksPath=/dev/null -c core.fsmonitor=false
+    -c diff.ignoreSubmodules=all -c submodule.recurse=false`.
+  - The project's checks run inside the fence through `verify` instead. This replaces FR-8's "run the commit
+    hooks".
+- **No nested repository is entered (fourth review, HIGH, measured on git 2.54).** A worker can create a git
+  repository inside its worktree. Once staged as a gitlink, any host `git status` or `git add -A` there spawns a git
+  inside it that reads its worker-written config and runs its `core.fsmonitor` or a clean filter on the host;
+  `-c core.fsmonitor=false` alone does not stop the filter. So status always runs with `--ignore-submodules=all`
+  through the verified git dir (`worktreeStatus`, which also lists checked-out gitlinks as changes), and the
+  checkpoint never stages a nested repository: it excludes them by literal pathspec, commits the rest and reports
+  what it left out. A missing lane worktree is never re-created on a branch holding commits its base lacks (the
+  shepherd would install there on the host).
+- **Reserved names.**
+  - Lane and phase names may not start with `integrate-`, which is the integration worktree's namespace; nor may an
+    integration be named `integrate`.
+  - Lanes that `verify` and `review` generate (`<name>-verify`, `<name>-review-<lens>`, `<name>-skeptic-<lens>`)
+    carry an ownership marker (`generated.json`: the integration and the head they started from).
+  - A reset touches only a lane its own integration generated: a foreign lane of the same name is refused with
+    nothing removed, and a branch that moved past its recorded head is never deleted.
+  - `launch` and `resume` refuse a generated lane's name. (Before this rule, `verify m3` reset a lane of arbab's own
+    build that happened to be named `m3-verify`.)
+- **No unreviewed install.**
+  - Generated lanes start from the integration head, and their new worktrees install dependencies on the host.
+  - So `verify` and `review` both refuse while a merged lane changed a dependency manifest that the human has not
+    confirmed (`integrate --deps-installed <sha>`).
+
+The second review (`arbab review m3` after those fixes: 8 confirmed, 1 HIGH) showed that a manifest check cannot make
+an install on worker code safe, and tightened the records:
+- **Generated lanes install only on a trusted commit.** An install runs files no manifest list covers (a
+  `postinstall` that runs `scripts/setup.js`, `pip install -e .` running `setup.py`, a `Makefile`). A generated lane's
+  worktree therefore starts at the integration's `baseSha`, or at `depsConfirmedAt` when manifests changed and a human
+  installed them at that head, installs there, and only then fast-forwards to the integration head (the shepherd's
+  `mergeBranches`, the same order plan phases use). Every commit is a sha from the record, so a later `integrate`
+  cannot change what a queued lane installs on.
+- **Manifests from every commit.** `integration.json` `manifests` is every dependency manifest that differs between
+  `baseSha` and the head, whoever committed it (a conflict resolved by hand, a merge whose record was lost).
+  `depsConfirmedAt` is the head a human confirmed; it is dropped when a later change touches a manifest, and
+  `--deps-installed <sha>` confirms only the head it names, which must be the recorded head (round 6). Confirming
+  vouches for the whole install at that head, not only the manifest lines: the human reviews what an install there
+  runs (package.json scripts and the files they run, `.npmrc`, `.pnpmfile.*`), because verify and review then
+  install at that head on the host (round 8). It is the human's step: the CLI refuses it without a terminal (an
+  agent's shell has none), so an orchestrator cannot confirm on the human's behalf.
+- **No lane is dropped.** One entry per lane, also for a lane already contained in the head; a lane whose worktree
+  holds uncommitted changes (its checkpoint did not commit them) is refused; a lane that works in another lane's
+  worktree blocks that lane's integration while it is active.
+- **`land` lands only the verified tree.** The base's HEAD must be an ancestor of the verified head, so the landing
+  merge holds exactly the tree that was verified. When the base moved, merge it into the integration (with hooks
+  off: `land` prints the exact command, since a plain merge there would run worker-written hooks on the host) and run
+  integrate, verify, review and readiness again.
+- **Readiness** lists every confirmed finding as a risk, whatever severity the skeptic gave it, and counts a lens only
+  when it reported coverage.
+
+The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added:
+- **A verify lane cannot change what it verifies.** It runs with `tools: ["Read", "Bash"]` (`LaneSpec.tools` narrows a
+  role's tools, never widens them, and a tool left out does not exist for the worker); the first call of each gate
+  command decides its result; and after the run its worktree must be clean through the verified git dir. Otherwise
+  `verify.json` records `passed: false` with the `reason`, as it does for a lane that ran on another commit.
+- **Records follow branches.** A landed integration's name is closed: `integrate` and `--deps-installed` refuse it,
+  naming the landing. When `integrate/<name>` is created anew, an older `integration.json` is moved aside as
+  `integration.superseded-<updatedAt>.json` and a fresh record starts from the new base. The name `integrate` is
+  reserved too (its generated lanes would start with `integrate-`).
+- **Integrate only what has stopped.** A lane whose worker is still alive (orphaned: its shepherd died) is refused. A
+  plan phase that works in the worktree of a lane outside the plan brings that lane into the integration, once, at
+  the phase's place.
+- **Cleanup is conservative** (see `land` below): finished lanes only, status only through the verified git dir, lane
+  branches kept, a borrowed generated worktree never reset, and `launch`/`resume` refuse to borrow one.
+
+- **`arbab integrate <name> (--lanes a,b,… | --plan <plan>)`**:
+  1. create or reuse the worktree `.arbab/worktrees/integrate-<name>` on branch `integrate/<name>` from `baseBranch`;
+  2. run the dependency command there on the trusted base;
+  3. merge each lane branch by sha (`--no-ff`), in the given order or the plan's waves.
+
+  A conflict aborts and stops, naming the paths. A lane that changes a dependency manifest is merged but flagged:
+  the dependencies are **not** reinstalled automatically (that would run worker code on the host). `verify`
+  refuses until the human has reviewed and installed them, and confirmed with `arbab integrate <name> --deps-installed
+  <sha>` (the head `integrate` printed).
+- **`arbab verify <name>`**:
+  - launches a probe lane `<name>-verify` (haiku, tools Read and Bash, exact allow rules for the gates) in its **own
+    worktree**, installed on a trusted commit and then fast-forwarded to the integration head (see above);
+  - it runs every `config.gates` argv, then `config.verify.smoke` when set, as single foreground commands;
+  - the exit codes are read from the stream's tool results for those exact commands (`exit 0` when not an error,
+    `Exit code N` otherwise; the first call of a command decides), never from the model's report. A gate whose call
+    cannot be found counts as `missing` (a failure).
+- **`arbab review <name> [--lenses a,b]`** (the tier lives in `readiness`):
+  - one reviewer lane per lens, `<name>-review-<lens>`, each in its own worktree at the integration head (prepared
+    as for verify);
+  - built-in lens templates `correctness`, `security`, `contracts`, plus config `review.lenses`
+    (`{name: "what to look for"}`);
+  - every brief carries the depth floor: read in full the files changed by `git diff <base>..integrate/<name>`,
+    every finding with evidence, a coverage section;
+  - after the lenses, one skeptic lane per lens with MEDIUM+ findings (verdicts schema) tries to refute them;
+  - `review.json` keeps every finding with its verdict (`confirmed`, `refuted`, `unverified`).
+- **`arbab readiness <name> [--tier …] [--waive item,…]`** writes the FR-21 report:
+  - **verified**: verify gates and smoke with exit codes, review lenses run, and confirmed and refuted findings;
+  - **skipped**: what the tier requires that did not run or did not pass;
+    - `low`: verify;
+    - `medium` (the default, config `landing.tier`): verify and at least one lens;
+    - `high`: verify, every configured lens, the skeptic pass and smoke.
+
+    Each skipped item stays until it runs or is waived by name.
+  - **risks**: every confirmed finding, unverified findings, the merged lanes' `open_questions` and
+    `not_verified`, and manifest changes.
+- **`arbab land <name>`**:
+  - refuses unless verify passed and readiness has no unwaived skipped item;
+  - refuses unless the main checkout is on the integration's base, clean, and contained in the verified head;
+  - merges `integrate/<name>` into it (`--no-ff`) and records `landing.json`;
+  - prints the push command and "not pushed". It never pushes;
+  - then cleans up what it landed, unless `--keep-worktrees`: the worktrees of the merged lanes, of the lanes
+    generated for the integration and of the integration itself. A worktree is removed only when its lane is
+    `finished` (not orphaned), no active lane borrows it, it passes `verifyWorktreeGit` and is clean through that
+    verified git dir, and its branch is merged (`git worktree remove`, never `--force`; only a generated lane's own
+    reset, of arbab's scratch, forces). Branches are deleted
+    (`git branch -d`) only for generated lanes and the integration: a lane's `arbab/<lane>` stays, because a plan
+    phase launched later merges its dependencies by that name (M3 review, round 3). Anything else is kept and
+    reported with the reason; a cleanup problem never fails the landing. Run directories and the integration's
+    records stay: they are the measurements, and a landed integration's name is not reused.
+
+  The skill asks the human before running it. Lane worktrees are not removed when a lane finishes: `resume`
+  continues in the same worktree, verifiers borrow a builder's worktree, and work that is not integrated stays
+  inspectable. Lanes that are never landed are removed with `arbab cleanup --worktrees` once merged.
+
+**Packaging.** `pnpm build` bundles the runner and assembles `plugin/`: `.claude-plugin/plugin.json`, `skills/**`
+and `dist/arbab.mjs`, nothing else. The marketplace points at `./plugin`, because a local marketplace install copies
+the plugin's whole source directory, ignored files included (measured on CLI 2.1.295): from the repository root it
+would copy `node_modules`, `.arbab/` and the private research.
+
+## 18. M4 — denial telemetry, raw HTTP for researchers
+
+- **`arbab denials [lane…] [--role r] [--json]`** (FR-13) aggregates refused tool calls across attempts. It reads
+  causes from each `summary.json` and the refused commands from the streams (the `tool_use` input of every refused
+  result), grouped by cause and by command prefix (first two words), with counts. Suggestions:
+  - a dontAsk refusal of a prefix that is not "any code" → add it to `config.commands.<role>`;
+  - analyzer, needs-approval and sleep-guard refusals → the brief shape to fix (single commands, the `timeout`
+    parameter);
+  - deny-rule refusals → denied on purpose; if frequent, the brief asks for something the fence forbids;
+  - sandbox refusals → outside the fence.
+
+  It never edits the config.
+- **`arbab http <url> [--head] [--header k:v]… [--user-agent s] [--max-bytes n] [--max-redirects n]`** (FR-14) is a
+  raw HTTP tool for researcher workers. WebFetch summarises, cannot show a status or raw XML, and gets 403s from
+  bot-blocking sites.
+  - It prints the status line, the headers and up to `--max-bytes` (default 200,000) of the body, for http/https
+    only.
+  - It follows at most `--max-redirects` (default 3), printing each hop.
+  - Inside a sandbox it needs Node's `--use-env-proxy` (measured): it re-executes itself with that flag when a proxy
+    is set and the flag is missing.
+- **Researcher lanes with `domains`.** A researcher lane may list `domains` (lane field, e.g.
+  `["example.com", "*.gov.ae"]`). The profile then:
+  - adds `Bash` to the tools, with the single allow rule `Bash(<node> --use-env-proxy <arbab> http *)`;
+  - sets `sandbox.network.allowedDomains` to the list.
+
+  A researcher without `domains` keeps WebSearch and WebFetch only. It has no local file tools either way, so prompt
+  injection finds nothing local to send.
+
+## 19. Open items
+
+- Can `sandbox.filesystem.denyWrite` take globs, so other sessions' scratchpads under `/tmp/claude-<uid>` become
+  unwritable from a worker? (M4 hardening; probe.)
+- Linux: `allowLocalBinding` has no effect (localhost is private to the command); loopback services need a
+  different design there.
+- `--bare` becoming the default for `-p`: doctor detects it from `apiKeySource` and an auth failure, and fails
+  clearly.
+- `arbab quota --reset` clears the old account's snapshot, but a lane still running on the old account can write a new
+  one, which holds the other lanes again until a newer reading replaces it. Reset after the old account's lanes stop.
+- `integrate` does not check that a lane's run ended in success; the orchestrator decides from `status`.

@@ -1,0 +1,8 @@
+{
+  "name": "m3-land-cleanup",
+  "role": "implementer",
+  "brief": "lanes/m3-land-cleanup.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 10
+}

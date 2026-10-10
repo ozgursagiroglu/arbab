@@ -1,0 +1,9 @@
+{
+  "name": "m2-fix-run",
+  "role": "implementer",
+  "brief": "lanes/m2-fix-run.md",
+  "base": "integrate/m2",
+  "effort": "high",
+  "budgetUsd": 12,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m2-fix-lint` owns src/brief/lint.ts and its test."
+}

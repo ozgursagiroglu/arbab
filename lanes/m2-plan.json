@@ -1,0 +1,9 @@
+{
+  "name": "m2-plan",
+  "role": "implementer",
+  "brief": "lanes/m2-plan.md",
+  "base": "integrate/m2",
+  "effort": "high",
+  "budgetUsd": 10,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m2-digest` owns src/digest/**.\n- `m2-lint-skill` owns src/brief/lint.ts and its test, skills/**, src/skill.test.ts."
+}

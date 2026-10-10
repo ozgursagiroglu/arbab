@@ -1,0 +1,7 @@
+{
+  "name": "m1-review-security",
+  "role": "reviewer",
+  "brief": "lanes/m1-review-security.md",
+  "base": "integrate/m1",
+  "budgetUsd": 8
+}

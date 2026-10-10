@@ -1,0 +1,7 @@
+{
+  "name": "m2-review",
+  "role": "reviewer",
+  "brief": "lanes/m2-review.md",
+  "base": "integrate/m2",
+  "budgetUsd": 8
+}

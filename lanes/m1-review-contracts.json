@@ -1,0 +1,7 @@
+{
+  "name": "m1-review-contracts",
+  "role": "reviewer",
+  "brief": "lanes/m1-review-contracts.md",
+  "base": "integrate/m1",
+  "budgetUsd": 8
+}

@@ -1,0 +1,9 @@
+{
+  "name": "m2-fix-lint",
+  "role": "implementer",
+  "brief": "lanes/m2-fix-lint.md",
+  "base": "integrate/m2",
+  "effort": "medium",
+  "budgetUsd": 6,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m2-fix-run` owns src/shepherd/**, src/digest/**, src/plan/**, src/commands/plan.ts and test/e2e/**."
+}

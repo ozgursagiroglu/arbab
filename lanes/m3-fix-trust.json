@@ -1,0 +1,8 @@
+{
+  "name": "m3-fix-trust",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-trust.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 12
+}

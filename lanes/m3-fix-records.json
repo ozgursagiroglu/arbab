@@ -1,0 +1,9 @@
+{
+  "name": "m3-fix-records",
+  "role": "implementer",
+  "brief": "lanes/m3-fix-records.md",
+  "base": "integrate/m3",
+  "effort": "high",
+  "budgetUsd": 8,
+  "coordination": "Other lanes run at the same time; do not edit their scopes:\n- `m3-fix-cleanup` owns src/commands/cleanup.ts, src/commands/land.ts and src/commands/generated.ts.\n- `m3-fix-verify` owns src/verify/**, src/commands/verify.ts, src/commands/integration.ts, src/commands/launch.ts, src/config/lane.ts, effectiveRole in src/shepherd/lifecycle.ts, src/cli.ts and scripts/build.mjs."
+}

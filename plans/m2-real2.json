@@ -1,0 +1,9 @@
+{
+  "name": "m2-real2",
+  "base": "integrate/m2",
+  "defaults": { "role": "probe", "checkpoint": true },
+  "phases": [
+    { "name": "m2-real2-a", "brief": "lanes/m2-real2-a.md", "scope": ["probe-a/**"] },
+    { "name": "m2-real2-b", "brief": "lanes/m2-real2-b.md", "scope": ["probe-b/**"], "dependsOn": ["m2-real2-a"] }
+  ]
+}

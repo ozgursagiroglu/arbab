@@ -1,0 +1,7 @@
+{
+  "name": "m1-probe-gitwrite",
+  "role": "probe",
+  "brief": "lanes/m1-probe-gitwrite.md",
+  "base": "integrate/m1",
+  "allow": ["Bash(touch *)", "Bash(cp *)", "Bash(cat *)", "Bash(ls *)"]
+}

@@ -1,0 +1,122 @@
+// The fixed parts of the fence (DESIGN.md §4). Rule paths use Claude Code's Read/Edit syntax: `~/` is home, `**/`
+// matches anywhere.
+
+export const BUILTIN_CREDENTIAL_PATHS: readonly string[] = [
+  "~/.ssh/**",
+  "~/.aws/**",
+  "~/.azure/**",
+  "~/.config/**",
+  "~/.docker/**",
+  "~/.kube/**",
+  "~/.gnupg/**",
+  "~/.claude/**",
+  "~/.claude.json",
+  "~/.netrc",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.git-credentials",
+  "~/Library/Keychains/**",
+  "~/Library/Cookies/**",
+  "**/.env*",
+  "**/*.pem",
+  "**/*.key",
+  "**/*.p12",
+  "**/*.pfx",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/*.tfstate",
+];
+
+export const GIT_WRITE_VERBS: readonly string[] = [
+  "commit",
+  "push",
+  "reset",
+  "checkout",
+  "switch",
+  "restore",
+  "rebase",
+  "merge",
+  "cherry-pick",
+  "stash",
+  "clean",
+  "branch",
+  "worktree",
+  "tag",
+  "config",
+  "update-ref",
+  "remote",
+];
+
+// No `grep`: its -O/--open-files-in-pager runs a program the caller names, and workers have the Grep tool.
+export const GIT_READ_VERBS: readonly string[] = ["status", "diff", "log", "show", "ls-files", "blame"];
+
+export const READ_UTILITIES: readonly string[] = ["ls", "cat", "head", "tail", "wc"];
+
+// File utilities for roles that write. The sandbox confines their writes to the worktree; without them a worker
+// cannot delete or rename a file (wave 1 of arbab's own build lost a turn to `rm` and left a misnamed file).
+export const FILE_UTILITIES: readonly string[] = ["mkdir", "cp", "mv", "rm", "touch"];
+
+/** Prefixes that run arbitrary code when followed by a wildcard ("node *" allows `node -e …`). */
+export const ANY_CODE_PREFIXES: readonly string[] = [
+  "node",
+  "npx",
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "bunx",
+  "deno",
+  "python",
+  "python3",
+  "ruby",
+  "perl",
+  "php",
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "env",
+  "eval",
+  "exec",
+  "xargs",
+  "find",
+  "awk",
+  "sed",
+  "make",
+  "sudo",
+  "osascript",
+  "open",
+  "docker",
+  "kubectl",
+  "ssh",
+  "curl",
+  "wget",
+  "git",
+  "pnpm exec",
+  "pnpm dlx",
+  "pnpm run",
+  "npm exec",
+  "npm run",
+  "yarn run",
+  "yarn dlx",
+  "bun run",
+  "bun x",
+  "git -C",
+  "git config",
+];
+
+/** Bash tool input parameters: `Bash(<param>:…)` is read as a parameter rule, not a command rule. */
+export const BASH_INPUT_PARAMS: readonly string[] = [
+  "timeout",
+  "description",
+  "run_in_background",
+  "dangerouslyDisableSandbox",
+];
+
+export const FIXED_ENV: Readonly<Record<string, string>> = {
+  BASH_DEFAULT_TIMEOUT_MS: "300000",
+  BASH_MAX_TIMEOUT_MS: "900000",
+};
+
+/** The one parameter rule arbab writes itself. */
+export const BACKGROUND_DENY = "Bash(run_in_background:true)";

@@ -104,8 +104,8 @@ claude plugin marketplace add ozgursagiroglu/arbab
 claude plugin install arbab@arbab
 ```
 
-The install copies only `plugin/`: the skill and a single-file runner, about 370 KB, with zero runtime
-dependencies. To update: `claude plugin marketplace update arbab`.
+The install copies only `plugin/`: the skill and a single-file runner (the `arbab ui` page included), about
+450 KB, with zero runtime dependencies. To update: `claude plugin marketplace update arbab`.
 
 ## Quick start
 

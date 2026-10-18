@@ -10,7 +10,7 @@ import { Counter, arrayOrEmpty, isRecord, numberOrNull, stringOrNull } from "./j
 import type { JsonRecord } from "./json";
 
 /** The report mechanism of --json-schema runs: neither work nor a failure worth counting. */
-const REPORT_TOOL = "StructuredOutput";
+export const REPORT_TOOL = "StructuredOutput";
 
 /**
  * One JSON value per non-empty line. A line that does not parse is counted, never thrown: the last line of a live
@@ -135,6 +135,16 @@ export function contentBlocks(event: unknown): JsonRecord[] {
   return isRecord(event) && isRecord(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord) : [];
 }
 
+/** The tool_use blocks of an assistant event, in order; none for any other event. */
+export function toolUses(event: unknown): Array<{ id: string | null; name: string }> {
+  if (!isRecord(event) || event.type !== "assistant") return [];
+  const out: Array<{ id: string | null; name: string }> = [];
+  for (const block of contentBlocks(event)) {
+    if (block.type === "tool_use" && typeof block.name === "string") out.push({ id: stringOrNull(block.id), name: block.name });
+  }
+  return out;
+}
+
 /**
  * Everything one attempt's events say, computed from all of them: a run with background work can emit several
  * `result` events, and the last one may describe only the last turn. Unknown event types and fields are ignored.
@@ -171,18 +181,16 @@ export function digestStream(events: unknown[], observedAt: string, unparsedLine
       if (typeof e.tool_use_id === "string" && type) deniedTypes.set(e.tool_use_id, type);
     } else if (e.type === "assistant") {
       if (isRecord(e.message) && typeof e.message.id === "string") messageIds.add(e.message.id);
-      for (const block of contentBlocks(e)) {
-        if (block.type !== "tool_use" || typeof block.name !== "string") continue;
-        const id = stringOrNull(block.id);
+      for (const { id, name } of toolUses(e)) {
         if (id !== null) {
           // A replayed block (same tool_use id) is one call, not two.
           if (countedToolUses.has(id)) continue;
           countedToolUses.add(id);
-          toolNames.set(id, block.name);
+          toolNames.set(id, name);
         }
-        if (block.name === REPORT_TOOL) continue;
-        toolCalls.add(block.name);
-        lastTool = block.name;
+        if (name === REPORT_TOOL) continue;
+        toolCalls.add(name);
+        lastTool = name;
       }
     } else if (e.type === "rate_limit_event") {
       rateLimit = rateLimitFromEvent(e, observedAt) ?? rateLimit;

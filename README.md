@@ -137,7 +137,7 @@ dependencies. To update: `claude plugin marketplace update arbab`.
    - splits the work into lanes and writes their briefs;
    - lints them and launches them;
    - reacts as each one finishes.
-4. **Watch:** the skill starts `arbab ui` and gives you its URL: the lanes as workers building a pyramid.
+4. **Watch:** the skill starts `arbab ui`, which opens the lanes in your browser as workers building a pyramid.
    `arbab status` shows the same as a table: each lane's state, turns, tool calls, refusals, cost and the quota.
 5. **Land:** the orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
    lands.

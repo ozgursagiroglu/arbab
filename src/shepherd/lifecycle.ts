@@ -28,6 +28,7 @@ import type {
   ProjectConfig,
   RateLimitSnapshot,
 } from "../types";
+import { NO_FREE_SLOT_REASON } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -174,7 +175,7 @@ export async function runShepherd(
       checkStop();
       held.slot = acquireSlot(deps.home, config.maxParallel, holder, deps.alive);
       if (held.slot !== null) break;
-      setState("held", { reason: "no free slot" });
+      setState("held", { reason: NO_FREE_SLOT_REASON });
       await pause(deps.slotPollMs);
     }
     await awaitQuota();

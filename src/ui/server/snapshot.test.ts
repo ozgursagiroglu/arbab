@@ -276,6 +276,12 @@ describe("createSnapshotBuilder: lane fields", () => {
     expect(lane(s, "odd")?.worktreeOf).toBeNull();
   });
 
+  it("gives worktreeOf null to a lane in its own worktree", () => {
+    p = makeProject();
+    run("check", finished(ago(1), { lane: { name: "check", role: "verifier", brief: "b.md", worktree: "check" } }));
+    expect(lane(build(), "check")).toMatchObject({ role: "verifier", worktreeOf: null });
+  });
+
   it("takes firstSeen from the lowest attempt's start, else the shepherd's start, else since", () => {
     p = makeProject();
     // Attempts 2 and 3 only: the lowest is 2.
@@ -337,6 +343,23 @@ describe("createSnapshotBuilder: lane fields", () => {
     const s = build();
     expect(lane(s, "impl")).toMatchObject({ attempt: 2, reportStatus: null });
     expect(lane(s, "rev")).toMatchObject({ attempt: 2, findings: null });
+  });
+
+  it("shows no report for a run without an attempt, or whose attempt is not the latest", () => {
+    p = makeProject();
+    // A rerun that failed in setup: the state is back at attempt 0, attempt 1's report belongs to the run before.
+    run("impl", finished(ago(2), { report: { status: "done" } }));
+    run("impl", { state: "finished", endState: "failed", attempt: 0, since: ago(1) });
+    run("rev", finished(ago(2), { lane: { name: "rev", role: "reviewer", brief: "b.md" }, report: { findings: [{}] } }));
+    run("rev", { state: "finished", endState: "failed", attempt: 0, since: ago(1), lane: { name: "rev", role: "reviewer", brief: "b.md" } });
+    // The state names attempt 1 while attempt 2's directory, with a report, already exists.
+    run("lag", finished(ago(2), { report: { status: "partial" } }));
+    run("lag", finished(ago(1), { report: { status: "done" } }));
+    writeState(p.runsRoot, { ...(readState(p.runsRoot, "lag") as LaneStateRecord), attempt: 1 });
+    const s = build();
+    expect(lane(s, "impl")).toMatchObject({ attempt: 0, reportStatus: null });
+    expect(lane(s, "rev")).toMatchObject({ attempt: 0, findings: null });
+    expect(lane(s, "lag")).toMatchObject({ attempt: 1, reportStatus: null });
   });
 
   it("takes a report that does not parse for no report, and still shows the lane", () => {

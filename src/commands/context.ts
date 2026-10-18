@@ -48,20 +48,43 @@ export interface CommandContext {
    * reserved for the human, such as confirming a dependency install, requires one.
    */
   interactive: boolean;
-  /** Opens a URL in the browser without waiting; false when this platform has no opener arbab knows. */
-  openUrl: (url: string) => boolean;
+  /**
+   * Opens a URL in the browser; resolves whether it did. False when this platform has no opener arbab knows, or the
+   * opener could not start or failed.
+   */
+  openUrl: (url: string) => Promise<boolean>;
 }
 
-/** `open <url>` on macOS, `xdg-open <url>` on Linux, detached and ignored; false on any other platform. */
+/** How long an opener may run before it counts as opened: some `xdg-open`s wait for the browser they start. */
+export const OPENER_WAIT_MS = 5000;
+
+/**
+ * `open <url>` on macOS, `xdg-open <url>` on Linux, detached and ignored. Resolves false on a spawn error or a non-zero
+ * exit, true on exit 0 or when the opener still runs after OPENER_WAIT_MS; false on any other platform.
+ */
 export function makeOpenUrl(platform: NodeJS.Platform, spawnFn: typeof spawn = spawn): CommandContext["openUrl"] {
   const opener = platform === "darwin" ? "open" : platform === "linux" ? "xdg-open" : null;
   return (url) => {
-    if (opener === null) return false;
-    const child = spawnFn(opener, [url], { detached: true, stdio: "ignore" });
-    // A missing opener is reported asynchronously; the URL is printed anyway.
-    child.on("error", () => undefined);
-    child.unref();
-    return true;
+    if (opener === null) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(true), OPENER_WAIT_MS);
+      // Neither the timer nor the opener keeps arbab alive.
+      timer.unref();
+      const settle = (opened: boolean): void => {
+        clearTimeout(timer);
+        resolve(opened);
+      };
+      let child: ReturnType<typeof spawn>;
+      try {
+        child = spawnFn(opener, [url], { detached: true, stdio: "ignore" });
+      } catch {
+        settle(false);
+        return;
+      }
+      child.on("error", () => settle(false));
+      child.on("exit", (code) => settle(code === 0));
+      child.unref();
+    });
   };
 }
 

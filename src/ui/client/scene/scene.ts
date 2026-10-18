@@ -124,9 +124,9 @@ export function foreground(snapshot: UiSnapshot): Foreground {
     .filter((e) => e.integration.landedAt !== null)
     .sort((a, b) => (a.at === b.at ? b.index - a.index : b.at > a.at ? 1 : -1))
     .map((e) => e.integration);
-  const first = landed[0];
-  const recent =
-    first !== undefined && Number.isFinite(now) && now - epochMs(first.landedAt) < RECENT_MS ? first : null;
+  // Every landing of the last ten minutes keeps its lanes in the foreground; the capstone shows the newest.
+  const recent = new Set(landed.filter((i) => Number.isFinite(now) && now - epochMs(i.landedAt) < RECENT_MS));
+  const latest = landed.find((i) => recent.has(i)) ?? null;
   const byName = new Map(snapshot.integrations.map((i) => [i.name, i]));
   const lanes = snapshot.lanes.filter((lane) => {
     if (!isBuilder(lane)) return false;
@@ -134,16 +134,16 @@ export function foreground(snapshot: UiSnapshot): Foreground {
     const integration = byName.get(lane.integration);
     // Missing: older than the five landed the snapshot keeps, so long landed.
     if (integration === undefined) return false;
-    return integration.landedAt === null || integration === recent;
+    return integration.landedAt === null || recent.has(integration);
   });
-  let capstone = recent;
+  let capstone = latest;
   if (capstone === null) {
     const names = new Set(lanes.map((l) => l.name));
     const open = snapshot.integrations.filter((i) => i.landedAt === null && i.lanes.some((n) => names.has(n)));
     capstone = newest(open, (i) => epochMs(i.updatedAt));
   }
-  const far = landed.filter((i) => i !== recent).slice(0, 3);
-  return { lanes, capstone, capstoneLanded: recent !== null, far };
+  const far = landed.filter((i) => !recent.has(i)).slice(0, 3);
+  return { lanes, capstone, capstoneLanded: latest !== null, far };
 }
 
 /** min(0.95, 1 − e^(−calls/40)) */
@@ -328,6 +328,8 @@ export function createScene(options: SceneOptions): Scene {
   let prev = new Map<string, UiLane>();
   let started = false;
   let hoist = 0;
+  /** The landing whose capstone rises once the one rising now has set. */
+  let nextLanding: UiIntegration | null = null;
   let cheer = 0;
   let highlighted: string | null = null;
   let actorsDirty = false;
@@ -942,17 +944,33 @@ export function createScene(options: SceneOptions): Scene {
     targets.delete(name);
   }
 
+  function dressCapstone(integration: UiIntegration): void {
+    const cap = world.pyramid.capstone;
+    cap.integration = integration.name;
+    cap.flag = integration.verify === "passed" ? "passed" : integration.verify === "failed" ? "failed" : "none";
+    cap.ready = integration.ready === true;
+  }
+
+  function startHoist(): void {
+    Object.assign(world.pyramid.capstone, { state: "hoisting", ...PLACES.sledge });
+    hoist = 0;
+  }
+
   function foldCapstone(fg: Foreground, first: boolean): void {
     const cap = world.pyramid.capstone;
     const integration = fg.capstone;
+    // A landing that comes while another's capstone rises waits for that one to set, then rises from the sledge.
+    if (fg.capstoneLanded && integration !== null && cap.state === "hoisting" && cap.integration !== integration.name) {
+      nextLanding = integration;
+      return;
+    }
+    nextLanding = null;
     if (integration === null) {
       Object.assign(cap, { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false });
       return;
     }
     const same = cap.integration === integration.name;
-    cap.integration = integration.name;
-    cap.flag = integration.verify === "passed" ? "passed" : integration.verify === "failed" ? "failed" : "none";
-    cap.ready = integration.ready === true;
+    dressCapstone(integration);
     if (!fg.capstoneLanded) {
       Object.assign(cap, { state: "waiting", ...PLACES.sledge });
       return;
@@ -962,8 +980,7 @@ export function createScene(options: SceneOptions): Scene {
       Object.assign(cap, { state: "set", ...world.pyramid.apex });
       return;
     }
-    Object.assign(cap, { state: "hoisting", ...PLACES.sledge });
-    hoist = 0;
+    startHoist();
     if (reduced) setCapstone();
   }
 
@@ -1114,7 +1131,14 @@ export function createScene(options: SceneOptions): Scene {
       const apex = world.pyramid.apex;
       cap.x = PLACES.sledge.x + (apex.x - PLACES.sledge.x) * e;
       cap.y = PLACES.sledge.y + (apex.y - PLACES.sledge.y) * e;
-      if (hoist >= 1) setCapstone();
+      if (hoist >= 1) {
+        setCapstone();
+        if (nextLanding !== null) {
+          dressCapstone(nextLanding);
+          nextLanding = null;
+          startHoist();
+        }
+      }
     }
     stepParticles(dt);
     cheer = Math.max(0, cheer - dt);

@@ -141,10 +141,12 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
     if (costed !== null) break;
   }
 
-  // The latest attempt's report only: an older attempt's never stands in, and one that does not parse is none.
+  // The latest attempt's report only: an older attempt's never stands in, and one that does not parse is none. A run
+  // that never reached an attempt (setup failed at attempt 0) has none either, not its predecessor's.
   let reportStatus: UiLane["reportStatus"] = null;
   let findings: number | null = null;
-  if (role === "implementer" || role === "verifier" || role === "reviewer") {
+  const reported = current !== null && current === attempts.at(-1);
+  if (reported && (role === "implementer" || role === "verifier" || role === "reviewer")) {
     const report = latestReport(runsRoot, name);
     if (role === "reviewer") {
       findings = isObject(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
@@ -161,7 +163,8 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
     role: role as Role,
     kind: laneKind(name, generatedBy, preflightBrief),
     generatedBy,
-    worktreeOf: isValidName(worktree) ? worktree : null,
+    // A lane in its own worktree (a verifier's `worktree` may name itself) builds its own block.
+    worktreeOf: isValidName(worktree) && worktree !== name ? worktree : null,
     state,
     endState: row.endState,
     hold: state === "held" ? (record.reason === NO_FREE_SLOT_REASON ? "slot" : "quota") : null,

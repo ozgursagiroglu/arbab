@@ -180,6 +180,29 @@ describe("foreground", () => {
     expect(fg.far.map((i) => i.name)).toEqual(["old"]);
   });
 
+  it("keeps every landing of the last 10 minutes in the foreground; the capstone shows the newest", () => {
+    const first = uiIntegration({ name: "first", lanes: ["a"], updatedAt: at(-400), landedAt: at(-300) });
+    const second = uiIntegration({ name: "second", lanes: ["b"], updatedAt: at(-200), landedAt: at(-60) });
+    const old = uiIntegration({ name: "old", lanes: ["z"], updatedAt: at(-5000), landedAt: at(-4000) });
+    const lanes = [
+      finishedLane({ name: "z", integration: "old" }),
+      finishedLane({ name: "a", integration: "first" }),
+      finishedLane({ name: "b", integration: "second" }),
+    ];
+    // The snapshot's order does not decide which is newest: landedAt does.
+    const fg = foreground(uiSnapshot({ lanes, integrations: [second, old, first] }));
+    expect(fg.lanes.map((l) => l.name)).toEqual(["a", "b"]);
+    expect(fg.capstone?.name).toBe("second");
+    expect(fg.capstoneLanded).toBe(true);
+    expect(fg.far.map((i) => i.name)).toEqual(["old"]);
+
+    // Ten minutes after the first landed, only the second keeps its lanes.
+    const later = foreground(uiSnapshot({ lanes, integrations: [old, first, second], now: at(300) }));
+    expect(later.lanes.map((l) => l.name)).toEqual(["b"]);
+    expect(later.capstone?.name).toBe("second");
+    expect(later.far.map((i) => i.name)).toEqual(["first", "old"]);
+  });
+
   it("lets a landing go far after 10 minutes", () => {
     const landed = uiIntegration({ name: "landed", lanes: ["a"], landedAt: at(-601) });
     const lanes = [finishedLane({ name: "a", integration: "landed" })];
@@ -928,6 +951,46 @@ describe("the capstone", () => {
     s.apply(uiSnapshot({ lanes, integrations: [{ ...open, landedAt: at(1) }], now: at(10) }));
     expect(cap.state).toBe("set");
     expect(kinds(s)).toEqual(["capstone"]);
+  });
+
+  it("lets a hoist finish before a landing that comes meanwhile hoists its own from the sledge", () => {
+    const s = newScene();
+    const two = [...lanes, finishedLane({ name: "c", integration: "int2" })];
+    const one = uiIntegration({ name: "int", lanes: ["a", "b"], updatedAt: at(-30), verify: "passed" });
+    const other = uiIntegration({ name: "int2", lanes: ["c"], updatedAt: at(-20), verify: "failed", ready: false });
+    s.apply(uiSnapshot({ lanes: two, integrations: [one, other] }));
+    s.apply(uiSnapshot({ lanes: two, integrations: [{ ...one, landedAt: at(1) }, other], now: at(2) }));
+    const cap = s.world.pyramid.capstone;
+    expect(cap).toMatchObject({ state: "hoisting", integration: "int", flag: "passed" });
+    run(s, 1);
+    const y = cap.y;
+
+    // int2 lands while int's capstone is on its way up: int's keeps rising, then sets.
+    const both = [
+      { ...one, landedAt: at(1) },
+      { ...other, landedAt: at(3) },
+    ];
+    s.apply(uiSnapshot({ lanes: two, integrations: both, now: at(3) }));
+    expect(cap).toMatchObject({ state: "hoisting", integration: "int", flag: "passed", y });
+    expect(s.world.pyramid.blocks.filter((b) => b.lane !== null).map((b) => b.lane)).toEqual(["a", "b", "c"]);
+    run(s, 1);
+    s.apply(uiSnapshot({ lanes: two, integrations: both, now: at(4) }));
+    expect(cap).toMatchObject({ state: "hoisting", integration: "int" });
+    expect(cap.y).toBeLessThan(y);
+    until(s, () => kinds(s).length > 0, 3);
+    expect(kinds(s)).toEqual(["capstone"]);
+    expect(s.world.events).toEqual([{ kind: "capstone", lane: "int" }]);
+
+    // Then int2's starts from the sledge, with its own flag, and sets in about 3 s.
+    expect(cap).toMatchObject({ state: "hoisting", integration: "int2", flag: "failed", ready: false, ...PLACES.sledge });
+    const took = until(s, () => cap.state === "set", 4);
+    expect(took).toBeGreaterThanOrEqual(2.95);
+    expect(took).toBeLessThanOrEqual(3.1);
+    expect(cap).toMatchObject({ state: "set", integration: "int2", ...s.world.pyramid.apex });
+    expect(s.world.events).toEqual([
+      { kind: "capstone", lane: "int" },
+      { kind: "capstone", lane: "int2" },
+    ]);
   });
 
   it("is set at once when the first snapshot shows it landed", () => {

@@ -156,7 +156,7 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
     nodeVersion: "20.11.0",
     interactive: true,
     version: "9.9.9",
-    openUrl: (url) => {
+    openUrl: async (url) => {
       opened.push(url);
       return true;
     },

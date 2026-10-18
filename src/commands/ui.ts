@@ -22,6 +22,15 @@ function intOption(flag: string, value: string | undefined, fallback: number, mi
   return n;
 }
 
+// 0 picks a free port. Below 1024 is refused: a browser leaves port 80 out of Host and Origin, so the server's own
+// checks would refuse every request, and the rest need privileges.
+function portOption(value: string | undefined): number {
+  if (value === undefined) return 0;
+  const n = /^[0-9]{1,6}$/.test(value) ? Number(value) : Number.NaN;
+  if (!(n === 0 || (n >= 1024 && n <= 65535))) throw new ArbabError("usage", `--port must be 0 or an integer from 1024 to 65535, not ${JSON.stringify(value)}`);
+  return n;
+}
+
 export async function runUi(argv: string[], ctx: CommandContext): Promise<number> {
   const { values } = parse("ui", {
     args: argv,
@@ -33,7 +42,7 @@ export async function runUi(argv: string[], ctx: CommandContext): Promise<number
     },
     allowPositionals: false,
   });
-  const port = intOption("--port", values.port, 0, 0, 65535);
+  const port = portOption(values.port);
   const hours = intOption("--hours", values.hours, 24, 1, 720);
   const project = openProject(ctx);
   const builder = createSnapshotBuilder({
@@ -63,9 +72,9 @@ export async function runUi(argv: string[], ctx: CommandContext): Promise<number
     // it: a background command's stdout is kept on disk and in the transcript.
     if (values.json === true) {
       printJson(ctx, { url: server.url, port: server.port });
-      if (values["no-open"] !== true && !ctx.openUrl(server.url)) ctx.stderr("open the URL above in a browser\n");
+      if (values["no-open"] !== true && !(await ctx.openUrl(server.url))) ctx.stderr("open the URL above in a browser\n");
     } else {
-      const opened = values["no-open"] !== true && ctx.openUrl(server.url);
+      const opened = values["no-open"] !== true && (await ctx.openUrl(server.url));
       const where = opened ? `http://127.0.0.1:${server.port}/ (opened in your browser)` : server.url;
       ctx.stdout(`arbab ui: ${basename(project.root)} at ${where}\nread-only; Ctrl-C stops it\n`);
       if (!opened && values["no-open"] !== true) ctx.stderr("open the URL above in a browser\n");

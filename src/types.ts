@@ -436,6 +436,9 @@ export interface AttemptSummary {
 
 export type LaneState = "queued" | "held" | "preparing" | "running" | "waiting-reset" | "finished" | "orphaned";
 
+/** The `reason` of a lane held for a free machine-wide slot; every other held lane waits for the quota. */
+export const NO_FREE_SLOT_REASON = "no free slot";
+
 /** <runs>/<lane>/state.json, written atomically by the shepherd. */
 export interface LaneStateRecord {
   lane: string;

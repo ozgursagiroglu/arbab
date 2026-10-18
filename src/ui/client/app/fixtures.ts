@@ -1,58 +1,13 @@
-// Hand-built Worlds for the renderer's tests and the docs/ui frames. Test-only: the real layout and the real worlds
-// come from src/ui/client/scene. The pyramids follow the scene's layout rules (DESIGN.md §19).
+// Hand-built Worlds for the renderer's tests and the docs/ui frames. Test-only: the real worlds come from
+// src/ui/client/scene; the geometry here is the scene's own (layout.ts), so the frames show what the page shows.
 import type { UiIntegration, UiLane, UiSnapshot } from "../../protocol";
 import { UI_PROTOCOL } from "../../protocol";
 import type { Actor, Block, BlockLook, Capstone, FarPyramid, Particle, World } from "../model";
-import { CAMP, HORIZON_Y, PLACES, PYRAMID_AREA } from "../model";
+import { PLACES } from "../model";
+import type { PyramidLayout, Slot } from "../scene/layout";
+import { campSeat, farPyramidPlace, pyramidLayout, workSpot } from "../scene/layout";
 
-export interface Slot {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-export interface Layout {
-  base: number;
-  blockW: number;
-  blockH: number;
-  slots: Slot[];
-  apex: { x: number; y: number };
-}
-
-/** The scene's pyramid layout for n lanes: the bottom course first, each course left to right. */
-export function layout(n: number): Layout {
-  let least = 1;
-  while ((least * (least + 1)) / 2 < n) least++;
-  const base = Math.max(4, least);
-  let blockW = Math.min(32, Math.floor(PYRAMID_AREA.maxWidth / base));
-  blockW -= blockW % 2;
-  const blockH = Math.min(blockW / 2, Math.floor(PYRAMID_AREA.maxHeight / base));
-  blockW = Math.min(blockW, 2 * blockH);
-  const slots: Slot[] = [];
-  for (let k = 0; k < base; k++) {
-    for (let j = 0; j < base - k; j++) {
-      slots.push({
-        x: PYRAMID_AREA.centerX - ((base - k) * blockW) / 2 + j * blockW,
-        y: PYRAMID_AREA.baseY - (k + 1) * blockH,
-        w: blockW,
-        h: blockH,
-      });
-    }
-  }
-  return { base, blockW, blockH, slots, apex: { x: PYRAMID_AREA.centerX, y: PYRAMID_AREA.baseY - base * blockH } };
-}
-
-/** A worker's feet at its slot. */
-export function feet(slot: Slot): { x: number; y: number } {
-  return { x: slot.x + slot.w / 2, y: slot.y + slot.h };
-}
-
-export function camp(seat: number): { x: number; y: number } {
-  const col = seat % CAMP.columns;
-  const row = Math.floor(seat / CAMP.columns);
-  return { x: PLACES.camp.x + col * CAMP.step, y: PLACES.camp.y + row * CAMP.rowStep };
-}
+const NO_SLOT: Slot = { x: 0, y: 0, w: 0, h: 0, course: 0 };
 
 export function actor(fields: Partial<Actor> & Pick<Actor, "id" | "cast" | "x" | "y">): Actor {
   return {
@@ -82,13 +37,16 @@ interface BlockSpec {
   highlight?: boolean;
 }
 
-function blocks(l: Layout, specs: readonly BlockSpec[]): Block[] {
+function blocks(l: PyramidLayout, specs: readonly BlockSpec[]): Block[] {
   return l.slots.map((slot, i) => {
     const spec = specs[i] ?? { look: "empty" };
     const fill = spec.fill ?? (spec.look === "set" ? 1 : 0);
     return {
       lane: spec.look === "empty" ? null : `lane-${i + 1}`,
-      ...slot,
+      x: slot.x,
+      y: slot.y,
+      w: slot.w,
+      h: slot.h,
       look: spec.look,
       fill,
       flash: spec.flash ?? 0,
@@ -114,8 +72,13 @@ function world(fields: Partial<World> & Pick<World, "pyramid">): World {
   };
 }
 
-function far(x: number, height: number, integration: string): FarPyramid {
-  return { integration, x, y: HORIZON_Y, height };
+/** Landed integrations on the horizon, newest first, by how many lanes each merged. */
+function farPyramids(lanes: readonly number[]): FarPyramid[] {
+  return lanes.map((n, i) => ({ integration: `int-${lanes.length - 1 - i}`, ...farPyramidPlace(i, n) }));
+}
+
+function slotOf(l: PyramidLayout): (i: number) => Slot {
+  return (i) => l.slots[i] ?? NO_SLOT;
 }
 
 function particle(kind: Particle["kind"], x: number, y: number, life = 0.5): Particle {
@@ -124,8 +87,8 @@ function particle(kind: Particle["kind"], x: number, y: number, life = 0.5): Par
 
 /** Midday: building, a fallen gap, a talk with arbab, a capstone waiting with a green pennant. */
 export function dayWorld(): World {
-  const l = layout(10);
-  const s = (i: number): Slot => l.slots[i] ?? { x: 0, y: 0, w: 0, h: 0 };
+  const l = pyramidLayout(10);
+  const s = slotOf(l);
   return world({
     sky: { phase: "day", sun: 0.38 },
     pyramid: {
@@ -147,26 +110,26 @@ export function dayWorld(): World {
       apex: l.apex,
       capstone: capstone({ state: "waiting", integration: "int-1", flag: "passed" }),
     },
-    far: [far(64, 12, "int-0")],
+    far: farPyramids([7]),
     actors: [
       arbab({ pose: "talk", poseTime: 0.3 }),
       actor({ id: "audience", cast: "laborer", ...PLACES.audience, facing: -1, pose: "talk", bubble: { seed: 11, open: 1 } }),
-      actor({ id: "builder-a", cast: "laborer", ...feet(s(3)), pose: "work", stroke: 0.7 }),
-      actor({ id: "builder-b", cast: "mason", ...feet(s(5)), facing: -1, pose: "work", stroke: 0.2 }),
-      actor({ id: "builder-c", cast: "laborer", ...feet(s(6)), facing: -1, pose: "work", stroke: 0.6, highlight: true, poseTime: 0.1 }),
-      actor({ id: "climber", cast: "mason", x: feet(s(7)).x, y: 192, pose: "climb", poseTime: 0.1 }),
-      actor({ id: "held-quota", cast: "laborer", ...camp(0), pose: "sit", icon: "hourglass" }),
-      actor({ id: "held-slot", cast: "mason", ...camp(1), pose: "sit", icon: "dots" }),
-      actor({ id: "scribe", cast: "scribe", x: s(0).x + 10, y: s(0).y, pose: "work", stroke: 0.7 }),
-      actor({ id: "surveyor", cast: "surveyor", x: PLACES.sledge.x - 20, y: PLACES.sledge.y + 2, pose: "work", stroke: 0.8 }),
-      actor({ id: "water", cast: "waterboy", x: 420, y: 222, facing: -1, pose: "walk", poseTime: 0.2 }),
+      actor({ id: "builder-a", cast: "laborer", ...workSpot(s(3)), pose: "work", stroke: 0.7 }),
+      actor({ id: "builder-b", cast: "mason", ...workSpot(s(5)), facing: -1, pose: "work", stroke: 0.2 }),
+      actor({ id: "builder-c", cast: "laborer", ...workSpot(s(6)), facing: -1, pose: "work", stroke: 0.6, highlight: true, poseTime: 0.1 }),
+      actor({ id: "climber", cast: "mason", x: workSpot(s(7)).x, y: workSpot(s(7)).y + 8, pose: "climb", poseTime: 0.1 }),
+      actor({ id: "held-quota", cast: "laborer", ...campSeat(0), pose: "sit", icon: "hourglass" }),
+      actor({ id: "held-slot", cast: "mason", ...campSeat(1), pose: "sit", icon: "dots" }),
+      actor({ id: "scribe", cast: "scribe", ...workSpot(s(4)), pose: "work", stroke: 0.7 }),
+      actor({ id: "surveyor", cast: "surveyor", x: PLACES.sledge.x - 14, y: PLACES.sledge.y + 2, facing: -1, pose: "work", stroke: 0.8 }),
+      actor({ id: "water", cast: "waterboy", x: 420, y: 208, facing: -1, pose: "walk", poseTime: 0.2 }),
     ],
     particles: [
-      particle("dust", feet(s(3)).x + 7, 204),
-      particle("dust", feet(s(3)).x + 9, 202),
-      particle("dust", feet(s(3)).x + 5, 201),
-      particle("stone", feet(s(3)).x + 11, 199),
-      particle("dust", feet(s(6)).x - 9, 186),
+      particle("dust", workSpot(s(3)).x + 7, 204),
+      particle("dust", workSpot(s(3)).x + 9, 202),
+      particle("dust", workSpot(s(3)).x + 5, 201),
+      particle("stone", workSpot(s(3)).x + 11, 199),
+      particle("dust", workSpot(s(6)).x - 9, 186),
     ],
     coins: 20,
   });
@@ -174,8 +137,8 @@ export function dayWorld(): World {
 
 /** Launches held: dusk, workers waiting in the camp, one asleep on the pyramid, an orphan's ghost. */
 export function duskWorld(): World {
-  const l = layout(8);
-  const s = (i: number): Slot => l.slots[i] ?? { x: 0, y: 0, w: 0, h: 0 };
+  const l = pyramidLayout(8);
+  const s = slotOf(l);
   return world({
     sky: { phase: "dusk", sun: 0.88 },
     pyramid: {
@@ -196,21 +159,21 @@ export function duskWorld(): World {
       apex: l.apex,
       capstone: capstone({}),
     },
-    far: [far(64, 12, "int-0")],
+    far: farPyramids([7]),
     actors: [
       arbab(),
       ...[0, 1, 2, 3, 5, 6].map((seat, i) =>
         actor({
           id: `held-${seat}`,
           cast: (["laborer", "mason", "laborer", "scribe", "laborer", "surveyor"] as const)[i] ?? "laborer",
-          ...camp(seat),
+          ...campSeat(seat),
           facing: i % 2 === 0 ? 1 : -1,
           pose: "sit",
           icon: "hourglass",
         }),
       ),
-      actor({ id: "sleeper", cast: "laborer", ...feet(s(4)), pose: "sleep", icon: "zzz" }),
-      actor({ id: "ghost", cast: "mason", ...feet(s(6)), ghost: true, icon: "question" }),
+      actor({ id: "sleeper", cast: "laborer", ...workSpot(s(4)), pose: "sleep", icon: "zzz" }),
+      actor({ id: "ghost", cast: "mason", ...workSpot(s(6)), ghost: true, icon: "question" }),
     ],
     coins: 12,
   });
@@ -218,7 +181,7 @@ export function duskWorld(): World {
 
 /** An integration landed: every block set, the capstone on the apex, arbab cheering, a worker going home fed. */
 export function capstoneWorld(): World {
-  const l = layout(15);
+  const l = pyramidLayout(15);
   return world({
     sky: { phase: "day", sun: 0.62 },
     pyramid: {
@@ -233,10 +196,11 @@ export function capstoneWorld(): World {
       apex: l.apex,
       capstone: capstone({ state: "set", integration: "int-3", ...l.apex, flag: "passed", ready: true }),
     },
-    far: [far(56, 14, "int-2"), far(104, 10, "int-1"), far(150, 8, "int-0")],
+    far: farPyramids([10, 3, 0]),
     actors: [
       arbab({ pose: "cheer", poseTime: 0.1 }),
-      actor({ id: "fed", cast: "laborer", x: 178, y: 252, facing: -1, pose: "carry-ration", ration: 3, poseTime: 0.05 }),
+      // On the way from the table to the village path.
+      actor({ id: "fed", cast: "laborer", x: 34, y: 260, facing: -1, pose: "carry-ration", ration: 3, poseTime: 0.05 }),
     ],
     particles: [
       particle("sparkle", l.apex.x - 9, l.apex.y - 9, 0.5),
@@ -245,7 +209,7 @@ export function capstoneWorld(): World {
       particle("sparkle", l.apex.x + 13, l.apex.y - 4, 0.6),
       particle("sparkle", l.apex.x + 2, l.apex.y - 15, 0.55),
       particle("sparkle", l.apex.x - 4, l.apex.y - 18, 0.35),
-      particle("coin", 178, 238, 0.4),
+      particle("coin", PLACES.treasury.x - 2, PLACES.treasury.y - 14, 0.4),
     ],
     coins: 34,
   });
@@ -253,8 +217,8 @@ export function capstoneWorld(): World {
 
 /** The account rejected: night, the moon and stars, everyone asleep. */
 export function nightWorld(): World {
-  const l = layout(6);
-  const s = (i: number): Slot => l.slots[i] ?? { x: 0, y: 0, w: 0, h: 0 };
+  const l = pyramidLayout(6);
+  const s = slotOf(l);
   return world({
     sky: { phase: "night", sun: 0.5 },
     pyramid: {
@@ -273,14 +237,14 @@ export function nightWorld(): World {
       apex: l.apex,
       capstone: capstone({}),
     },
-    far: [far(64, 12, "int-1"), far(112, 9, "int-0")],
+    far: farPyramids([2, 7]),
     actors: [
       arbab(),
-      actor({ id: "sleeper-a", cast: "laborer", ...feet(s(1)), pose: "sleep", icon: "zzz" }),
-      actor({ id: "sleeper-b", cast: "mason", ...feet(s(2)), pose: "sleep", icon: "zzz" }),
-      actor({ id: "sleeper-c", cast: "laborer", ...feet(s(4)), pose: "sleep", icon: "zzz" }),
-      actor({ id: "sleeper-d", cast: "scribe", ...camp(1), pose: "sleep", icon: "zzz" }),
-      actor({ id: "sleeper-e", cast: "laborer", ...camp(3), pose: "sleep", icon: "zzz" }),
+      actor({ id: "sleeper-a", cast: "laborer", ...workSpot(s(1)), pose: "sleep", icon: "zzz" }),
+      actor({ id: "sleeper-b", cast: "mason", ...workSpot(s(2)), pose: "sleep", icon: "zzz" }),
+      actor({ id: "sleeper-c", cast: "laborer", ...workSpot(s(4)), pose: "sleep", icon: "zzz" }),
+      actor({ id: "sleeper-d", cast: "scribe", ...campSeat(1), pose: "sleep", icon: "zzz" }),
+      actor({ id: "sleeper-e", cast: "laborer", ...campSeat(3), pose: "sleep", icon: "zzz" }),
     ],
     coins: 8,
   });

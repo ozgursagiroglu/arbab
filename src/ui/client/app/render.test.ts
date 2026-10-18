@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Actor, World } from "../model";
-import { ACTOR_BOX, HEIGHT, PLACES, WIDTH } from "../model";
+import { ACTOR_BOX, HEIGHT, PLACES, PYRAMID_AREA, WIDTH } from "../model";
 import type { Canvas2D } from "./browser";
-import { actor, arbab, dayWorld, duskWorld, feet, FRAMES, layout, nightWorld } from "./fixtures";
-import { BUBBLE, GOLD, OUTLINE, parseHex, WOOD } from "./palette";
+import { pyramidLayout, workSpot } from "../scene/layout";
+import { actor, arbab, dayWorld, duskWorld, FRAMES, nightWorld } from "./fixtures";
+import { BUBBLE, GOLD, LIMESTONE, OUTLINE, parseHex, WOOD } from "./palette";
 import type { Raster } from "./raster";
 import { createRaster } from "./raster";
-import { coinRects, frameIndex, GROUND_Y, prng, renderWorld, stoneLayout, sunPosition } from "./render";
+import { coinRects, frameIndex, GROUND_Y, ladderTop, prng, renderWorld, stoneLayout, sunPosition } from "./render";
 
 interface Op {
   x: number;
@@ -126,11 +127,11 @@ describe("renderWorld", () => {
   });
 
   it("draws back to front: the pyramid over the ground, actors over blocks, bubbles over actors", () => {
-    const l = layout(10);
+    const l = pyramidLayout(10);
     const world = dayWorld();
     const slot = l.slots[0];
     if (!slot) throw new Error("no slot");
-    const at = feet(slot);
+    const at = workSpot(slot);
     world.actors = [actor({ id: "front", cast: "laborer", ...at, bubble: null })];
     const r = rasterize(world);
     // The worker's dark outline covers the set block it stands in front of (block 0 is set).
@@ -203,6 +204,64 @@ describe("renderWorld", () => {
     const ground = empty();
     ground.actors = [actor({ id: "g", cast: "laborer", x: 240, y: 240, pose: "work" })];
     expect(pixel(rasterize(ground), 232, 240)).not.toBe(hex(WOOD[0]));
+    // The bottom course's workers stand on the pyramid's foot, two pixels above the ground line: no plank.
+    const foot = empty();
+    foot.actors = [actor({ id: "f", cast: "laborer", x: 240, y: PYRAMID_AREA.baseY, pose: "work" })];
+    const plain = rasterize(empty());
+    const onFoot = rasterize(foot);
+    for (const x of [231, 232, 247, 248]) expect(pixel(onFoot, x, PYRAMID_AREA.baseY)).toBe(pixel(plain, x, PYRAMID_AREA.baseY));
+  });
+
+  it("leans a ladder on the first course edge at least 6 px above the climber's feet", () => {
+    const pyramid = { base: 4, blockH: 16 };
+    expect(ladderTop(205, pyramid)).toBe(192);
+    expect(ladderTop(198, pyramid)).toBe(192);
+    expect(ladderTop(197, pyramid)).toBe(176);
+    expect(ladderTop(182, pyramid)).toBe(176);
+    expect(ladderTop(176, pyramid)).toBe(160);
+    // Above the top course, or without courses: just over the feet.
+    expect(ladderTop(140, pyramid)).toBe(132);
+    expect(ladderTop(200, { base: 4, blockH: 0 })).toBe(192);
+    const climb = empty();
+    climb.actors = [actor({ id: "c", cast: "laborer", x: 240, y: 200, pose: "climb" })];
+    const ctx = recorder();
+    renderWorld(ctx, climb);
+    const top = ladderTop(200, climb.pyramid);
+    const rails = ctx.ops.filter((op) => op.color === WOOD[1] && op.w === 1 && (op.x === 236 || op.x === 243));
+    expect(rails.map((op) => [op.y, op.y + op.h])).toEqual([
+      [top, GROUND_Y],
+      [top, GROUND_Y],
+    ]);
+  });
+
+  it("draws a worker at the table behind it, and one in front of the table in front of it", () => {
+    const at = PLACES.rations;
+    const plain = rasterize(empty());
+    const same = (r: Raster, y: number): boolean => {
+      for (let x = at.x - 5; x <= at.x + 5; x++) if (pixel(r, x, y) !== pixel(plain, x, y)) return false;
+      return true;
+    };
+    const behind = empty();
+    behind.actors = [actor({ id: "fed", cast: "mason", ...at })];
+    // The table's top hides the legs of the worker standing at it.
+    expect(same(rasterize(behind), at.y - 2)).toBe(true);
+    const front = empty();
+    front.actors = [actor({ id: "near", cast: "mason", x: at.x, y: at.y + 6 })];
+    expect(same(rasterize(front), at.y)).toBe(false);
+  });
+
+  it("keeps rubble on the pyramid's foot", () => {
+    const world = empty();
+    world.pyramid = { ...dayWorld().pyramid, blocks: [], rubble: 60, capstone: empty().pyramid.capstone };
+    const ctx = recorder();
+    renderWorld(ctx, world);
+    const half = (world.pyramid.base * world.pyramid.blockW) / 2;
+    const rubble = ctx.ops.filter((op) => op.y >= PYRAMID_AREA.baseY - 3 && op.y <= PYRAMID_AREA.baseY + 8 && op.color === LIMESTONE.light);
+    expect(rubble.length).toBeGreaterThan(0);
+    for (const op of rubble) {
+      expect(op.x).toBeGreaterThanOrEqual(PYRAMID_AREA.centerX - half);
+      expect(op.x + op.w).toBeLessThanOrEqual(PYRAMID_AREA.centerX + half);
+    }
   });
 
   it("blinks a gold marker over a highlighted actor at 2 Hz", () => {

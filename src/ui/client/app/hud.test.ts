@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { integration, lane, snapshot } from "./fixtures";
 import {
   announcements,
-  castOf,
   computeScale,
   crew,
   formatCounts,
@@ -75,21 +74,6 @@ describe("parseProblem", () => {
     expect(parseProblem(JSON.stringify({ message: "registry unreadable" }))).toBe("registry unreadable");
     expect(parseProblem("nope")).toBe("The server reported a problem.");
     expect(parseProblem(JSON.stringify({ message: 3 }))).toBe("The server reported a problem.");
-  });
-});
-
-describe("castOf", () => {
-  it("follows the cast table", () => {
-    const of = (role: Parameters<typeof castOf>[0]["role"], kind: Parameters<typeof castOf>[0]["kind"]): string =>
-      castOf({ role, kind, worktreeOf: null });
-    expect(of("implementer", "lane")).toBe("laborer");
-    expect(of("verifier", "lane")).toBe("mason");
-    expect(of("reviewer", "review")).toBe("scribe");
-    expect(of("reviewer", "skeptic")).toBe("skeptic");
-    expect(of("reviewer", "lane")).toBe("scribe");
-    expect(of("probe", "verify")).toBe("surveyor");
-    expect(of("probe", "preflight")).toBe("waterboy");
-    expect(of("researcher", "lane")).toBe("scout");
   });
 });
 

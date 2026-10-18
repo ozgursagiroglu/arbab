@@ -316,26 +316,50 @@ function placed(grid: Grid, cx: number, bottom: number): Rect[] {
   return spriteRects(s, cx - Math.floor(s.w / 2), bottom - s.h);
 }
 
-/** The camp, the well, the sledge, the table and the chest: they never move. */
+/**
+ * The tents' bottom edge: behind the heads and icons of the front row of seats (CAMP), so waiting workers sit in front
+ * of the tents rather than on their slopes, and their hourglasses do not hide in a tent's door.
+ */
+export const TENT_BOTTOM = PLACES.camp.y - 24;
+
+/** The table stands just in front of the rations spot, so a worker taking bread and beer stands behind it. */
+const TABLE_BOTTOM = PLACES.rations.y + 3;
+
+/** The palms, the camp's tents, the well and the shadows of the props: they never move. */
 const PROP_RECTS: Rect[] = (() => {
   const shadow = (cx: number, y: number, w: number): Rect => ({ x: cx - Math.floor(w / 2), y, w, h: 1, color: SAND[2] });
   return [
+    shadow(23, TENT_BOTTOM, 26),
+    ...placed(PROPS.tent, 24, TENT_BOTTOM),
+    shadow(63, TENT_BOTTOM - 2, 24),
+    ...placed(PROPS.tent, 63, TENT_BOTTOM - 2),
     ...placed(PROPS.palm, 6, 192),
-    shadow(16, 199, 26),
-    ...placed(PROPS.tent, 17, 199),
-    shadow(63, 197, 24),
-    ...placed(PROPS.tent, 63, 197),
     ...placed(PROPS.palm, 96, 200),
     ...placed(PROPS.palm, 466, 196),
     shadow(PLACES.well.x, 204, 20),
     ...placed(PROPS.well, PLACES.well.x, 204),
-    ...placed(PROPS.sledge, PLACES.sledge.x + 1, PLACES.sledge.y + 6),
-    shadow(PLACES.rations.x, 262, 22),
-    ...placed(PROPS.table, PLACES.rations.x, 262),
-    shadow(PLACES.treasury.x, 264, 16),
-    ...placed(PROPS.chest, PLACES.treasury.x, 264),
+    shadow(PLACES.rations.x, TABLE_BOTTOM, 22),
+    shadow(PLACES.treasury.x, PLACES.treasury.y, 16),
   ];
 })();
+
+interface Scenery {
+  /** The line it stands on: actors with their feet further back are drawn before it. */
+  y: number;
+  rects: readonly Rect[];
+}
+
+const FIXED_SCENERY: readonly Scenery[] = [
+  { y: PLACES.sledge.y + 6, rects: placed(PROPS.sledge, PLACES.sledge.x + 1, PLACES.sledge.y + 6) },
+  { y: PLACES.treasury.y, rects: placed(PROPS.chest, PLACES.treasury.x, PLACES.treasury.y) },
+  { y: TABLE_BOTTOM, rects: placed(PROPS.table, PLACES.rations.x, TABLE_BOTTOM) },
+];
+
+/** The props actors walk in front of and behind, back to front, with the coin pile of this frame. */
+function sceneryOf(coins: number): Scenery[] {
+  const all = [...FIXED_SCENERY, { y: PLACES.treasury.y + 1, rects: coinRects(coins) }];
+  return all.sort((a, b) => a.y - b.y);
+}
 
 const STACKS = 6;
 const coinCache = new Map<number, Rect[]>();
@@ -510,7 +534,8 @@ function drawBlock(p: Painter, b: Block): void {
 function rubbleAt(i: number, pyramid: Pyramid): { x: number; y: number } {
   const width = pyramid.base > 0 ? pyramid.base * pyramid.blockW : PYRAMID_AREA.maxWidth / 2;
   const h = Math.imul(i + 1, 2654435761) >>> 0;
-  const spread = width + 28;
+  // Inside the foot, less the widest rubble sprite, so no stone lies beyond the bottom course.
+  const spread = Math.max(0, width - 4);
   return {
     x: PYRAMID_AREA.centerX - spread / 2 + (h % 1000) / 1000 * spread,
     y: PYRAMID_AREA.baseY + 1 + ((h >>> 12) % 7),
@@ -572,8 +597,19 @@ function spriteOf(actor: Actor): Sprite | null {
   return frames[frameIndex(actor, frames.length)] ?? null;
 }
 
-function drawLadder(p: Painter, x: number, feet: number): void {
-  const top = feet - 8;
+/**
+ * Where a climber's ladder leans: the first course edge at least 6 px above its feet, so the ladder rests on the
+ * pyramid instead of ending in the air; above the pyramid, 8 px over the feet.
+ */
+export function ladderTop(feet: number, pyramid: Pick<Pyramid, "base" | "blockH">): number {
+  const h = pyramid.blockH;
+  if (!(h > 0) || !Number.isFinite(feet)) return feet - 8;
+  const k = Math.max(1, Math.ceil((PYRAMID_AREA.baseY - (feet - 6)) / h));
+  return k <= pyramid.base ? PYRAMID_AREA.baseY - k * h : feet - 8;
+}
+
+function drawLadder(p: Painter, x: number, feet: number, pyramid: Pyramid): void {
+  const top = ladderTop(feet, pyramid);
   if (top >= GROUND_Y) return;
   p.rect(x - 4, top, 1, GROUND_Y - top, WOOD[1]);
   p.rect(x + 3, top, 1, GROUND_Y - top, WOOD[1]);
@@ -638,14 +674,19 @@ function drawBubble(p: Painter, bubble: Bubble, speakerX: number, head: number):
 function drawActors(p: Painter, world: World): void {
   const order = world.actors.map((actor, i) => ({ actor, i }));
   order.sort((a, b) => a.actor.y - b.actor.y || a.i - b.i);
+  const scenery = sceneryOf(world.coins);
+  let next = 0;
   const shown: { actor: Actor; sprite: Sprite }[] = [];
   for (const { actor } of order) {
+    // Scenery standing further back than this actor goes first, so the actor passes in front of it.
+    for (; next < scenery.length && (scenery[next]?.y ?? 0) <= actor.y; next++) p.rects(scenery[next]?.rects ?? []);
     const sprite = spriteOf(actor);
     if (!sprite) continue;
     const x = Math.round(actor.x);
     const y = Math.round(actor.y);
-    if (actor.pose === "climb") drawLadder(p, x, y);
-    if (actor.pose === "work" && y < GROUND_Y) drawPlank(p, x, y);
+    if (actor.pose === "climb") drawLadder(p, x, y, world.pyramid);
+    // A worker above the pyramid's foot stands on a plank; on the foot itself it stands on the base.
+    if (actor.pose === "work" && y < PYRAMID_AREA.baseY) drawPlank(p, x, y);
     const alpha = Math.min(1, Math.max(0, Number.isFinite(actor.alpha) ? actor.alpha : 1)) * (actor.ghost ? 0.5 : 1);
     if (alpha <= 0) continue;
     if (alpha < 1) p.alpha(alpha);
@@ -653,6 +694,7 @@ function drawActors(p: Painter, world: World): void {
     if (alpha < 1) p.alpha(1);
     shown.push({ actor, sprite });
   }
+  for (; next < scenery.length; next++) p.rects(scenery[next]?.rects ?? []);
   // Icons, markers and bubbles are signs for the viewer: they keep their colors at dusk and at night.
   p.tint(null);
   for (const { actor, sprite } of shown) {
@@ -714,7 +756,6 @@ export function renderWorld(ctx: Canvas2D, world: World): void {
 
   p.rects(GROUND_RECTS);
   p.rects(PROP_RECTS);
-  p.rects(coinRects(world.coins));
 
   drawPyramid(p, world.pyramid);
   drawActors(p, world);

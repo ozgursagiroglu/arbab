@@ -4,7 +4,6 @@ import { formatElapsed } from "../../../registry/status";
 import type { QuotaWindow } from "../../../types";
 import type { UiLane, UiQuota, UiSnapshot } from "../../protocol";
 import { UI_PROTOCOL } from "../../protocol";
-import type { Cast } from "../model";
 import { HEIGHT, WIDTH } from "../model";
 
 const UNKNOWN = "—";
@@ -62,22 +61,6 @@ export function parseProblem(data: string): string {
     // Fall through to the generic message.
   }
   return "The server reported a problem.";
-}
-
-/** The worker a lane is (DESIGN.md §19, the cast); the crew list colors its chip by it. */
-export function castOf(lane: Pick<UiLane, "role" | "kind" | "worktreeOf">): Exclude<Cast, "arbab"> {
-  switch (lane.role) {
-    case "implementer":
-      return "laborer";
-    case "verifier":
-      return "mason";
-    case "reviewer":
-      return lane.kind === "skeptic" ? "skeptic" : "scribe";
-    case "probe":
-      return lane.kind === "verify" ? "surveyor" : "waterboy";
-    case "researcher":
-      return "scout";
-  }
 }
 
 export interface Counts {

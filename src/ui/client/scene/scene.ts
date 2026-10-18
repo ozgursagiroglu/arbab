@@ -46,6 +46,8 @@ const CHEER_S = 2;
 const SPARKLES = 20;
 const MAX_DT_MS = 100;
 const LINE_GAP = 12;
+/** Places in line behind the audience spot. */
+const MAX_LINE = 6;
 const MASON_OFFSET = 5;
 const FIVE_HOURS_S = 18000;
 
@@ -212,6 +214,8 @@ interface Crew {
   spot: Point | null;
   seat: number | null;
   fading: boolean;
+  /** On its way down the ladder to queue for a talk. */
+  descending: boolean;
   chatIn: number | null;
   chatLeft: number;
 }
@@ -452,6 +456,7 @@ export function createScene(options: SceneOptions): Scene {
     c.elapsed = 0;
     c.chatIn = null;
     c.chatLeft = 0;
+    c.descending = false;
     a.alpha = 1;
     a.stroke = 0;
     a.bubble = null;
@@ -552,10 +557,6 @@ export function createScene(options: SceneOptions): Scene {
       if (step.alpha !== undefined) a.alpha = step.alpha;
       if (step.faceCenter) a.facing = a.x <= PYRAMID_AREA.centerX ? 1 : -1;
     }
-    if (step.kind === "talk" && onPyramid(a)) {
-      c.queue.unshift({ kind: "move", x: a.x, y: GROUND_Y, pose: "climb", speed: CLIMB });
-      return true;
-    }
     return false;
   }
 
@@ -632,13 +633,27 @@ export function createScene(options: SceneOptions): Scene {
 
   // --- talks with arbab
 
-  /** The talk step: queue up, step up to the audience spot, talk; the time left when done, or -1. */
+  /**
+   * The talk step: queue up, step up to the audience spot, talk; the time left when done, or -1. At most MAX_LINE stand
+   * behind the audience spot, so the line stays on the canvas; the rest wait where they are, in arrival order.
+   */
   function talkStep(c: Crew, event: "brief" | "report", dt: number): number {
     const a = c.actor;
     let left = dt;
     if (!line.includes(c)) line.push(c);
     if (talk?.crew !== c) {
       const k = line.indexOf(c);
+      if (k > MAX_LINE) {
+        if (a.pose !== "sit") setPose(a, "idle");
+        return -1;
+      }
+      // Down the ladder to the ground line first; onPyramid turns false a step before the ladder's foot.
+      if (onPyramid(a)) c.descending = true;
+      if (c.descending) {
+        left = moveToward(a, { x: a.x, y: GROUND_Y }, "climb", CLIMB, left);
+        if (left < 0) return -1;
+        c.descending = false;
+      }
       const spot = { x: PLACES.audience.x + LINE_GAP * k, y: PLACES.audience.y };
       left = moveToward(a, spot, "walk", WALK, left);
       if (left < 0) return -1;
@@ -811,6 +826,7 @@ export function createScene(options: SceneOptions): Scene {
       spot: null,
       seat: null,
       fading: false,
+      descending: false,
       chatIn: null,
       chatLeft: 0,
     };

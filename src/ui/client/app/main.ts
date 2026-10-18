@@ -5,7 +5,7 @@ import type { UiLane, UiSnapshot } from "../../protocol";
 import { UI_EVENTS, UI_ROUTES, UI_TOKEN_PARAM } from "../../protocol";
 import type { Actor, Block } from "../model";
 import { HEIGHT, WIDTH } from "../model";
-import { createScene } from "../scene";
+import { castOf, createScene } from "../scene";
 import type {
   AudioContextConstructor,
   CanvasElementLike,
@@ -20,7 +20,6 @@ import type {
 } from "./browser";
 import {
   announcements,
-  castOf,
   computeScale,
   crew,
   formatState,

@@ -1,7 +1,13 @@
 {
   "name": "ui",
   "base": "ui-base",
-  "defaults": { "role": "implementer", "effort": "high", "budgetUsd": 20, "wallMin": 90, "idleMin": 20 },
+  "defaults": {
+    "role": "implementer",
+    "effort": "high",
+    "budgetUsd": 20,
+    "wallMin": 90,
+    "idleMin": 20
+  },
   "phases": [
     {
       "name": "ui-server",
@@ -22,20 +28,42 @@
     {
       "name": "ui-scene",
       "brief": "lanes/ui-scene.md",
-      "scope": ["src/ui/client/scene/**"]
+      "scope": [
+        "src/ui/client/scene/**"
+      ]
     },
     {
       "name": "ui-art",
       "brief": "lanes/ui-art.md",
-      "scope": ["src/ui/client/app/**", "scripts/build.mjs", "scripts/build.d.mts", "test/build.test.ts", "docs/ui/**"],
+      "scope": [
+        "src/ui/client/app/**",
+        "scripts/build.mjs",
+        "scripts/build.d.mts",
+        "test/build.test.ts",
+        "docs/ui/**"
+      ],
       "budgetUsd": 30,
       "wallMin": 120
     },
     {
       "name": "ui-wire",
       "brief": "lanes/ui-wire.md",
-      "scope": ["src/ui/server/**", "src/ui/client/scene/**", "src/ui/client/app/**", "src/ui/client/pipeline.test.ts", "docs/ui/**", "test/e2e/ui.test.ts"],
-      "dependsOn": ["ui-server", "ui-scene", "ui-art"]
+      "scope": [
+        "src/ui/server/**",
+        "src/ui/client/scene/**",
+        "src/ui/client/app/**",
+        "src/ui/client/pipeline.test.ts",
+        "docs/ui/**",
+        "test/e2e/ui.test.ts",
+        "src/commands/ui.ts",
+        "src/commands/ui.test.ts",
+        "src/stream/index.test.ts"
+      ],
+      "dependsOn": [
+        "ui-server",
+        "ui-scene",
+        "ui-art"
+      ]
     }
   ]
 }

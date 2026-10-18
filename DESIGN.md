@@ -665,14 +665,17 @@ takes a report; a pyramid is an integration; sound is off until the viewer turns
 `arbab ui [--port N] [--hours N] [--no-open] [--json]` serves the project's scene until SIGINT or SIGTERM.
 
 - It opens the page, `http://127.0.0.1:<port>/#token=<token>`, in the browser, then prints only
-  `http://127.0.0.1:<port>/`.
-- With `--no-open`, or when no browser could be opened, it prints the URL with its token instead.
+  `http://127.0.0.1:<port>/`. The page counts as opened when the opener (`open` on macOS, `xdg-open` on Linux) exits
+  0, or is still running after 5 s (some `xdg-open`s wait for the browser they start).
+- With `--no-open`, or when no browser could be opened (no opener, a spawn error, a non-zero exit), it prints the URL
+  with its token instead.
 - `--json` prints `{"url", "port"}`, the URL with its token, because it is asked for.
 
 Claude Code keeps a background command's output on disk and in the session transcript. So the token goes to the
 browser, and onto stdout only when a person has to open the page by hand.
 
-`--port` defaults to 0 (the system picks); `--hours` (default 24, 1–720) is the window. It is read-only: it writes
+`--port` is 0 (the default: the system picks) or 1024–65535; a browser leaves port 80 out of `Host` and `Origin`,
+which the server's checks would refuse. `--hours` (default 24, 1–720) is the window. It is read-only: it writes
 nothing under `.arbab/` or `~/.arbab/` and signals no process. The skill starts it as a background Bash call before a
 session's first launch.
 
@@ -685,8 +688,9 @@ session's first launch.
   - arbab never writes it to disk. It is printed only as the Command section says.
   - It is required, as `?token=`, by the data routes `/events` and `/snapshot.json` (compared in constant time; 401
     otherwise).
-  - On Linux, the opener (`xdg-open`, and a browser it starts) carries the URL in its argv, where other local users
-    can read it with `ps`. On a shared machine, use `--no-open`.
+  - The opener carries the URL in its argv, where other local users can read it with `ps`: briefly on macOS
+    (`open` exits at once), and for the browser's life on Linux (`xdg-open`, and a browser it starts). On a shared
+    machine, use `--no-open`.
 - The page, `/app.js` and `/app.css` are public code; they are served from memory, never from a path.
 - Every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
   img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
@@ -745,8 +749,9 @@ lanes have no worker, and blocks show their outcome. A lane that leaves the wind
 
 Pyramids:
 
-- The **foreground pyramid** holds the building lanes not in a landed integration, plus those of an integration landed
-  within the last 10 minutes (so its capstone can be seen). Blocks fill the bottom course first, left to right, in
+- The **foreground pyramid** holds the building lanes not in a landed integration, plus those of every integration
+  landed within the last 10 minutes (so its capstone can be seen; the newest landing holds the capstone, and one that
+  lands during another's hoist waits for it to set). Blocks fill the bottom course first, left to right, in
   `firstSeen` order: the oldest work is the foundation. The base is `max(4, the least b with b(b+1)/2 ≥ lanes)`; slots
   no lane has taken are drawn as a faint outline.
 - The **capstone** belongs to the newest integration that is not landed and merged a foreground lane: it waits on a

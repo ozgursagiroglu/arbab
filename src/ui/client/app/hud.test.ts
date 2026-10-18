@@ -181,7 +181,21 @@ describe("tooltip", () => {
   });
 
   it("never counts elapsed below zero", () => {
-    expect(laneElapsedMs({ elapsedMs: null, since: "2026-10-19T10:00:00Z" }, Date.parse("2026-10-19T09:00:00Z"))).toBe(0);
+    expect(laneElapsedMs({ elapsedMs: null, since: "2026-10-19T10:00:00Z", state: "running" }, Date.parse("2026-10-19T09:00:00Z"))).toBe(0);
+  });
+
+  it("counts from since only while the state is live; a finished or orphaned lane without a wall clock shows —", () => {
+    const since = "2026-10-19T10:00:00.000Z";
+    const server = Date.parse("2026-10-19T10:00:45.000Z");
+    for (const state of ["queued", "held", "preparing", "running", "waiting-reset"] as const) {
+      expect(laneElapsedMs({ elapsedMs: null, since, state }, server), state).toBe(45_000);
+    }
+    expect(laneElapsedMs({ elapsedMs: null, since, state: "finished" }, server)).toBeNull();
+    expect(laneElapsedMs({ elapsedMs: null, since, state: "orphaned" }, server)).toBeNull();
+    expect(laneElapsedMs({ elapsedMs: 3_000, since, state: "orphaned" }, server)).toBe(3_000);
+    for (const l of [lane({ name: "f", state: "finished", endState: "failed", since }), lane({ name: "o", state: "orphaned", since })]) {
+      expect(tooltipLines(l, server, 0)).toContain("elapsed —");
+    }
   });
 
   it("formats states", () => {

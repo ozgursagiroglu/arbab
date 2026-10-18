@@ -1,9 +1,10 @@
 import type { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { get } from "node:http";
 import { createServer } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { UiSnapshot } from "../ui/protocol";
-import { makeOpenUrl } from "./context";
+import { makeOpenUrl, OPENER_WAIT_MS } from "./context";
 import { dispatch } from "./index";
 import { makeProject, NOW_MS, writeLaneRun, type TestProject } from "./testkit";
 import { runUi } from "./ui";
@@ -134,7 +135,7 @@ describe("runUi", () => {
   it("prints the URL with the token and asks for it to be opened by hand when the opener fails", async () => {
     p = makeProject();
     const tried: string[] = [];
-    p.ctx.openUrl = (url) => {
+    p.ctx.openUrl = async (url) => {
       tried.push(url);
       return false;
     };
@@ -162,6 +163,12 @@ describe("runUi", () => {
     expect(ui.port).toBe(port);
     ui.stop();
     expect(await ui.done).toBe(0);
+
+    p.out.length = 0;
+    const any = await startUi(["--port", "0", "--no-open"]);
+    expect(any.port).toBeGreaterThan(0);
+    any.stop();
+    expect(await any.done).toBe(0);
   });
 
   it("uses --hours as the window", async () => {
@@ -184,6 +191,9 @@ describe("runUi", () => {
     p = makeProject();
     for (const argv of [
       ["--port", "-1"],
+      ["--port", "1"],
+      ["--port", "80"],
+      ["--port", "1023"],
       ["--port", "65536"],
       ["--port", "http"],
       ["--port", "1.5"],
@@ -220,35 +230,99 @@ describe("runUi", () => {
 });
 
 describe("makeOpenUrl", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A spawn whose child the test drives: `emit("exit", 0)`, `emit("error", …)`, or nothing at all. */
   function fakeSpawn() {
     const calls: Array<{ command: string; args: readonly string[]; options: unknown }> = [];
-    const events: string[] = [];
+    const children: Array<EventEmitter & { unrefs: number }> = [];
     const fn = ((command: string, args: readonly string[], options: unknown) => {
       calls.push({ command, args, options });
-      return {
-        on: (event: string) => events.push(`on:${event}`),
-        unref: () => events.push("unref"),
-      };
+      const child = Object.assign(new EventEmitter(), {
+        unrefs: 0,
+        unref() {
+          child.unrefs++;
+        },
+      });
+      children.push(child);
+      return child;
     }) as unknown as typeof spawn;
-    return { fn, calls, events };
+    return { fn, calls, children };
   }
 
-  it("runs open on macOS and xdg-open on Linux, detached and ignored, and returns true", () => {
+  /** Settles to the promise's value, or "pending" when it has not settled after the microtasks queued so far. */
+  async function peek<T>(promise: Promise<T>): Promise<T | "pending"> {
+    return Promise.race([promise, new Promise<"pending">((done) => setImmediate(() => done("pending")))]);
+  }
+
+  it("runs open on macOS and xdg-open on Linux, detached, ignored and unref'd, and resolves true when it exits 0", async () => {
     for (const [platform, command] of [
       ["darwin", "open"],
       ["linux", "xdg-open"],
     ] as const) {
       const fake = fakeSpawn();
-      expect(makeOpenUrl(platform, fake.fn)("http://127.0.0.1:1/#token=ab")).toBe(true);
+      const opened = makeOpenUrl(platform, fake.fn)("http://127.0.0.1:1/#token=ab");
       expect(fake.calls).toEqual([{ command, args: ["http://127.0.0.1:1/#token=ab"], options: { detached: true, stdio: "ignore" } }]);
-      expect(fake.events).toEqual(["on:error", "unref"]);
+      expect(fake.children[0]?.unrefs).toBe(1);
+      expect(await peek(opened)).toBe("pending");
+      fake.children[0]?.emit("exit", 0, null);
+      expect(await opened).toBe(true);
     }
   });
 
-  it("returns false and starts nothing on any other platform", () => {
+  it("resolves false when the opener cannot start (ENOENT), and an exit after it changes nothing", async () => {
+    const fake = fakeSpawn();
+    const opened = makeOpenUrl("linux", fake.fn)("http://127.0.0.1:1/");
+    fake.children[0]?.emit("error", Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" }));
+    fake.children[0]?.emit("exit", 0, null);
+    expect(await opened).toBe(false);
+  });
+
+  it("resolves false when the opener exits non-zero or is killed", async () => {
+    for (const [code, signal] of [
+      [1, null],
+      [null, "SIGTERM"],
+    ] as const) {
+      const fake = fakeSpawn();
+      const opened = makeOpenUrl("darwin", fake.fn)("http://127.0.0.1:1/");
+      fake.children[0]?.emit("exit", code, signal);
+      expect(await opened).toBe(false);
+    }
+  });
+
+  it("resolves false when spawn throws", async () => {
+    const fn = (() => {
+      throw new Error("EINVAL");
+    }) as unknown as typeof spawn;
+    expect(await makeOpenUrl("darwin", fn)("http://127.0.0.1:1/")).toBe(false);
+  });
+
+  it("resolves true when the opener still runs after 5 s, and clears its timer when it exits first", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const waiting = fakeSpawn();
+    const opened = makeOpenUrl("linux", waiting.fn)("http://127.0.0.1:1/");
+    expect(vi.getTimerCount()).toBe(1);
+    vi.advanceTimersByTime(OPENER_WAIT_MS - 1);
+    expect(await peek(opened)).toBe("pending");
+    vi.advanceTimersByTime(1);
+    expect(await opened).toBe(true);
+    // A late failure does not take it back.
+    waiting.children[0]?.emit("exit", 1, null);
+    expect(await opened).toBe(true);
+
+    const quick = fakeSpawn();
+    const failed = makeOpenUrl("linux", quick.fn)("http://127.0.0.1:1/");
+    quick.children[0]?.emit("exit", 3, null);
+    expect(await failed).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("returns false and starts nothing on any other platform", async () => {
     for (const platform of ["win32", "freebsd", "aix"] as const) {
       const fake = fakeSpawn();
-      expect(makeOpenUrl(platform, fake.fn)("http://127.0.0.1:1/")).toBe(false);
+      expect(await makeOpenUrl(platform, fake.fn)("http://127.0.0.1:1/")).toBe(false);
       expect(fake.calls).toEqual([]);
     }
   });

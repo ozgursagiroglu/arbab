@@ -1,7 +1,7 @@
 // What the DOM around the canvas says (DESIGN.md §19), as pure functions of a snapshot: main.ts only puts these
 // strings into elements with textContent.
 // registry/status, never the registry index: the index pulls node:fs into the bundle.
-import { formatElapsed, formatWindows } from "../../../registry/status";
+import { formatElapsed, formatWindows, isLive } from "../../../registry/status";
 import type { UiLane, UiSnapshot } from "../../protocol";
 import { UI_PROTOCOL } from "../../protocol";
 import { HEIGHT, WIDTH } from "../model";
@@ -161,9 +161,13 @@ export function formatState(lane: Pick<UiLane, "state" | "endState" | "hold">): 
   return lane.state;
 }
 
-/** A finished run's wall clock, else live from `since` by the server's clock. */
-export function laneElapsedMs(lane: Pick<UiLane, "elapsedMs" | "since">, serverNowMs: number): number | null {
+/**
+ * A finished run's wall clock; live from `since` by the server's clock only while the state is live. A finished or
+ * orphaned lane without a wall clock has none: its clock stopped with the run.
+ */
+export function laneElapsedMs(lane: Pick<UiLane, "elapsedMs" | "since" | "state">, serverNowMs: number): number | null {
   if (lane.elapsedMs !== null) return lane.elapsedMs;
+  if (!isLive(lane.state)) return null;
   const since = Date.parse(lane.since);
   return Number.isNaN(since) ? null : Math.max(0, serverNowMs - since);
 }

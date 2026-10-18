@@ -58,6 +58,12 @@ describe("arbab ui", () => {
       expect(page.status).toBe(200);
       expect(page.type).toBe("text/html; charset=utf-8");
 
+      // The bundle carries main.ts built for the browser, not the placeholder served from source.
+      const script = await fetchText(printed.port, "/app.js");
+      expect(script.status).toBe(200);
+      expect(script.body).toContain("This browser cannot draw the scene");
+      expect(script.body).not.toContain("The page script is built by pnpm build.");
+
       const snapshot = await fetchText(printed.port, `/snapshot.json?token=${token}`);
       expect(snapshot.status).toBe(200);
       const body = JSON.parse(snapshot.body) as { protocol: number; project: string; lanes: unknown[] };

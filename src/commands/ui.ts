@@ -59,7 +59,8 @@ export async function runUi(argv: string[], ctx: CommandContext): Promise<number
   try {
     if (values.json === true) printJson(ctx, { url: server.url, port: server.port });
     else ctx.stdout(`arbab ui: ${basename(project.root)} at ${server.url}\nread-only; Ctrl-C stops it\n`);
-    if (values["no-open"] !== true && !ctx.openUrl(server.url)) ctx.stderr(`open ${server.url} in a browser\n`);
+    // The URL carries the token, so it goes to stdout only; stderr may end up in logs.
+    if (values["no-open"] !== true && !ctx.openUrl(server.url)) ctx.stderr("open the URL above in a browser\n");
     await stopped;
   } finally {
     untrap();

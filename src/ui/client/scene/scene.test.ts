@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Actor, Block, Pose, Scene } from "../model";
-import { PLACES, PYRAMID_AREA } from "../model";
+import { PLACES, PYRAMID_AREA, WIDTH } from "../model";
 import type { UiLane, UiSnapshot } from "../../protocol";
 import { campSeat, pyramidLayout, workSpot } from "./layout";
 import { castOf, createScene, fillFor, foreground, isBuilder, rationFor } from "./scene";
@@ -649,6 +649,63 @@ describe("talks with arbab", () => {
     expect(s.world.events[1]).toEqual({ kind: "brief", lane: "b" });
   });
 
+  /** Workers standing in line behind the audience spot. */
+  function behind(s: Scene): Actor[] {
+    return s.world.actors.filter(
+      (a) => a.lane !== null && a.y === PLACES.audience.y && a.x > PLACES.audience.x && (a.x - PLACES.audience.x) % 12 === 0,
+    );
+  }
+
+  it("lines up at most 6 behind the audience spot when 20 lanes start at once; the rest join in arrival order", () => {
+    const names = Array.from({ length: 20 }, (_, i) => `l${String(i).padStart(2, "0")}`);
+    const s = newScene();
+    s.apply(uiSnapshot());
+    s.apply(uiSnapshot({ lanes: names.map((n) => builder(n, { state: "running" })), now: at(1) }));
+    const atSpawn = (): string[] =>
+      s.world.actors.filter((a) => a.x === PLACES.spawn.x && a.y === PLACES.spawn.y).map((a) => a.id);
+    run(s, 1);
+    // The talker and six in line set off; the other thirteen wait at the village path.
+    expect(atSpawn()).toEqual(names.slice(7));
+    let most = 0;
+    until(s, () => kinds(s).length === 20, 120, () => {
+      const line = behind(s);
+      most = Math.max(most, line.length);
+      expect(line.length).toBeLessThanOrEqual(6);
+      for (const a of s.world.actors) expect(a.x).toBeLessThanOrEqual(WIDTH);
+    });
+    expect(most).toBeGreaterThanOrEqual(5);
+    expect(s.world.events.map((e) => e.lane)).toEqual(names);
+    expect(new Set(kinds(s))).toEqual(new Set(["brief"]));
+  });
+
+  it("keeps the others in their camp seats until a place in line frees up", () => {
+    const names = Array.from({ length: 10 }, (_, i) => `l${i}`);
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: names.map((n) => builder(n)) }));
+    s.apply(uiSnapshot({ lanes: names.map((n) => builder(n, { state: "running" })), now: at(1) }));
+    run(s, 3);
+    // Seven are on their way to the line; the last three still sit where they were.
+    for (const n of names.slice(0, 7)) expect(mustActor(s, n).pose).toBe("walk");
+    for (const [i, n] of names.slice(7).entries()) expect(mustActor(s, n)).toMatchObject({ ...campSeat(7 + i), pose: "sit" });
+    until(s, () => kinds(s).length === 1, 20);
+    run(s, 0.5);
+    expect(mustActor(s, "l7")).toMatchObject({ pose: "walk" });
+    expect(mustActor(s, "l8")).toMatchObject({ ...campSeat(8), pose: "sit" });
+  });
+
+  it("climbs down from its block before it queues to report", () => {
+    const s = newScene();
+    const lanes = ["a", "b", "c", "d", "e"].map((n) => builder(n, { state: "running", toolCalls: 3 }));
+    s.apply(uiSnapshot({ lanes }));
+    const { marks, sample } = tracer(s, "e");
+    s.apply(
+      uiSnapshot({ lanes: lanes.map((l) => (l.name === "e" ? { ...l, state: "finished" as const, endState: "success" as const } : l)), now: at(1) }),
+    );
+    until(s, () => kinds(s, "e").includes("report"), 30, sample);
+    expectInOrder(poses(marks), ["climb", "walk", "talk"]);
+    expect(marks.find((m) => m.pose === "walk")?.y).toBeCloseTo(GROUND_Y, 0);
+  });
+
   it("opens each bubble over 0.15 s with a fresh seed", () => {
     const s = newScene();
     s.apply(uiSnapshot());
@@ -868,9 +925,9 @@ describe("the capstone", () => {
     });
     s.apply(uiSnapshot({ integrations }));
     expect(s.world.far).toEqual([
-      { integration: "i4", x: 452, y: 128, height: 20 },
-      { integration: "i3", x: 418, y: 128, height: 17 },
-      { integration: "i2", x: 386, y: 128, height: 14 },
+      { integration: "i4", x: 152, y: 128, height: 20 },
+      { integration: "i3", x: 108, y: 128, height: 17 },
+      { integration: "i2", x: 64, y: 128, height: 14 },
     ]);
   });
 });

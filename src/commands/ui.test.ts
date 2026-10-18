@@ -109,7 +109,9 @@ describe("runUi", () => {
     p = makeProject();
     p.ctx.openUrl = () => false;
     const ui = await startUi([]);
-    expect(p.stderr()).toBe(`open ${ui.url} in a browser\n`);
+    expect(p.stderr()).toBe("open the URL above in a browser\n");
+    expect(p.stderr()).not.toContain(ui.token);
+    expect(p.stdout()).toContain(ui.url);
     ui.stop();
     expect(await ui.done).toBe(0);
   });

@@ -153,6 +153,24 @@ describe("compose", () => {
   });
 });
 
+describe("the palette", () => {
+  it("has no character that no sprite uses", () => {
+    const used = new Set<string>();
+    const add = (grid: readonly string[]): void => {
+      for (const ch of chars(grid)) used.add(ch);
+    };
+    for (const cast of WORKER_CASTS) for (const frames of Object.values(workerGrids(cast))) frames.forEach(add);
+    for (const frames of Object.values(arbabGrids())) frames.forEach(add);
+    for (const prop of Object.values(PROPS)) {
+      if (typeof prop[0] === "string") add(prop as readonly string[]);
+      else for (const grid of prop as readonly (readonly string[])[]) add(grid);
+    }
+    Object.values(ICONS).forEach(add);
+    add(MARKER);
+    expect(Object.keys(SPRITE_CHARS).filter((ch) => !used.has(ch))).toEqual([]);
+  });
+});
+
 describe("cast colors", () => {
   it("tells every cast apart by its headcloth, sash or cloak", () => {
     const signature = (cast: (typeof WORKER_CASTS)[number]): string => JSON.stringify(castColors(cast));

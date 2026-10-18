@@ -13,8 +13,13 @@ describe("src/stream index", () => {
       "findTranscript",
       "measuredEffort",
       "buildAttemptSummary",
+      "toolUses",
     ]) {
       expect(typeof (stream as Record<string, unknown>)[name], name).toBe("function");
     }
+  });
+
+  it("exports the report tool's name", () => {
+    expect(stream.REPORT_TOOL).toBe("StructuredOutput");
   });
 });

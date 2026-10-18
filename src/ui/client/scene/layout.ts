@@ -50,7 +50,8 @@ export function campSeat(i: number): { x: number; y: number } {
   return { x: PLACES.camp.x + col * CAMP.step + (row * CAMP.step) / 2, y: PLACES.camp.y + row * CAMP.rowStep };
 }
 
-const FAR_X = [452, 418, 386] as const;
+/** The left horizon, clear of the site and the well: the newest stands nearest the site. */
+const FAR_X = [152, 108, 64] as const;
 
 /** i = 0 is the newest landed integration. */
 export function farPyramidPlace(i: number, lanes: number): { x: number; y: number; height: number } {

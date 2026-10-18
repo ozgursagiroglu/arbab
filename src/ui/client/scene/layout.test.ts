@@ -104,18 +104,18 @@ describe("campSeat", () => {
 });
 
 describe("farPyramidPlace", () => {
-  it("stands newest first on the horizon", () => {
-    expect(farPyramidPlace(0, 5)).toEqual({ x: 452, y: HORIZON_Y, height: 11 });
-    expect(farPyramidPlace(1, 5).x).toBe(418);
-    expect(farPyramidPlace(2, 5).x).toBe(386);
+  it("stands on the left horizon, the newest nearest the site", () => {
+    expect(farPyramidPlace(0, 5)).toEqual({ x: 152, y: HORIZON_Y, height: 11 });
+    expect(farPyramidPlace(1, 5).x).toBe(108);
+    expect(farPyramidPlace(2, 5).x).toBe(64);
   });
 
   it("clamps the height and the index", () => {
     expect(farPyramidPlace(0, 0).height).toBe(8);
     expect(farPyramidPlace(0, 100).height).toBe(22);
     expect(farPyramidPlace(0, 10).height).toBe(14);
-    expect(farPyramidPlace(7, 1).x).toBe(386);
-    expect(farPyramidPlace(-1, 1).x).toBe(452);
+    expect(farPyramidPlace(7, 1).x).toBe(64);
+    expect(farPyramidPlace(-1, 1).x).toBe(152);
   });
 });
 

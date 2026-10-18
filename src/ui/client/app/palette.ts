@@ -63,8 +63,6 @@ export const SPRITE_CHARS: Readonly<Record<string, string>> = {
   h: HEADCLOTH.laborer,
   H: shade(HEADCLOTH.laborer, 0.72),
   s: CLOTH.shadow,
-  S: CLOTH.shadow,
-  i: OUTLINE,
   n: WOOD[0],
   N: WOOD[1],
   l: LIMESTONE.light,
@@ -76,24 +74,18 @@ export const SPRITE_CHARS: Readonly<Record<string, string>> = {
   Y: GOLD.mid,
   z: GOLD.shadow,
   B: NEMES_BLUE,
-  D: shade(NEMES_BLUE, 0.7),
   b: BREAD,
   j: JUG,
   J: shade(JUG, 0.75),
   a: WATER,
-  g: ORPHANED.light,
-  E: ORPHANED.dark,
   v: PALM.leaf,
   V: PALM.leafDark,
   r: PALM.trunk,
   c: TENT.cloth,
   C: TENT.shade,
   q: TENT.stripe,
-  u: SAND[1],
   U: SAND[3],
   f: BUBBLE.fill,
-  F: BUBBLE.glyph,
-  x: FALLEN.crack,
 };
 
 /** Hair for the casts without a headcloth: the crack's dark brown, a step lighter than the outline. */
@@ -106,7 +98,7 @@ export function castColors(cast: Cast): Readonly<Record<string, string>> {
       return {};
     case "scribe":
     case "skeptic":
-      return { h: HAIR, H: OUTLINE, s: HEADCLOTH[cast], S: shade(HEADCLOTH[cast], 0.72) };
+      return { h: HAIR, H: OUTLINE, s: HEADCLOTH[cast] };
     case "scout": {
       const cloak = HEADCLOTH.scout;
       return { h: cloak, H: shade(cloak, 0.72), t: cloak, T: shade(cloak, 0.72) };

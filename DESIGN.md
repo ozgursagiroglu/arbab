@@ -682,8 +682,9 @@ skill starts it as a background Bash call before a session's first launch.
   `X-Frame-Options: DENY`, `Cross-Origin-Resource-Policy: same-origin` and `Cross-Origin-Opener-Policy: same-origin`,
   and no CORS header.
 - `/events` is server-sent events: `retry: 2000`, a snapshot at once, then one whenever a tick (1 s) finds it changed
-  (ignoring `now`), and at least every 30 s. At most 16 clients (503). Snapshots are built only while a client
-  listens, once per tick for all of them; a build that throws is skipped, and three in a row send a `problem` event.
+  (ignoring `now`), and at least every 30 s. At most 16 clients (503); a client more than 4 MiB behind is dropped.
+  Snapshots are built only while a client listens, once per tick for all of them; a build that throws is skipped,
+  and three in a row send a `problem` event.
 - The **window**: a lane is in the snapshot when it is not finished, its state changed within `--hours`, or it was
   merged into an integration that is not landed or landed within `--hours`. At most 300 lanes, the newest by
   `firstSeen`; the rest, and lanes whose records do not parse, are counted in `hiddenLanes`.
@@ -714,7 +715,8 @@ A worker's day:
 1. It comes in from the village path at the left edge. `queued` and `held` sit in the camp (an hourglass above a lane
    held for the quota, dots above one held for a slot).
 2. `preparing` or `running`: it walks to arbab and they talk (alternating bubbles of glyph gibberish), then a builder
-   carries a stone to its block, climbs to it and works; the others go to their place.
+   carries a stone to its block, climbs to it and works; the others go to their place. One worker talks at a time;
+   at most six wait in line behind it, and the rest wait where they are until a place frees up.
 3. `running`: one stroke per new tool call (at most six queued), a stone placed per stroke, with dust. A building
    block's fill is `min(0.95, 1 − e^(−calls/40))`.
 4. `waiting-reset`: it sleeps where it works (zzz).
@@ -738,7 +740,7 @@ Pyramids:
 - The **capstone** belongs to the newest integration that is not landed and merged a foreground lane: it waits on a
   sledge at the right foot with a green or red flag once `verify` ran on its head, and gleams when readiness is ready.
   When the integration lands, it is hoisted to the apex.
-- Landed integrations stand as up to three small finished pyramids on the horizon, newest first.
+- Landed integrations stand as up to three small finished pyramids on the left horizon, the newest nearest the site.
 
 The sky is day, dusk while launches are held, and night while the account is rejected; the sun crosses its arc over
 the five-hour window. The treasury's coin pile is `min(48, round(6·√(total cost of the lanes in view)))`.

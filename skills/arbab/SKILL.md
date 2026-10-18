@@ -175,7 +175,12 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 2. Before the **first wave of a project** (and after a CLI upgrade or a fence change), run
    `arbab preflight lanes/<name>.json`. A cheap probe attempt checks the toolchain, the fence, the isolation
    flags and the pinned version, and makes one call on the lane's own model. Do not launch a wave until it passes.
-3. `arbab launch lanes/<name>.json` for each lane. It returns as soon as the lane's shepherd has started and prints
+3. Once per session, before the first launch, start `arbab ui` as a **background** Bash call
+   (`run_in_background: true`).
+   - It serves a read-only scene of the lanes on 127.0.0.1: each lane a worker building a pyramid. It opens the scene
+     in the browser and prints its URL, which carries this session's token. Give the human that URL.
+   - The scene is for the human. You still react to `wait` and read `summary.json` and `report.json`.
+4. `arbab launch lanes/<name>.json` for each lane. It returns as soon as the lane's shepherd has started and prints
    the lane, its run dir and the shepherd pid. A lane without a free slot, or launched above the quota threshold,
    waits in state `held`. A lane that is already running (or being launched) is refused.
 

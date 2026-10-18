@@ -68,6 +68,14 @@ every measurement and confound. arbab packages that method so it is repeatable a
 - **Landing is yours.** `arbab land` merges only a tree that was verified, into a clean base. It never pushes; push
   and deploy stay human actions.
 
+**Watch it build.** `arbab ui` serves a live, read-only scene of your lanes on 127.0.0.1. Every lane is a worker
+building a pyramid, and arbab is the foreman at the front: workers walk up to talk when they take a brief, and again
+when they deliver the report. Each tool call sets a stone. A finished lane's block is set, or its stones fall. A
+landing hoists the capstone, and landed integrations stand on the horizon. Held lanes wait in the camp, the sky dusks
+when launches are held for the quota, and the coin pile grows with the spend.
+
+![arbab ui: workers building the pyramid while arbab talks to a worker at the front](docs/ui/day.png)
+
 `arbab status` after part of arbab's own M3 build. Each role runs at its own effort; costs are Claude Code's
 API-equivalent estimates, and the run was on a subscription.
 
@@ -129,7 +137,8 @@ dependencies. To update: `claude plugin marketplace update arbab`.
    - splits the work into lanes and writes their briefs;
    - lints them and launches them;
    - reacts as each one finishes.
-4. **Watch:** `arbab status` shows each lane's state, turns, tool calls, refusals, cost and the quota.
+4. **Watch:** the skill starts `arbab ui` and gives you its URL: the lanes as workers building a pyramid.
+   `arbab status` shows the same as a table: each lane's state, turns, tool calls, refusals, cost and the quota.
 5. **Land:** the orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
    lands.
 
@@ -160,6 +169,7 @@ Two steps are always yours:
 | `review <name> [--lenses a,b]` | One reviewer per lens, then skeptics for MEDIUM+ findings. |
 | `readiness <name> [--tier low\|medium\|high]` | Writes the readiness report: verified, skipped, risks. |
 | `land <name>` | Merges a ready integration into the base. Never pushes. |
+| `ui [--port N] [--hours N] [--no-open]` | Serves the live pyramid scene on 127.0.0.1, read-only, until stopped. |
 
 The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`. From a clone, run
 `node dist/arbab.mjs <command>` after `pnpm build`.

@@ -250,7 +250,7 @@ describe("startPage", () => {
     expect(connection.attributes.get("data-state")).toBe("closed");
     expect(notice.hidden).toBe(false);
     expect(notice.textContent).toBe(CLOSED_MESSAGE);
-    expect(CLOSED_MESSAGE).toBe("This session ended or restarted: open the URL `arbab ui` printed.");
+    expect(CLOSED_MESSAGE).toBe("This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.");
   });
 
   it("draws every animation frame and asks for the next", () => {

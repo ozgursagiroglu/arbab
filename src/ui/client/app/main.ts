@@ -34,8 +34,10 @@ import { PAGE_IDS } from "./page";
 import { renderWorld } from "./render";
 import { createSound } from "./sound";
 
-export const NO_TOKEN_MESSAGE = "Open the URL `arbab ui` printed: it carries this session's token";
-export const CLOSED_MESSAGE = "This session ended or restarted: open the URL `arbab ui` printed.";
+// arbab ui prints the token only when it could not open a browser (DESIGN.md §19), so both point at the tab it opened.
+export const NO_TOKEN_MESSAGE =
+  "This page needs its session token. Use the tab `arbab ui` opened, or run `arbab ui --no-open` to print a URL that carries it.";
+export const CLOSED_MESSAGE = "This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.";
 /** EventSource.CLOSED: the tsconfig has no DOM lib. */
 const EVENT_SOURCE_CLOSED = 2;
 

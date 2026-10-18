@@ -70,7 +70,7 @@ describe("the page script", () => {
     const script: unknown = JSON.parse(execFileSync(process.execPath, [outfile], { cwd: tmp, encoding: "utf8" }));
     expect(typeof script).toBe("string");
     // A marker from main.ts, and the IIFE wrapper.
-    expect(script).toContain("it carries this session's token");
+    expect(script).toContain("This page needs its session token");
     expect(String(script)).toMatch(/\}\)\(\);\s*$/);
     for (const call of FORBIDDEN) expect(String(script), call).not.toContain(call);
   });

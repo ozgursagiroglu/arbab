@@ -78,7 +78,7 @@ export interface UiLane {
   effort: string | null;
   /** The latest attempt's report status (implementer and verifier); null when it has none. */
   reportStatus: "done" | "partial" | "blocked" | null;
-  /** The newest reviewer report's finding count; null for other roles or without a report. */
+  /** The latest attempt's reviewer report finding count; null for other roles or when it has none. */
   findings: number | null;
 }
 

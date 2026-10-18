@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Canvas2D, ElementLike, EventLike, EventSourceLike, MessageEventLike, PageEnv, StyleLike } from "./browser";
 import { lane, snapshot } from "./fixtures";
-import { NO_TOKEN_MESSAGE, startPage } from "./main";
+import { CLOSED_MESSAGE, NO_TOKEN_MESSAGE, startPage } from "./main";
 import { PAGE_IDS } from "./page";
 
 type Listener = (event: EventLike) => void;
@@ -83,6 +83,7 @@ class FakeCanvas extends FakeElement {
 class FakeEventSource implements EventSourceLike {
   static last: FakeEventSource | null = null;
   closed = false;
+  readyState = 0;
   private readonly listeners = new Map<string, ((event: MessageEventLike) => void)[]>();
   constructor(readonly url: string) {
     FakeEventSource.last = this;
@@ -223,6 +224,33 @@ describe("startPage", () => {
     expect(p.el(PAGE_IDS.connection).textContent).toBe("reconnecting");
     es?.emit("snapshot", JSON.stringify(snapshot()));
     expect(p.el(PAGE_IDS.banner).hidden).toBe(true);
+  });
+
+  it("says reconnecting while the stream retries, and that the session ended once it is closed", () => {
+    const p = page();
+    startPage(p.env);
+    const es = FakeEventSource.last;
+    if (!es) throw new Error("no event source");
+    const notice = p.el(PAGE_IDS.notice);
+    const connection = p.el(PAGE_IDS.connection);
+    notice.hidden = true;
+    es.readyState = 1;
+    es.emit("open");
+    expect(connection.textContent).toBe("live");
+    // CONNECTING: EventSource retries by itself.
+    es.readyState = 0;
+    es.emit("error");
+    expect(connection.textContent).toBe("reconnecting");
+    expect(connection.attributes.get("data-state")).toBe("lost");
+    expect(notice.hidden).toBe(true);
+    // CLOSED: it gave up, as when the server refused the token of a session that restarted.
+    es.readyState = 2;
+    es.emit("error");
+    expect(connection.textContent).toBe("disconnected");
+    expect(connection.attributes.get("data-state")).toBe("closed");
+    expect(notice.hidden).toBe(false);
+    expect(notice.textContent).toBe(CLOSED_MESSAGE);
+    expect(CLOSED_MESSAGE).toBe("This session ended or restarted: open the URL `arbab ui` printed.");
   });
 
   it("draws every animation frame and asks for the next", () => {

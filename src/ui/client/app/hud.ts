@@ -1,8 +1,8 @@
 // What the DOM around the canvas says (DESIGN.md §19), as pure functions of a snapshot: main.ts only puts these
 // strings into elements with textContent.
-import { formatElapsed } from "../../../registry/status";
-import type { QuotaWindow } from "../../../types";
-import type { UiLane, UiQuota, UiSnapshot } from "../../protocol";
+// registry/status, never the registry index: the index pulls node:fs into the bundle.
+import { formatElapsed, formatWindows } from "../../../registry/status";
+import type { UiLane, UiSnapshot } from "../../protocol";
 import { UI_PROTOCOL } from "../../protocol";
 import { HEIGHT, WIDTH } from "../model";
 
@@ -132,18 +132,6 @@ export function totalCost(lanes: readonly UiLane[]): number {
   return lanes.reduce((sum, lane) => sum + (typeof lane.costUsd === "number" && Number.isFinite(lane.costUsd) ? lane.costUsd : 0), 0);
 }
 
-/** `5h 62% · 7d 40%`; windows that have already reset say nothing about now and are left out. */
-export function formatQuota(quota: Pick<UiQuota, "fiveHour" | "sevenDay">, nowSec: number): string {
-  const parts: string[] = [];
-  for (const [label, window] of [
-    ["5h", quota.fiveHour],
-    ["7d", quota.sevenDay],
-  ] as const satisfies readonly (readonly [string, QuotaWindow | null])[]) {
-    if (window && window.resetsAt > nowSec) parts.push(`${label} ${Math.round(window.utilization * 100)}%`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : UNKNOWN;
-}
-
 export interface Header {
   title: string;
   counts: string;
@@ -160,7 +148,7 @@ export function header(snapshot: UiSnapshot): Header {
     title: `${snapshot.project} · ${snapshot.version}`,
     counts: formatCounts(laneCounts(snapshot.lanes)),
     cost: formatUsd(totalCost(snapshot.lanes)),
-    quota: formatQuota(snapshot.quota, nowSec),
+    quota: formatWindows(snapshot.quota.fiveHour, snapshot.quota.sevenDay, nowSec),
     held: snapshot.quota.hold.hold === true,
     hidden: snapshot.hiddenLanes > 0 ? `${snapshot.hiddenLanes} older lanes are not shown.` : "",
   };

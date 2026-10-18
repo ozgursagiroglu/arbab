@@ -34,7 +34,7 @@ export const PLACES = {
 } as const;
 
 /** Camp seats: `columns` per row, `step` px apart; the second row sits `rowStep` px lower. */
-export const CAMP = { columns: 5, rows: 2, step: 12, rowStep: 9 } as const;
+export const CAMP = { columns: 5, rows: 2, step: 12, rowStep: 16 } as const;
 
 /** The foreground pyramid's box: centered on centerX, its bottom course standing on baseY. */
 export const PYRAMID_AREA = { centerX: 268, baseY: 208, maxWidth: 228, maxHeight: 104 } as const;
@@ -46,10 +46,12 @@ export const ARBAB_BOX = { w: 16, h: 26 } as const;
 /** arbab, or what a lane's worker is (DESIGN.md §19, the cast). */
 export type Cast = "arbab" | "laborer" | "mason" | "scribe" | "skeptic" | "surveyor" | "waterboy" | "scout";
 
+/** climb: on a ladder, hands free. climb-stone: a builder going up to its block, its stone on its back. */
 export type Pose =
   | "idle"
   | "walk"
   | "climb"
+  | "climb-stone"
   | "sit"
   | "work"
   | "sleep"

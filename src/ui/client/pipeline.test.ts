@@ -154,7 +154,7 @@ function playDay(): Map<string, Moment> {
   // After the brief it carries a stone up its ladder to course 2.
   stepUntil("climb", () => {
     const a = actor("obelisk");
-    return a !== undefined && a.pose === "climb" && a.y <= GROUND_Y - 20;
+    return a !== undefined && a.pose === "climb-stone" && a.y <= GROUND_Y - 20;
   }, 30);
   capture("climb");
 
@@ -174,6 +174,12 @@ function playDay(): Map<string, Moment> {
   // A success: the worker reports, then takes bread and beer at the table.
   change("court", { state: "finished", endState: "success", reportStatus: "done", elapsedMs: 900_000 });
   scene.apply(snapshot());
+  // It climbs down from course 1 empty-handed: the stone stays in the wall.
+  stepUntil("climb-down", () => {
+    const a = actor("court");
+    return a !== undefined && a.pose === "climb" && a.y >= spotOf("court").y + 4;
+  }, 10);
+  capture("climb-down");
   stepUntil("ration", () => {
     const a = actor("court");
     return a !== undefined && a.pose === "idle" && a.x === PLACES.rations.x && a.y === PLACES.rations.y;
@@ -226,7 +232,7 @@ describe("the live scene", () => {
 
     it(`${name}: every worker not climbing stands on the ground or a course`, () => {
       for (const a of moment(name).actors) {
-        if (a.pose === "climb" || a.alpha === 0) continue;
+        if (a.pose === "climb" || a.pose === "climb-stone" || a.alpha === 0) continue;
         expect(standsOnSomething(a), `${a.id} at ${a.x},${a.y} (${a.pose})`).toBe(true);
       }
     });
@@ -251,6 +257,7 @@ describe("the live scene", () => {
   it("climb: the ladder stands under the slot and reaches from the ground line to the climber", () => {
     const m = moment("climb");
     const a = actorIn(m, "obelisk");
+    expect(a.pose).toBe("climb-stone");
     expect(a.x).toBe(spotOf("obelisk").x);
     expect(a.y).toBeGreaterThanOrEqual(spotOf("obelisk").y);
     expect(a.y).toBeLessThan(GROUND_Y);
@@ -258,6 +265,14 @@ describe("the live scene", () => {
     expect((PYRAMID_AREA.baseY - top) % LAYOUT.blockH).toBe(0);
     expect(top).toBeLessThan(a.y);
     expect(top).toBeGreaterThanOrEqual(spotOf("obelisk").y - LAYOUT.blockH);
+  });
+
+  it("climb-down: the finished builder climbs down its ladder empty-handed", () => {
+    const a = actorIn(moment("climb-down"), "court");
+    expect(a.pose).toBe("climb");
+    expect(a.x).toBe(spotOf("court").x);
+    expect(a.y).toBeGreaterThan(spotOf("court").y);
+    expect(a.y).toBeLessThan(GROUND_Y);
   });
 
   it("strike: the builder on course 1 is past the middle of a stroke, its stone just placed", () => {

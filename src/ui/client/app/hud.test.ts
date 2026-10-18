@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { UiQuota, UiSnapshot } from "../../protocol";
 import { integration, lane, snapshot } from "./fixtures";
 import {
   announcements,
   computeScale,
   crew,
   formatCounts,
-  formatQuota,
   formatState,
   formatUsd,
   header,
@@ -124,10 +124,11 @@ describe("header", () => {
     });
   });
 
-  it("leaves out windows that have reset", () => {
-    const nowSec = Date.parse("2026-10-19T10:05:00Z") / 1000;
-    expect(formatQuota({ fiveHour: { utilization: 0.9, resetsAt: nowSec - 1 }, sevenDay: null }, nowSec)).toBe("—");
-    expect(formatQuota({ fiveHour: null, sevenDay: { utilization: 0.123, resetsAt: nowSec + 1 } }, nowSec)).toBe("7d 12%");
+  it("leaves out quota windows that have reset", () => {
+    const nowSec = Date.parse(snapshot().now) / 1000;
+    const quota = (fiveHour: UiQuota["fiveHour"], sevenDay: UiQuota["sevenDay"]): UiSnapshot => snapshot({ quota: { ...snapshot().quota, fiveHour, sevenDay } });
+    expect(header(quota({ utilization: 0.9, resetsAt: nowSec - 1 }, null)).quota).toBe("—");
+    expect(header(quota(null, { utilization: 0.123, resetsAt: nowSec + 1 })).quota).toBe("7d 12%");
   });
 
   it("formats money", () => {

@@ -1,9 +1,12 @@
-import type { AttemptSummary, LaneStateRecord, QuotaWindow, StatusRow } from "../types";
+import type { AttemptSummary, LaneState, LaneStateRecord, QuotaWindow, StatusRow } from "../types";
 
 const UNKNOWN = "—";
 
 /** States in which the clock is still running for the current attempt. */
-const LIVE = new Set(["queued", "held", "preparing", "running", "waiting-reset"]);
+const LIVE: ReadonlySet<LaneState> = new Set<LaneState>(["queued", "held", "preparing", "running", "waiting-reset"]);
+
+/** Whether the clock still runs for the current attempt in `state`. */
+export const isLive = (state: LaneState): boolean => LIVE.has(state);
 
 /**
  * One status row. Pass the record with its effective state (see effectiveState) and the summary of the record's
@@ -30,7 +33,7 @@ export function statusRow(record: LaneStateRecord, summary: AttemptSummary | nul
 }
 
 function elapsed(record: LaneStateRecord, summary: AttemptSummary | null, nowMs: number): number | null {
-  if (!LIVE.has(record.state)) return summary?.wallMs ?? null;
+  if (!isLive(record.state)) return summary?.wallMs ?? null;
   const since = Date.parse(record.since);
   return Number.isNaN(since) ? null : Math.max(0, nowMs - since);
 }
@@ -69,7 +72,7 @@ function formatCost(cost: number | null, delta: number | null): string {
 }
 
 /** `5h 62% · 7d 60%`; windows that have already reset say nothing about now and are left out. */
-function formatWindows(fiveHour: QuotaWindow | null, sevenDay: QuotaWindow | null, nowSec: number): string {
+export function formatWindows(fiveHour: QuotaWindow | null, sevenDay: QuotaWindow | null, nowSec: number): string {
   const parts: string[] = [];
   for (const [label, window] of [
     ["5h", fiveHour],

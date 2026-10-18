@@ -76,7 +76,7 @@ export interface UiLane {
   model: string | null;
   /** The effort most transcript entries carried; null while unknown. */
   effort: string | null;
-  /** The newest valid report's `status` (implementer and verifier reports); null when there is none. */
+  /** The latest attempt's report status (implementer and verifier); null when it has none. */
   reportStatus: "done" | "partial" | "blocked" | null;
   /** The newest reviewer report's finding count; null for other roles or without a report. */
   findings: number | null;

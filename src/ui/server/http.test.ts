@@ -380,7 +380,7 @@ describe("startUiServer: the event stream", () => {
     const more = s.calls;
     await until(() => s.calls >= more + 5);
     expect(sse.events).toHaveLength(2);
-    // Recovery: the next build counts as it would have; the page sees the snapshot when it changed.
+    // Recovery: the first build after the problem goes out.
     s.fail = null;
     s.hidden = 3;
     await until(() => sse.events.length === 3);
@@ -389,6 +389,72 @@ describe("startUiServer: the event stream", () => {
     await until(() => sse.events.length === 4);
     expect(sse.events[3]).toEqual({ event: "problem", data: JSON.stringify({ message: "again" }) });
     sse.close();
+  });
+
+  it("sends the first build after a problem to every client at once, though it did not change", async () => {
+    const { s, build } = source();
+    const { port } = await start({ snapshot: build, heartbeatMs: 60_000 });
+    const a = await openSse(port);
+    const b = await openSse(port);
+    await until(() => a.events.length === 1 && b.events.length === 1);
+    s.fail = "down";
+    await until(() => a.events.length === 2 && b.events.length === 2);
+    expect(a.events[1]?.event).toBe("problem");
+    expect(b.events[1]?.event).toBe("problem");
+    s.fail = null;
+    await until(() => a.events.length === 3 && b.events.length === 3);
+    for (const sse of [a, b]) {
+      expect(sse.events[2]?.event).toBe("snapshot");
+      expect((JSON.parse(sse.events[2]?.data ?? "") as UiSnapshot).hiddenLanes).toBe(0);
+    }
+    expect(a.events[2]).toEqual(b.events[2]);
+    // Back to normal: unchanged snapshots are not sent again.
+    const after = s.calls;
+    await until(() => s.calls >= after + 5);
+    expect(a.events).toHaveLength(3);
+    a.close();
+    b.close();
+  });
+
+  it("gives a client that connects while a problem stands the latest snapshot, then the problem", async () => {
+    const { s, build } = source();
+    const { port } = await start({ snapshot: build, heartbeatMs: 60_000 });
+    const a = await openSse(port);
+    await until(() => a.events.length === 1);
+    s.fail = "registry unreadable";
+    await until(() => a.events.length === 2);
+    const b = await openSse(port);
+    await until(() => b.events.length === 2);
+    const problem = { event: "problem", data: JSON.stringify({ message: "registry unreadable" }) };
+    expect(b.raw().startsWith(`retry: 2000\n\nevent: snapshot\ndata: ${a.events[0]?.data}\n\nevent: problem\n`)).toBe(true);
+    expect(b.events).toEqual([a.events[0], problem]);
+    // Only once: the ticks that keep failing send nothing more.
+    const more = s.calls;
+    await until(() => s.calls >= more + 4);
+    expect(b.events).toHaveLength(2);
+    expect(a.events).toHaveLength(2);
+    a.close();
+    b.close();
+  });
+
+  it("gives a client that connects while a problem stands and nothing ever built the problem right after retry", async () => {
+    const { s, build } = source();
+    s.fail = "broken";
+    const { port } = await start({ snapshot: build });
+    const a = await openSse(port);
+    await until(() => a.events.length === 1);
+    const b = await openSse(port);
+    await until(() => b.events.length === 1);
+    expect(b.raw().startsWith("retry: 2000\n\nevent: problem\n")).toBe(true);
+    expect(b.events).toEqual([{ event: "problem", data: JSON.stringify({ message: "broken" }) }]);
+    // The build recovers, by a tick or by the next client's connect: everyone gets the snapshot, no one the problem.
+    s.fail = null;
+    const c = await openSse(port);
+    await until(() => a.events.length === 2 && b.events.length === 2 && c.events.length === 1);
+    for (const sse of [a, b, c]) expect(sse.events.at(-1)?.event).toBe("snapshot");
+    a.close();
+    b.close();
+    c.close();
   });
 
   it("answers 503 to one client more than maxClients, and takes a new one after a client leaves", async () => {

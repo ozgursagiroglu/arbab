@@ -95,7 +95,14 @@ describe("castOf and isBuilder", () => {
     [{ role: "probe", kind: "preflight" }, "waterboy", false],
     [{ role: "probe", kind: "lane" }, "waterboy", false],
     [{ role: "researcher", kind: "lane" }, "scout", false],
-    [{ role: "implementer", kind: "verify" }, "laborer", false],
+    // By kind before role: what `arbab preflight` writes is a probe with the probed lane's role.
+    [{ role: "implementer", kind: "preflight" }, "waterboy", false],
+    [{ role: "verifier", kind: "preflight" }, "waterboy", false],
+    [{ role: "researcher", kind: "preflight" }, "waterboy", false],
+    [{ role: "implementer", kind: "verify" }, "surveyor", false],
+    [{ role: "verifier", kind: "verify" }, "surveyor", false],
+    [{ role: "implementer", kind: "review" }, "scribe", false],
+    [{ role: "probe", kind: "skeptic" }, "skeptic", false],
   ];
 
   it.each(cases)("%o is a %s (builder: %s)", (over, cast, build) => {
@@ -355,7 +362,7 @@ describe("a builder's day", () => {
       "walk",
       "talk",
       "carry-stone",
-      "climb",
+      "climb-stone",
       "work",
       "climb",
       "walk",
@@ -365,10 +372,16 @@ describe("a builder's day", () => {
       "carry-ration",
     ]);
     const at0 = (pose: Pose, n = 0): Mark => marks.filter((m) => m.pose === pose)[n]!;
-    // The climb starts on the ground line below the block, and the work on the block.
-    expect(at0("climb")).toMatchObject({ x: spot.x });
-    expect(at0("climb").y).toBeCloseTo(GROUND_Y, 0);
+    // The climb up, with the stone, starts on the ground line below the block, and the work on the block.
+    expect(at0("climb-stone")).toMatchObject({ x: spot.x });
+    expect(at0("climb-stone").y).toBeCloseTo(GROUND_Y, 0);
     expect(at0("work")).toMatchObject(spot);
+    // The climb down to report is empty-handed: it starts on the block, after the work.
+    const up = marks.findIndex((m) => m.pose === "climb-stone");
+    const down = marks.findIndex((m) => m.pose === "climb");
+    expect(down).toBeGreaterThan(up);
+    expect(marks.slice(down).some((m) => m.pose === "climb-stone")).toBe(false);
+    expect(at0("climb").x).toBe(spot.x);
     // It pauses at the table, then carries its ration off.
     const carry = marks.findIndex((m) => m.pose === "carry-ration");
     expect(marks[carry - 1]).toMatchObject({ pose: "idle", ...PLACES.rations });
@@ -703,6 +716,7 @@ describe("talks with arbab", () => {
     );
     until(s, () => kinds(s, "e").includes("report"), 30, sample);
     expectInOrder(poses(marks), ["climb", "walk", "talk"]);
+    expect(poses(marks)).not.toContain("climb-stone");
     expect(marks.find((m) => m.pose === "walk")?.y).toBeCloseTo(GROUND_Y, 0);
   });
 
@@ -761,10 +775,18 @@ describe("the other workers", () => {
       if (a.pose === "work" && last !== "work") writes.push({ x: a.x, y: a.y, t });
       last = a.pose;
     };
-    sample();
-    run(s, 40, sample);
+    const climbs = new Set<Pose>();
+    const each = (): void => {
+      sample();
+      const pose = mustActor(s, "scribe").pose;
+      if (pose === "climb" || pose === "climb-stone") climbs.add(pose);
+    };
+    each();
+    run(s, 40, each);
     expect(writes.length).toBeGreaterThanOrEqual(4);
     for (const w of writes) expect(low).toContainEqual({ x: w.x, y: w.y });
+    // Up and down the courses empty-handed: only a builder carries a stone up.
+    expect([...climbs]).toEqual(["climb"]);
   });
 
   it("a skeptic speaks up for 1.2 s now and then while writing", () => {

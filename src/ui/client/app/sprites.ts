@@ -28,6 +28,7 @@ export const POSES: readonly Pose[] = [
   "idle",
   "walk",
   "climb",
+  "climb-stone",
   "sit",
   "work",
   "sleep",
@@ -366,15 +367,18 @@ export function workerGrids(cast: Exclude<Cast, "arbab">): Record<string, string
   const idle = [withItem(body(HEAD, TORSO.idle, LEGS.stand), item), withItem(body(HEAD, TORSO.idle, LEGS.stand, 1), item)];
   const walk = walkCycle((i) => withItem(body(HEAD, WALK_TORSO[i] ?? TORSO.idle, WALK_LEGS[i] ?? LEGS.pass, WALK_BOB[i]), item));
 
-  const climbBody = (arms: Grid, legs: Grid): string[] =>
+  const climbBody = (arms: Grid, legs: Grid, stone: boolean): string[] =>
     compose(ACTOR_BOX.w, ACTOR_BOX.h, [
       { grid: legs, dy: 15 },
       { grid: KILT, dy: 12 },
       { grid: arms, dy: 4 },
       { grid: HEAD_UP },
-      { grid: STONE, dx: 0, dy: 6 },
+      ...(stone ? [{ grid: STONE, dx: 0, dy: 6 }] : []),
     ]);
-  const climb = [climbBody(ARMS_UP.climbA, LEGS.climbA), climbBody(ARMS_UP.climbB, LEGS.climbB)];
+  const climbing = (stone: boolean): string[][] => [
+    climbBody(ARMS_UP.climbA, LEGS.climbA, stone),
+    climbBody(ARMS_UP.climbB, LEGS.climbB, stone),
+  ];
 
   const sit = [
     compose(ACTOR_BOX.w, ACTOR_BOX.h, [
@@ -429,7 +433,8 @@ export function workerGrids(cast: Exclude<Cast, "arbab">): Record<string, string
   const grids: Record<string, string[][]> = {
     idle,
     walk,
-    climb,
+    climb: climbing(false),
+    "climb-stone": climbing(true),
     sit,
     work,
     sleep: [[...SLEEP]],

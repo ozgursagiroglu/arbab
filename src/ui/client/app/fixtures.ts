@@ -117,7 +117,7 @@ export function dayWorld(): World {
       actor({ id: "builder-a", cast: "laborer", ...workSpot(s(3)), pose: "work", stroke: 0.7 }),
       actor({ id: "builder-b", cast: "mason", ...workSpot(s(5)), facing: -1, pose: "work", stroke: 0.2 }),
       actor({ id: "builder-c", cast: "laborer", ...workSpot(s(6)), facing: -1, pose: "work", stroke: 0.6, highlight: true, poseTime: 0.1 }),
-      actor({ id: "climber", cast: "mason", x: workSpot(s(7)).x, y: workSpot(s(7)).y + 8, pose: "climb", poseTime: 0.1 }),
+      actor({ id: "climber", cast: "mason", x: workSpot(s(7)).x, y: workSpot(s(7)).y + 8, pose: "climb-stone", poseTime: 0.1 }),
       actor({ id: "held-quota", cast: "laborer", ...campSeat(0), pose: "sit", icon: "hourglass" }),
       actor({ id: "held-slot", cast: "mason", ...campSeat(1), pose: "sit", icon: "dots" }),
       actor({ id: "scribe", cast: "scribe", ...workSpot(s(4)), pose: "work", stroke: 0.7 }),

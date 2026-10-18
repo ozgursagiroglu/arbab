@@ -28,7 +28,12 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
-/** Starts runUi with a trapSignals that hands the test the handler, and waits for the printed URL. */
+const URL_WITH_TOKEN = /http:\/\/127\.0\.0\.1:(\d+)\/#token=([0-9a-f]+)/;
+
+/**
+ * Starts runUi with a trapSignals that hands the test the handler, and waits for the printed lines. The URL with its
+ * token comes from stdout, or from the opener when the browser opened (stdout then has none).
+ */
 async function startUi(argv: string[]): Promise<Running> {
   let handler: (() => void) | null = null;
   let untrapped = false;
@@ -41,9 +46,9 @@ async function startUi(argv: string[]): Promise<Running> {
   const done = runUi(argv, p.ctx);
   let failed: unknown = null;
   done.catch((err: unknown) => (failed = err));
-  await until(() => failed !== null || /http:\/\/127\.0\.0\.1:\d+\/#token=[0-9a-f]+/.test(p.stdout()));
+  await until(() => failed !== null || /Ctrl-C stops it\n|"port"/.test(p.stdout()));
   if (failed !== null) throw failed;
-  const match = /http:\/\/127\.0\.0\.1:(\d+)\/#token=([0-9a-f]+)/.exec(p.stdout());
+  const match = URL_WITH_TOKEN.exec(p.stdout()) ?? URL_WITH_TOKEN.exec(p.opened.at(-1) ?? "");
   return {
     url: match?.[0] ?? "",
     port: Number(match?.[1]),
@@ -78,12 +83,13 @@ function freePort(): Promise<number> {
 }
 
 describe("runUi", () => {
-  it("prints the project and the URL, opens it, serves the page and the snapshot, and stops on the signal", async () => {
+  it("opens the URL, prints the project and the URL without the token, serves the page and the snapshot, and stops on the signal", async () => {
     p = makeProject();
     const ui = await startUi([]);
     expect(ui.token).toMatch(/^[0-9a-f]{32}$/);
-    expect(p.stdout()).toBe(`arbab ui: repo at ${ui.url}\nread-only; Ctrl-C stops it\n`);
     expect(p.opened).toEqual([ui.url]);
+    expect(p.stdout()).toBe(`arbab ui: repo at http://127.0.0.1:${ui.port}/ (opened in your browser)\nread-only; Ctrl-C stops it\n`);
+    expect(p.stdout()).not.toContain(ui.token);
     expect(p.stderr()).toBe("");
     expect((await fetchText(ui.port, "/")).status).toBe(200);
     const snap = await fetchText(ui.port, `/snapshot.json?token=${ui.token}`);
@@ -96,24 +102,57 @@ describe("runUi", () => {
     await expect(fetchText(ui.port, "/")).rejects.toThrow();
   });
 
-  it("prints {url, port} with --json and does not open the browser with --no-open", async () => {
+  it("prints the URL with the token and opens nothing with --no-open", async () => {
     p = makeProject();
-    const ui = await startUi(["--json", "--no-open"]);
-    expect(JSON.parse(p.stdout())).toEqual({ url: ui.url, port: ui.port });
+    const ui = await startUi(["--no-open"]);
+    expect(p.stdout()).toBe(`arbab ui: repo at ${ui.url}\nread-only; Ctrl-C stops it\n`);
+    expect(ui.url).toContain(`#token=${ui.token}`);
     expect(p.opened).toEqual([]);
+    expect(p.stderr()).toBe("");
     ui.stop();
     expect(await ui.done).toBe(0);
   });
 
-  it("asks for the URL to be opened by hand when there is no opener", async () => {
+  it("prints {url, port} with the token under --json, whether it opened the browser or not", async () => {
     p = makeProject();
-    p.ctx.openUrl = () => false;
+    const quiet = await startUi(["--json", "--no-open"]);
+    expect(JSON.parse(p.stdout())).toEqual({ url: quiet.url, port: quiet.port });
+    expect(quiet.url).toContain(`#token=${quiet.token}`);
+    expect(p.opened).toEqual([]);
+    quiet.stop();
+    expect(await quiet.done).toBe(0);
+
+    p.out.length = 0;
+    const opened = await startUi(["--json"]);
+    expect(JSON.parse(p.stdout())).toEqual({ url: opened.url, port: opened.port });
+    expect(p.opened).toEqual([opened.url]);
+    expect(p.stderr()).toBe("");
+    opened.stop();
+    expect(await opened.done).toBe(0);
+  });
+
+  it("prints the URL with the token and asks for it to be opened by hand when the opener fails", async () => {
+    p = makeProject();
+    const tried: string[] = [];
+    p.ctx.openUrl = (url) => {
+      tried.push(url);
+      return false;
+    };
     const ui = await startUi([]);
+    expect(tried).toEqual([ui.url]);
+    expect(p.stdout()).toBe(`arbab ui: repo at ${ui.url}\nread-only; Ctrl-C stops it\n`);
+    expect(ui.url).toContain(`#token=${ui.token}`);
     expect(p.stderr()).toBe("open the URL above in a browser\n");
-    expect(p.stderr()).not.toContain(ui.token);
-    expect(p.stdout()).toContain(ui.url);
     ui.stop();
     expect(await ui.done).toBe(0);
+
+    p.out.length = 0;
+    p.err.length = 0;
+    const json = await startUi(["--json"]);
+    expect(JSON.parse(p.stdout())).toEqual({ url: json.url, port: json.port });
+    expect(p.stderr()).toBe("open the URL above in a browser\n");
+    json.stop();
+    expect(await json.done).toBe(0);
   });
 
   it("listens on the --port it is given", async () => {

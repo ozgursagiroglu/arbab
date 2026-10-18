@@ -35,6 +35,9 @@ import { renderWorld } from "./render";
 import { createSound } from "./sound";
 
 export const NO_TOKEN_MESSAGE = "Open the URL `arbab ui` printed: it carries this session's token";
+export const CLOSED_MESSAGE = "This session ended or restarted: open the URL `arbab ui` printed.";
+/** EventSource.CLOSED: the tsconfig has no DOM lib. */
+const EVENT_SOURCE_CLOSED = 2;
 
 export interface PageHandle {
   stop(): void;
@@ -115,9 +118,9 @@ export function startPage(env: PageEnv): PageHandle | null {
     return null;
   }
 
-  const setConnection = (state: "connecting" | "live" | "lost"): void => {
+  const setConnection = (state: "connecting" | "live" | "lost" | "closed"): void => {
     connection.setAttribute("data-state", state);
-    connection.textContent = state === "lost" ? "reconnecting" : state;
+    connection.textContent = state === "lost" ? "reconnecting" : state === "closed" ? "disconnected" : state;
   };
   const showNotice = (text: string): void => {
     notice.textContent = text;
@@ -378,8 +381,16 @@ export function startPage(env: PageEnv): PageHandle | null {
   source.addEventListener("open", () => setConnection("live"));
   source.addEventListener(UI_EVENTS.snapshot, (event) => onSnapshot(event.data));
   source.addEventListener(UI_EVENTS.problem, (event) => showBanner(parseProblem(event.data)));
-  // EventSource retries by itself (the server sends retry: 2000).
-  source.addEventListener("error", () => setConnection("lost"));
+  // EventSource retries by itself (the server sends retry: 2000) while it is CONNECTING. CLOSED means it gave up: the
+  // server answered with an error (a new session's token, a server gone and another on the port).
+  source.addEventListener("error", () => {
+    if (source.readyState === EVENT_SOURCE_CLOSED) {
+      setConnection("closed");
+      showNotice(CLOSED_MESSAGE);
+    } else {
+      setConnection("lost");
+    }
+  });
 
   // The loop: step the scene, draw it, play its events.
   let stopped = false;

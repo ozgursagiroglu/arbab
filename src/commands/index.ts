@@ -15,6 +15,7 @@ import { runReview } from "./review";
 import { runShepherdProcess } from "./shepherd";
 import { runStatus } from "./status";
 import { runStop } from "./stop";
+import { runUi } from "./ui";
 import { runVerify } from "./verify";
 import { runWait } from "./wait";
 
@@ -40,6 +41,7 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
   review: runReview,
   readiness: runReadiness,
   land: runLand,
+  ui: runUi,
   __shepherd: runShepherdProcess,
 };
 
@@ -80,6 +82,8 @@ export const HELP = `usage: arbab <command> [options]
   land <name> [--keep-worktrees] [--json]
                                           merge a ready integration into the base branch; never pushes; then
                                           remove the worktrees it landed (lane branches stay) unless --keep-worktrees
+  ui [--port N] [--hours N] [--no-open] [--json]
+                                          serve the pyramid scene on 127.0.0.1 until stopped (read-only)
   help, --help                            this text
   version, --version                      the arbab version
 

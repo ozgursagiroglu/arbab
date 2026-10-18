@@ -62,6 +62,8 @@ export interface TestProject {
   err: string[];
   spawned: Array<{ root: string; lane: string; mode: ShepherdMode }>;
   signals: Array<{ target: number; sig: NodeJS.Signals }>;
+  /** The URLs ctx.openUrl was asked to open. */
+  opened: string[];
   alive: Set<number>;
   commands: Map<number, string>;
   now: { ms: number };
@@ -115,6 +117,7 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
   const err: string[] = [];
   const spawned: TestProject["spawned"] = [];
   const signals: TestProject["signals"] = [];
+  const opened: string[] = [];
   const alive = new Set<number>();
   const commands = new Map<number, string>();
   const now = { ms: NOW_MS };
@@ -153,6 +156,10 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
     nodeVersion: "20.11.0",
     interactive: true,
     version: "9.9.9",
+    openUrl: (url) => {
+      opened.push(url);
+      return true;
+    },
   };
 
   return {
@@ -168,6 +175,7 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
     err,
     spawned,
     signals,
+    opened,
     alive,
     commands,
     now,

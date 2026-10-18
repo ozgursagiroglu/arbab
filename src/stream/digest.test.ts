@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { FailureCause } from "../types";
-import { contentBlocks, digestStream, failureCause, parseStream, rateLimitFromEvent, toolResultText } from "./digest";
+import {
+  REPORT_TOOL,
+  contentBlocks,
+  digestStream,
+  failureCause,
+  parseStream,
+  rateLimitFromEvent,
+  toolResultText,
+  toolUses,
+} from "./digest";
+import * as stream from "./index";
 
 const T = "2026-10-09T10:00:00.000Z";
 const SID = "11111111-2222-4333-8444-555555555555";
@@ -327,5 +337,46 @@ describe("contentBlocks", () => {
       { type: "assistant", message: {} },
     ];
     for (const event of events) expect(contentBlocks(event)).toEqual([]);
+  });
+});
+
+describe("toolUses", () => {
+  it("returns the tool_use blocks of an assistant event in order, with their ids", () => {
+    const event = {
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "first" },
+          { type: "tool_use", id: "a", name: "Bash", input: {} },
+          { type: "tool_use", name: "Read" },
+          { type: "tool_use", id: 7, name: "Grep" },
+          { type: "tool_use", id: "s", name: REPORT_TOOL },
+        ],
+      },
+    };
+    expect(toolUses(event)).toEqual([
+      { id: "a", name: "Bash" },
+      { id: null, name: "Read" },
+      { id: null, name: "Grep" },
+      { id: "s", name: "StructuredOutput" },
+    ]);
+  });
+
+  it("skips blocks without a string name", () => {
+    const event = { type: "assistant", message: { content: [{ type: "tool_use", id: "a" }, { type: "tool_use", id: "b", name: 3 }] } };
+    expect(toolUses(event)).toEqual([]);
+  });
+
+  it("is empty for any event that is not an assistant event", () => {
+    const block = { type: "tool_use", id: "a", name: "Bash" };
+    for (const event of [null, "assistant", [block], { type: "user", message: { content: [block] } }, { message: { content: [block] } }]) {
+      expect(toolUses(event)).toEqual([]);
+    }
+    expect(toolUses({ type: "assistant", message: { content: "text" } })).toEqual([]);
+  });
+
+  it("is exported with REPORT_TOOL from the module index", () => {
+    expect(stream.toolUses).toBe(toolUses);
+    expect(stream.REPORT_TOOL).toBe("StructuredOutput");
   });
 });

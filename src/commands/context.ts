@@ -48,6 +48,21 @@ export interface CommandContext {
    * reserved for the human, such as confirming a dependency install, requires one.
    */
   interactive: boolean;
+  /** Opens a URL in the browser without waiting; false when this platform has no opener arbab knows. */
+  openUrl: (url: string) => boolean;
+}
+
+/** `open <url>` on macOS, `xdg-open <url>` on Linux, detached and ignored; false on any other platform. */
+export function makeOpenUrl(platform: NodeJS.Platform, spawnFn: typeof spawn = spawn): CommandContext["openUrl"] {
+  const opener = platform === "darwin" ? "open" : platform === "linux" ? "xdg-open" : null;
+  return (url) => {
+    if (opener === null) return false;
+    const child = spawnFn(opener, [url], { detached: true, stdio: "ignore" });
+    // A missing opener is reported asynchronously; the URL is printed anyway.
+    child.on("error", () => undefined);
+    child.unref();
+    return true;
+  };
 }
 
 /** The `__shepherd` argv for a lane; `launch` and the recycled-pid guard of `stop` agree on it. */
@@ -126,5 +141,6 @@ export function defaultContext(opts: { scriptPath: string; version: string }): C
     nodeVersion: process.versions.node,
     version: opts.version,
     interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
+    openUrl: makeOpenUrl(process.platform),
   };
 }

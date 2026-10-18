@@ -226,8 +226,14 @@ describe("createSnapshotBuilder: lane fields", () => {
     }
     run("other-verify", finished(ago(1)));
     run("x-review-security", finished(ago(1)));
-    run("demo-pf-tools", finished(ago(1), { lane: { name: "demo-pf-tools", role: "probe", brief: "b.md" } }));
-    run("demo-pf-model", finished(ago(1), { lane: { name: "demo-pf-model", role: "probe", brief: "b.md" } }));
+    // What `arbab preflight` writes: the probed lane's role, the brief under .arbab/preflight/.
+    run("demo-pf-tools", finished(ago(1), { lane: { name: "demo-pf-tools", role: "implementer", brief: ".arbab/preflight/demo/demo-pf-tools.md" } }));
+    run("demo-pf-model", finished(ago(1), { lane: { name: "demo-pf-model", role: "verifier", brief: join(p.root, ".arbab/preflight/demo/demo-pf-model.md") } }));
+    // The name alone does not make a probe.
+    run("own-pf-tools", finished(ago(1), { lane: { name: "own-pf-tools", role: "implementer", brief: "lanes/own-pf-tools.md" } }));
+    run("near-pf-model", finished(ago(1), { lane: { name: "near-pf-model", role: "implementer", brief: ".arbab/preflight-x/near-pf-model.md" } }));
+    run("out-pf-model", finished(ago(1), { lane: { name: "out-pf-model", role: "implementer", brief: ".arbab/preflight/../out-pf-model.md" } }));
+    run("demo-pf-other", finished(ago(1), { lane: { name: "demo-pf-other", role: "implementer", brief: ".arbab/preflight/demo/demo-pf-other.md" } }));
     run("plain", finished(ago(1)));
     const s = build();
     const kinds = Object.fromEntries(s.lanes.map((l) => [l.name, [l.kind, l.integration]]));
@@ -240,9 +246,13 @@ describe("createSnapshotBuilder: lane fields", () => {
       "x-review-security": ["lane", null],
       "demo-pf-tools": ["preflight", null],
       "demo-pf-model": ["preflight", null],
+      "own-pf-tools": ["lane", null],
+      "near-pf-model": ["lane", null],
+      "out-pf-model": ["lane", null],
+      "demo-pf-other": ["lane", null],
       plain: ["lane", null],
     });
-    expect(lane(s, "demo-pf-tools")?.role).toBe("probe");
+    expect(lane(s, "demo-pf-tools")?.role).toBe("implementer");
   });
 
   it("names the integration with the newest updatedAt that merged the lane; the generator wins over a merge", () => {
@@ -318,6 +328,30 @@ describe("createSnapshotBuilder: lane fields", () => {
     expect(lane(s, "mcp")?.lastTool).toBe("mcp__srv.tool:v-1");
   });
 
+  it("reads the latest attempt's report only: an older attempt's never stands in", () => {
+    p = makeProject();
+    run("impl", finished(ago(1), { report: { status: "partial" } }));
+    run("impl", finished(ago(1)));
+    run("rev", finished(ago(1), { lane: { name: "rev", role: "reviewer", brief: "b.md" }, report: { findings: [{}] } }));
+    run("rev", finished(ago(1), { lane: { name: "rev", role: "reviewer", brief: "b.md" } }));
+    const s = build();
+    expect(lane(s, "impl")).toMatchObject({ attempt: 2, reportStatus: null });
+    expect(lane(s, "rev")).toMatchObject({ attempt: 2, findings: null });
+  });
+
+  it("takes a report that does not parse for no report, and still shows the lane", () => {
+    p = makeProject();
+    run("impl", finished(ago(1), { report: { status: "done" } }));
+    run("impl", finished(ago(1), { report: { status: "done" } }));
+    writeFileSync(join(runPaths(p.runsRoot, "impl").attemptDir(2), "report.json"), "{");
+    run("rev", finished(ago(1), { lane: { name: "rev", role: "reviewer", brief: "b.md" }, report: { findings: [] } }));
+    writeFileSync(join(runPaths(p.runsRoot, "rev").attemptDir(1), "report.json"), "[1,");
+    const s = build();
+    expect(s.hiddenLanes).toBe(0);
+    expect(lane(s, "impl")).toMatchObject({ attempt: 2, reportStatus: null });
+    expect(lane(s, "rev")?.findings).toBeNull();
+  });
+
   it("reads reportStatus for implementers and verifiers and findings for reviewers, from the newest report", () => {
     p = makeProject();
     run("impl", finished(ago(1), { report: { status: "partial" } }));
@@ -340,17 +374,16 @@ describe("createSnapshotBuilder: lane fields", () => {
 
   it("counts a lane whose records do not parse in hiddenLanes and builds the rest", () => {
     p = makeProject();
-    for (const name of ["state", "summary", "lanefile", "role", "report", "started", "good"]) run(name, finished(ago(1), { report: { status: "done" } }));
+    for (const name of ["state", "summary", "lanefile", "role", "started", "good"]) run(name, finished(ago(1), { report: { status: "done" } }));
     const dir = (name: string): string => runPaths(p.runsRoot, name).laneDir;
     writeFileSync(join(dir("state"), "state.json"), "{not json");
     writeFileSync(join(dir("summary"), "attempt-1", "summary.json"), "[1,");
     writeFileSync(join(dir("lanefile"), "lane.json"), "");
     writeFileSync(join(dir("role"), "lane.json"), JSON.stringify({ name: "role", role: "boss" }));
-    writeFileSync(join(dir("report"), "attempt-1", "report.json"), "{");
     writeFileSync(join(dir("started"), "attempt-1", "started.json"), "nope");
     const s = build();
     expect(names(s)).toEqual(["good"]);
-    expect(s.hiddenLanes).toBe(6);
+    expect(s.hiddenLanes).toBe(5);
   });
 });
 

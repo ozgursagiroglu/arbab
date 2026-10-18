@@ -55,6 +55,8 @@ export interface MessageEventLike {
 }
 
 export interface EventSourceLike {
+  /** 0 connecting (it retries), 1 open, 2 closed (it gave up). */
+  readonly readyState: number;
   addEventListener(type: string, listener: (event: MessageEventLike) => void): void;
   close(): void;
 }

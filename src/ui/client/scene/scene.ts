@@ -54,16 +54,28 @@ const FIVE_HOURS_S = 18000;
 // ---------------------------------------------------------------------------------------------------------------
 // Pure helpers
 
+// By kind first: a generated lane or a probe is what it does, whatever role it was given (a probe has the probed
+// lane's role).
 export function castOf(lane: UiLane): Cast {
+  switch (lane.kind) {
+    case "verify":
+      return "surveyor";
+    case "review":
+      return "scribe";
+    case "skeptic":
+      return "skeptic";
+    case "preflight":
+      return "waterboy";
+  }
   switch (lane.role) {
     case "implementer":
       return "laborer";
     case "verifier":
       return "mason";
     case "reviewer":
-      return lane.kind === "skeptic" ? "skeptic" : "scribe";
+      return "scribe";
     case "probe":
-      return lane.kind === "verify" ? "surveyor" : "waterboy";
+      return "waterboy";
     case "researcher":
       return "scout";
     default:
@@ -382,17 +394,23 @@ export function createScene(options: SceneOptions): Scene {
     return place;
   }
 
-  /** Moves from where the actor stands: off the pyramid by its ladder, along the ground, up the target's ladder. */
+  /**
+   * Moves from where the actor stands: off the pyramid by its ladder, along the ground, up the target's ladder. A
+   * builder carrying its stone climbs up with it on its back; every other climb is empty-handed.
+   */
   function path(from: Point, to: Point, pose: Pose): Step[] {
     const speed = pose === "slump" ? SLUMP : WALK;
+    const up: Pose = pose === "carry-stone" ? "climb-stone" : "climb";
     const steps: Step[] = [];
     const fromUp = onPyramid(from);
     const toUp = onPyramid(to);
-    if (fromUp && toUp && from.x === to.x) return [{ kind: "move", x: to.x, y: to.y, pose: "climb", speed: CLIMB }];
+    if (fromUp && toUp && from.x === to.x) {
+      return [{ kind: "move", x: to.x, y: to.y, pose: to.y < from.y ? up : "climb", speed: CLIMB }];
+    }
     if (fromUp) steps.push({ kind: "move", x: from.x, y: GROUND_Y, pose: "climb", speed: CLIMB });
     if (toUp) {
       steps.push({ kind: "move", x: to.x, y: GROUND_Y, pose, speed });
-      steps.push({ kind: "move", x: to.x, y: to.y, pose: "climb", speed: CLIMB });
+      steps.push({ kind: "move", x: to.x, y: to.y, pose: up, speed: CLIMB });
     } else {
       steps.push({ kind: "move", x: to.x, y: to.y, pose, speed });
     }

@@ -143,8 +143,11 @@ export const MAX_PREFLIGHT_NAME = (() => {
   return n;
 })();
 
+/** The probes' directory, relative to the project root. */
+export const PREFLIGHT_DIR = ".arbab/preflight";
+
 /** Where a lane's probe files live: arbab's own directory, never the project's lanes/. */
-export const preflightDir = (project: Project, lane: string): string => join(project.root, ".arbab", "preflight", assertValidName(lane, "lane"));
+export const preflightDir = (project: Project, lane: string): string => join(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
 
 /**
  * Writes the two probe lanes, their briefs and schemas under preflightDir. The probes borrow the lane's worktree
@@ -362,7 +365,7 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
 
   // The probe lanes are generated files: keep them out of the project's git status, as the shepherd does for its own
   // directories (it ignores only the worktree and runs roots).
-  ensureIgnored(project.root, [".arbab/preflight/"], ctx.git);
+  ensureIgnored(project.root, [`${PREFLIGHT_DIR}/`], ctx.git);
   const files = writeProbeLanes(project, lane);
   // Both probes are linted before either starts, so a refused second probe never leaves the first one running.
   for (const probe of [files.tools, files.model]) {

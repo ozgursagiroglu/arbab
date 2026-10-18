@@ -22,6 +22,7 @@ const FRAMES: Readonly<Record<Pose, number>> = {
   idle: 2,
   walk: 4,
   climb: 2,
+  "climb-stone": 2,
   sit: 1,
   work: 2,
   sleep: 1,
@@ -82,6 +83,26 @@ describe("worker sprites", () => {
     for (const cast of ["waterboy", "scout"] as const) {
       const grids = workerGrids(cast);
       expect(grids.work).toEqual(grids.idle);
+    }
+  });
+
+  it("climbs empty-handed in climb and with the stone on its back in climb-stone", () => {
+    // The stone's colors (l, L, e) appear in no other part of a climbing worker.
+    const stone = (grid: readonly string[]): boolean => [...chars(grid)].some((ch) => "lLe".includes(ch));
+    for (const cast of WORKER_CASTS) {
+      const grids = workerGrids(cast);
+      const climb = grids.climb ?? [];
+      const climbStone = grids["climb-stone"] ?? [];
+      expect(climb.length, cast).toBe(2);
+      expect(climb.some(stone), cast).toBe(false);
+      expect(climbStone.every(stone), cast).toBe(true);
+      // The same climber under the stone: the frames differ only where the stone lies, on the back (left half).
+      climb.forEach((grid, i) => {
+        const other = climbStone[i] ?? [];
+        grid.forEach((row, y) => {
+          for (let x = 0; x < row.length; x++) if (row[x] !== other[y]?.[x]) expect(x, `${cast} (${x}, ${y})`).toBeLessThan(6);
+        });
+      });
     }
   });
 

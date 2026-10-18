@@ -684,7 +684,7 @@ function drawActors(p: Painter, world: World): void {
     if (!sprite) continue;
     const x = Math.round(actor.x);
     const y = Math.round(actor.y);
-    if (actor.pose === "climb") drawLadder(p, x, y, world.pyramid);
+    if (actor.pose === "climb" || actor.pose === "climb-stone") drawLadder(p, x, y, world.pyramid);
     // A worker above the pyramid's foot stands on a plank; on the foot itself it stands on the base.
     if (actor.pose === "work" && y < PYRAMID_AREA.baseY) drawPlank(p, x, y);
     const alpha = Math.min(1, Math.max(0, Number.isFinite(actor.alpha) ? actor.alpha : 1)) * (actor.ghost ? 0.5 : 1);

@@ -72,7 +72,8 @@ export function startUiServer(options: UiServerOptions): Promise<UiServer> {
   let lastSent: string | null = null;
   let ticksSinceSent = 0;
   let failures = 0;
-  let problemSent = false;
+  /** The `problem` event's data once it was sent, until a build succeeds again. */
+  let problem: string | null = null;
 
   const send = (res: ServerResponse, event: string, data: string): void => {
     res.write(`event: ${event}\ndata: ${data}\n\n`);
@@ -82,28 +83,36 @@ export function startUiServer(options: UiServerOptions): Promise<UiServer> {
     for (const res of clients) send(res, event, data);
   };
 
+  /** Records a snapshot that built; broadcasts it when it changed, the heartbeat is due, or it ends a problem. */
+  function built(snapshot: UiSnapshot, counts: boolean): string {
+    const recovered = problem !== null;
+    failures = 0;
+    problem = null;
+    latest = JSON.stringify(snapshot);
+    const key = comparable(snapshot);
+    if (counts) ticksSinceSent++;
+    // The page shows the problem's banner until a snapshot comes, so the first one after it goes out, changed or not.
+    if (recovered || key !== lastSent || ticksSinceSent >= heartbeatTicks) {
+      lastSent = key;
+      ticksSinceSent = 0;
+      broadcast(UI_EVENTS.snapshot, latest);
+    }
+    return latest;
+  }
+
   function tick(): void {
     let snapshot: UiSnapshot;
     try {
       snapshot = options.snapshot();
     } catch (err) {
       failures++;
-      if (failures >= FAILURES_BEFORE_PROBLEM && !problemSent) {
-        problemSent = true;
-        broadcast(UI_EVENTS.problem, JSON.stringify({ message: message(err).slice(0, PROBLEM_MAX) }));
+      if (failures >= FAILURES_BEFORE_PROBLEM && problem === null) {
+        problem = JSON.stringify({ message: message(err).slice(0, PROBLEM_MAX) });
+        broadcast(UI_EVENTS.problem, problem);
       }
       return;
     }
-    failures = 0;
-    problemSent = false;
-    latest = JSON.stringify(snapshot);
-    const key = comparable(snapshot);
-    ticksSinceSent++;
-    if (key !== lastSent || ticksSinceSent >= heartbeatTicks) {
-      lastSent = key;
-      ticksSinceSent = 0;
-      broadcast(UI_EVENTS.snapshot, latest);
-    }
+    built(snapshot, true);
   }
 
   function stopTicking(): void {
@@ -113,7 +122,7 @@ export function startUiServer(options: UiServerOptions): Promise<UiServer> {
     lastSent = null;
     ticksSinceSent = 0;
     failures = 0;
-    problemSent = false;
+    problem = null;
   }
 
   function reply(req: IncomingMessage, res: ServerResponse, status: number, type: string, body: string, extra: Record<string, string> = {}): void {
@@ -142,16 +151,15 @@ export function startUiServer(options: UiServerOptions): Promise<UiServer> {
     let first = latest;
     if (first === null) {
       try {
-        const snapshot = options.snapshot();
-        first = JSON.stringify(snapshot);
-        latest = first;
-        lastSent = comparable(snapshot);
-        ticksSinceSent = 0;
+        // The clients already listening (after a problem) get it too; this one is not among them yet.
+        first = built(options.snapshot(), false);
       } catch {
         // The ticks report a build that keeps failing; this client gets the next snapshot that builds.
       }
     }
     if (first !== null) send(res, UI_EVENTS.snapshot, first);
+    // A problem that stands: the newcomer sees the banner the others see, over the latest snapshot.
+    if (problem !== null) send(res, UI_EVENTS.problem, problem);
     clients.add(res);
     res.on("close", () => {
       clients.delete(res);

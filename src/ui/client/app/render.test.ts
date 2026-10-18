@@ -212,6 +212,30 @@ describe("renderWorld", () => {
     for (const x of [231, 232, 247, 248]) expect(pixel(onFoot, x, PYRAMID_AREA.baseY)).toBe(pixel(plain, x, PYRAMID_AREA.baseY));
   });
 
+  it("draws climb empty-handed and climb-stone with the stone on the back, both on a ladder", () => {
+    const at = { x: 240, y: 180 };
+    const stone = new Set([LIMESTONE.light, LIMESTONE.face, LIMESTONE.edge].map(hex));
+    const stonePixels = (r: Raster): number => {
+      let n = 0;
+      for (let y = at.y - ACTOR_BOX.h; y < at.y; y++) for (let x = at.x - 6; x < at.x + 6; x++) if (stone.has(pixel(r, x, y))) n++;
+      return n;
+    };
+    const plain = rasterize(empty());
+    const draw = (pose: Actor["pose"]): Raster => {
+      const world = empty();
+      world.actors = [actor({ id: "c", cast: "laborer", ...at, pose })];
+      return rasterize(world);
+    };
+    const climb = draw("climb");
+    const carrying = draw("climb-stone");
+    expect(stonePixels(climb)).toBe(stonePixels(plain));
+    expect(stonePixels(carrying)).toBeGreaterThanOrEqual(stonePixels(plain) + 12);
+    for (const r of [climb, carrying]) {
+      expect(pixel(r, 236, GROUND_Y - 1)).toBe(hex(WOOD[1]));
+      expect(pixel(r, 243, GROUND_Y - 1)).toBe(hex(WOOD[1]));
+    }
+  });
+
   it("leans a ladder on the first course edge at least 6 px above the climber's feet", () => {
     const pyramid = { base: 4, blockH: 16 };
     expect(ladderTop(205, pyramid)).toBe(192);

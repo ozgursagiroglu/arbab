@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AttemptSummary, LaneStateRecord, StatusRow } from "../types";
 import { formatElapsed, formatStatusTable, statusRow } from "./index";
+import { formatWindows, isLive } from "./status";
 
 const FIVE_RESET = 1791549000; // 12:30Z
 const SEVEN_RESET = 1792051200;
@@ -108,6 +109,29 @@ describe("formatElapsed", () => {
     expect(formatElapsed(723_000)).toBe("12m03s");
     expect(formatElapsed(3_840_000)).toBe("1h04m");
     expect(formatElapsed(36_000_000)).toBe("10h00m");
+  });
+});
+
+describe("isLive", () => {
+  it("is true while the clock runs and false once it stopped", () => {
+    for (const state of ["queued", "held", "preparing", "running", "waiting-reset"] as const) expect(isLive(state)).toBe(true);
+    for (const state of ["finished", "orphaned"] as const) expect(isLive(state)).toBe(false);
+  });
+});
+
+describe("formatWindows", () => {
+  const window = (utilization: number, resetsAt: number) => ({ utilization, resetsAt });
+
+  it("rounds each window that has not reset to a percentage, 5h first", () => {
+    expect(formatWindows(window(0.62, FIVE_RESET), window(0.604, SEVEN_RESET), NOW_SEC)).toBe("5h 62% · 7d 60%");
+    expect(formatWindows(null, window(0.125, NOW_SEC + 1), NOW_SEC)).toBe("7d 13%");
+    expect(formatWindows(window(1, NOW_SEC + 1), null, NOW_SEC)).toBe("5h 100%");
+  });
+
+  it("leaves out windows that have reset, and is — without any", () => {
+    expect(formatWindows(window(0.9, NOW_SEC), window(0.4, SEVEN_RESET), NOW_SEC)).toBe("7d 40%");
+    expect(formatWindows(window(0.9, NOW_SEC - 1), null, NOW_SEC)).toBe("—");
+    expect(formatWindows(null, null, NOW_SEC)).toBe("—");
   });
 });
 

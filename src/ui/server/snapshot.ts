@@ -2,12 +2,15 @@
 // UiSnapshot. It is built every second while the page is open, so whatever cannot have changed is cached: finished
 // lanes until their state record changes, integrations until one of their record files does.
 import { statSync } from "node:fs";
-import { basename } from "node:path";
-import { readGenerated } from "../../commands/generated";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { generatingIntegration, readGenerated } from "../../commands/generated";
+import { latestReport } from "../../commands/integration";
+import { PREFLIGHT_DIR } from "../../commands/preflight";
 import { readReadinessReport, readReviewRecord, readVerifyRecord } from "../../commands/records";
 import { integrationPaths, listIntegrations, readIntegration } from "../../integrate";
 import { holdDecision, readQuota } from "../../quota";
 import { attemptFiles, effectiveState, listAttempts, listLanes, readState, runPaths, statusRow } from "../../registry";
+import { isLive } from "../../registry/status";
 import { NO_FREE_SLOT_REASON, ROLES } from "../../types";
 import type { AttemptSummary, LaneState, LaneStateRecord, ProjectConfig, Role } from "../../types";
 import { ArbabError } from "../../util/errors";
@@ -40,9 +43,6 @@ export const MAX_LANES = 300;
 const LANDED_KEPT = 5;
 const REASON_MAX = 200;
 const TOOL_NAME = /^[A-Za-z0-9_.:-]{1,64}$/;
-const BY = "integration:";
-/** States in which the clock still runs (statusRow's LIVE). */
-const LIVE: ReadonlySet<LaneState> = new Set(["queued", "held", "preparing", "running", "waiting-reset"]);
 const REPORT_STATUSES = ["done", "partial", "blocked"] as const;
 
 type Fields = Record<string, unknown>;
@@ -73,13 +73,21 @@ interface CachedIntegration {
 const stateKey = (r: LaneStateRecord): string =>
   JSON.stringify([r.state, r.attempt, r.since, r.shepherdPid, r.endState ?? null, r.reason ?? null]);
 
-function laneKind(name: string, generatedBy: string | null): UiLaneKind {
+/** Whether a lane file's `brief` lies under the project's preflight directory, where only `arbab preflight` writes. */
+function briefUnderPreflight(root: string, brief: unknown): boolean {
+  if (typeof brief !== "string" || brief === "") return false;
+  const rel = relative(join(root, PREFLIGHT_DIR), isAbsolute(brief) ? brief : join(root, brief));
+  return rel !== "" && !isAbsolute(rel) && rel.split(sep)[0] !== "..";
+}
+
+// A probe carries the probed lane's role, so its kind comes from its name and where its brief lives.
+function laneKind(name: string, generatedBy: string | null, preflightBrief: boolean): UiLaneKind {
   if (generatedBy !== null) {
     if (name === `${generatedBy}-verify`) return "verify";
     if (name.startsWith(`${generatedBy}-review-`)) return "review";
     if (name.startsWith(`${generatedBy}-skeptic-`)) return "skeptic";
   }
-  if (name.endsWith("-pf-tools") || name.endsWith("-pf-model")) return "preflight";
+  if (preflightBrief && (name.endsWith("-pf-tools") || name.endsWith("-pf-model"))) return "preflight";
   return "lane";
 }
 
@@ -98,9 +106,9 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
   const role = isObject(spec) ? spec["role"] : undefined;
   if (!ROLES.includes(role as Role)) throw new ArbabError("io", `the lane file of ${name} has no valid role`);
   const worktree = isObject(spec) ? spec["worktree"] : undefined;
+  const preflightBrief = briefUnderPreflight(source.root, isObject(spec) ? spec["brief"] : undefined);
 
-  const by = readGenerated(runsRoot, name)?.by ?? null;
-  const generatedBy = by?.startsWith(BY) === true && isValidName(by.slice(BY.length)) ? by.slice(BY.length) : null;
+  const generatedBy = generatingIntegration(readGenerated(runsRoot, name)?.by ?? null);
 
   const attempts = listAttempts(runsRoot, name);
   const files = (n: number) => attemptFiles(paths.attemptDir(n));
@@ -133,19 +141,16 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
     if (costed !== null) break;
   }
 
+  // The latest attempt's report only: an older attempt's never stands in, and one that does not parse is none.
   let reportStatus: UiLane["reportStatus"] = null;
   let findings: number | null = null;
   if (role === "implementer" || role === "verifier" || role === "reviewer") {
-    for (const n of [...attempts].reverse()) {
-      const report = readJson<unknown>(files(n).report);
-      if (report === null) continue;
-      if (role === "reviewer") {
-        findings = isObject(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
-      } else {
-        const status = isObject(report) ? report["status"] : undefined;
-        reportStatus = REPORT_STATUSES.find((s) => s === status) ?? null;
-      }
-      break;
+    const report = latestReport(runsRoot, name);
+    if (role === "reviewer") {
+      findings = isObject(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
+    } else {
+      const status = isObject(report) ? report["status"] : undefined;
+      reportStatus = REPORT_STATUSES.find((s) => s === status) ?? null;
     }
   }
 
@@ -154,7 +159,7 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
   return {
     name,
     role: role as Role,
-    kind: laneKind(name, generatedBy),
+    kind: laneKind(name, generatedBy, preflightBrief),
     generatedBy,
     worktreeOf: isValidName(worktree) ? worktree : null,
     state,
@@ -165,7 +170,7 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
     attempt: record.attempt,
     firstSeen: firstMs === null ? record.since : new Date(firstMs).toISOString(),
     since: record.since,
-    elapsedMs: LIVE.has(state) ? null : finiteOrNull(row.elapsedMs),
+    elapsedMs: isLive(state) ? null : finiteOrNull(row.elapsedMs),
     toolCalls,
     lastTool: tokenOrNull(lastTool),
     turns: countOrZero(row.turns),
@@ -284,11 +289,11 @@ export function createSnapshotBuilder(source: SnapshotSource): SnapshotBuilder {
           const state = effectiveState(record, source.alive);
           const key = stateKey(record);
           const cached = lanes.get(name);
-          if (cached !== undefined && cached.key === key && cached.facts.state === state && !LIVE.has(state)) {
+          if (cached !== undefined && cached.key === key && cached.facts.state === state && !isLive(state)) {
             facts = cached.facts;
           } else {
             facts = readLane(source, name, record, state, nowMs);
-            if (LIVE.has(state)) lanes.delete(name);
+            if (isLive(state)) lanes.delete(name);
             else lanes.set(name, { key, facts });
           }
         } catch {

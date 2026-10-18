@@ -1,8 +1,10 @@
 // arbab ui [--port N] [--hours N] [--no-open] [--json]
 //
 // Serves the project's pyramid scene on 127.0.0.1 until SIGINT or SIGTERM (DESIGN.md §19). Read-only: it writes
-// nothing under .arbab/ or ~/.arbab/ and signals no process. The session token appears only in the printed URL.
-// Text: `arbab ui: <project> at <url>` and `read-only; Ctrl-C stops it`. --json: {"url", "port"}.
+// nothing under .arbab/ or ~/.arbab/ and signals no process. The session token appears only in the printed URL, and
+// only when the browser was not opened.
+// Text: `arbab ui: <project> at <url>` and `read-only; Ctrl-C stops it`; once the browser opened, <url> is
+// `http://127.0.0.1:<port>/ (opened in your browser)`, without the token. --json: {"url", "port"}, the token always.
 import { randomBytes } from "node:crypto";
 import { basename } from "node:path";
 import { uiAssets } from "../ui/client/app/assets";
@@ -57,10 +59,17 @@ export async function runUi(argv: string[], ctx: CommandContext): Promise<number
   });
   const untrap = ctx.trapSignals(() => stop());
   try {
-    if (values.json === true) printJson(ctx, { url: server.url, port: server.port });
-    else ctx.stdout(`arbab ui: ${basename(project.root)} at ${server.url}\nread-only; Ctrl-C stops it\n`);
-    // The URL carries the token, so it goes to stdout only; stderr may end up in logs.
-    if (values["no-open"] !== true && !ctx.openUrl(server.url)) ctx.stderr("open the URL above in a browser\n");
+    // The URL carries the token, so it goes to stdout only (stderr may end up in logs), and only when someone needs
+    // it: a background command's stdout is kept on disk and in the transcript.
+    if (values.json === true) {
+      printJson(ctx, { url: server.url, port: server.port });
+      if (values["no-open"] !== true && !ctx.openUrl(server.url)) ctx.stderr("open the URL above in a browser\n");
+    } else {
+      const opened = values["no-open"] !== true && ctx.openUrl(server.url);
+      const where = opened ? `http://127.0.0.1:${server.port}/ (opened in your browser)` : server.url;
+      ctx.stdout(`arbab ui: ${basename(project.root)} at ${where}\nread-only; Ctrl-C stops it\n`);
+      if (!opened && values["no-open"] !== true) ctx.stderr("open the URL above in a browser\n");
+    }
     await stopped;
   } finally {
     untrap();

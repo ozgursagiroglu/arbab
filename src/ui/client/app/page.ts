@@ -122,7 +122,7 @@ h2 { font-size: 0.95rem; margin: 0 0 0.5rem; color: var(--muted); }
   border-radius: 50%; background: var(--wait); vertical-align: -0.05rem;
 }
 .connection[data-state="live"]::before { background: var(--ok); }
-.connection[data-state="lost"]::before { background: var(--bad); }
+.connection[data-state="lost"]::before, .connection[data-state="closed"]::before { background: var(--bad); }
 button {
   font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line);
   border-radius: 0.3rem; padding: 0.15rem 0.6rem; cursor: pointer;

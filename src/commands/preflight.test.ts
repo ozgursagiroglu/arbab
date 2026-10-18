@@ -9,6 +9,7 @@ import { LAUNCH_POLL_MS } from "./launch";
 import { openProject } from "./project";
 import {
   MAX_PREFLIGHT_NAME,
+  PREFLIGHT_DIR,
   PROBE_MODEL,
   SHA_COMMAND,
   evaluatePreflight,
@@ -168,6 +169,8 @@ describe("probe lanes", () => {
     const lane = { ...loadLane(p.root, "lanes/demo.json"), model: "claude-opus-5-5", allow: ["Bash(make check)"] };
     const files = writeProbeLanes(project, lane);
     expect(preflightDir(project, "demo")).toBe(join(p.root, ".arbab", "preflight", "demo"));
+    expect(preflightDir(project, "demo")).toBe(join(p.root, PREFLIGHT_DIR, "demo"));
+    expect(PREFLIGHT_DIR).toBe(".arbab/preflight");
     expect(files).toEqual({
       tools: { name: "demo-pf-tools", laneFile: ".arbab/preflight/demo/demo-pf-tools.json" },
       model: { name: "demo-pf-model", laneFile: ".arbab/preflight/demo/demo-pf-model.json" },

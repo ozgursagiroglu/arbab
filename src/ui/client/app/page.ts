@@ -251,10 +251,12 @@ h1 { margin: 0; font-size: 18px; line-height: 0; color: var(--gold); }
 }
 @media (min-width: 1280px) {
   .grid { grid-template-columns: minmax(0, 1fr) 360px; align-items: stretch; }
-  /* As tall as the scene card and no taller: size containment keeps the crew from stretching the row. */
-  .side { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; contain: size; }
+  /* As tall as the scene card and no taller: size containment keeps the crew from stretching the row. The items
+     stretch, so the crew panel fills the first row instead of shrinking to its title around a zero-basis list. */
+  .side { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; align-items: stretch; contain: size; }
   .crew-panel { display: flex; flex-direction: column; min-height: 0; }
-  .crew-panel .crew-scroll { flex: 1 1 0; max-height: none; }
+  .crew-panel > .titlebar { flex: none; }
+  .crew-panel .crew-scroll { flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; }
 }
 .panel { padding: var(--s3); min-width: 0; }
 .titlebar {

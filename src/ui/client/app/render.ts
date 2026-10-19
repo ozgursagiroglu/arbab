@@ -348,7 +348,8 @@ function drawPyramid(p: Painter, pyramid: Pyramid): void {
   }
   const cap = pyramid.capstone;
   if (cap.state === "none") return;
-  if (cap.flag !== "none") {
+  // The pennant marks the capstone on the sledge; once it rises the sledge is empty.
+  if (cap.state === "waiting" && cap.flag !== "none") {
     const px = PLACES.sledge.x + 15;
     const base = PLACES.sledge.y + 5;
     p.rect(px, base - 18, 1, 18, WOOD[1]);

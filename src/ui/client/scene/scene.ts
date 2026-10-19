@@ -977,6 +977,7 @@ export function createScene(options: SceneOptions): Scene {
   function startHoist(): void {
     Object.assign(world.pyramid.capstone, { state: "hoisting", ...PLACES.sledge, glow: 0 });
     hoist = 0;
+    finishSlots();
   }
 
   function foldCapstone(fg: Foreground, first: boolean): void {
@@ -1023,6 +1024,7 @@ export function createScene(options: SceneOptions): Scene {
     const cap = world.pyramid.capstone;
     const apex = world.pyramid.apex;
     Object.assign(cap, { state: "set", ...apex, glow: 1 });
+    finishSlots();
     if (!reduced) world.shake = Math.max(world.shake, CAPSTONE_SHAKE);
     for (let i = 0; i < SPARKLES && !reduced; i += 1) {
       const x = apex.x + (random() - 0.5) * 8;
@@ -1086,6 +1088,19 @@ export function createScene(options: SceneOptions): Scene {
     if (p.capstone.state === "set") Object.assign(p.capstone, p.apex);
   }
 
+  /**
+   * A set capstone stands on a finished pyramid: the slots without a lane are set blocks while it is set, and empty
+   * again once it is not (the next landing's capstone rises, new work starts).
+   */
+  function finishSlots(): void {
+    const set = world.pyramid.capstone.state === "set";
+    for (const b of world.pyramid.blocks) {
+      if (b.lane !== null) continue;
+      b.look = set ? "set" : "empty";
+      b.fill = set ? 1 : 0;
+    }
+  }
+
   /** Sends workers whose work place moved (a lane left, the pyramid grew) there again. */
   function relocate(reshaped: boolean): void {
     for (const c of [...crews.values()]) {
@@ -1138,6 +1153,7 @@ export function createScene(options: SceneOptions): Scene {
     rebuildPyramid(fg);
     relocate(reshaped);
     foldCapstone(fg, first);
+    finishSlots();
     world.far = fg.far.map((integration, i) => ({
       integration: integration.name,
       ...farPyramidPlace(i, integration.lanes.length),

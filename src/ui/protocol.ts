@@ -12,6 +12,7 @@ export const UI_ROUTES = {
   style: "/app.css",
   events: "/events",
   snapshot: "/snapshot.json",
+  icon: "/icon.svg",
 } as const;
 
 /**
@@ -23,11 +24,13 @@ export const UI_TOKEN_PARAM = "token";
 /** The SSE event names: a snapshot, or a problem the page shows in a banner (`data` is `{"message": string}`). */
 export const UI_EVENTS = { snapshot: "snapshot", problem: "problem" } as const;
 
-/** The page, its stylesheet and its script, served from memory (never from disk). */
+/** The page, its stylesheet, its script and its icon, served from memory (never from disk). */
 export interface UiAssets {
   html: string;
   css: string;
   js: string;
+  /** An SVG served at UI_ROUTES.icon as image/svg+xml: the tab's icon and the page's logo. */
+  icon: string;
 }
 
 /**

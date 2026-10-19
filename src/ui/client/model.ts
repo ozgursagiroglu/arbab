@@ -131,6 +131,8 @@ export interface Capstone {
   flag: "none" | "passed" | "failed";
   /** readiness says ready: it gleams. */
   ready: boolean;
+  /** 0–1: the light that falls on a capstone as it is set; it fades over a few seconds. */
+  glow: number;
 }
 
 export interface Pyramid {
@@ -145,6 +147,11 @@ export interface Pyramid {
   /** Center of the top course's top edge, where a set capstone stands. */
   apex: { x: number; y: number };
   capstone: Capstone;
+  /**
+   * The landed integration standing here as a finished monument while no lane builds (every block set, its capstone
+   * on the apex); null while lanes build, or when nothing has landed.
+   */
+  monument: string | null;
 }
 
 /** A landed integration: a small finished pyramid on the horizon. */
@@ -196,6 +203,13 @@ export interface World {
   /** Events since the page last emptied this array (it plays sounds, then sets length to 0). */
   events: SceneEvent[];
   reducedMotion: boolean;
+  /**
+   * Seconds since the scene began, advanced by step. The renderer's clock for the life that carries no data (clouds,
+   * birds, water, the boat and the caravan, palms, fire and torches), so a frame is a pure function of the World.
+   */
+  time: number;
+  /** Pixels of camera shake now, 0 when still: the renderer offsets the scene by up to this much. It decays. */
+  shake: number;
 }
 
 export interface SceneOptions {

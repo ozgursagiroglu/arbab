@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { PLACEHOLDER_SCRIPT, uiAssets } from "./assets";
+import { ICON_SVG, PLACEHOLDER_SCRIPT, uiAssets } from "./assets";
 import { UI_SCRIPT } from "./bundle";
 import { PAGE_CSS, PAGE_HTML } from "./page";
 
@@ -12,7 +12,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 describe("uiAssets", () => {
   it("serves the page, its stylesheet, and the placeholder while the script is not built", () => {
     expect(UI_SCRIPT).toBeNull();
-    expect(uiAssets()).toEqual({ html: PAGE_HTML, css: PAGE_CSS, js: PLACEHOLDER_SCRIPT });
+    expect(uiAssets()).toEqual({ html: PAGE_HTML, css: PAGE_CSS, js: PLACEHOLDER_SCRIPT, icon: ICON_SVG });
   });
 
   it("the placeholder says so with textContent", () => {

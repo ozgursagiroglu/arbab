@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { Actor, Block, Pose, Scene } from "../model";
+import type { Actor, Block, Particle, Pose, Scene } from "../model";
 import { PLACES, PYRAMID_AREA, WIDTH } from "../model";
 import type { UiLane, UiSnapshot } from "../../protocol";
-import { campSeat, pyramidLayout, workSpot } from "./layout";
+import { campSeat, farPyramidPlace, pyramidLayout, workSpot } from "./layout";
 import { castOf, createScene, fillFor, foreground, isBuilder, rationFor } from "./scene";
 import { at, finishedLane, seededRandom, T0, uiIntegration, uiLane, uiQuota, uiSnapshot } from "./testkit";
 
@@ -205,11 +205,47 @@ describe("foreground", () => {
 
   it("lets a landing go far after 10 minutes", () => {
     const landed = uiIntegration({ name: "landed", lanes: ["a"], landedAt: at(-601) });
-    const lanes = [finishedLane({ name: "a", integration: "landed" })];
+    // With other work in the foreground: without it, the landing would stand there as the monument.
+    const lanes = [finishedLane({ name: "a", integration: "landed" }), uiLane({ name: "new" })];
     const fg = foreground(uiSnapshot({ lanes, integrations: [landed] }));
+    expect(fg.lanes.map((l) => l.name)).toEqual(["new"]);
+    expect(fg.capstone).toBeNull();
+    expect(fg.monument).toBeNull();
+    expect(fg.far.map((i) => i.name)).toEqual(["landed"]);
+  });
+
+  it("makes the newest landing the monument while the foreground holds no lane, and leaves it out of far", () => {
+    const integrations = [1, 2, 3, 4, 5].map((n) =>
+      uiIntegration({ name: `old-${n}`, lanes: [`l-${n}`], updatedAt: at(-9000 + n), landedAt: at(-7200 + n * 60) }),
+    );
+    const lanes = [1, 2, 3, 4, 5].map((n) => finishedLane({ name: `l-${n}`, integration: `old-${n}` }));
+    // By landedAt, not by the snapshot's order.
+    const fg = foreground(uiSnapshot({ lanes, integrations: [...integrations].reverse() }));
     expect(fg.lanes).toEqual([]);
     expect(fg.capstone).toBeNull();
-    expect(fg.far.map((i) => i.name)).toEqual(["landed"]);
+    expect(fg.monument?.name).toBe("old-5");
+    expect(fg.far.map((i) => i.name)).toEqual(["old-4", "old-3", "old-2"]);
+
+    // Lanes that are not builders do not hold the foreground.
+    const scout = uiLane({ name: "scout", role: "researcher", state: "running" });
+    expect(foreground(uiSnapshot({ lanes: [...lanes, scout], integrations })).monument?.name).toBe("old-5");
+    // Work in the foreground, even planned, sends it far.
+    const busy = foreground(uiSnapshot({ lanes: [...lanes, uiLane({ name: "new" })], integrations }));
+    expect(busy.monument).toBeNull();
+    expect(busy.far.map((i) => i.name)).toEqual(["old-5", "old-4", "old-3"]);
+  });
+
+  it("has no monument with nothing landed, nor while a landing is within its 10 minutes", () => {
+    expect(foreground(uiSnapshot()).monument).toBeNull();
+    const open = uiIntegration({ name: "open", lanes: ["a"] });
+    expect(foreground(uiSnapshot({ integrations: [open] })).monument).toBeNull();
+    // The landing's lanes have left the snapshot: still no monument within the 10 minutes.
+    const recent = uiIntegration({ name: "recent", lanes: ["a"], landedAt: at(-60) });
+    const old = uiIntegration({ name: "old", lanes: ["z"], landedAt: at(-4000) });
+    const fg = foreground(uiSnapshot({ integrations: [old, recent] }));
+    expect(fg.monument).toBeNull();
+    expect(fg.capstone?.name).toBe("recent");
+    expect(fg.far.map((i) => i.name)).toEqual(["old"]);
   });
 
   it("gives the capstone to the newest open integration that merged a foreground lane", () => {
@@ -982,8 +1018,19 @@ describe("the capstone", () => {
     expect(kinds(s)).toEqual(["capstone"]);
     expect(s.world.events).toEqual([{ kind: "capstone", lane: "int" }]);
 
+    // int's stays set on the apex for 1.5 s, through another snapshot too, before int2's rises.
+    const apex = s.world.pyramid.apex;
+    expect(cap).toMatchObject({ state: "set", integration: "int", flag: "passed", ...apex, glow: 1 });
+    run(s, 0.75);
+    s.apply(uiSnapshot({ lanes: two, integrations: both, now: at(8) }));
+    expect(cap).toMatchObject({ state: "set", integration: "int", flag: "passed", ...apex });
+    const held = 0.75 + until(s, () => cap.state !== "set", 2);
+    expect(held).toBeGreaterThanOrEqual(1.45);
+    expect(held).toBeLessThanOrEqual(1.55);
+
     // Then int2's starts from the sledge, with its own flag, and sets in about 3 s.
     expect(cap).toMatchObject({ state: "hoisting", integration: "int2", flag: "failed", ready: false, ...PLACES.sledge });
+    expect(cap.glow).toBe(0);
     const took = until(s, () => cap.state === "set", 4);
     expect(took).toBeGreaterThanOrEqual(2.95);
     expect(took).toBeLessThanOrEqual(3.1);
@@ -1009,7 +1056,9 @@ describe("the capstone", () => {
       const merged = Array.from({ length: n * 5 }, (_, k) => `x${k}`);
       return uiIntegration({ name: `i${n}`, lanes: merged, landedAt: at(-7200 + n) });
     });
-    s.apply(uiSnapshot({ integrations }));
+    // Work in the foreground, so the newest stands far too rather than as the monument.
+    s.apply(uiSnapshot({ lanes: [builder("new")], integrations }));
+    expect(s.world.pyramid.monument).toBeNull();
     expect(s.world.far).toEqual([
       { integration: "i4", x: 152, y: 128, height: 20 },
       { integration: "i3", x: 108, y: 128, height: 17 },
@@ -1086,7 +1135,13 @@ describe("particles", () => {
     s.apply(uiSnapshot({ lanes: failed, now: at(1) }));
     expect(kinds(s).filter((k) => k === "fall")).toHaveLength(40);
     expect(s.world.particles).toHaveLength(300);
-    run(s, 3);
+    // The workers walking off raise dust on top of the falling stones: the cap still holds.
+    let dust = 0;
+    run(s, 3, () => {
+      expect(s.world.particles.length).toBeLessThanOrEqual(300);
+      dust = Math.max(dust, s.world.particles.filter((p) => p.kind === "dust").length);
+    });
+    expect(dust).toBeGreaterThan(0);
     expect(s.world.pyramid.rubble).toBe(60);
   });
 });
@@ -1209,6 +1264,317 @@ describe("pick and highlight", () => {
   });
 });
 
+// ---------------------------------------------------------------------------------------------------------------
+
+describe("the idle monument", () => {
+  // Twelve lanes (base 5), so its layout differs from that of one new lane (base 4).
+  const merged = Array.from({ length: 12 }, (_, i) => `m${String(i).padStart(2, "0")}`);
+  const finished = merged.map((name, i) => finishedLane({ name, integration: "int-m", firstSeen: at(-8000 + i) }));
+  const older = uiIntegration({ name: "int-o", lanes: ["o1"], updatedAt: at(-9100), landedAt: at(-9000) });
+  const open = uiIntegration({ name: "int-m", lanes: merged, updatedAt: at(-7300), verify: "passed", ready: false });
+  const landed = { ...open, landedAt: at(-7200) };
+
+  function expectMonument(s: Scene): void {
+    const p = s.world.pyramid;
+    const layout = pyramidLayout(merged.length);
+    expect(layout.base).toBe(5);
+    expect(p.monument).toBe("int-m");
+    expect([p.base, p.blockW, p.blockH]).toEqual([layout.base, layout.blockW, layout.blockH]);
+    expect(p.apex).toEqual(layout.apex);
+    expect(p.blocks.map((b) => [b.x, b.y, b.w, b.h])).toEqual(layout.slots.map((x) => [x.x, x.y, x.w, x.h]));
+    for (const b of p.blocks) expect(b).toMatchObject({ look: "set", fill: 1 });
+    expect(p.blocks.map((b) => b.lane)).toEqual([...merged, null, null, null]);
+    expect(p.capstone).toEqual({ state: "set", integration: "int-m", ...layout.apex, flag: "passed", ready: true, glow: 0 });
+    // Not also on the horizon.
+    expect(s.world.far.map((f) => f.integration)).toEqual(["int-o"]);
+  }
+
+  it("stands at the baseline while no lane builds", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: finished, integrations: [older, landed] }));
+    expectMonument(s);
+    expect(s.world.events).toEqual([]);
+    expect(s.world.shake).toBe(0);
+    run(s, 2);
+    expectMonument(s);
+    expect(s.world.particles).toEqual([]);
+    // Its blocks carry the lane names: they can be picked and highlighted.
+    const block = s.world.pyramid.blocks[3]!;
+    expect(s.pick(block.x + 1, block.y + 1)).toBe("m03");
+    s.highlight("m03");
+    expect(s.world.pyramid.blocks.filter((b) => b.highlight).map((b) => b.lane)).toEqual(["m03"]);
+  });
+
+  it("flies the flag of its verify", () => {
+    const flag = (verify: "passed" | "failed" | null): string => {
+      const s = newScene();
+      s.apply(uiSnapshot({ integrations: [{ ...landed, verify }] }));
+      return s.world.pyramid.capstone.flag;
+    };
+    expect([flag("passed"), flag("failed"), flag(null)]).toEqual(["passed", "failed", "none"]);
+  });
+
+  it("stands live once the last lane leaves, at once", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: [builder("w", { state: "running", toolCalls: 3 })], integrations: [older, landed] }));
+    expect(s.world.pyramid.monument).toBeNull();
+    expect(s.world.far.map((f) => f.integration)).toEqual(["int-m", "int-o"]);
+    s.apply(uiSnapshot({ integrations: [older, landed], now: at(1) }));
+    expectMonument(s);
+    expect(kinds(s)).toEqual([]);
+  });
+
+  it("is the foreground's landing itself once its 10 minutes pass, not before", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: finished, integrations: [older, open] }));
+    expect(s.world.pyramid.capstone.state).toBe("waiting");
+    const now = { ...open, landedAt: at(1) };
+    s.apply(uiSnapshot({ lanes: finished, integrations: [older, now], now: at(2) }));
+    // Within its 10 minutes the landing is the foreground, with its lanes and its hoist.
+    expect(s.world.pyramid.monument).toBeNull();
+    expect(s.world.pyramid.capstone.state).toBe("hoisting");
+    until(s, () => s.world.pyramid.capstone.state === "set", 4);
+    s.apply(uiSnapshot({ lanes: finished, integrations: [older, now], now: at(600) }));
+    expect(s.world.pyramid.monument).toBeNull();
+    expect(s.world.pyramid.blocks.filter((b) => b.lane !== null).map((b) => b.look)).toEqual(merged.map(() => "set"));
+    s.apply(uiSnapshot({ lanes: finished, integrations: [older, now], now: at(602) }));
+    expectMonument(s);
+    expect(kinds(s)).toEqual(["capstone"]);
+  });
+
+  it("leaves for the horizon at once when work starts, live and in reduced motion", () => {
+    for (const reduced of [false, true]) {
+      const s = newScene(reduced);
+      s.apply(uiSnapshot({ lanes: finished, integrations: [older, landed] }));
+      expectMonument(s);
+      s.apply(uiSnapshot({ lanes: [...finished, builder("new")], integrations: [older, landed], now: at(1) }));
+      const p = s.world.pyramid;
+      const layout = pyramidLayout(1);
+      expect(p.monument).toBeNull();
+      expect([p.base, p.blockW, p.blockH]).toEqual([layout.base, layout.blockW, layout.blockH]);
+      expect(p.apex).toEqual(layout.apex);
+      // The new work's outline: its planned block, then empty slots.
+      expect(p.blocks.map((b) => [b.lane, b.look])).toEqual([
+        ["new", "planned"],
+        ...layout.slots.slice(1).map(() => [null, "empty"]),
+      ]);
+      expect(p.capstone).toEqual({ state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false, glow: 0 });
+      expect(s.world.far).toEqual([
+        { integration: "int-m", ...farPyramidPlace(0, merged.length) },
+        { integration: "int-o", ...farPyramidPlace(1, 1) },
+      ]);
+      expect(kinds(s)).toEqual([]);
+      expect(s.world.shake).toBe(0);
+    }
+  });
+
+  it("leaves the empty outline with nothing landed", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ integrations: [uiIntegration({ name: "open", lanes: ["a"] })] }));
+    const p = s.world.pyramid;
+    expect(p.monument).toBeNull();
+    expect(p.blocks).toHaveLength(pyramidLayout(0).slots.length);
+    for (const b of p.blocks) expect(b).toMatchObject({ lane: null, look: "empty", fill: 0 });
+    expect(p.capstone).toMatchObject({ state: "none", integration: null });
+    expect(s.world.far).toEqual([]);
+  });
+});
+
+describe("time", () => {
+  it("starts at 0 and adds each step's seconds, a long step cut to 100 ms", () => {
+    for (const reduced of [false, true]) {
+      const s = newScene(reduced);
+      expect(s.world.time).toBe(0);
+      s.apply(uiSnapshot({ lanes: [builder("a", { state: "running" })] }));
+      expect(s.world.time).toBe(0);
+      s.step(16);
+      s.step(34);
+      expect(s.world.time).toBeCloseTo(0.05, 9);
+      s.step(10_000);
+      expect(s.world.time).toBeCloseTo(0.15, 9);
+      for (const dt of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) s.step(dt);
+      expect(s.world.time).toBeCloseTo(0.15, 9);
+      run(s, 2);
+      expect(s.world.time).toBeCloseTo(2.15, 9);
+    }
+  });
+});
+
+describe("shake and glow", () => {
+  const lanes = [finishedLane({ name: "a", integration: "int" }), finishedLane({ name: "b", integration: "int" })];
+  const open = uiIntegration({ name: "int", lanes: ["a", "b"], verify: "passed" });
+
+  it("shakes 2 px on a live fall, decaying at 6 px/s", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: [builder("a", { state: "running", toolCalls: 40 })] }));
+    expect(s.world.shake).toBe(0);
+    s.apply(uiSnapshot({ lanes: [builder("a", { state: "finished", endState: "failed" })], now: at(1) }));
+    expect(s.world.shake).toBe(2);
+    s.step(100);
+    expect(s.world.shake).toBeCloseTo(1.4, 9);
+    s.step(100);
+    expect(s.world.shake).toBeCloseTo(0.8, 9);
+    run(s, 0.15);
+    expect(s.world.shake).toBe(0);
+    run(s, 1);
+    expect(s.world.shake).toBe(0);
+  });
+
+  it("does not shake for a block fallen at the baseline", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: [finishedLane({ name: "a", endState: "failed", reportStatus: null })] }));
+    expect(s.world.pyramid.rubble).toBe(4);
+    expect(s.world.shake).toBe(0);
+  });
+
+  it("shakes 3 px and lights the capstone when a hoist sets it; the larger shake wins", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: [...lanes, builder("c", { state: "running", toolCalls: 40 })], integrations: [open] }));
+    s.apply(
+      uiSnapshot({
+        lanes: [...lanes, builder("c", { state: "running", toolCalls: 40 })],
+        integrations: [{ ...open, landedAt: at(1) }],
+        now: at(2),
+      }),
+    );
+    const cap = s.world.pyramid.capstone;
+    expect(cap).toMatchObject({ state: "hoisting", glow: 0 });
+    until(s, () => cap.state === "set", 4);
+    expect(s.world.shake).toBe(3);
+    expect(cap.glow).toBe(1);
+    // A fall now does not lower the shake.
+    s.apply(
+      uiSnapshot({
+        lanes: [...lanes, builder("c", { state: "finished", endState: "failed" })],
+        integrations: [{ ...open, landedAt: at(1) }],
+        now: at(3),
+      }),
+    );
+    expect(kinds(s)).toEqual(["capstone", "fall"]);
+    expect(s.world.shake).toBe(3);
+    s.step(100);
+    expect(s.world.shake).toBeCloseTo(2.4, 9);
+    expect(cap.glow).toBeCloseTo(0.975, 9);
+    run(s, 0.9);
+    expect(cap.glow).toBeCloseTo(0.75, 9);
+    expect(s.world.shake).toBeCloseTo(0, 9);
+    run(s, 3.05);
+    expect(cap.glow).toBe(0);
+    expect(cap.state).toBe("set");
+    // Another snapshot keeps the set capstone as it is.
+    s.apply(uiSnapshot({ lanes, integrations: [{ ...open, landedAt: at(1) }], now: at(10) }));
+    expect(cap).toMatchObject({ state: "set", glow: 0 });
+  });
+
+  it("gives no glow to a capstone already set at the baseline", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes, integrations: [{ ...open, landedAt: at(-60) }] }));
+    expect(s.world.pyramid.capstone).toMatchObject({ state: "set", glow: 0 });
+    expect(s.world.shake).toBe(0);
+  });
+
+  it("never shakes in reduced motion; the capstone still glows", () => {
+    const s = newScene(true);
+    s.apply(uiSnapshot({ lanes: [...lanes, builder("c", { state: "running", toolCalls: 40 })], integrations: [open] }));
+    s.apply(
+      uiSnapshot({
+        lanes: [...lanes, builder("c", { state: "finished", endState: "failed" })],
+        integrations: [{ ...open, landedAt: at(1) }],
+        now: at(2),
+      }),
+    );
+    expect(kinds(s)).toEqual(["fall", "capstone"]);
+    expect(s.world.shake).toBe(0);
+    expect(s.world.pyramid.capstone).toMatchObject({ state: "set", glow: 1 });
+    run(s, 2);
+    expect(s.world.shake).toBe(0);
+    expect(s.world.pyramid.capstone.glow).toBeCloseTo(0.5, 9);
+  });
+});
+
+describe("dust underfoot", () => {
+  const WALKING: ReadonlySet<Pose> = new Set<Pose>(["walk", "slump", "carry-scroll", "carry-stone", "carry-ration"]);
+
+  interface Puff {
+    p: Particle;
+    pose: Pose;
+    feet: { x: number; y: number };
+  }
+
+  /** Steps the scene, logging each new dust particle with the pose and feet of the lane's worker in that step. */
+  function watch(s: Scene, lane: string): { puffs: Puff[]; poses: Set<Pose>; walked: () => number; each: () => void } {
+    const seen = new Set<Particle>(s.world.particles);
+    const puffs: Puff[] = [];
+    const poses = new Set<Pose>();
+    let walked = 0;
+    let last: { x: number; y: number } | null = null;
+    const each = (): void => {
+      const a = actorOf(s, lane);
+      if (a) {
+        poses.add(a.pose);
+        if (last !== null && WALKING.has(a.pose) && (a.x !== last.x || a.y !== last.y)) walked += 0.05;
+        last = { x: a.x, y: a.y };
+      }
+      for (const p of s.world.particles) {
+        if (seen.has(p)) continue;
+        seen.add(p);
+        if (p.kind === "dust" && a) puffs.push({ p: { ...p }, pose: a.pose, feet: { x: a.x, y: a.y } });
+      }
+    };
+    return { puffs, poses, walked: () => walked, each };
+  }
+
+  it("puffs one dust every 0.25 s of walking, at the feet, none while sitting, talking, climbing or working", () => {
+    const done = ["d1", "d2", "d3", "d4"].map((name, i) => finishedLane({ name, firstSeen: at(-7200 + i) }));
+    const me = (extra: Partial<UiLane>): UiLane => uiLane({ name: "me", firstSeen: at(-3600), ...extra });
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: done }));
+    s.apply(uiSnapshot({ lanes: [...done, me({ state: "queued" })], now: at(1) }));
+    const w = watch(s, "me");
+    w.each();
+    until(s, () => mustActor(s, "me").pose === "sit", 10, w.each);
+    run(s, 2, w.each);
+    // No tool calls: no strokes, so every dust is underfoot.
+    s.apply(uiSnapshot({ lanes: [...done, me({ state: "running", toolCalls: 0 })], now: at(10) }));
+    until(s, () => mustActor(s, "me").pose === "work", 60, w.each);
+    run(s, 3, w.each);
+
+    for (const pose of ["walk", "sit", "talk", "carry-stone", "climb-stone", "work"] as const) expect(w.poses).toContain(pose);
+    expect(w.walked()).toBeGreaterThan(5);
+    const expected = Math.floor(w.walked() / 0.25);
+    expect(w.puffs.length).toBeGreaterThanOrEqual(expected - 1);
+    expect(w.puffs.length).toBeLessThanOrEqual(expected + 1);
+    for (const { p, pose, feet } of w.puffs) {
+      expect(WALKING.has(pose)).toBe(true);
+      expect(p.vx).toBeGreaterThanOrEqual(-4);
+      expect(p.vx).toBeLessThanOrEqual(4);
+      expect(p.vy).toBeGreaterThanOrEqual(-6);
+      expect(p.vy).toBeLessThanOrEqual(-2);
+      // Made at the feet, then moved for the rest of the step.
+      expect(Math.abs(p.x - feet.x)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(p.y - feet.y)).toBeLessThanOrEqual(0.5);
+    }
+  });
+
+  it("puffs while a worker slumps off", () => {
+    const s = newScene();
+    s.apply(uiSnapshot({ lanes: [builder("a", { state: "running", toolCalls: 40 })] }));
+    s.apply(uiSnapshot({ lanes: [builder("a", { state: "finished", endState: "failed" })], now: at(1) }));
+    const w = watch(s, "a");
+    until(s, () => actorOf(s, "a") === undefined, 60, w.each);
+    expect(w.puffs.some((x) => x.pose === "slump")).toBe(true);
+    expect(w.puffs.every((x) => WALKING.has(x.pose))).toBe(true);
+  });
+
+  it("raises none in reduced motion", () => {
+    const s = newScene(true);
+    s.apply(uiSnapshot());
+    s.apply(uiSnapshot({ lanes: [builder("a")], now: at(1) }));
+    s.apply(uiSnapshot({ lanes: [builder("a", { state: "running" })], now: at(2) }));
+    run(s, 5, () => expect(s.world.particles).toEqual([]));
+  });
+});
+
 describe("determinism", () => {
   function script(s: Scene): void {
     const lanes = [
@@ -1244,6 +1610,7 @@ describe("determinism", () => {
     script(two);
     expect(one.world).toEqual(two.world);
     expect(one.world.events.length).toBeGreaterThan(0);
+    expect(one.world.time).toBeCloseTo(23, 1);
   });
 
   it("differs with another seed", () => {

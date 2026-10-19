@@ -50,6 +50,16 @@ const LINE_GAP = 12;
 const MAX_LINE = 6;
 const MASON_OFFSET = 5;
 const FIVE_HOURS_S = 18000;
+/** How long a set capstone stays on the apex before the next landing's rises from the sledge. */
+const NEXT_HOIST_PAUSE_S = 1.5;
+const FALL_SHAKE = 2;
+const CAPSTONE_SHAKE = 3;
+const SHAKE_DECAY_PER_S = 6;
+const GLOW_S = 4;
+/** Seconds of walking per puff of dust underfoot. */
+const DUST_EVERY_S = 0.25;
+const DUST_LIFE_S = 0.5;
+const DUST_POSES: ReadonlySet<Pose> = new Set<Pose>(["walk", "slump", "carry-scroll", "carry-stone", "carry-ration"]);
 
 // ---------------------------------------------------------------------------------------------------------------
 // Pure helpers
@@ -93,6 +103,8 @@ export interface Foreground {
   lanes: UiLane[];
   capstone: UiIntegration | null;
   capstoneLanded: boolean;
+  /** The newest landing, standing finished in the foreground while it holds no lane; never also in far. */
+  monument: UiIntegration | null;
   far: UiIntegration[];
 }
 
@@ -142,8 +154,10 @@ export function foreground(snapshot: UiSnapshot): Foreground {
     const open = snapshot.integrations.filter((i) => i.landedAt === null && i.lanes.some((n) => names.has(n)));
     capstone = newest(open, (i) => epochMs(i.updatedAt));
   }
-  const far = landed.filter((i) => !recent.has(i)).slice(0, 3);
-  return { lanes, capstone, capstoneLanded: latest !== null, far };
+  // A recent landing holds the foreground with its lanes, so only an older one can stand as the monument.
+  const monument = lanes.length === 0 && latest === null ? (landed[0] ?? null) : null;
+  const far = landed.filter((i) => !recent.has(i) && i !== monument).slice(0, 3);
+  return { lanes, capstone, capstoneLanded: latest !== null, monument, far };
 }
 
 /** min(0.95, 1 − e^(−calls/40)) */
@@ -230,6 +244,8 @@ interface Crew {
   descending: boolean;
   chatIn: number | null;
   chatLeft: number;
+  /** Seconds walked since the last puff of dust. */
+  dust: number;
 }
 
 interface Talk {
@@ -333,6 +349,8 @@ export function createScene(options: SceneOptions): Scene {
   let hoist = 0;
   /** The landing whose capstone rises once the one rising now has set. */
   let nextLanding: UiIntegration | null = null;
+  /** Seconds the set capstone still stays on the apex before nextLanding's rises. */
+  let pause = 0;
   let cheer = 0;
   let highlighted: string | null = null;
   let actorsDirty = false;
@@ -788,6 +806,7 @@ export function createScene(options: SceneOptions): Scene {
         const y = block.y + random() * block.h;
         addParticle("stone", x, y, (random() * 2 - 1) * 40, 0, 5);
       }
+      world.shake = Math.max(world.shake, FALL_SHAKE);
     }
     block.fill = 0;
     emit("fall", block.lane);
@@ -852,6 +871,7 @@ export function createScene(options: SceneOptions): Scene {
       descending: false,
       chatIn: null,
       chatLeft: 0,
+      dust: 0,
     };
     crews.set(lane.name, c);
     actorsDirty = true;
@@ -955,32 +975,44 @@ export function createScene(options: SceneOptions): Scene {
   }
 
   function startHoist(): void {
-    Object.assign(world.pyramid.capstone, { state: "hoisting", ...PLACES.sledge });
+    Object.assign(world.pyramid.capstone, { state: "hoisting", ...PLACES.sledge, glow: 0 });
     hoist = 0;
   }
 
   function foldCapstone(fg: Foreground, first: boolean): void {
     const cap = world.pyramid.capstone;
     const integration = fg.capstone;
-    // A landing that comes while another's capstone rises waits for that one to set, then rises from the sledge.
-    if (fg.capstoneLanded && integration !== null && cap.state === "hoisting" && cap.integration !== integration.name) {
+    // A landing that comes while another's capstone rises (or stands its pause on the apex) waits for that one to
+    // set, then rises from the sledge.
+    const busy = cap.state === "hoisting" || pause > 0;
+    if (fg.capstoneLanded && integration !== null && busy && cap.integration !== integration.name) {
       nextLanding = integration;
       return;
     }
     nextLanding = null;
+    pause = 0;
+    if (fg.monument !== null) {
+      dressCapstone(fg.monument);
+      Object.assign(cap, { state: "set", ...world.pyramid.apex, ready: true, glow: 0 });
+      return;
+    }
     if (integration === null) {
-      Object.assign(cap, { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false });
+      Object.assign(cap, { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false, glow: 0 });
       return;
     }
     const same = cap.integration === integration.name;
     dressCapstone(integration);
     if (!fg.capstoneLanded) {
-      Object.assign(cap, { state: "waiting", ...PLACES.sledge });
+      Object.assign(cap, { state: "waiting", ...PLACES.sledge, glow: 0 });
       return;
     }
     if (same && cap.state === "hoisting") return;
-    if ((same && cap.state === "set") || first) {
-      Object.assign(cap, { state: "set", ...world.pyramid.apex });
+    if (same && cap.state === "set") {
+      Object.assign(cap, world.pyramid.apex);
+      return;
+    }
+    if (first) {
+      Object.assign(cap, { state: "set", ...world.pyramid.apex, glow: 0 });
       return;
     }
     startHoist();
@@ -990,7 +1022,8 @@ export function createScene(options: SceneOptions): Scene {
   function setCapstone(): void {
     const cap = world.pyramid.capstone;
     const apex = world.pyramid.apex;
-    Object.assign(cap, { state: "set", ...apex });
+    Object.assign(cap, { state: "set", ...apex, glow: 1 });
+    if (!reduced) world.shake = Math.max(world.shake, CAPSTONE_SHAKE);
     for (let i = 0; i < SPARKLES && !reduced; i += 1) {
       const x = apex.x + (random() - 0.5) * 8;
       const y = apex.y - random() * 6;
@@ -1031,6 +1064,18 @@ export function createScene(options: SceneOptions): Scene {
     p.blockW = layout.blockW;
     p.blockH = layout.blockH;
     p.apex = { ...layout.apex };
+    const monument = fg.monument;
+    p.monument = monument === null ? null : monument.name;
+    if (monument !== null) {
+      // Finished: every slot is set, the merged lanes in order on the first ones.
+      p.blocks = layout.slots.map((slot, i) => ({
+        ...emptyBlock(slot),
+        lane: monument.lanes[i] ?? null,
+        look: "set",
+        fill: 1,
+      }));
+      return;
+    }
     p.blocks = layout.slots.map((slot, i) => {
       const lane = fg.lanes[i];
       const block = lane === undefined ? undefined : blocks.get(lane.name);
@@ -1078,7 +1123,7 @@ export function createScene(options: SceneOptions): Scene {
     const fg = foreground(snapshot);
     foldSky(snapshot);
     const old = layout;
-    layout = pyramidLayout(fg.lanes.length);
+    layout = pyramidLayout(fg.monument === null ? fg.lanes.length : fg.monument.lanes.length);
     const reshaped = old.base !== layout.base || old.blockW !== layout.blockW || old.blockH !== layout.blockH;
     slots = new Map();
     fg.lanes.forEach((lane, i) => {
@@ -1107,7 +1152,12 @@ export function createScene(options: SceneOptions): Scene {
   function step(dtMs: number): void {
     const dt = Math.min(MAX_DT_MS, Number.isFinite(dtMs) ? Math.max(0, dtMs) : 0) / 1000;
     if (dt <= 0) return;
+    world.time += dt;
     arbab.poseTime += dt;
+    // Before the effects of this frame, so a fall or a set in it shakes and glows at full strength.
+    world.shake = Math.max(0, world.shake - SHAKE_DECAY_PER_S * dt);
+    const cap = world.pyramid.capstone;
+    cap.glow = Math.max(0, cap.glow - dt / GLOW_S);
     // Before the strokes, so a stone placed in this frame shows its full shine.
     for (const block of blocks.values()) block.flash = Math.max(0, block.flash - FLASH_FADE_PER_S * dt);
     for (const c of [...crews.values()]) {
@@ -1117,7 +1167,9 @@ export function createScene(options: SceneOptions): Scene {
         if (c.actor.alpha <= 0) removeCrew(c);
         continue;
       }
+      const { x, y } = c.actor;
       advance(c, dt);
+      kickDust(c, dt, c.actor.x !== x || c.actor.y !== y);
     }
     for (const [name, block] of blocks) {
       if (block.look !== "building") continue;
@@ -1127,7 +1179,6 @@ export function createScene(options: SceneOptions): Scene {
         block.fill = Math.min(target, block.fill + EASE_PER_S * dt);
       }
     }
-    const cap = world.pyramid.capstone;
     if (cap.state === "hoisting") {
       hoist = Math.min(1, hoist + dt / HOIST_S);
       const e = easeInOut(hoist);
@@ -1136,17 +1187,32 @@ export function createScene(options: SceneOptions): Scene {
       cap.y = PLACES.sledge.y + (apex.y - PLACES.sledge.y) * e;
       if (hoist >= 1) {
         setCapstone();
-        if (nextLanding !== null) {
-          dressCapstone(nextLanding);
-          nextLanding = null;
-          startHoist();
-        }
+        // The set capstone is seen on the apex before the next landing's rises.
+        if (nextLanding !== null) pause = NEXT_HOIST_PAUSE_S;
+      }
+    } else if (pause > 0) {
+      pause = Math.max(0, pause - dt);
+      if (pause === 0 && nextLanding !== null) {
+        dressCapstone(nextLanding);
+        nextLanding = null;
+        startHoist();
       }
     }
     stepParticles(dt);
     cheer = Math.max(0, cheer - dt);
     updateArbab();
     refreshActors();
+  }
+
+  /** A puff of dust at the feet for every DUST_EVERY_S a worker walks on the ground (a climb raises none). */
+  function kickDust(c: Crew, dt: number, moved: boolean): void {
+    const a = c.actor;
+    if (reduced || !moved || !DUST_POSES.has(a.pose)) return;
+    c.dust += dt;
+    while (c.dust >= DUST_EVERY_S) {
+      c.dust -= DUST_EVERY_S;
+      addParticle("dust", a.x, a.y, -4 + 8 * random(), -6 + 4 * random(), DUST_LIFE_S);
+    }
   }
 
   function stepParticles(dt: number): void {

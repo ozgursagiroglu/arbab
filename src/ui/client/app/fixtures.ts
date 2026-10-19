@@ -135,6 +135,8 @@ export function dayWorld(): World {
       particle("dust", workSpot(s(6)).x - 9, 186),
     ],
     coins: 20,
+    // Birds overhead, the felucca clear of the grove, the caravan passing behind the temple.
+    time: 14,
   });
 }
 
@@ -180,6 +182,8 @@ export function duskWorld(): World {
       actor({ id: "ghost", cast: "mason", ...workSpot(s(6)), ghost: true, icon: "question" }),
     ],
     coins: 12,
+    // Birds against the low sun, the felucca nearly across, the caravan leaving.
+    time: 60,
   });
 }
 
@@ -199,9 +203,10 @@ export function capstoneWorld(): World {
       rubble: 0,
       monument: null,
       apex: l.apex,
-      capstone: capstone({ state: "set", integration: "int-3", ...l.apex, flag: "passed", ready: true }),
+      capstone: capstone({ state: "set", integration: "int-3", ...l.apex, flag: "passed", ready: true, glow: 0.8 }),
     },
     far: farPyramids([10, 3, 0]),
+    time: 150,
     actors: [
       arbab({ pose: "cheer", poseTime: 0.1 }),
       // On the way from the table to the village path.
@@ -253,10 +258,40 @@ export function nightWorld(): World {
       actor({ id: "sleeper-e", cast: "laborer", ...campSeat(3), pose: "sleep", icon: "zzz" }),
     ],
     coins: 8,
+    // A shooting star halfway through its streak.
+    time: 120.3,
   });
 }
 
-export const FRAMES = { day: dayWorld, dusk: duskWorld, capstone: capstoneWorld, night: nightWorld } as const;
+/**
+ * Nobody at work: the last landing stands as the monument with its plaque, while the valley goes on living (a felucca
+ * mid-river, the caravan mid-crossing, the camp fire, birds overhead).
+ */
+export function idleWorld(): World {
+  const l = pyramidLayout(15);
+  return world({
+    sky: { phase: "day", sun: 0.3 },
+    pyramid: {
+      base: l.base,
+      blockW: l.blockW,
+      blockH: l.blockH,
+      blocks: blocks(
+        l,
+        l.slots.map(() => ({ look: "set" })),
+      ),
+      rubble: 0,
+      monument: "int-walls",
+      apex: l.apex,
+      capstone: capstone({ state: "set", integration: "int-walls", ...l.apex, flag: "passed", ready: true }),
+    },
+    far: farPyramids([6, 9]),
+    actors: [arbab()],
+    coins: 26,
+    time: 49,
+  });
+}
+
+export const FRAMES = { day: dayWorld, dusk: duskWorld, capstone: capstoneWorld, night: nightWorld, idle: idleWorld } as const;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Snapshots for the HUD and page tests

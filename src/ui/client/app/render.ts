@@ -1,28 +1,41 @@
 // Draws a World (DESIGN.md §19) with solid rectangles and globalAlpha only, so the page and the PNG frames share it.
-// It never changes the world. Everything goes through one clipping, rounding rect(); static layers are rect lists
-// built once, so a frame's work follows what is on screen.
-import type { Actor, Block, Bubble, Particle, Pyramid, Sky, World } from "../model";
+// It never changes the world, and a frame is a function of the world alone: what lives without data moves by
+// world.time. The scenery lives in ./art; this file puts it together with the pyramid, the actors and their signs.
+import type { Actor, Block, Bubble, Particle, Pyramid, World } from "../model";
 import { HEIGHT, HORIZON_Y, PLACES, PYRAMID_AREA, WIDTH } from "../model";
+import {
+  drawGlowBeam,
+  drawLightPools,
+  drawNameplate,
+  drawPlaque,
+  drawPyramidShadow,
+  drawShadows,
+  drawVignette,
+  shakeOffset,
+} from "./art/fx";
+import { drawFarLand, drawRiverAndPlain } from "./art/land";
+import type { Painter, Rect } from "./art/paint";
+import { clock, lightOf, painter, prng } from "./art/paint";
+import type { Scenery, ShadowSpot } from "./art/props";
+import { LIGHTS, PROP_SHADOWS, propScenery } from "./art/props";
+import { drawSky } from "./art/sky";
 import type { Canvas2D } from "./browser";
 import {
   BUBBLE,
   COIN,
-  DUNES,
   FALLEN,
+  FAR_STONE,
   FLAG,
   FLASH,
   GOLD,
   LIMESTONE,
-  MOON,
-  MOON_SHADE,
   ORPHANED,
   OUTLINE,
   OUTLINE_EMPTY,
   OUTLINE_PLANNED,
+  PLAIN,
   SAND,
-  SKY,
-  STAR,
-  SUN,
+  SKY_RAMP,
   WOOD,
   desaturate,
   mix,
@@ -30,116 +43,11 @@ import {
 import type { Grid, Sprite } from "./sprites";
 import { compileProp, createSpriteSet, GLYPHS, ICONS, MARKER, PROPS } from "./sprites";
 
-interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  color: string;
-}
+export { MOON_AT, sunPosition } from "./art/sky";
+export { prng } from "./art/paint";
 
 /** The ground line: ladders stand on it, and a worker above it works on a plank. */
 export const GROUND_Y = PYRAMID_AREA.baseY + 2;
-
-/** The sun's arc: a parabola through (40, 112), (240, 26) and (440, 112). */
-export function sunPosition(sun: number): { x: number; y: number } {
-  const t = Number.isFinite(sun) ? Math.min(1, Math.max(0, sun)) : 0.5;
-  const x = 40 + 400 * t;
-  return { x, y: 26 + (86 / 200 ** 2) * (x - 240) ** 2 };
-}
-
-export const MOON_AT = { x: 400, y: 30 } as const;
-
-/** A small deterministic PRNG (mulberry32): the same seed gives the same sequence. */
-export function prng(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// The painter: rounds once, clips to the canvas, and sets fillStyle only when it changes.
-
-interface Painter {
-  rect(x: number, y: number, w: number, h: number, color: string): void;
-  rects(list: readonly Rect[], dx?: number, dy?: number): void;
-  sprite(sprite: Sprite, left: number, top: number, mirror?: boolean): void;
-  alpha(value: number): void;
-  /** Recolors what follows (dusk and night light), or stops recoloring with null. */
-  tint(map: ((color: string) => string) | null): void;
-}
-
-function painter(ctx: Canvas2D): Painter {
-  let current = "";
-  let recolor: ((color: string) => string) | null = null;
-  const rect = (x: number, y: number, w: number, h: number, original: string): void => {
-    const color = recolor ? recolor(original) : original;
-    let x0 = Math.round(x);
-    let y0 = Math.round(y);
-    let x1 = x0 + Math.round(w);
-    let y1 = y0 + Math.round(h);
-    x0 = Math.max(0, x0);
-    y0 = Math.max(0, y0);
-    x1 = Math.min(WIDTH, x1);
-    y1 = Math.min(HEIGHT, y1);
-    if (x1 <= x0 || y1 <= y0) return;
-    if (color !== current) {
-      ctx.fillStyle = color;
-      current = color;
-    }
-    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-  };
-  return {
-    rect,
-    rects(list, dx = 0, dy = 0) {
-      for (const r of list) rect(r.x + dx, r.y + dy, r.w, r.h, r.color);
-    },
-    sprite(sprite, left, top, mirror = false) {
-      for (const run of mirror ? sprite.mirrored : sprite.runs) rect(left + run.x, top + run.y, run.w, 1, run.color);
-    },
-    alpha(value) {
-      ctx.globalAlpha = Math.min(1, Math.max(0, Number.isFinite(value) ? value : 1));
-    },
-    tint(map) {
-      recolor = map;
-    },
-  };
-}
-
-/** The light of each phase on the land: none by day, warm at dusk, moonlit blue at night. */
-const LIGHT: Readonly<Record<Sky["phase"], { color: string; amount: number } | null>> = {
-  day: null,
-  dusk: { color: SKY.dusk[1], amount: 0.2 },
-  night: { color: SKY.night[1], amount: 0.48 },
-};
-
-const tintCache = new Map<Sky["phase"], Map<string, string>>();
-function lightOf(phase: Sky["phase"]): ((color: string) => string) | null {
-  const light = LIGHT[phase];
-  if (!light) return null;
-  let cache = tintCache.get(phase);
-  if (!cache) {
-    cache = new Map();
-    tintCache.set(phase, cache);
-  }
-  const table = cache;
-  return (color) => {
-    let out = table.get(color);
-    if (out === undefined) {
-      out = mix(color, light.color, light.amount);
-      table.set(color, out);
-    }
-    return out;
-  };
-}
-
-// ---------------------------------------------------------------------------------------------------------------
-// Static layers
 
 const SPRITES = createSpriteSet();
 const propCache = new Map<Grid, Sprite>();
@@ -152,160 +60,6 @@ function prop(grid: Grid): Sprite {
   return sprite;
 }
 
-const BAYER = [
-  [0, 8, 2, 10],
-  [12, 4, 14, 6],
-  [3, 11, 1, 9],
-  [15, 7, 13, 5],
-] as const;
-
-/** Rows y0..y1 shading from one color to the next through an ordered (Bayer) dither. */
-function ditherBand(out: Rect[], y0: number, y1: number, from: string, to: string): void {
-  const n = y1 - y0;
-  for (let i = 0; i < n; i++) {
-    const y = y0 + i;
-    const t = (i + 0.5) / n;
-    const [base, other, density] = t < 0.5 ? [from, to, t] : [to, from, 1 - t];
-    out.push({ x: 0, y, w: WIDTH, h: 1, color: base });
-    const row = BAYER[y % 4] ?? BAYER[0];
-    for (let x = 0; x < WIDTH; x++) {
-      if ((row[x % 4] ?? 0) < density * 16) out.push({ x, y, w: 1, h: 1, color: other });
-    }
-  }
-}
-
-/** Solid bands with dithered seams: `stops` are [y, color] from the top. */
-function bands(stops: readonly [number, string][], end: number, seam: number): Rect[] {
-  const out: Rect[] = [];
-  for (let i = 0; i < stops.length; i++) {
-    const [y, color] = stops[i] ?? [0, "#000000"];
-    const next = stops[i + 1];
-    const solidEnd = next ? next[0] - seam / 2 : end;
-    const solidStart = i === 0 ? y : y + seam / 2;
-    if (solidEnd > solidStart) out.push({ x: 0, y: solidStart, w: WIDTH, h: solidEnd - solidStart, color });
-    if (next) ditherBand(out, next[0] - seam / 2, next[0] + seam / 2, color, next[1]);
-  }
-  return out;
-}
-
-const skyCache = new Map<Sky["phase"], Rect[]>();
-function skyRects(phase: Sky["phase"]): Rect[] {
-  let rects = skyCache.get(phase);
-  if (!rects) {
-    const [top, mid, low] = SKY[phase];
-    rects = bands(
-      [
-        [0, top],
-        [52, mid],
-        [100, low],
-      ],
-      HORIZON_Y,
-      16,
-    );
-    skyCache.set(phase, rects);
-  }
-  return rects;
-}
-
-function disc(out: Rect[], cx: number, cy: number, r: number, color: string): void {
-  for (let dy = -r; dy <= r; dy++) {
-    const half = Math.floor(Math.sqrt((r + 0.5) ** 2 - dy * dy));
-    out.push({ x: cx - half, y: cy + dy, w: half * 2 + 1, h: 1, color });
-  }
-}
-
-const STARS: Rect[] = (() => {
-  const rand = prng(1907);
-  const out: Rect[] = [];
-  for (let i = 0; i < 46; i++) {
-    const x = Math.floor(rand() * WIDTH);
-    const y = Math.floor(rand() * 104);
-    if (Math.abs(x - MOON_AT.x) < 12 && Math.abs(y - MOON_AT.y) < 12) continue;
-    out.push({ x, y, w: 1, h: 1, color: i % 5 === 0 ? MOON : STAR });
-    // A few bright ones get a cross.
-    if (i % 9 === 0) out.push({ x: x - 1, y, w: 3, h: 1, color: STAR }, { x, y: y - 1, w: 1, h: 3, color: STAR });
-  }
-  return out;
-})();
-
-const MOON_RECTS: Rect[] = (() => {
-  const out: Rect[] = [];
-  disc(out, MOON_AT.x, MOON_AT.y, 7, MOON);
-  out.push(
-    { x: MOON_AT.x + 1, y: MOON_AT.y - 3, w: 2, h: 2, color: MOON_SHADE },
-    { x: MOON_AT.x - 3, y: MOON_AT.y + 1, w: 3, h: 2, color: MOON_SHADE },
-    { x: MOON_AT.x + 3, y: MOON_AT.y + 3, w: 1, h: 1, color: MOON_SHADE },
-  );
-  return out;
-})();
-
-const SUN_RECTS: Rect[] = (() => {
-  const out: Rect[] = [];
-  disc(out, 0, 0, 8, SUN.rim);
-  disc(out, 0, 0, 6, SUN.core);
-  return out;
-})();
-
-/** Columns → row runs of one color. */
-function columnsToRows(heights: number[], colors: string[], baseY: number): Rect[] {
-  const out: Rect[] = [];
-  const maxH = Math.max(0, ...heights);
-  for (let row = 1; row <= maxH; row++) {
-    const y = baseY - row;
-    let x = 0;
-    while (x < heights.length) {
-      if ((heights[x] ?? 0) < row) {
-        x++;
-        continue;
-      }
-      const color = colors[x] ?? DUNES[0];
-      let end = x + 1;
-      while (end < heights.length && (heights[end] ?? 0) >= row && colors[end] === color) end++;
-      out.push({ x, y, w: end - x, h: 1, color });
-      x = end;
-    }
-  }
-  return out;
-}
-
-/** Two rows of dunes on the horizon, shaded on their right-facing slopes. */
-const DUNE_RECTS: Rect[] = (() => {
-  const far: number[] = [];
-  const farShade: string[] = [];
-  const near: number[] = [];
-  for (let x = 0; x < WIDTH; x++) {
-    far.push(Math.max(0, Math.round(7 + 4 * Math.sin(x / 41) + 3 * Math.sin(x / 17 + 1.3))));
-    // Slopes falling to the right face away from the light.
-    farShade.push((4 / 41) * Math.cos(x / 41) + (3 / 17) * Math.cos(x / 17 + 1.3) < 0 ? DUNES[1] : DUNES[0]);
-    near.push(Math.max(0, Math.round(2 + 3 * Math.sin(x / 29 + 2.1) + 1.5 * Math.sin(x / 11))));
-  }
-  return [...columnsToRows(far, farShade, HORIZON_Y), ...columnsToRows(near, near.map(() => DUNES[1]), HORIZON_Y)];
-})();
-
-/** Sand, darker toward the horizon, with ripples. */
-const GROUND_RECTS: Rect[] = (() => {
-  const out = bands(
-    [
-      [HORIZON_Y, SAND[2]],
-      [HORIZON_Y + 20, SAND[1]],
-      [HORIZON_Y + 60, SAND[0]],
-    ],
-    HEIGHT,
-    8,
-  );
-  out.push({ x: 0, y: HORIZON_Y, w: WIDTH, h: 1, color: SAND[3] });
-  const rand = prng(77);
-  for (let i = 0; i < 70; i++) {
-    const y = HORIZON_Y + 4 + Math.floor(rand() ** 1.6 * (HEIGHT - HORIZON_Y - 6));
-    const x = Math.floor(rand() * WIDTH);
-    const w = 3 + Math.floor(rand() * 6);
-    const near = y > HORIZON_Y + 60;
-    out.push({ x, y, w, h: 1, color: near ? SAND[1] : y > HORIZON_Y + 20 ? SAND[2] : SAND[3] });
-    if (near) out.push({ x: x + 1, y: y - 1, w: Math.max(1, w - 2), h: 1, color: mix(SAND[0], "#FFFFFF", 0.25) });
-  }
-  return out;
-})();
-
 function spriteRects(sprite: Sprite, left: number, top: number): Rect[] {
   return sprite.runs.map((r) => ({ x: left + r.x, y: top + r.y, w: r.w, h: 1, color: r.color }));
 }
@@ -316,48 +70,41 @@ function placed(grid: Grid, cx: number, bottom: number): Rect[] {
   return spriteRects(s, cx - Math.floor(s.w / 2), bottom - s.h);
 }
 
-/**
- * The tents' bottom edge: behind the heads and icons of the front row of seats (CAMP), so waiting workers sit in front
- * of the tents rather than on their slopes, and their hourglasses do not hide in a tent's door.
- */
-export const TENT_BOTTOM = PLACES.camp.y - 24;
+// ---------------------------------------------------------------------------------------------------------------
+// Scenery in front of the pyramid's foot
 
 /** The table stands just in front of the rations spot, so a worker taking bread and beer stands behind it. */
 const TABLE_BOTTOM = PLACES.rations.y + 3;
+const SLEDGE_BOTTOM = PLACES.sledge.y + 6;
 
-/** The palms, the camp's tents, the well and the shadows of the props: they never move. */
-const PROP_RECTS: Rect[] = (() => {
-  const shadow = (cx: number, y: number, w: number): Rect => ({ x: cx - Math.floor(w / 2), y, w, h: 1, color: SAND[2] });
-  return [
-    shadow(23, TENT_BOTTOM, 26),
-    ...placed(PROPS.tent, 24, TENT_BOTTOM),
-    shadow(63, TENT_BOTTOM - 2, 24),
-    ...placed(PROPS.tent, 63, TENT_BOTTOM - 2),
-    ...placed(PROPS.palm, 6, 192),
-    ...placed(PROPS.palm, 96, 200),
-    ...placed(PROPS.palm, 466, 196),
-    shadow(PLACES.well.x, 204, 20),
-    ...placed(PROPS.well, PLACES.well.x, 204),
-    shadow(PLACES.rations.x, TABLE_BOTTOM, 22),
-    shadow(PLACES.treasury.x, PLACES.treasury.y, 16),
-  ];
-})();
-
-interface Scenery {
-  /** The line it stands on: actors with their feet further back are drawn before it. */
-  y: number;
-  rects: readonly Rect[];
-}
+const fixed = (y: number, rects: readonly Rect[]): Scenery => ({ y, draw: (p) => p.rects(rects) });
 
 const FIXED_SCENERY: readonly Scenery[] = [
-  { y: PLACES.sledge.y + 6, rects: placed(PROPS.sledge, PLACES.sledge.x + 1, PLACES.sledge.y + 6) },
-  { y: PLACES.treasury.y, rects: placed(PROPS.chest, PLACES.treasury.x, PLACES.treasury.y) },
-  { y: TABLE_BOTTOM, rects: placed(PROPS.table, PLACES.rations.x, TABLE_BOTTOM) },
+  fixed(SLEDGE_BOTTOM, placed(PROPS.sledge, PLACES.sledge.x + 1, SLEDGE_BOTTOM)),
+  fixed(PLACES.treasury.y, placed(PROPS.chest, PLACES.treasury.x, PLACES.treasury.y)),
+  fixed(TABLE_BOTTOM, placed(PROPS.table, PLACES.rations.x, TABLE_BOTTOM)),
 ];
 
-/** The props actors walk in front of and behind, back to front, with the coin pile of this frame. */
-function sceneryOf(coins: number): Scenery[] {
-  const all = [...FIXED_SCENERY, { y: PLACES.treasury.y + 1, rects: coinRects(coins) }];
+const FIXED_SHADOWS: readonly ShadowSpot[] = [
+  { cx: PLACES.sledge.x + 1, y: SLEDGE_BOTTOM, rx: 12, ry: 1 },
+  { cx: PLACES.treasury.x, y: PLACES.treasury.y, rx: 8, ry: 1 },
+  { cx: PLACES.rations.x, y: TABLE_BOTTOM, rx: 11, ry: 1 },
+  { cx: PLACES.treasury.x - 22, y: PLACES.treasury.y + 1, rx: 12, ry: 1 },
+];
+
+/** Where the monument's plaque stands: on the ground at the pyramid's foot, centered. */
+export const PLAQUE_FOOT = { x: PYRAMID_AREA.centerX, y: PYRAMID_AREA.baseY + 18 } as const;
+
+const PROPS_ON_PLAIN = propScenery();
+/** Props standing behind the pyramid's foot are drawn before it; the rest go in line with the actors. */
+const BEHIND = PROPS_ON_PLAIN.filter((s) => s.y < PYRAMID_AREA.baseY).sort((a, b) => a.y - b.y);
+const IN_FRONT = PROPS_ON_PLAIN.filter((s) => s.y >= PYRAMID_AREA.baseY);
+
+/** The scenery actors walk in front of and behind, back to front, with this frame's coins and plaque. */
+function sceneryOf(world: World): Scenery[] {
+  const all = [...IN_FRONT, ...FIXED_SCENERY, fixed(PLACES.treasury.y + 1, coinRects(world.coins))];
+  const monument = world.pyramid.monument;
+  if (monument) all.push({ y: PLAQUE_FOOT.y, draw: (p) => drawPlaque(p, monument, PLAQUE_FOOT.x, PLAQUE_FOOT.y) });
   return all.sort((a, b) => a.y - b.y);
 }
 
@@ -531,6 +278,33 @@ function drawBlock(p: Painter, b: Block): void {
   }
 }
 
+/**
+ * Where a set block's shine stands: the x of its top row, from just left of the block (flash 1) to past its right
+ * edge plus its height (flash 0), so the band sweeps across as the flash fades.
+ */
+export function shineOffset(flash: number, w: number, h: number): number {
+  const f = Number.isFinite(flash) ? Math.min(1, Math.max(0, flash)) : 0;
+  return Math.round((1 - f) * (w + h + 4)) - 2;
+}
+
+function drawShine(p: Painter, b: Block): void {
+  const pos = shineOffset(b.flash, b.w, b.h);
+  p.alpha(0.75);
+  for (let r = 0; r < b.h; r++) {
+    // Leaning like light off a facet: each row a pixel left of the one above.
+    const x0 = b.x + pos - r;
+    for (const [dx, w, color] of [
+      [0, 3, FLASH],
+      [-3, 1, GOLD.gleam],
+    ] as const) {
+      const from = Math.max(b.x, x0 + dx);
+      const to = Math.min(b.x + b.w, x0 + dx + w);
+      if (to > from) p.rect(from, b.y + r, to - from, 1, color);
+    }
+  }
+  p.alpha(1);
+}
+
 function rubbleAt(i: number, pyramid: Pyramid): { x: number; y: number } {
   const width = pyramid.base > 0 ? pyramid.base * pyramid.blockW : PYRAMID_AREA.maxWidth / 2;
   const h = Math.imul(i + 1, 2654435761) >>> 0;
@@ -549,6 +323,7 @@ function drawPyramid(p: Painter, pyramid: Pyramid): void {
       p.alpha(Math.min(1, b.flash) * 0.6);
       p.rect(b.x, b.y, b.w, b.h, FLASH);
       p.alpha(1);
+      if (b.look === "set") drawShine(p, b);
     }
   }
   for (const b of pyramid.blocks) if (b.highlight) outline(p, b, GOLD.light);
@@ -575,6 +350,23 @@ function drawPyramid(p: Painter, pyramid: Pyramid): void {
   const top = Math.round(cap.y) - sprite.h;
   p.sprite(sprite, left, top);
   if (cap.ready) p.sprite(prop(PROPS.glint), left - 3, top - 2);
+}
+
+/** A small stepped pyramid with a gold tip, standing on (x, y), softened by the distance. */
+function drawFarPyramid(p: Painter, cx: number, base: number, height: number): void {
+  const h = Math.max(4, Math.min(40, Math.round(height)));
+  const x = Math.round(cx);
+  const y = Math.round(base);
+  for (let r = 0; r < h; r++) {
+    const half = h - (r - (r % 2));
+    const row = y - 1 - r;
+    const tip = r >= h - 3;
+    // Every other row a course line, a shade darker.
+    const course = r % 2 === 1;
+    p.rect(x - half, row, half, 1, tip ? GOLD.light : course ? FAR_STONE.face : FAR_STONE.light);
+    p.rect(x, row, half, 1, tip ? GOLD.mid : course ? FAR_STONE.dark : FAR_STONE.shade);
+  }
+  p.rect(x - h - 1, y - 1, 2 * h + 2, 1, FAR_STONE.dark);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -628,7 +420,8 @@ function headTop(actor: Actor, sprite: Sprite): number {
   return Math.round(actor.y) - sprite.h + sprite.top;
 }
 
-function drawBubble(p: Painter, bubble: Bubble, speakerX: number, head: number): void {
+/** Draws a speech bubble over a head and returns the row of its top edge. */
+function drawBubble(p: Painter, bubble: Bubble, speakerX: number, head: number): number {
   const rand = prng(bubble.seed);
   const count = 3 + Math.floor(rand() * 5);
   const lines = count > 4 ? 2 : 1;
@@ -636,7 +429,7 @@ function drawBubble(p: Painter, bubble: Bubble, speakerX: number, head: number):
   const fullW = perLine * 4 - 1 + 6;
   const fullH = lines * 5 - 1 + 6;
   const open = Number.isFinite(bubble.open) ? Math.min(1, Math.max(0, bubble.open)) : 1;
-  if (open <= 0) return;
+  if (open <= 0) return head;
   const w = Math.max(4, Math.round(fullW * open));
   const h = Math.max(4, Math.round(fullH * open));
   const tailH = open >= 0.5 ? 3 : 1;
@@ -659,7 +452,7 @@ function drawBubble(p: Painter, bubble: Bubble, speakerX: number, head: number):
     p.rect(tx + 2, top + h - 1, 1, 1, OUTLINE);
     p.rect(tx, top + h + 1, 1, 1, OUTLINE);
   }
-  if (open < 1) return;
+  if (open < 1) return top;
   for (let i = 0; i < count; i++) {
     const glyph = GLYPHS[Math.floor(rand() * GLYPHS.length)] ?? GLYPHS[0] ?? [];
     const line = Math.floor(i / perLine);
@@ -669,17 +462,39 @@ function drawBubble(p: Painter, bubble: Bubble, speakerX: number, head: number):
       for (let x = 0; x < row.length; x++) if (row[x] === "#") p.rect(gx + x, gy + y, 1, 1, BUBBLE.glyph);
     });
   }
+  return top;
 }
 
-function drawActors(p: Painter, world: World): void {
+function actorAlpha(actor: Actor): number {
+  return Math.min(1, Math.max(0, Number.isFinite(actor.alpha) ? actor.alpha : 1)) * (actor.ghost ? 0.5 : 1);
+}
+
+/** Every actor on its feet casts a shadow; a climber on its ladder does not. */
+function actorShadows(world: World): { solid: ShadowSpot[]; faded: { spot: ShadowSpot; alpha: number }[] } {
+  const solid: ShadowSpot[] = [];
+  const faded: { spot: ShadowSpot; alpha: number }[] = [];
+  for (const actor of world.actors) {
+    if (actor.pose === "climb" || actor.pose === "climb-stone") continue;
+    if (!Number.isFinite(actor.x) || !Number.isFinite(actor.y)) continue;
+    const alpha = actorAlpha(actor);
+    if (alpha <= 0) continue;
+    const rx = actor.cast === "arbab" ? 7 : actor.pose === "sleep" ? 8 : 5;
+    const spot = { cx: Math.round(actor.x), y: Math.round(actor.y), rx, ry: 1 };
+    if (alpha >= 1) solid.push(spot);
+    else faded.push({ spot, alpha });
+  }
+  return { solid, faded };
+}
+
+function drawActors(p: Painter, world: World, light: ((color: string) => string) | null, time: number): { actor: Actor; sprite: Sprite }[] {
   const order = world.actors.map((actor, i) => ({ actor, i }));
   order.sort((a, b) => a.actor.y - b.actor.y || a.i - b.i);
-  const scenery = sceneryOf(world.coins);
+  const scenery = sceneryOf(world);
   let next = 0;
   const shown: { actor: Actor; sprite: Sprite }[] = [];
   for (const { actor } of order) {
     // Scenery standing further back than this actor goes first, so the actor passes in front of it.
-    for (; next < scenery.length && (scenery[next]?.y ?? 0) <= actor.y; next++) p.rects(scenery[next]?.rects ?? []);
+    for (; next < scenery.length && (scenery[next]?.y ?? 0) <= actor.y; next++) scenery[next]?.draw(p, time, light);
     const sprite = spriteOf(actor);
     if (!sprite) continue;
     const x = Math.round(actor.x);
@@ -687,16 +502,20 @@ function drawActors(p: Painter, world: World): void {
     if (actor.pose === "climb" || actor.pose === "climb-stone") drawLadder(p, x, y, world.pyramid);
     // A worker above the pyramid's foot stands on a plank; on the foot itself it stands on the base.
     if (actor.pose === "work" && y < PYRAMID_AREA.baseY) drawPlank(p, x, y);
-    const alpha = Math.min(1, Math.max(0, Number.isFinite(actor.alpha) ? actor.alpha : 1)) * (actor.ghost ? 0.5 : 1);
+    const alpha = actorAlpha(actor);
     if (alpha <= 0) continue;
     if (alpha < 1) p.alpha(alpha);
     p.sprite(sprite, x - Math.floor(sprite.w / 2), y - sprite.h, actor.facing === -1);
     if (alpha < 1) p.alpha(1);
     shown.push({ actor, sprite });
   }
-  for (; next < scenery.length; next++) p.rects(scenery[next]?.rects ?? []);
-  // Icons, markers and bubbles are signs for the viewer: they keep their colors at dusk and at night.
-  p.tint(null);
+  for (; next < scenery.length; next++) scenery[next]?.draw(p, time, light);
+  return shown;
+}
+
+/** Icons, markers, bubbles and nameplates: signs for the viewer, in their own colors at any hour. */
+function drawSigns(p: Painter, world: World, shown: { actor: Actor; sprite: Sprite }[], offset: { dx: number; dy: number }): void {
+  const tops = new Map<Actor, number>();
   for (const { actor, sprite } of shown) {
     const x = Math.round(actor.x);
     let top = headTop(actor, sprite);
@@ -705,13 +524,24 @@ function drawActors(p: Painter, world: World): void {
       top -= icon.h + 2;
       p.sprite(icon, x - Math.floor(icon.w / 2), top);
     }
-    const blinkOn = world.reducedMotion || Math.floor(Math.max(0, actor.poseTime) * 4) % 2 === 0;
-    if (actor.highlight && blinkOn) {
+    if (actor.highlight) {
       const marker = prop(MARKER);
-      p.sprite(marker, x - Math.floor(marker.w / 2), top - marker.h - 1);
+      const blinkOn = world.reducedMotion || Math.floor(Math.max(0, actor.poseTime) * 4) % 2 === 0;
+      if (blinkOn) p.sprite(marker, x - Math.floor(marker.w / 2), top - marker.h - 1);
+      // The nameplate keeps the marker's place whether it shows or not, so it does not jump.
+      top -= marker.h + 1;
     }
+    tops.set(actor, top);
   }
-  for (const { actor, sprite } of shown) if (actor.bubble) drawBubble(p, actor.bubble, Math.round(actor.x), headTop(actor, sprite));
+  for (const { actor, sprite } of shown) {
+    if (!actor.bubble) continue;
+    const top = drawBubble(p, actor.bubble, Math.round(actor.x), headTop(actor, sprite));
+    tops.set(actor, Math.min(tops.get(actor) ?? top, top));
+  }
+  for (const { actor } of shown) {
+    if (!actor.highlight) continue;
+    drawNameplate(p, actor.lane ?? actor.id, Math.round(actor.x), (tops.get(actor) ?? Math.round(actor.y)) - 2, offset);
+  }
 }
 
 function drawParticle(p: Painter, particle: Particle): void {
@@ -740,40 +570,50 @@ export function renderWorld(ctx: Canvas2D, world: World): void {
   ctx.imageSmoothingEnabled = false;
   ctx.globalAlpha = 1;
   const p = painter(ctx);
+  const phase = world.sky.phase;
+  const time = clock(world.time);
+  const light = lightOf(phase);
+  const offset = shakeOffset(world.shake, time);
 
-  p.rects(skyRects(world.sky.phase));
-  if (world.sky.phase === "night") {
-    p.rects(STARS);
-    p.rects(MOON_RECTS);
-  } else {
-    const sun = sunPosition(world.sky.sun);
-    p.rects(SUN_RECTS, Math.round(sun.x), Math.round(sun.y));
+  if (offset.dx !== 0 || offset.dy !== 0) {
+    // A shaken scene uncovers a sliver at the edges: fill it with the sky and the sand.
+    p.rect(0, 0, WIDTH, HORIZON_Y, SKY_RAMP[phase][0] ?? "#000000");
+    p.tint(light);
+    p.rect(0, HORIZON_Y, WIDTH, HEIGHT - HORIZON_Y, PLAIN[4]);
+    p.tint(null);
   }
+  p.offset(offset.dx, offset.dy);
 
-  p.tint(lightOf(world.sky.phase));
-  p.rects(DUNE_RECTS);
+  drawSky(p, world.sky, time);
+  drawFarLand(p, phase, time);
+  p.tint(light);
   for (const far of world.far.slice(0, 3)) drawFarPyramid(p, far.x, far.y, far.height);
+  p.tint(null);
+  drawRiverAndPlain(p, phase, time);
 
-  p.rects(GROUND_RECTS);
-  p.rects(PROP_RECTS);
-
-  drawPyramid(p, world.pyramid);
-  drawActors(p, world);
-  for (const particle of world.particles) drawParticle(p, particle);
-  ctx.globalAlpha = 1;
-}
-
-/** A small stepped pyramid with a gold tip, standing on (x, y). */
-function drawFarPyramid(p: Painter, cx: number, base: number, height: number): void {
-  const h = Math.max(4, Math.min(40, Math.round(height)));
-  const x = Math.round(cx);
-  const y = Math.round(base);
-  for (let r = 0; r < h; r++) {
-    const half = h - (r - (r % 2));
-    const row = y - 1 - r;
-    const tip = r >= h - 3;
-    p.rect(x - half, row, half, 1, tip ? GOLD.light : LIMESTONE.light);
-    p.rect(x, row, half, 1, tip ? GOLD.mid : LIMESTONE.mortar);
+  drawShadows(p, world.sky, [...PROP_SHADOWS, ...FIXED_SHADOWS]);
+  if (world.pyramid.blocks.some((b) => b.look !== "empty" && b.look !== "planned")) {
+    drawPyramidShadow(p, world.sky, PYRAMID_AREA, world.pyramid);
   }
-  p.rect(x - h - 1, y - 1, 2 * h + 2, 1, LIMESTONE.edge);
+  p.tint(light);
+  for (const s of BEHIND) s.draw(p, time, light);
+  drawPyramid(p, world.pyramid);
+
+  p.tint(null);
+  const shadows = actorShadows(world);
+  drawShadows(p, world.sky, shadows.solid);
+  for (const f of shadows.faded) drawShadows(p, world.sky, [f.spot], f.alpha);
+
+  p.tint(light);
+  const shown = drawActors(p, world, light, time);
+  for (const particle of world.particles) drawParticle(p, particle);
+  p.tint(null);
+
+  if (phase === "night") drawLightPools(p, LIGHTS, time);
+  drawGlowBeam(p, world.pyramid.capstone, world.pyramid.apex);
+  drawSigns(p, world, shown, offset);
+
+  p.offset(0, 0);
+  drawVignette(p, phase);
+  ctx.globalAlpha = 1;
 }

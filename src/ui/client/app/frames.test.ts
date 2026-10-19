@@ -6,8 +6,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { World } from "../model";
 import { HEIGHT, WIDTH } from "../model";
+import { caravanAt, feluccaAt } from "./art/land";
+import { FIRE_AT } from "./art/props";
+import { flock, shootingStar } from "./art/sky";
 import { FRAMES } from "./fixtures";
-import { GOLD, parseHex, SKY } from "./palette";
+import { GOLD, parseHex, SKY_RAMP } from "./palette";
 import type { Raster } from "./raster";
 import { createRaster, decodePng, encodePng } from "./raster";
 import { renderWorld } from "./render";
@@ -50,12 +53,13 @@ describe("docs/ui frames", () => {
     });
   }
 
-  it("day: a day sky in the top-left corner", () => {
-    expect(pixel(rasterize(FRAMES.day()), 0, 0).slice(0, 3)).toEqual(parseHex(SKY.day[0]));
+  // Inside the vignette, at the zenith, clear of the sun and the clouds of these frames.
+  it("day: the zenith's blue at the top, inside the vignette", () => {
+    expect(pixel(rasterize(FRAMES.day()), 150, 13).slice(0, 3)).toEqual(parseHex(SKY_RAMP.day[0] ?? ""));
   });
 
-  it("dusk: a dusk sky in the top-left corner", () => {
-    expect(pixel(rasterize(FRAMES.dusk()), 0, 0).slice(0, 3)).toEqual(parseHex(SKY.dusk[0]));
+  it("dusk: the dusk's indigo at the top, inside the vignette", () => {
+    expect(pixel(rasterize(FRAMES.dusk()), 150, 13).slice(0, 3)).toEqual(parseHex(SKY_RAMP.dusk[0] ?? ""));
   });
 
   it("night: the sky's top-left is dark", () => {
@@ -63,8 +67,36 @@ describe("docs/ui frames", () => {
     expect(Math.max(r, g, b)).toBeLessThan(48);
   });
 
+  it("night: a shooting star mid-streak, and fires lighting the dark", () => {
+    const world = FRAMES.night();
+    const star = shootingStar(world.time);
+    expect(star?.progress).toBeGreaterThan(0.3);
+    expect(star?.progress).toBeLessThan(0.7);
+    const lit = rasterize(world);
+    // The camp fire's pool is brighter than the sand far from any fire.
+    const glow = pixel(lit, FIRE_AT.x + 12, FIRE_AT.y + 4);
+    const dark = pixel(lit, 300, 250);
+    expect(glow[0] + glow[1]).toBeGreaterThan(dark[0] + dark[1]);
+  });
+
+  it("idle: the monument, its plaque, the felucca, the caravan and the birds", () => {
+    const world = FRAMES.idle();
+    expect(world.pyramid.monument).not.toBeNull();
+    expect(world.actors.filter((a) => a.cast !== "arbab")).toEqual([]);
+    expect(world.pyramid.blocks.every((b) => b.look === "set")).toBe(true);
+    const boat = feluccaAt(world.time);
+    expect(boat?.x).toBeGreaterThan(WIDTH / 4);
+    expect(boat?.x).toBeLessThan((WIDTH * 3) / 4);
+    const caravan = caravanAt(world.time);
+    expect(caravan.length).toBeGreaterThan(0);
+    expect(caravan.every((m) => m.x > 0 && m.x < WIDTH)).toBe(true);
+    expect(flock(world.time).length).toBeGreaterThanOrEqual(3);
+  });
+
   it("capstone: gold at the apex", () => {
-    const world = FRAMES.capstone();
+    // Without the beam, which washes over it.
+    const made = FRAMES.capstone();
+    const world = { ...made, pyramid: { ...made.pyramid, capstone: { ...made.pyramid.capstone, glow: 0 } } };
     const { x, y } = world.pyramid.apex;
     const golds = Object.values(GOLD).map((c) => parseHex(c).join(","));
     const raster = rasterize(world);

@@ -23,6 +23,8 @@ interface Tail {
   attempt: number;
   path: string;
   offset: number;
+  /** The file was read to its end once; until then a count reads on past maxBytesPerCall. */
+  primed: boolean;
   /** The unfinished last line, as bytes: decoding it now could cut a multi-byte character. */
   pending: Buffer;
   seen: Set<string>;
@@ -34,6 +36,7 @@ const fresh = (attempt: number, path: string): Tail => ({
   attempt,
   path,
   offset: 0,
+  primed: false,
   pending: Buffer.alloc(0),
   seen: new Set(),
   toolCalls: 0,
@@ -91,6 +94,21 @@ function readMore(tail: Tail, max: number): Buffer | null {
   }
 }
 
+/** Counts the complete lines of a chunk read at the tail's offset and keeps the unfinished last one. */
+function consume(tail: Tail, chunk: Buffer): void {
+  if (chunk.length === 0) return;
+  tail.offset += chunk.length;
+  const bytes = tail.pending.length > 0 ? Buffer.concat([tail.pending, chunk]) : chunk;
+  let start = 0;
+  for (let end = bytes.indexOf(NEWLINE, start); end !== -1; end = bytes.indexOf(NEWLINE, start)) {
+    // A newline byte never occurs inside a UTF-8 sequence, so each complete line decodes on its own.
+    countLine(tail, bytes.toString("utf8", start, end));
+    start = end + 1;
+  }
+  // A copy, so the pending line does not pin the whole chunk.
+  tail.pending = Buffer.from(bytes.subarray(start));
+}
+
 export function createToolCallCounter(options: { maxBytesPerCall?: number } = {}): ToolCallCounter {
   const max = options.maxBytesPerCall ?? DEFAULT_MAX_BYTES;
   if (!Number.isSafeInteger(max) || max < 1) throw new ArbabError("usage", `maxBytesPerCall ${max} must be a positive integer`);
@@ -103,23 +121,18 @@ export function createToolCallCounter(options: { maxBytesPerCall?: number } = {}
         tail = fresh(attempt, streamPath);
         tails.set(lane, tail);
       }
-      const chunk = readMore(tail, max);
-      if (chunk === null) {
-        tails.set(lane, fresh(attempt, streamPath));
-        return { toolCalls: 0, lastTool: null };
-      }
-      if (chunk.length > 0) {
-        tail.offset += chunk.length;
-        const bytes = tail.pending.length > 0 ? Buffer.concat([tail.pending, chunk]) : chunk;
-        let start = 0;
-        for (let end = bytes.indexOf(NEWLINE, start); end !== -1; end = bytes.indexOf(NEWLINE, start)) {
-          // A newline byte never occurs inside a UTF-8 sequence, so each complete line decodes on its own.
-          countLine(tail, bytes.toString("utf8", start, end));
-          start = end + 1;
+      // The first read of an attempt (or of a file that started over) goes to the end in max-sized chunks, so the
+      // first snapshot counts the whole stream; later reads take at most one chunk per call.
+      let chunk: Buffer | null;
+      do {
+        chunk = readMore(tail, max);
+        if (chunk === null) {
+          tails.set(lane, fresh(attempt, streamPath));
+          return { toolCalls: 0, lastTool: null };
         }
-        // A copy, so the pending line does not pin the whole chunk.
-        tail.pending = Buffer.from(bytes.subarray(start));
-      }
+        consume(tail, chunk);
+      } while (!tail.primed && chunk.length === max);
+      tail.primed = true;
       return { toolCalls: tail.toolCalls, lastTool: tail.lastTool };
     },
     retain(lanes) {

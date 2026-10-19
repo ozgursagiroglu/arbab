@@ -36,18 +36,49 @@ describe("createToolCallCounter", () => {
 
   it("decodes a multi-byte character cut by a tiny read limit", () => {
     const counter = createToolCallCounter({ maxBytesPerCall: 3 });
+    // The first read goes to the end of the file; an empty one makes the later reads chunked.
+    writeFileSync(stream, "");
+    expect(counter.count("demo", 1, stream).toolCalls).toBe(0);
     const text = JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "€ğü" }, { type: "tool_use", id: "x", name: "Ünlü" }] } }) + "\n";
-    writeFileSync(stream, text);
+    appendFileSync(stream, text);
     const calls = Math.ceil(Buffer.byteLength(text) / 3);
     for (let i = 1; i < calls; i++) expect(counter.count("demo", 1, stream).toolCalls).toBe(0);
     expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 1, lastTool: "Ünlü" });
   });
 
-  it("reads at most maxBytesPerCall per call; the rest waits for the next call", () => {
+  it("reads at most maxBytesPerCall per call after the first; the rest waits for the next call", () => {
     const counter = createToolCallCounter({ maxBytesPerCall: use("a", "Bash").length });
-    writeFileSync(stream, use("a", "Bash") + use("b", "Grep"));
+    writeFileSync(stream, use("a", "Bash"));
     expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 1, lastTool: "Bash" });
+    appendFileSync(stream, use("b", "Grep") + use("c", "Read"));
     expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 2, lastTool: "Grep" });
+    expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 3, lastTool: "Read" });
+  });
+
+  it("reads the whole stream on the first call of an attempt, in chunks of a tiny maxBytesPerCall", () => {
+    const counter = createToolCallCounter({ maxBytesPerCall: 7 });
+    const names = ["Bash", "Read", "Edit", "Grep", "Glob", "Write", "Ünlü"];
+    writeFileSync(stream, names.map((n, i) => use(`id-${i}`, n)).join("") + use("tail", "Bash").slice(0, 10));
+    expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 7, lastTool: "Ünlü" });
+    // Later calls read at most 7 bytes each: the rest of the cut line takes several.
+    appendFileSync(stream, use("tail", "Bash").slice(10));
+    const left = Buffer.byteLength(use("tail", "Bash").slice(10));
+    for (let i = 1; i < Math.ceil(left / 7); i++) expect(counter.count("demo", 1, stream).toolCalls).toBe(7);
+    expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 8, lastTool: "Bash" });
+    // Another attempt is a first read again; so is a file that comes back after it went missing.
+    expect(counter.count("demo", 2, stream)).toEqual({ toolCalls: 8, lastTool: "Bash" });
+    rmSync(stream);
+    expect(counter.count("demo", 2, stream)).toEqual({ toolCalls: 0, lastTool: null });
+    writeFileSync(stream, use("a", "Bash") + use("b", "Read") + use("c", "Edit"));
+    expect(counter.count("demo", 2, stream)).toEqual({ toolCalls: 3, lastTool: "Edit" });
+  });
+
+  it("reads a file that started over to its end, even after the first call", () => {
+    const counter = createToolCallCounter({ maxBytesPerCall: 7 });
+    writeFileSync(stream, use("a", "Bash") + use("b", "Bash") + use("c", "Bash") + use("d", "Bash"));
+    expect(counter.count("demo", 1, stream).toolCalls).toBe(4);
+    writeFileSync(stream, use("x", "Grep") + use("y", "Read"));
+    expect(counter.count("demo", 1, stream)).toEqual({ toolCalls: 2, lastTool: "Read" });
   });
 
   it("counts a replayed id once, a block without an id each time, and never StructuredOutput", () => {

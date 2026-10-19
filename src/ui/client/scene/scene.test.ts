@@ -414,7 +414,7 @@ describe("a builder's day", () => {
       if (a?.pose === "carry-ration") carried = a.ration;
     });
 
-    expect(kinds(s, "me")).toEqual(["brief", "stone", "stone", "stone", "stone", "stone", "set", "report"]);
+    expect(kinds(s, "me")).toEqual(["brief", "stone", "stone", "stone", "stone", "stone", "set", "report", "pay"]);
     expectInOrder(poses(marks), [
       "walk",
       "sit",
@@ -553,7 +553,7 @@ describe("a builder's day", () => {
     expect(ration).toBe(1);
     expect(paused).toBeGreaterThanOrEqual(0.5);
     expect(paused).toBeLessThanOrEqual(0.65);
-    expect(kinds(s)).toEqual(["report"]);
+    expect(kinds(s)).toEqual(["report", "pay"]);
   });
 
   it("stalls on a blocked report and sends the worker off empty-handed", () => {
@@ -573,6 +573,85 @@ describe("a builder's day", () => {
     });
     expect(seen.has("slump")).toBe(true);
     expect(seen.has("carry-ration")).toBe(false);
+  });
+
+  describe("the pay at the ration table", () => {
+    // The spend stays put, so no coins fly in for it: only the pay makes them.
+    const finish = (s: Scene, extra: Partial<UiLane>): void => {
+      const costUsd = extra.costUsd ?? null;
+      s.apply(uiSnapshot({ lanes: [builder("a", { state: "running", toolCalls: 20, costUsd })] }));
+      s.apply(uiSnapshot({ lanes: [builder("a", { state: "finished", toolCalls: 20, ...extra })], now: at(1) }));
+    };
+    const coins = (s: Scene): Particle[] => s.world.particles.filter((p) => p.kind === "coin");
+
+    /** Steps until the pay; what stood before that step and what the step made. */
+    function toPay(s: Scene): { before: Actor; after: Actor | undefined; coins: Particle[] } {
+      let before = { ...mustActor(s, "a") };
+      let had = coins(s).length;
+      for (let t = 0; t < 60_000; t += 50) {
+        before = { ...mustActor(s, "a") };
+        had = coins(s).length;
+        s.step(50);
+        if (kinds(s).includes("pay")) return { before, after: actorOf(s, "a"), coins: coins(s).slice(had) };
+      }
+      throw new Error("no pay");
+    }
+
+    it("fires once, with the lane, in the step the pause ends and the ration is carried, and coins jump", () => {
+      const s = newScene();
+      finish(s, { endState: "success", costUsd: 2 });
+      const { before, after, coins: made } = toPay(s);
+      expect(before).toMatchObject({ pose: "idle", ...PLACES.rations, ration: 0 });
+      expect(after).toMatchObject({ pose: "carry-ration", ration: 2 });
+      expect(s.world.events.filter((e) => e.kind === "pay")).toEqual([{ kind: "pay", lane: "a" }]);
+      expect(made.length).toBeGreaterThanOrEqual(3);
+      expect(made.length).toBeLessThanOrEqual(5);
+      for (const p of made) {
+        expect(Math.abs(p.x - PLACES.treasury.x)).toBeLessThanOrEqual(6);
+        expect(p.y).toBeLessThan(PLACES.treasury.y);
+        expect(p.vy).toBeLessThan(0);
+      }
+      until(s, () => actorOf(s, "a") === undefined, 60);
+      expect(kinds(s, "a").filter((k) => k === "pay")).toHaveLength(1);
+      // The coins fall back and are gone.
+      expect(coins(s)).toEqual([]);
+    });
+
+    it.each<[string, Partial<UiLane>]>([
+      ["a failure", { endState: "failed" }],
+      ["a blocked report", { endState: "success", reportStatus: "blocked", costUsd: 2 }],
+    ])("fires nothing when the worker leaves empty-handed after %s", (_, extra) => {
+      const s = newScene();
+      finish(s, extra);
+      let jumped = false;
+      until(s, () => actorOf(s, "a") === undefined, 60, () => {
+        if (coins(s).length > 0) jumped = true;
+      });
+      expect(kinds(s)).not.toContain("pay");
+      expect(jumped).toBe(false);
+    });
+
+    it("fires in reduced motion too, without coins", () => {
+      const s = newScene(true);
+      finish(s, { endState: "success", costUsd: 2 });
+      const { before, coins: made } = toPay(s);
+      expect(before).toMatchObject({ pose: "idle", ...PLACES.rations });
+      expect(made).toEqual([]);
+      expect(s.world.particles).toEqual([]);
+      // Without motion it reaches the exit in the same step.
+      until(s, () => actorOf(s, "a") === undefined, 60);
+      expect(s.world.events.filter((e) => e.kind === "pay")).toEqual([{ kind: "pay", lane: "a" }]);
+    });
+
+    it("is deterministic for a seed", () => {
+      const once = (): string => {
+        const s = newScene(false, 11);
+        finish(s, { endState: "success", costUsd: 7 });
+        const { coins: made } = toPay(s);
+        return JSON.stringify({ made, world: s.world });
+      };
+      expect(once()).toBe(once());
+    });
   });
 
   it("sleeps where it works while waiting for a reset", () => {

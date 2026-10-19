@@ -8,6 +8,16 @@ export const SOUND_KEY = "arbab-ui-sound";
 /** At most this many stone drums a second: a busy fleet places many stones. */
 export const STONES_PER_SECOND = 3;
 
+/** At most this many pays a second: workers leaving together would make a din of coins. */
+export const PAYS_PER_SECOND = 2;
+
+/** The coins of a pay: when each clinks after the first (s) and its pitch (Hz), fixed so the sound is deterministic. */
+const CLINKS: readonly { at: number; freq: number }[] = [
+  { at: 0, freq: 3150 },
+  { at: 0.065, freq: 3420 },
+  { at: 0.14, freq: 2980 },
+];
+
 export interface Sound {
   readonly enabled: boolean;
   /** Turns sound on or off, remembers the choice, and returns the new state. Call it from a user gesture. */
@@ -46,6 +56,16 @@ export function createSound(deps: SoundDeps): Sound {
   let out: AudioNodeLike | null = null;
   let noise: AudioBufferLike | null = null;
   const stones: number[] = [];
+  const pays: number[] = [];
+
+  /** Records a play at now unless max already played in the last second. */
+  const throttle = (times: number[], max: number): boolean => {
+    const now = deps.now();
+    while (times.length > 0 && now - (times[0] ?? 0) >= 1000) times.shift();
+    if (times.length >= max) return false;
+    times.push(now);
+    return true;
+  };
 
   const start = (): void => {
     if (ctx || !deps.AudioContext) return;
@@ -131,6 +151,48 @@ export function createSound(deps: SoundDeps): Sound {
     horn(c, dest, t + 0.3, 294, 0.5);
   };
 
+  /** A short ringing tone that dies away fast: one partial of a coin. */
+  const ping = (
+    c: AudioContextLike,
+    dest: AudioNodeLike,
+    t: number,
+    type: string,
+    freq: number,
+    level: number,
+    decay: number,
+  ): void => {
+    const osc = c.createOscillator();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    const gain = c.createGain();
+    gain.gain.setValueAtTime(level, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + decay);
+    osc.connect(gain);
+    gain.connect(dest);
+    osc.start(t);
+    osc.stop(t + decay + 0.01);
+  };
+
+  /** Coins dropping into the chest: a soft wooden knock under a few bright clinks. */
+  const coins = (c: AudioContextLike, dest: AudioNodeLike, t: number): void => {
+    const knock = c.createOscillator();
+    knock.type = "sine";
+    knock.frequency.setValueAtTime(160, t);
+    knock.frequency.exponentialRampToValueAtTime(120, t + 0.06);
+    const kg = c.createGain();
+    kg.gain.setValueAtTime(0.15, t);
+    kg.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+    knock.connect(kg);
+    kg.connect(dest);
+    knock.start(t);
+    knock.stop(t + 0.07);
+    for (const clink of CLINKS) {
+      ping(c, dest, t + clink.at, "triangle", clink.freq, 0.1, 0.12);
+      // An inharmonic overtone makes it metal rather than a whistle.
+      ping(c, dest, t + clink.at, "sine", clink.freq * 1.3, 0.04, 0.09);
+    }
+  };
+
   return {
     get enabled() {
       return enabled;
@@ -159,14 +221,14 @@ export function createSound(deps: SoundDeps): Sound {
         case "report":
           horn(c, dest, t, 220);
           break;
-        case "stone": {
-          const now = deps.now();
-          while (stones.length > 0 && now - (stones[0] ?? 0) >= 1000) stones.shift();
-          if (stones.length >= STONES_PER_SECOND) return;
-          stones.push(now);
+        case "stone":
+          if (!throttle(stones, STONES_PER_SECOND)) return;
           drum(c, dest, t, 140, 0.5);
           break;
-        }
+        case "pay":
+          if (!throttle(pays, PAYS_PER_SECOND)) return;
+          coins(c, dest, t);
+          break;
         case "set":
           fanfare(c, dest, t);
           break;

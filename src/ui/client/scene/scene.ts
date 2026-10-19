@@ -246,6 +246,8 @@ interface Crew {
   chatLeft: number;
   /** Seconds walked since the last puff of dust. */
   dust: number;
+  /** Took its ration: the treasury pays once per worker. */
+  paid: boolean;
 }
 
 interface Talk {
@@ -478,6 +480,19 @@ export function createScene(options: SceneOptions): Scene {
     if (world.particles.length > MAX_PARTICLES) world.particles.splice(0, world.particles.length - MAX_PARTICLES);
   }
 
+  /** The worker takes its ration: a few coins jump from the treasury. The event is sound, so it fires when reduced too. */
+  function pay(c: Crew): void {
+    c.paid = true;
+    emit("pay", c.lane.name);
+    // Draw nothing from random when reduced: no particles would be made of it.
+    if (reduced) return;
+    const n = 3 + Math.floor(random() * 3);
+    for (let i = 0; i < n; i += 1) {
+      const x = PLACES.treasury.x + (random() - 0.5) * 6;
+      addParticle("coin", x, PLACES.treasury.y - 8, (random() - 0.5) * 24, -40 - random() * 15, 0.6);
+    }
+  }
+
   const addRubble = (n: number): void => {
     world.pyramid.rubble = Math.min(MAX_RUBBLE, world.pyramid.rubble + n);
   };
@@ -588,6 +603,7 @@ export function createScene(options: SceneOptions): Scene {
       const to = resolve(c, step.to);
       if (step.alpha !== undefined) a.alpha = step.alpha;
       if (step.ration !== undefined) a.ration = step.ration;
+      if (step.ration !== undefined && step.ration > 0 && !c.paid) pay(c);
       c.queue.splice(0, 1, ...path(a, to, step.pose));
       return true;
     }
@@ -872,6 +888,7 @@ export function createScene(options: SceneOptions): Scene {
       chatIn: null,
       chatLeft: 0,
       dust: 0,
+      paid: false,
     };
     crews.set(lane.name, c);
     actorsDirty = true;

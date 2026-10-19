@@ -5,7 +5,7 @@ import { UI_PROTOCOL, type UiSnapshot } from "../protocol";
 import { MAX_URL_LENGTH, SECURITY_HEADERS, startUiServer, type UiServer, type UiServerOptions } from "./http";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
-const ASSETS = { html: "<!doctype html><title>t</title>", css: "body{}", js: "console.log(1)" };
+const ASSETS = { html: "<!doctype html><title>t</title>", css: "body{}", js: "console.log(1)", icon: "<svg/>" };
 
 function snapshot(lanes = 0, now = "2026-10-18T12:00:00.000Z"): UiSnapshot {
   return {

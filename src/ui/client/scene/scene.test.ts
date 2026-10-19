@@ -914,6 +914,7 @@ describe("the capstone", () => {
         ...PLACES.sledge,
         flag,
         ready: gleam,
+        glow: 0,
       });
     }
   });

@@ -309,7 +309,8 @@ export function createScene(options: SceneOptions): Scene {
       blocks: layout.slots.map(emptyBlock),
       rubble: 0,
       apex: { ...layout.apex },
-      capstone: { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false },
+      capstone: { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false, glow: 0 },
+      monument: null,
     },
     far: [],
     actors: [arbab],
@@ -317,6 +318,8 @@ export function createScene(options: SceneOptions): Scene {
     coins: 0,
     events: [],
     reducedMotion: reduced,
+    time: 0,
+    shake: 0,
   };
 
   const crews = new Map<string, Crew>();

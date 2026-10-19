@@ -56,7 +56,7 @@ function blocks(l: PyramidLayout, specs: readonly BlockSpec[]): Block[] {
 }
 
 function capstone(fields: Partial<Capstone>): Capstone {
-  return { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false, ...fields };
+  return { state: "none", integration: null, ...PLACES.sledge, flag: "none", ready: false, glow: 0, ...fields };
 }
 
 function world(fields: Partial<World> & Pick<World, "pyramid">): World {
@@ -68,6 +68,8 @@ function world(fields: Partial<World> & Pick<World, "pyramid">): World {
     coins: 0,
     events: [],
     reducedMotion: false,
+    time: 0,
+    shake: 0,
     ...fields,
   };
 }
@@ -107,6 +109,7 @@ export function dayWorld(): World {
         { look: "planned" },
       ]),
       rubble: 7,
+      monument: null,
       apex: l.apex,
       capstone: capstone({ state: "waiting", integration: "int-1", flag: "passed" }),
     },
@@ -156,6 +159,7 @@ export function duskWorld(): World {
         { look: "planned" },
       ]),
       rubble: 0,
+      monument: null,
       apex: l.apex,
       capstone: capstone({}),
     },
@@ -193,6 +197,7 @@ export function capstoneWorld(): World {
         l.slots.map((_, i) => ({ look: "set", flash: i === 14 ? 0.4 : 0 })),
       ),
       rubble: 0,
+      monument: null,
       apex: l.apex,
       capstone: capstone({ state: "set", integration: "int-3", ...l.apex, flag: "passed", ready: true }),
     },
@@ -234,6 +239,7 @@ export function nightWorld(): World {
         { look: "planned" },
       ]),
       rubble: 0,
+      monument: null,
       apex: l.apex,
       capstone: capstone({}),
     },

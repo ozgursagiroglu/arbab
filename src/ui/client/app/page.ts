@@ -15,7 +15,6 @@ export const PAGE_IDS = {
   held: "held",
   connection: "connection",
   sound: "sound",
-  fullscreen: "fullscreen",
   banner: "banner",
   kpis: "kpis",
   site: "site",
@@ -29,7 +28,9 @@ export const PAGE_IDS = {
   tooltip: "tooltip",
   notice: "notice",
   caption: "caption",
+  crewPanel: "crew-panel",
   crewTitle: "crew-title",
+  crewScroll: "crew-scroll",
   crew: "crew",
   crewEmpty: "crew-empty",
   recentGroup: "recent-group",
@@ -69,12 +70,15 @@ export const PAGE_HTML = `<!doctype html>
 <p class="project"><span id="${I.project}">connecting…</span> <span id="${I.version}" class="version"></span></p>
 </div>
 <div class="status">
+<div class="gauges">
 <div id="${I.gauge5h}" class="gauge" data-level="ok"></div>
 <div id="${I.gauge7d}" class="gauge" data-level="ok"></div>
+</div>
+<div class="controls">
 <span id="${I.held}" class="pill held" hidden>held</span>
 <span id="${I.connection}" class="pill connection" data-state="connecting">connecting</span>
 <button id="${I.sound}" type="button" aria-pressed="false">sound</button>
-<button id="${I.fullscreen}" type="button" aria-controls="${I.site}">full screen</button>
+</div>
 </div>
 </header>
 <p id="${I.banner}" class="banner" role="alert" hidden></p>
@@ -102,16 +106,18 @@ export const PAGE_HTML = `<!doctype html>
 <p id="${I.caption}" class="caption">THE SITE IS QUIET</p>
 </section>
 <aside class="side" aria-label="Crew and monument">
-<section class="frame panel" aria-labelledby="${I.crewTitle}">
+<section id="${I.crewPanel}" class="frame panel crew-panel" aria-labelledby="${I.crewTitle}" data-more="false">
 <div class="titlebar"><h2 id="${I.crewTitle}">Crew</h2></div>
+<div id="${I.crewScroll}" class="crew-scroll">
 <ul id="${I.crew}" class="crew"></ul>
 <div id="${I.crewEmpty}" class="crew-empty"></div>
 <details id="${I.recentGroup}" class="recent-group" hidden>
 <summary id="${I.recentTitle}">Recently finished</summary>
 <ul id="${I.recent}" class="recent"></ul>
 </details>
+</div>
 </section>
-<section class="frame panel" aria-labelledby="${I.monumentTitle}">
+<section class="frame panel monument-panel" aria-labelledby="${I.monumentTitle}">
 <div class="titlebar"><h2 id="${I.monumentTitle}">Monument</h2></div>
 <div id="${I.monument}" class="monument"></div>
 </section>
@@ -208,7 +214,8 @@ h1 { margin: 0; font-size: 18px; line-height: 0; color: var(--gold); }
 .project { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #${I.project} { color: var(--text); font-weight: 600; }
 .version { color: var(--muted); }
-.status { margin-left: auto; display: flex; align-items: center; gap: var(--s3); }
+.status, .gauges, .controls { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.status { margin-left: auto; }
 .gauge { display: flex; align-items: center; gap: 6px; --level: var(--sand); }
 .gauge[data-level="warn"] { --level: var(--gold-2); }
 .gauge[data-level="hold"] { --level: var(--st-failed); }
@@ -233,17 +240,21 @@ h1 { margin: 0; font-size: 18px; line-height: 0; color: var(--gold); }
 @keyframes pulse { 50% { opacity: 0.3; } }
 .banner { padding: var(--s2) var(--s4); background: var(--st-failed); color: #fff; font-weight: 600; }
 
-/* The dashboard */
-.hud { display: grid; gap: var(--s4); padding: var(--s4); max-width: 1880px; margin: 0 auto; }
-.grid, .side, .below { display: grid; gap: var(--s4); grid-template-columns: minmax(0, 1fr); align-items: start; }
+/* The dashboard. Its vertical spacing around the scene card is PAGE_GAPS in hud.ts: keep the two in step. */
+.hud { display: grid; gap: var(--s3); padding: var(--s3) var(--s4) var(--s4); max-width: 1880px; margin: 0 auto; }
+.grid, .side, .below { display: grid; gap: var(--s3); grid-template-columns: minmax(0, 1fr); align-items: start; }
+.hud > *, .grid > *, .side > *, .below > * { min-width: 0; }
 .side { align-content: start; }
 @media (min-width: 900px) {
   .side { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .below { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
 }
 @media (min-width: 1280px) {
-  .grid { grid-template-columns: minmax(0, 1fr) 380px; }
-  .side { grid-template-columns: minmax(0, 1fr); }
+  .grid { grid-template-columns: minmax(0, 1fr) 360px; align-items: stretch; }
+  /* As tall as the scene card and no taller: size containment keeps the crew from stretching the row. */
+  .side { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; contain: size; }
+  .crew-panel { display: flex; flex-direction: column; min-height: 0; }
+  .crew-panel .crew-scroll { flex: 1 1 0; max-height: none; }
 }
 .panel { padding: var(--s3); min-width: 0; }
 .titlebar {
@@ -259,10 +270,17 @@ h2 { margin: 0; font-size: 14px; line-height: 0; color: var(--gold); }
 .kpi .icon { grid-area: icon; width: 16px; height: 16px; }
 .kpi .kpi-label { grid-area: label; }
 .kpi .kpi-number { grid-area: num; min-height: 44px; }
+/* Wide: one row per card (icon, label, number), so the KPI row leaves the scene its height. */
+@media (min-width: 1280px) {
+  .kpi { grid-template-columns: 16px auto minmax(0, 1fr); grid-template-areas: "icon label num"; padding: var(--s2) 14px; }
+  .kpi .kpi-number { justify-self: end; }
+}
 
-/* The scene card */
+/* The scene card: lean chrome, so 3× fits a 1080-px screen (stageRoom in hud.ts measures it). */
+.site { padding: var(--s2); }
+.site .titlebar { min-height: 28px; margin-bottom: var(--s2); padding-bottom: 6px; }
 .stage {
-  position: relative; display: flex; align-items: center; justify-content: center; min-height: 270px; overflow: hidden;
+  position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden;
   background-color: var(--frame-dark);
   background-image:
     repeating-linear-gradient(45deg, rgb(255 255 255 / 0.025) 0 2px, transparent 2px 8px),
@@ -271,8 +289,10 @@ h2 { margin: 0; font-size: 14px; line-height: 0; color: var(--gold); }
   box-shadow: inset 0 0 0 2px var(--frame-lo);
 }
 #${I.canvas} { display: block; flex: none; width: 480px; height: 270px; image-rendering: crisp-edges; image-rendering: pixelated; }
+/* Below 1×: the stage's width, the height by the art's aspect ratio. */
+#${I.canvas}.fluid { flex: 1 1 auto; max-width: 100%; aspect-ratio: 480 / 270; }
 .caption {
-  display: flex; justify-content: center; min-height: 27px; margin-top: var(--s2); padding: var(--s2);
+  display: flex; justify-content: center; min-height: 27px; margin-top: 6px; padding: var(--s2);
   line-height: 0; color: var(--sand); background: var(--bg-2); box-shadow: inset 0 0 0 2px var(--frame-lo);
 }
 .site:fullscreen { margin: 0; width: 100vw; height: 100vh; display: flex; flex-direction: column; background: var(--bg); box-shadow: none; }
@@ -293,8 +313,14 @@ h2 { margin: 0; font-size: 14px; line-height: 0; color: var(--gold); }
   background: rgb(18 13 10 / 0.94); font-size: 15px;
 }
 
-/* Crew */
-.crew { list-style: none; margin: 0; padding: 2px; display: grid; gap: var(--s3); max-height: 640px; overflow: auto; }
+/* Crew: the list scrolls inside its panel, with a fade at the bottom edge while there is more below. */
+.crew-panel { position: relative; }
+.crew-scroll { min-height: 0; max-height: 640px; overflow: auto; }
+.crew-panel[data-more="true"]::after {
+  content: ""; position: absolute; left: var(--s3); right: var(--s3); bottom: var(--s3); height: 36px; pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--panel));
+}
+.crew { list-style: none; margin: 0; padding: 2px; display: grid; gap: var(--s3); }
 .card {
   width: calc(100% - 4px); display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; align-items: start;
   padding: var(--s2); text-align: left; white-space: normal; font-size: 14px; color: var(--text); background: var(--panel-2);
@@ -306,6 +332,8 @@ h2 { margin: 0; font-size: 14px; line-height: 0; color: var(--gold); }
   background: color-mix(in srgb, var(--chip, var(--frame)) 38%, var(--bg-2)); box-shadow: inset 0 0 0 2px var(--frame-dark);
 }
 .tile .avatar { width: 36px; height: 54px; }
+.tile-arbab { flex: none; width: 56px; height: 86px; background: var(--bg-2); }
+.tile-arbab .avatar { width: 48px; height: 78px; }
 .tile.ghost .avatar { opacity: 0.75; }
 ${Object.keys(CHIPS)
   .map((cast) => `.cast-${cast} { --chip: var(--chip-${cast}); }`)
@@ -323,7 +351,8 @@ ${Object.keys(CHIPS)
   background: repeating-linear-gradient(90deg, var(--gold) 0 4px, var(--gold-2) 4px 5px, var(--frame-dark) 5px 6px);
 }
 .badge { display: inline-flex; align-items: center; flex: none; padding: 2px var(--s1); background: var(--tone, var(--st-orphaned)); box-shadow: 0 0 0 1px var(--frame-dark); }
-${["running", "preparing", "waiting", "asleep", "success", "failed", "orphaned"].map((t) => `.tone-${t} { --tone: var(--st-${t}); }`).join("\n")}
+${["running", "preparing", "waiting", "asleep", "success", "orphaned"].map((t) => `.tone-${t} { --tone: var(--st-${t}); }`).join("\n")}
+.tone-failed { --tone: var(--badge-failed); }
 .crew-empty { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) 0; }
 .empty-lead { font-weight: 600; }
 .empty-hint { color: var(--muted); font-size: 13px; }
@@ -383,6 +412,16 @@ footer { padding: 0 var(--s4) var(--s4); color: var(--muted); font-size: 13px; t
 @media (max-width: 899px) {
   .topbar { height: auto; min-height: 56px; flex-wrap: wrap; padding: var(--s2) var(--s4); }
   .status { flex-wrap: wrap; }
+}
+/* Narrow (a phone): nothing wider than the screen. The top bar stacks its rows: the logo, the gauges, the buttons. */
+@media (max-width: 599px) {
+  .topbar { flex-direction: column; align-items: stretch; gap: var(--s2); }
+  .status { margin-left: 0; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+  .gauges, .controls { flex-wrap: wrap; }
+  .hud { padding: var(--s2); }
+  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .card-head, .card-foot { flex-wrap: wrap; }
+  .recent-item { grid-template-columns: 44px minmax(0, 1fr) auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }

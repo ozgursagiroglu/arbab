@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { UI_ROUTES } from "../../protocol";
-import { CHIPS, TOKENS } from "./hud/tokens";
+import { badgeColors, CHIPS, TOKENS } from "./hud/tokens";
 import { PAGE_CSS, PAGE_HTML, PAGE_IDS } from "./page";
 
 /** WCAG relative luminance of `#rrggbb`. */
@@ -95,8 +95,40 @@ describe("PAGE_CSS", () => {
   it("puts the side beside the scene from 1280 px, under it from 900 px, and one column below", () => {
     expect(PAGE_CSS).toMatch(/\.grid, \.side, \.below \{[^}]*grid-template-columns: minmax\(0, 1fr\)/);
     expect(PAGE_CSS).toMatch(/@media \(min-width: 900px\) \{[^@]*\.below \{ grid-template-columns: minmax\(0, 2fr\) minmax\(0, 3fr\); \}/);
-    expect(PAGE_CSS).toMatch(/@media \(min-width: 1280px\) \{\n {2}\.grid \{ grid-template-columns: minmax\(0, 1fr\) 380px; \}/);
+    expect(PAGE_CSS).toMatch(/@media \(min-width: 1280px\) \{\n {2}\.grid \{ grid-template-columns: minmax\(0, 1fr\) 360px; align-items: stretch; \}/);
     expect(PAGE_CSS).toContain("grid-template-columns: repeat(auto-fit, minmax(170px, 1fr))");
+  });
+
+  it("makes the side column as tall as the scene card: the crew grows and scrolls, the monument keeps its height", () => {
+    const wide = /@media \(min-width: 1280px\) \{\n {2}\.grid[^@]*/.exec(PAGE_CSS)?.[0] ?? "";
+    expect(wide).toMatch(/\.side \{[^}]*grid-template-rows: minmax\(0, 1fr\) auto;[^}]*contain: size;/);
+    expect(wide).toMatch(/\.crew-panel \{ display: flex; flex-direction: column; min-height: 0; \}/);
+    expect(wide).toMatch(/\.crew-panel \.crew-scroll \{ flex: 1 1 0; max-height: none; \}/);
+    expect(PAGE_CSS).toMatch(/\.crew-scroll \{[^}]*overflow: auto;/);
+    expect(PAGE_CSS).toMatch(/\.crew-panel\[data-more="true"\]::after \{[^}]*linear-gradient\(to bottom, transparent, var\(--panel\)\)/);
+    // The crew comes first in the column, the monument after it.
+    expect(PAGE_HTML.indexOf('class="frame panel crew-panel"')).toBeLessThan(PAGE_HTML.indexOf('class="frame panel monument-panel"'));
+  });
+
+  it("keeps the one full-screen button on the scene card", () => {
+    expect(PAGE_HTML.match(/full screen<\/button>/g)).toHaveLength(1);
+    expect(PAGE_HTML).toMatch(/<button id="site-fullscreen"[^>]*>full screen<\/button>/);
+  });
+
+  it("lets the canvas take the stage's width below 1×, by its aspect ratio", () => {
+    expect(PAGE_CSS).toMatch(/#scene\.fluid \{[^}]*aspect-ratio: 480 \/ 270;/);
+  });
+
+  it("fits a 420 px screen: min-width 0 on grid children, a stacked top bar, two KPI cards a row, wrapping crew cards", () => {
+    expect(PAGE_CSS).toContain(".hud > *, .grid > *, .side > *, .below > * { min-width: 0; }");
+    const narrow = /@media \(max-width: 599px\) \{[^@]*/.exec(PAGE_CSS)?.[0] ?? "";
+    expect(narrow).toMatch(/\.topbar \{ flex-direction: column;/);
+    expect(narrow).toMatch(/\.status \{[^}]*flex-direction: column;/);
+    expect(narrow).toContain(".kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }");
+    expect(narrow).toContain(".card-head, .card-foot { flex-wrap: wrap; }");
+    expect(PAGE_CSS).toMatch(/\.table-wrap \{[^}]*overflow: auto;/);
+    // The top bar's rows: the logo, the gauges, the buttons.
+    expect(PAGE_HTML).toMatch(/<div class="gauges">[\s\S]*<\/div>\n<div class="controls">/);
   });
 
   it("has a sticky 56 px top bar and a sticky ledger header", () => {
@@ -119,6 +151,15 @@ describe("PAGE_CSS", () => {
   it("colors a chip for every cast and a badge for every state", () => {
     for (const cast of ["laborer", "mason", "scribe", "skeptic", "surveyor", "waterboy", "scout"]) expect(PAGE_CSS).toContain(`.cast-${cast} {`);
     for (const tone of ["running", "preparing", "waiting", "asleep", "success", "failed", "orphaned"]) expect(PAGE_CSS).toContain(`.tone-${tone} {`);
+  });
+
+  it("inks every state badge at 4.5:1 or more: light on the failed badge's dark red, dark on the rest", () => {
+    for (const tone of ["running", "preparing", "waiting", "asleep", "success", "failed", "orphaned"] as const) {
+      const { ground, ink } = badgeColors(tone);
+      expect(contrast(ink, ground), tone).toBeGreaterThanOrEqual(4.5);
+    }
+    expect(badgeColors("failed")).toEqual({ ground: "#b23a3a", ink: TOKENS.text });
+    expect(PAGE_CSS).toContain(".tone-failed { --tone: var(--badge-failed); }");
   });
 
   it("keeps body text at 4.5:1 or more on every panel", () => {

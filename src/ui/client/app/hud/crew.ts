@@ -5,16 +5,19 @@ import type { LaneState } from "../../../../types";
 import type { UiLane, UiSnapshot } from "../../../protocol";
 import type { Cast, Pose } from "../../model";
 import { castOf, fillFor } from "../../scene/scene";
-import type { CanvasElementLike, DocumentLike, ElementLike } from "../browser";
+import type { Canvas2D, CanvasElementLike, DocumentLike, ElementLike } from "../browser";
 import { formatUsd, laneElapsedMs } from "../hud";
 import type { Sprite, SpriteSet } from "../sprites";
+import { compileProp, ICONS } from "../sprites";
 import { make, makeCanvas, reorder } from "./dom";
 import type { PixelText } from "./pixel-text";
 import { createPixelText } from "./pixel-text";
-import { BADGE_INK, badgeOf, TOKENS } from "./tokens";
+import { BADGE_INK, badgeColors, badgeOf, TOKENS } from "./tokens";
 
 /** The avatar's canvas, in CSS px, and the most a sprite pixel is scaled. */
 export const AVATAR = { w: 36, h: 54, scale: 3 } as const;
+/** arbab on the empty state's tile: its 16 × 26 sprite at 3×. */
+export const AVATAR_ARBAB = { w: 48, h: 78, scale: 3 } as const;
 export const RECENT_MAX = 6;
 
 const RANK: Readonly<Record<LaneState, number>> = {
@@ -74,6 +77,12 @@ export function blockFill(lane: Pick<UiLane, "state" | "endState" | "reportStatu
   return isSet(lane) ? 1 : fillFor(lane.toolCalls);
 }
 
+/** Whether a scroll container holds more below what it shows (a pixel of slack for fractional layouts). */
+export function moreBelow(el: Pick<ElementLike, "scrollHeight" | "clientHeight" | "scrollTop">): boolean {
+  const { scrollHeight = 0, clientHeight = 0, scrollTop = 0 } = el;
+  return [scrollHeight, clientHeight, scrollTop].every(Number.isFinite) && scrollHeight - clientHeight - scrollTop > 1;
+}
+
 /** `CREW · 3 AT WORK` */
 export function crewTitle(lanes: readonly UiLane[]): string {
   const n = lanes.filter((lane) => lane.state === "running" || lane.state === "preparing").length;
@@ -86,12 +95,31 @@ export function drawSprite(canvas: CanvasElementLike, sprite: Sprite, cssW: numb
   if (!ctx) return 0;
   ctx.clearRect(0, 0, cssW * dpr, cssH * dpr);
   const scale = Math.max(1, Math.min(maxScale, Math.floor(cssW / Math.max(1, sprite.w)), Math.floor(cssH / Math.max(1, sprite.h))));
+  paintSprite(ctx, sprite, Math.floor((cssW - sprite.w * scale) / 2), cssH - sprite.h * scale, scale, dpr);
+  return scale;
+}
+
+/** A sprite's runs at (x, y) CSS px, each sprite pixel `scale` CSS px. */
+function paintSprite(ctx: Canvas2D, sprite: Sprite, x: number, y: number, scale: number, dpr: number): void {
   const px = scale * dpr;
-  const x0 = Math.floor((cssW - sprite.w * scale) / 2) * dpr;
-  const y0 = (cssH - sprite.h * scale) * dpr;
   for (const run of sprite.runs) {
     ctx.fillStyle = run.color;
-    ctx.fillRect(x0 + run.x * px, y0 + run.y * px, run.w * px, px);
+    ctx.fillRect((x + run.x * scale) * dpr, (y + run.y * scale) * dpr, run.w * px, px);
+  }
+}
+
+const ZZZ = compileProp(ICONS.zzz);
+
+/**
+ * A worker's avatar: its sprite standing on the bottom edge. Asleep it lies there at 2× (16 px across a 36-px tile),
+ * a thin figure, so the zzz the scene shows over a sleeper floats above it.
+ */
+export function drawAvatar(canvas: CanvasElementLike, sprite: Sprite, pose: Pose, dpr: number): number {
+  const scale = drawSprite(canvas, sprite, AVATAR.w, AVATAR.h, AVATAR.scale, dpr);
+  const ctx = canvas.getContext("2d");
+  if (pose === "sleep" && ctx) {
+    const lying = sprite.h - sprite.top;
+    paintSprite(ctx, ZZZ, AVATAR.w - ZZZ.w * 2 - 2, AVATAR.h - lying * scale - ZZZ.h * 2 - 4, 2, dpr);
   }
   return scale;
 }
@@ -116,9 +144,22 @@ export function createAvatar(doc: DocumentLike, sprites: SpriteSet, dpr: number)
       key = next;
       el.className = `tile cast-${cast}${ghost ? " ghost" : ""}`;
       const sprite = sprites.frames(cast, pose, 0, ghost)[0];
-      if (canvas && sprite) drawSprite(canvas, sprite, AVATAR.w, AVATAR.h, AVATAR.scale, dpr);
+      if (canvas && sprite) drawAvatar(canvas, sprite, pose, dpr);
     },
   };
+}
+
+/** The empty state's tile: arbab standing idle at 3×. */
+export function createArbabTile(doc: DocumentLike, sprites: SpriteSet, dpr: number): ElementLike {
+  const el = make(doc, "span", "tile tile-arbab");
+  el.setAttribute("aria-hidden", "true");
+  const canvas = makeCanvas(doc, AVATAR_ARBAB.w, AVATAR_ARBAB.h, dpr, "px avatar");
+  const sprite = sprites.frames("arbab", "idle", 0, false)[0];
+  if (canvas) {
+    el.appendChild(canvas);
+    if (sprite) drawSprite(canvas, sprite, AVATAR_ARBAB.w, AVATAR_ARBAB.h, AVATAR_ARBAB.scale, dpr);
+  }
+  return el;
 }
 
 function workerCast(lane: UiLane): Exclude<Cast, "arbab"> {
@@ -129,7 +170,7 @@ function workerCast(lane: UiLane): Exclude<Cast, "arbab"> {
 function setBadge(badge: PixelText, lane: UiLane): void {
   const { tone, label } = badgeOf(lane);
   badge.el.className = `pxt badge tone-${tone}`;
-  badge.set(label, BADGE_INK);
+  badge.set(label, badgeColors(tone).ink);
 }
 
 function elapsedText(lane: UiLane, serverNowMs: number): string {
@@ -184,9 +225,7 @@ export function mountCrew(doc: DocumentLike, els: CrewElements, sprites: SpriteS
   const recentTitle = createPixelText(doc, { scale: 1, color: TOKENS.muted, dpr }, "RECENTLY FINISHED");
   els.recentTitle.replaceChildren(recentTitle.el);
 
-  // The empty state: a worker asleep, and what to run.
-  const sleeper = createAvatar(doc, sprites, dpr);
-  sleeper.set("laborer", "sleep", false);
+  // The empty state: arbab waiting for work, and what to run.
   const lead = make(doc, "p", "empty-lead", "The site is quiet.");
   const hint = make(doc, "p", "empty-hint");
   hint.appendChild(make(doc, "span", "", "No lane is at work. Launch one with "));
@@ -197,7 +236,7 @@ export function mountCrew(doc: DocumentLike, els: CrewElements, sprites: SpriteS
   const words = make(doc, "div", "empty-words");
   words.appendChild(lead);
   words.appendChild(hint);
-  els.empty.replaceChildren(sleeper.el, words);
+  els.empty.replaceChildren(createArbabTile(doc, sprites, dpr), words);
 
   const cards = new Map<string, Card>();
   let order: string[] = [];

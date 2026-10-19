@@ -9,14 +9,41 @@ import { HEIGHT, WIDTH } from "../model";
 const UNKNOWN = "—";
 
 /**
- * The largest integer scale that fits the stage's width and the window below the header; at least 1. Full screen, it
- * is the stage's own size with no header.
+ * CSS px per art pixel: the largest scale that fits the stage and is a whole number of *device* pixels,
+ * `floor(min(w / 480, h / 270) × dpr) / dpr`, so a dpr-2 screen also gets the half steps (2.5× is 5 device px). 0 when
+ * nothing fits.
  */
-export function computeScale(stageWidth: number, windowHeight: number, headerHeight: number): number {
-  const byWidth = Math.floor(stageWidth / WIDTH);
-  const byHeight = Math.floor((windowHeight - headerHeight) / HEIGHT);
-  const scale = Math.min(byWidth, byHeight);
-  return Number.isFinite(scale) && scale >= 1 ? scale : 1;
+export function computeScale(stageWidth: number, stageHeight: number, dpr: number): number {
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const fit = Math.min(stageWidth / WIDTH, stageHeight / HEIGHT);
+  if (!Number.isFinite(fit) || fit <= 0) return 0;
+  return Math.floor(fit * ratio + 1e-9) / ratio;
+}
+
+/** How the canvas is sized: whole device pixels per art pixel, or, below 1×, the stage's width (pixelated). */
+export type SceneSize = { fluid: false; scale: number; width: number; height: number } | { fluid: true };
+
+/**
+ * The scene's CSS size for a stage `stageWidth` wide with `stageHeight` to spare on the first screen. Below 1× it is
+ * fluid when the stage is narrower than the art (a phone); a wide but short window keeps 1× and scrolls.
+ */
+export function sceneSize(stageWidth: number, stageHeight: number, dpr: number): SceneSize {
+  const scale = computeScale(stageWidth, stageHeight, dpr);
+  if (scale >= 1) return { fluid: false, scale, width: WIDTH * scale, height: HEIGHT * scale };
+  if (Number.isFinite(stageWidth) && stageWidth >= WIDTH) return { fluid: false, scale: 1, width: WIDTH, height: HEIGHT };
+  return { fluid: true };
+}
+
+/** The page's vertical spacing around the scene card that the elements' boxes do not include (hud padding, gaps, margins). */
+export const PAGE_GAPS = 40;
+
+/**
+ * The stage height that keeps the whole scene card on the first screen: the viewport less the top bar, the KPI row,
+ * the card's chrome (its height less its stage's) and the page's gaps.
+ */
+export function stageRoom(viewport: number, header: number, kpis: number, chrome: number): number {
+  const room = viewport - header - kpis - chrome - PAGE_GAPS;
+  return Number.isFinite(room) ? Math.max(0, room) : 0;
 }
 
 /** `#token=<hex>` from the page URL's fragment; null without a well-formed one. */

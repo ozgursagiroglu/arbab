@@ -3,7 +3,7 @@ import type { EventSourceLike, FetchLike, MessageEventLike, PageEnv } from "./br
 import { integration, lane, snapshot } from "./fixtures";
 import type { FakeCanvas, FakeDocument, FakeElement } from "./hud/fake-dom";
 import { fakeDocument } from "./hud/fake-dom";
-import { CLOSED_MESSAGE, NO_TOKEN_MESSAGE, NOT_RUNNING_MESSAGE, startPage, TOO_MANY_MESSAGE } from "./main";
+import { CLOSED_MESSAGE, NO_TOKEN_MESSAGE, NOT_RUNNING_MESSAGE, startPage, TITLE_CARD_MS, TOO_MANY_MESSAGE } from "./main";
 import { PAGE_IDS } from "./page";
 
 class FakeEventSource implements EventSourceLike {
@@ -34,6 +34,7 @@ interface Page {
   window: FakeElement & { innerWidth: number; innerHeight: number };
   fetched: string[];
   clock: { now: number };
+  timers: { callback: () => void; ms: number }[];
 }
 
 const CANVAS_IDS = [PAGE_IDS.canvas, PAGE_IDS.logo, PAGE_IDS.titleCardLogo];
@@ -46,13 +47,17 @@ function page(hash = "#token=00112233445566778899aabbccddeeff", fetch: FetchLike
     return e;
   };
   const canvas = el(PAGE_IDS.canvas) as FakeCanvas;
+  // A 1000-px stage; the top bar, the KPI row and the card's chrome leave it 900 − 50 − 70 − 100 − 40 = 640 px.
   el(PAGE_IDS.stage).rect = { left: 0, top: 0, width: 1000, height: 600 };
   el(PAGE_IDS.header).rect = { left: 0, top: 0, width: 1000, height: 50 };
+  el(PAGE_IDS.kpis).rect = { left: 0, top: 0, width: 1000, height: 70 };
+  el(PAGE_IDS.site).rect = { left: 0, top: 0, width: 1000, height: 700 };
   canvas.rect = { left: 0, top: 0, width: 960, height: 540 };
   const win = Object.assign(fakeDocument().root, { innerWidth: 1200, innerHeight: 900 });
   const frames: ((time: number) => void)[] = [];
   const fetched: string[] = [];
   const clock = { now: Date.parse("2026-10-19T10:05:00.000Z") };
+  const timers: { callback: () => void; ms: number }[] = [];
   const env: PageEnv = {
     document: doc,
     window: win,
@@ -68,10 +73,11 @@ function page(hash = "#token=00112233445566778899aabbccddeeff", fetch: FetchLike
     storage: () => null,
     matchMedia: () => ({ matches: false }),
     requestAnimationFrame: (callback) => frames.push(callback),
+    setTimeout: (callback, ms) => timers.push({ callback, ms }),
     devicePixelRatio: 1,
     now: () => clock.now,
   };
-  return { env, el, canvas, frames, doc, window: win, fetched, clock };
+  return { env, el, canvas, frames, doc, window: win, fetched, clock, timers };
 }
 
 function emit(s: unknown): void {
@@ -319,14 +325,73 @@ describe("startPage", () => {
     expect(p.frames).toHaveLength(2);
   });
 
-  it("scales the canvas by the largest integer that fits, on resize too", () => {
+  it("scales the canvas by whole device pixels to fit the stage and the first screen, on resize too", () => {
     const p = page();
     startPage(p.env);
     expect(p.canvas.style.width).toBe("960px");
     expect(p.canvas.style.height).toBe("540px");
+    expect(p.canvas.className).toBe("");
+    // A taller window: the width bounds it now, at 2.5× on a dpr-2 screen (5 device px per art px).
+    const tall = page();
+    Object.assign(tall.window, { innerHeight: 1000 });
+    tall.el(PAGE_IDS.stage).rect = { left: 0, top: 0, width: 1200, height: 600 };
+    startPage({ ...tall.env, devicePixelRatio: 2 });
+    expect(tall.canvas.style.width).toBe("1200px");
+    expect(tall.canvas.style.height).toBe("675px");
+    // Narrower than the art: the stage's width, the height by the aspect ratio.
     p.el(PAGE_IDS.stage).rect = { left: 0, top: 0, width: 400, height: 300 };
     p.window.dispatch("resize");
-    expect(p.canvas.style.width).toBe("480px");
+    expect(p.canvas.style.width).toBe("100%");
+    expect(p.canvas.style.height).toBe("auto");
+    expect(p.canvas.className).toBe("fluid");
+  });
+
+  it("fades the title card at the first snapshot and hides it after the fade, whatever the renderer does", () => {
+    const p = page();
+    startPage(p.env);
+    const card = p.el(PAGE_IDS.titleCard);
+    expect(card.hidden).toBe(false);
+    emit(snapshot());
+    expect(card.className).toBe("title-card gone");
+    expect(card.hidden).toBe(false);
+    expect(p.timers.map((t) => t.ms)).toEqual([TITLE_CARD_MS]);
+    p.timers[0]?.callback();
+    expect(card.hidden).toBe(true);
+    // A second snapshot sets no second timer.
+    emit(snapshot());
+    expect(p.timers).toHaveLength(1);
+    // With reduced motion there is no fade to wait for.
+    const still = page();
+    startPage({ ...still.env, matchMedia: () => ({ matches: true }) });
+    emit(snapshot());
+    expect(still.el(PAGE_IDS.titleCard).hidden).toBe(true);
+    expect(still.timers).toHaveLength(0);
+  });
+
+  it("fades the crew's bottom edge while the list has more below", () => {
+    const p = page();
+    startPage(p.env);
+    const scroll = p.el(PAGE_IDS.crewScroll);
+    const panel = p.el(PAGE_IDS.crewPanel);
+    expect(panel.attributes.get("data-more")).toBe("false");
+    Object.assign(scroll, { scrollHeight: 900, clientHeight: 300, scrollTop: 0 });
+    emit(snapshot({ lanes: ["a", "b", "c"].map((name) => lane({ name })) }));
+    expect(panel.attributes.get("data-more")).toBe("true");
+    Object.assign(scroll, { scrollTop: 600 });
+    scroll.dispatch("scroll");
+    expect(panel.attributes.get("data-more")).toBe("false");
+  });
+
+  it("writes the caption from the World: a capstone rising, then set, between snapshots", () => {
+    const p = page();
+    startPage(p.env);
+    const lanes = [lane({ name: "a", state: "finished", endState: "success", integration: "int-1" })];
+    emit(snapshot({ lanes, integrations: [integration({ name: "int-1", lanes: ["a"], verify: "passed" })] }));
+    expect(p.el(PAGE_IDS.caption).text()).toBe("INT-1 · 1/1 BLOCKS SET · CAPSTONE WAITING · VERIFY ✓");
+    emit(snapshot({ lanes, integrations: [integration({ name: "int-1", lanes: ["a"], verify: "passed", landedAt: "2026-10-19T10:04:59.000Z" })] }));
+    expect(p.el(PAGE_IDS.caption).text()).toBe("INT-1 · 1/1 BLOCKS SET · CAPSTONE RISING · VERIFY ✓");
+    for (let i = 0; i < 250; i += 1) p.frames[i]?.(16 * (i + 1));
+    expect(p.el(PAGE_IDS.caption).text()).toBe("INT-1 · 1/1 BLOCKS SET · CAPSTONE SET · VERIFY ✓");
   });
 
   it("goes full screen on the scene card, at the largest scale the screen holds", () => {
@@ -346,15 +411,19 @@ describe("startPage", () => {
     expect(p.canvas.style.width).toBe("1920px");
     expect(p.canvas.style.height).toBe("1080px");
     // Again leaves it.
-    p.el(PAGE_IDS.fullscreen).dispatch("click");
+    p.el(PAGE_IDS.siteFullscreen).dispatch("click");
     expect(p.doc.fullscreenElement).toBeNull();
+  });
+
+  it("has one full-screen button, the scene card's", () => {
+    expect(Object.keys(PAGE_IDS)).not.toContain("fullscreen");
   });
 
   it("leaves the page as it is when the browser refuses full screen", async () => {
     const p = page();
     p.el(PAGE_IDS.site).requestFullscreen = () => Promise.reject(new TypeError("denied"));
     startPage(p.env);
-    p.el(PAGE_IDS.fullscreen).dispatch("click");
+    p.el(PAGE_IDS.siteFullscreen).dispatch("click");
     await settle();
     p.el(PAGE_IDS.site).requestFullscreen = () => {
       throw new Error("denied");
@@ -363,10 +432,9 @@ describe("startPage", () => {
     expect(p.canvas.style.width).toBe("960px");
   });
 
-  it("hides the full-screen buttons where the browser has no Fullscreen API", () => {
+  it("hides the full-screen button where the browser has no Fullscreen API", () => {
     const p = page();
     startPage(p.env);
-    expect(p.el(PAGE_IDS.fullscreen).hidden).toBe(true);
     expect(p.el(PAGE_IDS.siteFullscreen).hidden).toBe(true);
   });
 

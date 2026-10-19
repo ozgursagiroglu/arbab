@@ -64,6 +64,12 @@ describe("arbab ui", () => {
       expect(script.body).toContain("This browser cannot draw the scene");
       expect(script.body).not.toContain("The page script is built by pnpm build.");
 
+      // The page icon: the pixel pyramid, as SVG.
+      const icon = await fetchText(printed.port, "/icon.svg");
+      expect(icon.status).toBe(200);
+      expect(icon.type).toMatch(/^image\/svg\+xml\b/);
+      expect(icon.body).toMatch(/^<svg [^>]*xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+
       const snapshot = await fetchText(printed.port, `/snapshot.json?token=${token}`);
       expect(snapshot.status).toBe(200);
       const body = JSON.parse(snapshot.body) as { protocol: number; project: string; lanes: unknown[] };

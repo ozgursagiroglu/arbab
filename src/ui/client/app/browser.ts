@@ -38,6 +38,10 @@ export interface ElementLike {
   remove(): void;
   addEventListener(type: string, listener: (event: EventLike) => void): void;
   getBoundingClientRect(): { left: number; top: number; width: number; height: number };
+  /** A scroll container's extent and position, in CSS px. */
+  readonly scrollHeight?: number;
+  readonly clientHeight?: number;
+  readonly scrollTop?: number;
   /** Missing where the Fullscreen API is (older Safari on iOS). */
   requestFullscreen?: () => unknown;
 }
@@ -164,6 +168,7 @@ export interface PageEnv {
   storage: () => StorageLike | null;
   matchMedia: (query: string) => MediaQueryListLike;
   requestAnimationFrame: (callback: (time: number) => void) => unknown;
+  setTimeout: (callback: () => void, ms: number) => unknown;
   devicePixelRatio: number;
   /** The client's clock, epoch ms. */
   now: () => number;

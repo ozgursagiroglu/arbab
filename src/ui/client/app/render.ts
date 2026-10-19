@@ -11,13 +11,14 @@ import {
   drawPyramidShadow,
   drawShadows,
   drawVignette,
+  plaqueBox,
   shakeOffset,
 } from "./art/fx";
 import { drawFarLand, drawRiverAndPlain } from "./art/land";
 import type { Painter, Rect } from "./art/paint";
 import { clock, lightOf, painter, prng } from "./art/paint";
-import type { Scenery, ShadowSpot } from "./art/props";
-import { LIGHTS, PROP_SHADOWS, propScenery } from "./art/props";
+import type { Scenery, ShadowSpot, Torch } from "./art/props";
+import { LIGHTS, PROP_SHADOWS, propScenery, siteTorches, torchLight, torchScenery, torchShadow } from "./art/props";
 import { drawSky } from "./art/sky";
 import type { Canvas2D } from "./browser";
 import {
@@ -92,20 +93,31 @@ const FIXED_SHADOWS: readonly ShadowSpot[] = [
   { cx: PLACES.treasury.x - 22, y: PLACES.treasury.y + 1, rx: 12, ry: 1 },
 ];
 
-/** Where the monument's plaque stands: on the ground at the pyramid's foot, centered. */
-export const PLAQUE_FOOT = { x: PYRAMID_AREA.centerX, y: PYRAMID_AREA.baseY + 18 } as const;
+/** Where the monument's plaque stands: on the ground a few px in front of the pyramid's foot, centered. */
+export const PLAQUE_FOOT = { x: PYRAMID_AREA.centerX, y: PYRAMID_AREA.baseY + 22 } as const;
 
 const PROPS_ON_PLAIN = propScenery();
 /** Props standing behind the pyramid's foot are drawn before it; the rest go in line with the actors. */
 const BEHIND = PROPS_ON_PLAIN.filter((s) => s.y < PYRAMID_AREA.baseY).sort((a, b) => a.y - b.y);
 const IN_FRONT = PROPS_ON_PLAIN.filter((s) => s.y >= PYRAMID_AREA.baseY);
 
-/** The scenery actors walk in front of and behind, back to front, with this frame's coins and plaque. */
-function sceneryOf(world: World): Scenery[] {
-  const all = [...IN_FRONT, ...FIXED_SCENERY, fixed(PLACES.treasury.y + 1, coinRects(world.coins))];
+/** The scenery actors walk in front of and behind, back to front, with this frame's coins, site torches and plaque. */
+function sceneryOf(world: World, torches: readonly Torch[]): Scenery[] {
+  const all = [...IN_FRONT, ...FIXED_SCENERY, fixed(PLACES.treasury.y + 1, coinRects(world.coins)), ...torches.map(torchScenery)];
   const monument = world.pyramid.monument;
   if (monument) all.push({ y: PLAQUE_FOOT.y, draw: (p) => drawPlaque(p, monument, PLAQUE_FOOT.x, PLAQUE_FOOT.y) });
   return all.sort((a, b) => a.y - b.y);
+}
+
+/** Shadows of what stands on the plain this frame: the props, the site's torches and the plaque. */
+function groundShadows(world: World, torches: readonly Torch[]): ShadowSpot[] {
+  const spots = [...PROP_SHADOWS, ...FIXED_SHADOWS, ...torches.map(torchShadow)];
+  const monument = world.pyramid.monument;
+  if (monument) {
+    const box = plaqueBox(monument, PLAQUE_FOOT.x, PLAQUE_FOOT.y);
+    spots.push({ cx: PLAQUE_FOOT.x, y: PLAQUE_FOOT.y, rx: Math.ceil(box.w / 2) + 2, ry: 1 });
+  }
+  return spots;
 }
 
 const STACKS = 6;
@@ -345,6 +357,10 @@ function drawPyramid(p: Painter, pyramid: Pyramid): void {
     for (let i = 0; i < 4; i++) p.rect(px + 1, base - 18 + i, 6 - i * 1.5, 1, color);
     p.rect(px + 1, base - 15, 1, 1, OUTLINE);
   }
+  drawCapstone(p, cap);
+}
+
+function drawCapstone(p: Painter, cap: Pyramid["capstone"]): void {
   const sprite = prop(cap.ready ? PROPS.capstoneGleam : PROPS.capstone);
   const left = Math.round(cap.x) - Math.floor(sprite.w / 2);
   const top = Math.round(cap.y) - sprite.h;
@@ -469,12 +485,20 @@ function actorAlpha(actor: Actor): number {
   return Math.min(1, Math.max(0, Number.isFinite(actor.alpha) ? actor.alpha : 1)) * (actor.ghost ? 0.5 : 1);
 }
 
-/** Every actor on its feet casts a shadow; a climber on its ladder does not. */
+/** A worker above the pyramid's foot stands on a plank; on the foot itself it stands on the base. */
+function onPlank(actor: Actor): boolean {
+  return actor.pose === "work" && Math.round(actor.y) < PYRAMID_AREA.baseY;
+}
+
+/**
+ * Every actor on its feet casts a shadow on the ground; a climber on its ladder does not, and a worker on its plank
+ * casts its shadow on the plank (drawn with it).
+ */
 function actorShadows(world: World): { solid: ShadowSpot[]; faded: { spot: ShadowSpot; alpha: number }[] } {
   const solid: ShadowSpot[] = [];
   const faded: { spot: ShadowSpot; alpha: number }[] = [];
   for (const actor of world.actors) {
-    if (actor.pose === "climb" || actor.pose === "climb-stone") continue;
+    if (actor.pose === "climb" || actor.pose === "climb-stone" || onPlank(actor)) continue;
     if (!Number.isFinite(actor.x) || !Number.isFinite(actor.y)) continue;
     const alpha = actorAlpha(actor);
     if (alpha <= 0) continue;
@@ -486,10 +510,16 @@ function actorShadows(world: World): { solid: ShadowSpot[]; faded: { spot: Shado
   return { solid, faded };
 }
 
-function drawActors(p: Painter, world: World, light: ((color: string) => string) | null, time: number): { actor: Actor; sprite: Sprite }[] {
+function drawActors(
+  p: Painter,
+  world: World,
+  torches: readonly Torch[],
+  light: ((color: string) => string) | null,
+  time: number,
+): { actor: Actor; sprite: Sprite }[] {
   const order = world.actors.map((actor, i) => ({ actor, i }));
   order.sort((a, b) => a.actor.y - b.actor.y || a.i - b.i);
-  const scenery = sceneryOf(world);
+  const scenery = sceneryOf(world, torches);
   let next = 0;
   const shown: { actor: Actor; sprite: Sprite }[] = [];
   for (const { actor } of order) {
@@ -500,9 +530,13 @@ function drawActors(p: Painter, world: World, light: ((color: string) => string)
     const x = Math.round(actor.x);
     const y = Math.round(actor.y);
     if (actor.pose === "climb" || actor.pose === "climb-stone") drawLadder(p, x, y, world.pyramid);
-    // A worker above the pyramid's foot stands on a plank; on the foot itself it stands on the base.
-    if (actor.pose === "work" && y < PYRAMID_AREA.baseY) drawPlank(p, x, y);
     const alpha = actorAlpha(actor);
+    if (onPlank(actor)) {
+      drawPlank(p, x, y);
+      p.tint(null);
+      drawShadows(p, world.sky, [{ cx: x, y, rx: 4, ry: 0 }], alpha);
+      p.tint(light);
+    }
     if (alpha <= 0) continue;
     if (alpha < 1) p.alpha(alpha);
     p.sprite(sprite, x - Math.floor(sprite.w / 2), y - sprite.h, actor.facing === -1);
@@ -544,11 +578,27 @@ function drawSigns(p: Painter, world: World, shown: { actor: Actor; sprite: Spri
   }
 }
 
+/** Pale dust, lighter than any sand it rises from. */
+const PUFF = "#FBF0D6";
+/** Seconds of life left when a puff starts to spread. */
+const DUST_SPREAD_S = 0.3;
+
 function drawParticle(p: Painter, particle: Particle): void {
   const { x, y } = particle;
   switch (particle.kind) {
     case "dust":
-      p.rect(x, y, 1, 1, SAND[2]);
+      // A puff that spreads and thins as it settles: one sand pixel alone reads as nothing on the plain.
+      if (particle.life > DUST_SPREAD_S) {
+        p.rect(x, y - 1, 2, 1, PUFF);
+        p.rect(x, y, 1, 1, PUFF);
+        p.rect(x + 1, y, 1, 1, SAND[2]);
+      } else {
+        p.alpha(0.8);
+        p.rect(x - 1, y, 3, 1, PUFF);
+        p.rect(x, y - 1, 1, 1, PUFF);
+        p.rect(x + 1, y + 1, 1, 1, SAND[2]);
+        p.alpha(1);
+      }
       break;
     case "stone":
       p.rect(x, y, 2, 2, LIMESTONE.face);
@@ -591,7 +641,8 @@ export function renderWorld(ctx: Canvas2D, world: World): void {
   p.tint(null);
   drawRiverAndPlain(p, phase, time);
 
-  drawShadows(p, world.sky, [...PROP_SHADOWS, ...FIXED_SHADOWS]);
+  const torches = siteTorches(world.pyramid);
+  drawShadows(p, world.sky, groundShadows(world, torches));
   if (world.pyramid.blocks.some((b) => b.look !== "empty" && b.look !== "planned")) {
     drawPyramidShadow(p, world.sky, PYRAMID_AREA, world.pyramid);
   }
@@ -605,12 +656,15 @@ export function renderWorld(ctx: Canvas2D, world: World): void {
   for (const f of shadows.faded) drawShadows(p, world.sky, [f.spot], f.alpha);
 
   p.tint(light);
-  const shown = drawActors(p, world, light, time);
+  const shown = drawActors(p, world, torches, light, time);
   for (const particle of world.particles) drawParticle(p, particle);
   p.tint(null);
 
-  if (phase === "night") drawLightPools(p, LIGHTS, time);
-  drawGlowBeam(p, world.pyramid.capstone, world.pyramid.apex);
+  if (phase === "night") drawLightPools(p, [...LIGHTS, ...torches.map(torchLight)], time);
+  const cap = world.pyramid.capstone;
+  drawGlowBeam(p, cap, world.pyramid.apex);
+  // In the beam the stone shows in its own gold, haloed by the light rather than washed out by it.
+  if (cap.state !== "none" && cap.glow > 0) drawCapstone(p, cap);
   drawSigns(p, world, shown, offset);
 
   p.offset(0, 0);

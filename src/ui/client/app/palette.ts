@@ -47,6 +47,67 @@ export const COIN = { face: "#F2C14E", shadow: "#C9962C" } as const;
 /** The white of a block's flash. */
 export const FLASH = "#FFFFFF";
 
+// ---------------------------------------------------------------------------------------------------------------
+// The game-studio pass: the scenery's materials, a few shades each, lit from the sun's side.
+
+/** The sky from the zenith down to the horizon haze, per phase. */
+export const SKY_RAMP: Readonly<Record<"day" | "dusk" | "night", readonly string[]>> = {
+  day: ["#2E6CAF", "#3D82C2", "#5299CF", "#6CAED9", "#8DC2E0", "#B1D3DF", "#D3DDCB", "#ECE1BA"],
+  dusk: ["#2A2350", "#45306A", "#6C3B70", "#984870", "#C25A66", "#E0755A", "#F1954E", "#F6B860"],
+  night: ["#060A1C", "#0A1027", "#0F1733", "#151E3E", "#1B2648", "#222E52", "#2A375C", "#334166"],
+};
+
+/** The sun's disc at the horizon (warm) and high up (pale): the renderer mixes them by height. */
+export const SUN_LOW = { core: "#FFA640", rim: "#FFCB6B", halo: "#FFB85C" } as const;
+export const SUN_HIGH = { core: "#FFF7DC", rim: "#FFFCEF", halo: "#FFF3C4" } as const;
+
+/** Clouds: lit top, body, shaded underside. */
+export const CLOUDS: Readonly<Record<"day" | "dusk" | "night", readonly [string, string, string]>> = {
+  day: ["#FFFDF6", "#F1ECDF", "#CBD3DD"],
+  dusk: ["#FFD39A", "#E8968A", "#9C5A7C"],
+  night: ["#5A6688", "#46507A", "#343D63"],
+};
+
+export const STARS = { bright: "#F5F3E8", mid: "#C9CCE0", dim: "#7E86AA" } as const;
+export const BIRD: Readonly<Record<"day" | "dusk", string>> = { day: "#4A3A3C", dusk: "#3A2236" };
+
+/** The valley's cliffs, farthest first: lit face, shaded face, strata. */
+export const CLIFFS = [
+  { light: "#DCD3C6", face: "#C9BFB6", shade: "#B0A7A9" },
+  { light: "#E5CBA2", face: "#D2B58C", shade: "#B39575" },
+] as const;
+export const FAR_DUNES = { light: "#E2BE7C", face: "#D4AA68", shade: "#BF9456" } as const;
+/** Fields and trees along the far bank. */
+export const BANK_GREEN = { light: "#7E9A4A", face: "#5F7D3A", shade: "#465F2E" } as const;
+export const RIVER = { sky: "#9CC9DD", light: "#6FA8CC", face: "#4F8FBF", deep: "#3D78A8", bank: "#A88654" } as const;
+export const GLINT: Readonly<Record<"day" | "dusk" | "night", string>> = { day: "#E6F4FA", dusk: "#FFE0A8", night: "#A9B6D8" };
+export const REED = { light: "#9CAA52", face: "#6E8A3C", shade: "#4E6A2E", tip: "#C8B068" } as const;
+/** The far temple and obelisks: sunlit and shaded stone, softened by the distance. */
+export const FAR_STONE = { light: "#EADCB8", face: "#D6C499", shade: "#B5A27C", dark: "#9A8868" } as const;
+
+/** The plain from the river bank to the front, and its worn paths and pebbles. */
+export const PLAIN = ["#CFAA6A", "#D8B36F", "#DFBC77", "#E6C582", "#E9C886", "#E3BF7A"] as const;
+export const PATH = { light: "#F1D9A2", face: "#ECD195", track: "#D9B878" } as const;
+export const PEBBLE = { light: "#CDB693", face: "#A8906C", shade: "#7E6A4E" } as const;
+export const SCRUB = { light: "#A3A057", face: "#7C7E43", shade: "#5A5E34" } as const;
+
+export const CAMEL = { light: "#D9AE73", face: "#BE8E55", shade: "#97693C", dark: "#6E4A2A" } as const;
+export const FIRE = { white: "#FFF6D0", yellow: "#FFD24A", orange: "#F68B2C", red: "#D1452A", ember: "#8E2E1E" } as const;
+export const SMOKE = "#CFC8C0";
+export const STONE_RING = { light: "#A8A094", shade: "#756E64" } as const;
+export const BRONZE = { light: "#E0A859", face: "#B37A3A", shade: "#7E5226" } as const;
+/** arbab's canopy: cream and red stripes; its banners in the nemes' blue and gold. */
+export const CANOPY = { cream: "#F2E4C2", creamShade: "#D7C29A", red: "#B8433A", redShade: "#8E2F2B" } as const;
+export const SAIL = { light: "#FBF7EC", shade: "#DCD4C2" } as const;
+export const QUARRY = { light: "#F3E6C2", face: "#E0CD9F", shade: "#C2AA78", edge: "#9C8558" } as const;
+/** Shadows on the sand and the light of fires at night. */
+export const SHADOW = "#3E2A1C";
+export const NIGHT_SHADOW = "#0A0E22";
+export const FIRELIGHT = "#FFB45A";
+export const VIGNETTE: Readonly<Record<"day" | "dusk" | "night", string>> = { day: "#4A321E", dusk: "#2E1830", night: "#05071A" };
+/** The nameplate above a highlighted worker. */
+export const PLATE = { fill: "#2B1D14", rim: GOLD.mid, text: GOLD.gleam } as const;
+
 /** What each sprite character draws before a cast recolors it. `.` is transparent. */
 export const SPRITE_CHARS: Readonly<Record<string, string>> = {
   o: OUTLINE,

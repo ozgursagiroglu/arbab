@@ -1,0 +1,9 @@
+{
+  "name": "ui2-pay",
+  "role": "implementer",
+  "brief": "lanes/ui2-pay.md",
+  "base": "integrate/ui2",
+  "effort": "high",
+  "budgetUsd": 8,
+  "wallMin": 45
+}

@@ -68,13 +68,21 @@ every measurement and confound. arbab packages that method so it is repeatable a
 - **Landing is yours.** `arbab land` merges only a tree that was verified, into a clean base. It never pushes; push
   and deploy stay human actions.
 
-**Watch it build.** `arbab ui` serves a live, read-only scene of your lanes on 127.0.0.1. Every lane is a worker
-building a pyramid, and arbab is the foreman at the front: workers walk up to talk when they take a brief, and again
-when they deliver the report. Each tool call sets a stone. A finished lane's block is set, or its stones fall. A
-landing hoists the capstone, and landed integrations stand on the horizon. Held lanes wait in the camp, the sky dusks
-when launches are held for the quota, and the coin pile grows with the spend.
+**Watch it build.** `arbab ui` serves a live, read-only page of your lanes on 127.0.0.1: a pixel-art scene inside a
+game-style dashboard.
+- **The scene**: every lane is a worker building a pyramid, and arbab is the foreman at the front. Workers walk up to
+  talk when they take a brief, and again when they deliver the report.
+- **The stones**: each tool call sets a stone. A finished lane's block is set, or its stones fall.
+- **Landings**: a landing hoists the capstone in a beam of light, and landed integrations stand on the horizon. While
+  nothing is under way, the last one stands as a monument.
+- **The quota and the spend**: held lanes wait in the camp, the sky dusks when launches are held for the quota, and
+  the coin pile grows with the spend.
+- **Around the scene**: KPI cards, quota gauges, the crew with their avatars, the integration's progress, a chronicle
+  of what happened, and a ledger of every lane.
 
 ![arbab ui: workers building the pyramid while arbab talks to a worker at the front](docs/ui/day.png)
+
+![The arbab ui dashboard: KPI cards, the scene, the crew and the integration, the chronicle and the ledger](docs/ui/page.png)
 
 `arbab status` after part of arbab's own M3 build. Each role runs at its own effort; costs are Claude Code's
 API-equivalent estimates, and the run was on a subscription.

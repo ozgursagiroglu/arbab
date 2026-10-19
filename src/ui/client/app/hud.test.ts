@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { UiQuota, UiSnapshot } from "../../protocol";
+import type { UiLane, UiQuota, UiSnapshot } from "../../protocol";
 import { integration, lane, snapshot } from "./fixtures";
 import {
   announcements,
   computeScale,
-  crew,
   formatCounts,
   formatState,
   formatUsd,
@@ -13,24 +12,67 @@ import {
   laneElapsedMs,
   parseProblem,
   parseSnapshot,
+  PAGE_GAPS,
   parseToken,
-  tableRow,
+  sceneSize,
+  STATE_RANK,
+  stageRoom,
+  startedSince,
   tooltipLines,
   totalCost,
 } from "./hud";
 
 describe("computeScale", () => {
-  it("is the largest integer that fits the stage width and the window below the header", () => {
-    expect(computeScale(1000, 900, 50)).toBe(2);
-    expect(computeScale(2000, 900, 50)).toBe(3);
-    expect(computeScale(2000, 600, 50)).toBe(2);
-    expect(computeScale(1440, 2000, 0)).toBe(3);
+  it("is floor(min(w / 480, h / 270) × dpr) / dpr: whole device pixels per art pixel", () => {
+    expect(computeScale(1000, 850, 1)).toBe(2);
+    expect(computeScale(2000, 850, 1)).toBe(3);
+    expect(computeScale(2000, 550, 1)).toBe(2);
+    expect(computeScale(1440, 2000, 1)).toBe(3);
+    // A dpr-2 screen gets the half steps: 2.5× CSS is 5× device.
+    expect(computeScale(1200, 2000, 2)).toBe(2.5);
+    expect(computeScale(1199, 2000, 2)).toBe(2);
+    expect(computeScale(1000, 850, 2)).toBe(2);
+    expect(computeScale(1120, 2000, 3)).toBe(7 / 3);
   });
 
-  it("is at least 1", () => {
-    expect(computeScale(100, 100, 50)).toBe(1);
-    expect(computeScale(0, 0, 0)).toBe(1);
-    expect(computeScale(Number.NaN, 900, 0)).toBe(1);
+  it("is below 1 on a narrow stage, 0 when nothing fits, and reads a bad dpr as 1", () => {
+    expect(computeScale(400, 900, 1)).toBe(0);
+    expect(computeScale(400, 900, 2)).toBe(0.5);
+    expect(computeScale(0, 0, 1)).toBe(0);
+    expect(computeScale(Number.NaN, 900, 1)).toBe(0);
+    expect(computeScale(1000, 850, Number.NaN)).toBe(2);
+    expect(computeScale(1000, 850, 0)).toBe(2);
+  });
+});
+
+describe("sceneSize", () => {
+  it("is a fixed size at 1× and up", () => {
+    expect(sceneSize(1000, 850, 1)).toEqual({ fluid: false, scale: 2, width: 960, height: 540 });
+    expect(sceneSize(1200, 2000, 2)).toEqual({ fluid: false, scale: 2.5, width: 1200, height: 675 });
+  });
+
+  it("takes the stage's width below 1× on a narrow stage, and keeps 1× on a wide but short one", () => {
+    expect(sceneSize(380, 900, 2)).toEqual({ fluid: true });
+    expect(sceneSize(380, 900, 1)).toEqual({ fluid: true });
+    expect(sceneSize(1200, 200, 1)).toEqual({ fluid: false, scale: 1, width: 480, height: 270 });
+    expect(sceneSize(Number.NaN, 900, 1)).toEqual({ fluid: true });
+  });
+});
+
+describe("stageRoom", () => {
+  it("leaves the stage the viewport less the top bar, the KPI row, the card's chrome and the page's gaps", () => {
+    expect(stageRoom(900, 56, 100, 120)).toBe(900 - 56 - 100 - 120 - PAGE_GAPS);
+    expect(stageRoom(100, 56, 100, 120)).toBe(0);
+    expect(stageRoom(Number.NaN, 56, 100, 120)).toBe(0);
+  });
+
+  it("reaches 3× at 1920 × 1080 (dpr 1) with the trimmed layout: a 1452-px stage, a one-row KPI strip, lean chrome", () => {
+    // The top bar 56; KPI cards 44 + 2 × 8 padding + 2 × 4 margins; the card: 2 × 8 padding, a 44-px title bar, a 33-px caption.
+    const room = stageRoom(1080, 56, 68, 93);
+    expect(room).toBeGreaterThanOrEqual(810);
+    expect(computeScale(1452, room, 1)).toBe(3);
+    // 1440 × 900: 2×.
+    expect(computeScale(1012, stageRoom(900, 56, 68, 93), 1)).toBe(2);
   });
 });
 
@@ -115,13 +157,19 @@ describe("header", () => {
       },
     });
     expect(header(s)).toEqual({
-      title: "demo · 0.2.0",
+      project: "demo",
+      version: "v0.2.0",
       counts: "3 running",
       cost: "$3.75",
       quota: "5h 62% · 7d 40%",
       held: true,
-      hidden: "3 older lanes are not shown.",
+      footer: "Read-only · arbab 0.2.0 · 3 older lanes not shown",
     });
+  });
+
+  it("leaves the hidden lanes out of the footer when there are none", () => {
+    expect(header(snapshot()).footer).toBe("Read-only · arbab 0.2.0");
+    expect(header(snapshot({ hiddenLanes: 1 })).footer).toBe("Read-only · arbab 0.2.0 · 1 older lane not shown");
   });
 
   it("leaves out quota windows that have reset", () => {
@@ -204,23 +252,23 @@ describe("tooltip", () => {
   });
 });
 
-describe("crew and table", () => {
-  it("lists every lane not finished", () => {
-    const s = snapshot({ lanes: [lane({ name: "a" }), lane({ name: "b", state: "finished", endState: "success" }), lane({ name: "c", state: "queued" })] });
-    expect(crew(s).map((l) => l.name)).toEqual(["a", "c"]);
+describe("startedSince and STATE_RANK", () => {
+  it("is a lane preparing or running that was not already, nor asleep until the quota reset", () => {
+    const s = (state: UiLane["state"]): Pick<UiLane, "state"> => ({ state });
+    expect(startedSince(s("running"), undefined)).toBe(true);
+    expect(startedSince(s("preparing"), s("queued"))).toBe(true);
+    expect(startedSince(s("running"), s("held"))).toBe(true);
+    expect(startedSince(s("running"), s("finished"))).toBe(true);
+    expect(startedSince(s("running"), s("preparing"))).toBe(false);
+    expect(startedSince(s("running"), s("running"))).toBe(false);
+    expect(startedSince(s("running"), s("waiting-reset"))).toBe(false);
+    expect(startedSince(s("queued"), undefined)).toBe(false);
+    expect(startedSince(s("waiting-reset"), s("running"))).toBe(false);
   });
 
-  it("makes a table row", () => {
-    expect(tableRow(lane({ name: "a", role: "verifier", state: "finished", endState: "failed", attempt: 3, toolCalls: 7, costUsd: 0.5 }))).toEqual([
-      "a",
-      "verifier",
-      "finished",
-      "failed",
-      "3",
-      "7",
-      "$0.50",
-    ]);
-    expect(tableRow(lane({ name: "b" }))[3]).toBe("—");
+  it("orders the states at work first, finished last", () => {
+    const states = Object.keys(STATE_RANK).sort((a, b) => STATE_RANK[a as UiLane["state"]] - STATE_RANK[b as UiLane["state"]]);
+    expect(states).toEqual(["running", "preparing", "waiting-reset", "held", "queued", "orphaned", "finished"]);
   });
 });
 

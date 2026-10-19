@@ -1,0 +1,9 @@
+{
+  "name": "ui2-polish",
+  "role": "implementer",
+  "brief": "lanes/ui2-polish.md",
+  "base": "integrate/ui2",
+  "effort": "high",
+  "budgetUsd": 12,
+  "wallMin": 60
+}

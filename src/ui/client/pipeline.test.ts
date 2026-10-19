@@ -6,12 +6,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { UiIntegration, UiLane, UiSnapshot } from "../protocol";
+import { plaqueBox, shakeOffset } from "./app/art/fx";
+import { caravanAt, feluccaAt } from "./app/art/land";
+import { siteTorches, torchLight } from "./app/art/props";
 import type { Canvas2D } from "./app/browser";
+import { BUBBLE, GOLD, PLATE } from "./app/palette";
 import type { Raster } from "./app/raster";
 import { createRaster, decodePng, encodePng } from "./app/raster";
-import { GROUND_Y, ladderTop, renderWorld } from "./app/render";
+import { GROUND_Y, ladderTop, PLAQUE_FOOT, renderWorld } from "./app/render";
 import type { Actor, Scene, World } from "./model";
-import { HEIGHT, PLACES, PYRAMID_AREA, WIDTH } from "./model";
+import { ACTOR_BOX, HEIGHT, PLACES, PYRAMID_AREA, WIDTH } from "./model";
 import { pyramidLayout, workSpot } from "./scene/layout";
 import { createScene } from "./scene/scene";
 import { at, finishedLane, seededRandom, T0, uiIntegration, uiLane, uiQuota, uiSnapshot } from "./scene/testkit";
@@ -149,7 +153,10 @@ function playDay(): Map<string, Moment> {
   scene.apply(snapshot());
   stepUntil("talk", () => actor("obelisk")?.bubble?.open === 1, 20);
   stepFor(0.2);
+  // Hovered while it talks: its nameplate stands over its bubble.
+  scene.highlight("obelisk");
   capture("talk");
+  scene.highlight(null);
 
   // After the brief it carries a stone up its ladder to course 2.
   stepUntil("climb", () => {
@@ -165,10 +172,16 @@ function playDay(): Map<string, Moment> {
   stepUntil("strike", () => (actor("ramp")?.stroke ?? 0) >= 0.55, 5);
   capture("strike");
 
-  // A failure: the block's stones tumble.
+  // A failure: the block's stones tumble and the camera shakes.
   change("gate", { state: "finished", endState: "failed", reportStatus: null, elapsedMs: 600_000 });
   scene.apply(snapshot());
-  stepFor(0.2);
+  const fellAt = seconds;
+  stepUntil("fall-shake", () => {
+    const o = shakeOffset(scene.world.shake, scene.world.time);
+    return Math.abs(o.dx) >= 1 && Math.abs(o.dy) >= 1;
+  }, 0.15);
+  capture("fall-shake");
+  stepFor(0.2 - (seconds - fellAt));
   capture("fall");
 
   // A success: the worker reports, then takes bread and beer at the table.
@@ -194,13 +207,68 @@ function playDay(): Map<string, Moment> {
   stepFor(1.5);
   capture("capstone-hoist");
   stepUntil("capstone", () => scene.world.pyramid.capstone.state === "set", 3);
+  capture("capstone-glow");
   stepFor(0.25);
   capture("capstone");
 
   return moments;
 }
 
+/** The finished lanes an integration merged, and the integration landed two hours ago. */
+function landed(name: string, count: number): { lanes: UiLane[]; integration: UiIntegration } {
+  const names = Array.from({ length: count }, (_, i) => `${name}-${i + 1}`);
+  return {
+    lanes: names.map((n) => finishedLane({ name: n, integration: name, toolCalls: 30, costUsd: 0.8 })),
+    integration: uiIntegration({ name, lanes: names, updatedAt: at(-7300), verify: "passed", ready: true, landedAt: at(-7200) }),
+  };
+}
+
+/**
+ * Nobody at work: the last landing stands as the monument with its plaque, and the valley goes on living. At 49 s the
+ * felucca is mid-river and the caravan mid-crossing.
+ */
+const IDLE_SECONDS = 49;
+
+function playIdle(blocks: number, seconds: number): Moment {
+  const scene = createScene({ reducedMotion: false, random: seededRandom(77) });
+  const old = landed("int-quarry", 5);
+  const last = landed("int-walls", blocks);
+  scene.apply(
+    uiSnapshot({
+      lanes: [...old.lanes, ...last.lanes],
+      integrations: [{ ...old.integration, landedAt: at(-9000) }, last.integration],
+      quota: uiQuota({ fiveHour: { utilization: 0.2, resetsAt: NOW_SEC + 12_600 } }),
+    }),
+  );
+  for (let i = 0; i < Math.round(seconds * 60); i += 1) scene.step(FRAME_MS);
+  return { raster: rasterize(scene.world), actors: scene.world.actors.map((a) => ({ ...a })), world: structuredClone(scene.world) };
+}
+
+/** The account rejected while lanes still run: night over the site, the builders at work under the torches. */
+function playNightWork(): Moment {
+  const scene = createScene({ reducedMotion: false, random: seededRandom(4242) });
+  const lanes = [
+    uiLane({ name: "walls", state: "running", toolCalls: 30, costUsd: 1.2 }),
+    finishedLane({ name: "found", toolCalls: 40 }),
+    uiLane({ name: "shaft", state: "running", toolCalls: 12, costUsd: 0.4 }),
+    uiLane({ name: "hall", state: "running", toolCalls: 22, costUsd: 0.9 }),
+    uiLane({ name: "ramp", state: "running", toolCalls: 6, costUsd: 0.2 }),
+    uiLane({ name: "gate", state: "running", toolCalls: 50, costUsd: 1.6 }),
+    uiLane({ name: "court", state: "held", hold: "quota" }),
+  ];
+  scene.apply(
+    uiSnapshot({
+      lanes,
+      quota: uiQuota({ status: "rejected", fiveHour: { utilization: 1, resetsAt: NOW_SEC + 3_600 } }),
+    }),
+  );
+  for (let i = 0; i < 90; i += 1) scene.step(FRAME_MS);
+  return { raster: rasterize(scene.world), actors: scene.world.actors.map((a) => ({ ...a })), world: structuredClone(scene.world) };
+}
+
 const DAY = playDay();
+DAY.set("idle", playIdle(8, IDLE_SECONDS));
+DAY.set("night-work", playNightWork());
 
 function moment(name: string): Moment {
   const m = DAY.get(name);
@@ -311,8 +379,104 @@ describe("the live scene", () => {
     const set = moment("capstone").world.pyramid;
     expect(set.capstone).toMatchObject({ state: "set", ...set.apex });
     expect(moment("capstone").actors[0]?.pose).toBe("cheer");
+    // Set, it stands on a finished pyramid: the slots without a lane are set blocks, dotted while it rose.
+    const free = (p: typeof set): string[] => p.blocks.filter((b) => b.lane === null).map((b) => `${b.look} ${b.fill}`);
+    for (const [p, look] of [[hoist, "empty 0"], [set, "set 1"], [moment("capstone-glow").world.pyramid, "set 1"]] as const) {
+      expect(free(p).length).toBeGreaterThan(0);
+      expect(new Set(free(p))).toEqual(new Set([look]));
+    }
   });
+
+  it("talk: the hovered worker's nameplate stands above its bubble", () => {
+    const m = moment("talk");
+    expect(actorIn(m, "obelisk").highlight).toBe(true);
+    // The plate's rim is gold over a dark fill; the bubble's is white. Above the speaker's head, the plate comes first.
+    const column = PLACES.audience.x;
+    let plate = -1;
+    let bubble = -1;
+    for (let y = 0; y < PLACES.audience.y; y += 1) {
+      const c = pixelAt(m.raster, column, y);
+      if (plate < 0 && c === PLATE.fill.toLowerCase()) plate = y;
+      if (bubble < 0 && c === BUBBLE.fill.toLowerCase()) bubble = y;
+    }
+    expect(plate).toBeGreaterThan(0);
+    expect(bubble).toBeGreaterThan(plate);
+  });
+
+  it("fall-shake: the stones in the air while the camera is off by a pixel or more each way", () => {
+    const { world } = moment("fall-shake");
+    expect(world.particles.filter((p) => p.kind === "stone").length).toBeGreaterThanOrEqual(4);
+    const o = shakeOffset(world.shake, world.time);
+    expect(Math.abs(o.dx)).toBeGreaterThanOrEqual(1);
+    expect(Math.abs(o.dy)).toBeGreaterThanOrEqual(1);
+    // The shake moves the scene, not the frame: the shaken and the still frame differ in the middle.
+    const still = rasterize({ ...world, shake: 0 });
+    expect(Buffer.from(still.data).equals(Buffer.from(moment("fall-shake").raster.data))).toBe(false);
+  });
+
+  it("capstone-glow: the stone just set on the apex, gold inside its beam", () => {
+    const m = moment("capstone-glow");
+    const cap = m.world.pyramid.capstone;
+    expect(cap).toMatchObject({ state: "set", ...m.world.pyramid.apex });
+    expect(cap.glow).toBeGreaterThan(0.95);
+    // The stone keeps its own gold under the light: its shaded right side at the base row.
+    const shade = pixelAt(m.raster, cap.x + 2 + shakeOffset(m.world.shake, m.world.time).dx, cap.y - 1 + shakeOffset(m.world.shake, m.world.time).dy);
+    expect(Object.values(GOLD).map((c) => c.toLowerCase())).toContain(shade);
+  });
+
+  it("idle: nobody at work, the monument with its plaque, the felucca and the caravan on screen", () => {
+    const { world } = moment("idle");
+    expect(world.actors.map((a) => a.id)).toEqual(["arbab"]);
+    expect(world.pyramid.monument).toBe("int-walls");
+    expect(world.pyramid.blocks.every((b) => b.look === "set")).toBe(true);
+    expect(world.pyramid.capstone).toMatchObject({ state: "set", ...world.pyramid.apex });
+    expect(world.far.map((f) => f.integration)).toEqual(["int-quarry"]);
+    const boat = feluccaAt(world.time);
+    expect(boat?.x).toBeGreaterThan(0);
+    expect(boat?.x).toBeLessThan(WIDTH);
+    const caravan = caravanAt(world.time);
+    expect(caravan.length).toBeGreaterThan(0);
+    expect(caravan.every((c) => c.x > 0 && c.x < WIDTH)).toBe(true);
+  });
+
+  it("night-work: night over the site, builders at work, the corner workers in the torches' light", () => {
+    const { world, actors } = moment("night-work");
+    expect(world.sky.phase).toBe("night");
+    const working = actors.filter((a) => a.pose === "work");
+    expect(working.length).toBe(5);
+    const lights = siteTorches(world.pyramid).map(torchLight);
+    const lit = working.filter((a) => lights.some((l) => Math.hypot(a.x - l.x, a.y - 8 - l.y) <= l.radius));
+    expect(lit.length).toBeGreaterThanOrEqual(2);
+  });
+
+  for (const blocks of [1, 8, 30]) {
+    it(`a monument of ${blocks} blocks: the plaque stands on the sand in front of its foot, clear of the dais`, () => {
+      const { world, raster } = playIdle(blocks, 1);
+      expect(world.pyramid.monument).toBe("int-walls");
+      expect(world.pyramid.blocks.length).toBe((world.pyramid.base * (world.pyramid.base + 1)) / 2);
+      const box = plaqueBox("int-walls", PLAQUE_FOOT.x, PLAQUE_FOOT.y);
+      const without = rasterize({ ...world, pyramid: { ...world.pyramid, monument: null } });
+      const changed = (y: number): number => {
+        let n = 0;
+        for (let x = box.x - 4; x < box.x + box.w + 4; x += 1) if (pixelAt(raster, x, y) !== pixelAt(without, x, y)) n += 1;
+        return n;
+      };
+      // The slab is drawn; between it and the bottom course lies untouched sand.
+      for (let y = box.y; y < box.y + box.h; y += 1) expect(changed(y)).toBeGreaterThan(box.w / 2);
+      expect(box.y).toBeGreaterThanOrEqual(PYRAMID_AREA.baseY + 3);
+      for (let y = PYRAMID_AREA.baseY; y < box.y; y += 1) expect(changed(y), `row ${y}`).toBe(0);
+      // Clear of arbab's audience and of the capstone's sledge.
+      expect(box.x).toBeGreaterThan(PLACES.audience.x + ACTOR_BOX.w);
+      expect(box.x + box.w).toBeLessThan(PLACES.sledge.x - 12);
+    });
+  }
 });
+
+function pixelAt(raster: Raster, x: number, y: number): string {
+  const i = (Math.round(y) * raster.width + Math.round(x)) * 4;
+  const hex = (v: number | undefined): string => (v ?? 0).toString(16).padStart(2, "0");
+  return `#${hex(raster.data[i])}${hex(raster.data[i + 1])}${hex(raster.data[i + 2])}`;
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // The cost of a frame
@@ -332,7 +496,7 @@ function counter(): Canvas2D & { fills: number } {
 }
 
 describe("a 300-lane world", () => {
-  it("draws with fewer than 40,000 fillRect calls a frame", () => {
+  it("draws with fewer than 60,000 fillRect calls a frame", () => {
     const states = ["running", "running", "running", "queued", "held", "waiting-reset", "orphaned", "preparing"] as const;
     const lanes: UiLane[] = [];
     for (const role of ["reviewer", "probe", "researcher"] as const) {
@@ -353,6 +517,6 @@ describe("a 300-lane world", () => {
       most = Math.max(most, ctx.fills);
     }
     expect(scene.world.actors.length).toBeGreaterThan(200);
-    expect(most).toBeLessThan(40_000);
+    expect(most).toBeLessThan(60_000);
   });
 });

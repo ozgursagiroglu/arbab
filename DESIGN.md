@@ -691,7 +691,7 @@ session's first launch.
   - The opener carries the URL in its argv, where other local users can read it with `ps`: briefly on macOS
     (`open` exits at once), and for the browser's life on Linux (`xdg-open`, and a browser it starts). On a shared
     machine, use `--no-open`.
-- The page, `/app.js` and `/app.css` are public code; they are served from memory, never from a path.
+- The page, `/app.js`, `/app.css` and `/icon.svg` are public code; they are served from memory, never from a path.
 - Every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
   img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
@@ -704,8 +704,9 @@ session's first launch.
 - The **window**: a lane is in the snapshot when it is not finished, its state changed within `--hours`, or it was
   merged into an integration that is not landed or landed within `--hours`. At most 300 lanes, the newest by
   `firstSeen`; the rest, and lanes whose records do not parse, are counted in `hiddenLanes`.
-- A running attempt's tool calls are counted from its stream incrementally (a byte offset per attempt, never the whole
-  stream per tick), the way `digestStream` counts them: one per `tool_use` id, `StructuredOutput` excluded.
+- A running attempt's tool calls are counted from its stream incrementally, the way `digestStream` counts them: one
+  per `tool_use` id, `StructuredOutput` excluded. The counter keeps a byte offset per attempt. Its first read of an
+  attempt takes at most 64 MiB, and each later read one chunk of 8 MiB, so no tick blocks on a long run's stream.
 - A snapshot carries states, counts, costs, names and enums (`src/ui/protocol.ts`): never a brief, report text,
   stream content, an environment value or a path. The exceptions are a state's `reason` (cut to 200 characters) and the
   project directory's name. A tool name outside `^[A-Za-z0-9_.:-]{1,64}$` becomes null.
@@ -740,8 +741,9 @@ A worker's day:
    **stalled** on a `partial` or `blocked` report, and **falls** otherwise (its stones tumble to the foot as rubble;
    the slot stays an empty gap until the lane runs again). The worker walks back to arbab and they talk. With success it
    takes its ration from the table, by its cost (`costDeltaUsd`, else `costUsd`): under $1 a loaf, under $5 a loaf and
-   a jug, else a basket and a jug; a `partial` report gets a loaf. A `blocked` report or any other end state leaves
-   empty-handed, slumped. Then it walks off the left edge.
+   a jug, else a basket and a jug; a `partial` report gets a loaf. As it takes its ration, coins jump from the treasury
+   with a clink (the `pay` event, owner's request). A `blocked` report or any other end state leaves empty-handed,
+   slumped. Then it walks off the left edge.
 6. `orphaned`: a pale ghost where it stood, with a question mark, until the lane changes.
 
 The first snapshot sets the scene as it stands, without walks: workers stand where their state puts them, finished
@@ -770,8 +772,9 @@ the five-hour window. The treasury's coin pile is `min(48, round(6·√(total co
   accessible equivalent of the canvas) and a polite live region that announces finishes and landings.
 - Text goes in with `textContent` only; nothing from a snapshot is ever parsed as HTML. `prefers-reduced-motion` moves
   actors at once and drops particles.
-- Sound: a drum and a horn synthesized with WebAudio (no files), off by default; the toggle is remembered in
-  `localStorage`.
+- Sound: a drum, a horn and coins synthesized with WebAudio (no files), off by default; the toggle is remembered in
+  `localStorage`. A brief and a report sound the horn, a stone the drum (at most 3 a second), a set block a fanfare, a
+  fall a thud, a capstone a fanfare and a drum roll, and a ration coins clinking into the chest (at most 2 a second).
 - The renderer draws with solid `fillRect`s and `globalAlpha` only, so the same code rasterizes the scene into PNG
   frames in tests. `docs/ui/*.png` are those frames: the README's pictures and the renderer's goldens (compared by
   pixel, so another zlib cannot fail them).
@@ -783,6 +786,84 @@ bundle, replaces `src/ui/client/app/bundle.ts` with it. Run from source (tests),
 send a placeholder script.
 
 Not in this version: actions from the page (stop, resume), several projects in one page, history beyond the window.
+
+### The game-studio pass (2026-10-19)
+
+The owner's verdict on the first version: too empty and too plain. It should look as if it came out of a game studio.
+The owner chose a dashboard around the scene, not a full-screen game HUD.
+
+**Page.** A dark night-desert game interface with gold accents:
+- **Top bar**: the logo (a pixel pyramid) and the wordmark, the project and version, two stone-tablet quota gauges (5h
+  and 7d, each with a tick at its hold threshold), a pulsing LIVE pill, and the sound button.
+- **KPI cards**: at work (running and preparing), waiting (queued and held), asleep (waiting-reset), finished (✓ and
+  ✗), and the treasury (the spend in view). Each has a pixel icon, a big pixel-font number that counts up when it
+  changes, and a label.
+- **The scene card**, "The site": the canvas in a carved frame, a caption under it (the integration, its blocks, the
+  capstone, verify), and a full-screen button. A title card, the logo and "the site awakens…", fades out at the first
+  snapshot.
+- **The side panel**:
+  - **Crew**: one card per lane. A card holds an avatar (the lane's sprite, drawn at 3×), the name and role, a state
+    badge, elapsed time, a progress bar (the block's fill) and calls, last tool and cost. Active lanes come first, and
+    recently finished lanes sit in a folded group.
+  - **Monument**: the current integration as a stepper (integrated → verify → review → ready → landed) with its
+    findings.
+- **Below**:
+  - **Chronicle**: a feed of what happened (started, finished with its end state and cost, landed, verify), built from
+    the snapshot and its changes, newest first.
+  - **Ledger**: every lane in a sortable table with state badges.
+- **Empty states** say what is going on and what to run: "The site is quiet. No lane is at work…".
+- **Panels and buttons** have pixel frames: stepped corners and edges drawn with `box-shadow`, with no images, so the
+  CSP stays as it is. Titles, numbers and badges use the pixel font; dense text uses the system font.
+- **Accessibility**: the semantic structure, the table, focus styles and the live region stay. Every canvas-drawn word
+  also exists as text.
+
+**The pixel font** (`src/ui/client/app/font.ts`) is glyph grids drawn with `fillRect`, like the sprites. It is used
+by the scene (the nameplate above a highlighted worker, the monument's plaque) and by the page (into small canvases,
+with the text beside them for screen readers). It has no font file.
+
+**Scene.**
+- **The idle monument**: while no lane builds, the newest landed integration stands in the foreground as a finished
+  pyramid (`Pyramid.monument`), every block set and its capstone on the apex. It leaves for the horizon when work
+  starts.
+- **Life that carries no data**, a pure function of `World.time`:
+  - drifting clouds in two or three parallax layers, and birds crossing now and then;
+  - the Nile at the horizon with moving glints, reeds and a felucca sailing by;
+  - a camel caravan crossing the far dunes, and palms swaying;
+  - a camp fire with smoke, and torches and braziers that light pools around them at night;
+  - stars that twinkle, and a shooting star now and then.
+- **Scenery**:
+  - distant cliffs, and the silhouettes of a temple pylon and obelisks;
+  - a stone quarry by the site, and worn paths from the camp to arbab and the site;
+  - arbab's dais under a striped canopy with banners, and the scribe's table.
+- **Light**:
+  - the sun's color follows its height, with a halo, and every actor and prop casts a shadow from where the sun
+    stands;
+  - dusk tints warm and night tints dark;
+  - a dithered vignette frames the scene.
+- **Juice**:
+  - the camera shakes (`World.shake`) when a block falls and when a capstone is set;
+  - a beam of light falls on a capstone as it is set (`Capstone.glow`);
+  - a shine sweeps across a block as it is set;
+  - walking workers raise dust.
+
+All of it stays deterministic: the goldens fix `World.time`.
+
+Decided while building it (plan `ui2`):
+- The scene's scale is whole device pixels: `floor(min(stageW / 480, stageH / 270) · dpr) / dpr`, where the stage's
+  height is what is left of the first screen. That allows half steps on a dpr-2 screen and 3× at 1920×1080. Below 1×
+  the canvas takes the stage's width.
+- From 1280 px the side column (360 px) is as tall as the scene card: the crew list scrolls inside it, with a fade
+  while there is more. KPI cards turn into single rows. Narrower layouts stack.
+- A landed pyramid is complete: while a capstone is set, every slot without a lane is a set block. The verify
+  pennant stands by the sledge only while the capstone waits there.
+- The monument's plaque stands on the ground in front of the pyramid. The site's torches follow the pyramid's size,
+  so the work stays lit at night.
+- An asleep worker's avatar carries the scene's zzz. Failed badges use their own darker red (`#b23a3a`) under light
+  ink.
+- The title card leaves at the first snapshot, after 0.6 s (at once with reduced motion), by a timer as well as its
+  transition.
+- When the event stream closes, the page asks `/snapshot.json` why: 200 means too many tabs, 401 means the session
+  ended or restarted, and no answer means arbab ui is not running.
 
 ## 20. Open items
 

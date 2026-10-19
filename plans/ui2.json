@@ -1,0 +1,81 @@
+{
+  "name": "ui2",
+  "base": "ui2-base",
+  "defaults": { "role": "implementer", "effort": "high", "budgetUsd": 20, "wallMin": 90, "idleMin": 20 },
+  "phases": [
+    {
+      "name": "ui2-font",
+      "brief": "lanes/ui2-font.md",
+      "scope": ["src/ui/client/app/font.ts", "src/ui/client/app/font.test.ts", "docs/ui/font.png"],
+      "budgetUsd": 10,
+      "wallMin": 60
+    },
+    {
+      "name": "ui2-scene",
+      "brief": "lanes/ui2-scene.md",
+      "scope": ["src/ui/client/scene/**", "src/ui/server/tail.ts", "src/ui/server/tail.test.ts"],
+      "budgetUsd": 15,
+      "wallMin": 75
+    },
+    {
+      "name": "ui2-art",
+      "brief": "lanes/ui2-art.md",
+      "scope": [
+        "src/ui/client/app/render.ts",
+        "src/ui/client/app/sprites.ts",
+        "src/ui/client/app/palette.ts",
+        "src/ui/client/app/raster.ts",
+        "src/ui/client/app/fixtures.ts",
+        "src/ui/client/app/frames.test.ts",
+        "src/ui/client/app/render.test.ts",
+        "src/ui/client/app/sprites.test.ts",
+        "src/ui/client/app/palette.test.ts",
+        "src/ui/client/app/raster.test.ts",
+        "src/ui/client/app/art/**",
+        "docs/ui/day.png",
+        "docs/ui/dusk.png",
+        "docs/ui/capstone.png",
+        "docs/ui/night.png",
+        "docs/ui/idle.png"
+      ],
+      "dependsOn": ["ui2-font"],
+      "budgetUsd": 45,
+      "wallMin": 180
+    },
+    {
+      "name": "ui2-hud",
+      "brief": "lanes/ui2-hud.md",
+      "scope": [
+        "src/ui/client/app/page.ts",
+        "src/ui/client/app/page.test.ts",
+        "src/ui/client/app/hud.ts",
+        "src/ui/client/app/hud.test.ts",
+        "src/ui/client/app/main.ts",
+        "src/ui/client/app/main.test.ts",
+        "src/ui/client/app/browser.ts",
+        "src/ui/client/app/assets.ts",
+        "src/ui/client/app/assets.test.ts",
+        "src/ui/client/app/hud/**",
+        "src/ui/server/http.ts",
+        "src/ui/server/http.test.ts",
+        "test/build.test.ts"
+      ],
+      "dependsOn": ["ui2-font"],
+      "budgetUsd": 35,
+      "wallMin": 150
+    },
+    {
+      "name": "ui2-wire",
+      "brief": "lanes/ui2-wire.md",
+      "scope": [
+        "src/ui/server/**",
+        "src/ui/client/scene/**",
+        "src/ui/client/app/**",
+        "src/ui/client/pipeline.test.ts",
+        "docs/ui/**",
+        "test/e2e/ui.test.ts"
+      ],
+      "dependsOn": ["ui2-font", "ui2-scene", "ui2-art", "ui2-hud"]
+    }
+  ]
+}

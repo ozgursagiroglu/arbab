@@ -32,10 +32,18 @@ export interface ElementLike {
   readonly style: StyleLike;
   setAttribute(name: string, value: string): void;
   appendChild(child: ElementLike): unknown;
+  /** Moves `child` before `ref` (null: to the end). */
+  insertBefore(child: ElementLike, ref: ElementLike | null): unknown;
   replaceChildren(...children: ElementLike[]): void;
   remove(): void;
   addEventListener(type: string, listener: (event: EventLike) => void): void;
   getBoundingClientRect(): { left: number; top: number; width: number; height: number };
+  /** A scroll container's extent and position, in CSS px. */
+  readonly scrollHeight?: number;
+  readonly clientHeight?: number;
+  readonly scrollTop?: number;
+  /** Missing where the Fullscreen API is (older Safari on iOS). */
+  requestFullscreen?: () => unknown;
 }
 
 export interface CanvasElementLike extends ElementLike {
@@ -48,6 +56,9 @@ export interface DocumentLike {
   getElementById(id: string): ElementLike | null;
   createElement(tag: string): ElementLike;
   addEventListener(type: string, listener: (event: EventLike) => void): void;
+  /** The element shown full screen; null or missing when none is. */
+  readonly fullscreenElement?: ElementLike | null;
+  exitFullscreen?: () => unknown;
 }
 
 export interface MessageEventLike {
@@ -135,18 +146,29 @@ export interface WindowLike {
   addEventListener(type: string, listener: (event: EventLike) => void): void;
 }
 
+/** The part of a fetch Response the page reads. */
+export interface ResponseLike {
+  readonly status: number;
+}
+
+/** fetch with a URL only; it rejects when nothing answers. */
+export type FetchLike = (url: string) => Promise<ResponseLike>;
+
 /** Everything startPage takes from the browser. */
 export interface PageEnv {
   document: DocumentLike;
   window: WindowLike;
   location: LocationLike;
   EventSource: EventSourceConstructor;
+  /** null where fetch is missing: a closed stream then says the session ended. */
+  fetch: FetchLike | null;
   /** null where WebAudio is missing. */
   AudioContext: AudioContextConstructor | null;
   /** A getter, because touching localStorage can throw (privacy modes, sandboxed frames). */
   storage: () => StorageLike | null;
   matchMedia: (query: string) => MediaQueryListLike;
   requestAnimationFrame: (callback: (time: number) => void) => unknown;
+  setTimeout: (callback: () => void, ms: number) => unknown;
   devicePixelRatio: number;
   /** The client's clock, epoch ms. */
   now: () => number;

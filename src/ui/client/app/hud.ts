@@ -2,18 +2,49 @@
 // strings into elements with textContent.
 // registry/status, never the registry index: the index pulls node:fs into the bundle.
 import { formatElapsed, formatWindows, isLive } from "../../../registry/status";
+import type { LaneState } from "../../../types";
 import type { UiLane, UiSnapshot } from "../../protocol";
 import { UI_PROTOCOL } from "../../protocol";
 import { HEIGHT, WIDTH } from "../model";
 
 const UNKNOWN = "—";
 
-/** The largest integer scale that fits the stage's width and the window below the header; at least 1. */
-export function computeScale(stageWidth: number, windowHeight: number, headerHeight: number): number {
-  const byWidth = Math.floor(stageWidth / WIDTH);
-  const byHeight = Math.floor((windowHeight - headerHeight) / HEIGHT);
-  const scale = Math.min(byWidth, byHeight);
-  return Number.isFinite(scale) && scale >= 1 ? scale : 1;
+/**
+ * CSS px per art pixel: the largest scale that fits the stage and is a whole number of *device* pixels,
+ * `floor(min(w / 480, h / 270) × dpr) / dpr`, so a dpr-2 screen also gets the half steps (2.5× is 5 device px). 0 when
+ * nothing fits.
+ */
+export function computeScale(stageWidth: number, stageHeight: number, dpr: number): number {
+  const ratio = Number.isFinite(dpr) && dpr > 0 ? dpr : 1;
+  const fit = Math.min(stageWidth / WIDTH, stageHeight / HEIGHT);
+  if (!Number.isFinite(fit) || fit <= 0) return 0;
+  return Math.floor(fit * ratio + 1e-9) / ratio;
+}
+
+/** How the canvas is sized: whole device pixels per art pixel, or, below 1×, the stage's width (pixelated). */
+export type SceneSize = { fluid: false; scale: number; width: number; height: number } | { fluid: true };
+
+/**
+ * The scene's CSS size for a stage `stageWidth` wide with `stageHeight` to spare on the first screen. Below 1× it is
+ * fluid when the stage is narrower than the art (a phone); a wide but short window keeps 1× and scrolls.
+ */
+export function sceneSize(stageWidth: number, stageHeight: number, dpr: number): SceneSize {
+  const scale = computeScale(stageWidth, stageHeight, dpr);
+  if (scale >= 1) return { fluid: false, scale, width: WIDTH * scale, height: HEIGHT * scale };
+  if (Number.isFinite(stageWidth) && stageWidth >= WIDTH) return { fluid: false, scale: 1, width: WIDTH, height: HEIGHT };
+  return { fluid: true };
+}
+
+/** The page's vertical spacing around the scene card that the elements' boxes do not include (hud padding, gaps, margins). */
+export const PAGE_GAPS = 40;
+
+/**
+ * The stage height that keeps the whole scene card on the first screen: the viewport less the top bar, the KPI row,
+ * the card's chrome (its height less its stage's) and the page's gaps.
+ */
+export function stageRoom(viewport: number, header: number, kpis: number, chrome: number): number {
+  const room = viewport - header - kpis - chrome - PAGE_GAPS;
+  return Number.isFinite(room) ? Math.max(0, room) : 0;
 }
 
 /** `#token=<hex>` from the page URL's fragment; null without a well-formed one. */
@@ -133,24 +164,29 @@ export function totalCost(lanes: readonly UiLane[]): number {
 }
 
 export interface Header {
-  title: string;
+  project: string;
+  version: string;
+  /** The text equivalent of the KPI row and the gauges, for the document title and tests. */
   counts: string;
   cost: string;
   quota: string;
   held: boolean;
-  hidden: string;
+  /** `Read-only · arbab 0.2.0 · 3 older lanes not shown` */
+  footer: string;
 }
 
 export function header(snapshot: UiSnapshot): Header {
   const nowMs = Date.parse(snapshot.now);
   const nowSec = Number.isNaN(nowMs) ? 0 : nowMs / 1000;
+  const hidden = snapshot.hiddenLanes > 0 ? ` · ${snapshot.hiddenLanes} older ${snapshot.hiddenLanes === 1 ? "lane" : "lanes"} not shown` : "";
   return {
-    title: `${snapshot.project} · ${snapshot.version}`,
+    project: snapshot.project,
+    version: `v${snapshot.version}`,
     counts: formatCounts(laneCounts(snapshot.lanes)),
     cost: formatUsd(totalCost(snapshot.lanes)),
     quota: formatWindows(snapshot.quota.fiveHour, snapshot.quota.sevenDay, nowSec),
     held: snapshot.quota.hold.hold === true,
-    hidden: snapshot.hiddenLanes > 0 ? `${snapshot.hiddenLanes} older lanes are not shown.` : "",
+    footer: `Read-only · arbab ${snapshot.version}${hidden}`,
   };
 }
 
@@ -194,18 +230,27 @@ export function tooltipLines(lane: UiLane, clientNowMs: number, offsetMs: number
   return lines;
 }
 
-/** One row of the lanes table: lane, role, state, end state, attempt, calls, cost. */
-export function tableRow(lane: UiLane): string[] {
-  return [lane.name, lane.role, lane.state, lane.endState ?? UNKNOWN, String(lane.attempt), String(lane.toolCalls), formatUsd(lane.costUsd)];
-}
+/** The order of lane states on the page, at work first: the crew's cards and the ledger's state column. */
+export const STATE_RANK: Readonly<Record<LaneState, number>> = {
+  running: 0,
+  preparing: 1,
+  "waiting-reset": 2,
+  held: 3,
+  queued: 4,
+  orphaned: 5,
+  finished: 6,
+};
 
-/** The lanes in the crew list: every lane not finished. */
-export function crew(snapshot: UiSnapshot): UiLane[] {
-  return snapshot.lanes.filter((lane) => lane.state !== "finished");
-}
+const STARTED: ReadonlySet<LaneState> = new Set<LaneState>(["preparing", "running"]);
+const RESUMING: ReadonlySet<LaneState> = new Set<LaneState>(["preparing", "running", "waiting-reset"]);
 
-const STARTED = new Set(["preparing", "running"]);
-const RESUMING = new Set(["preparing", "running", "waiting-reset"]);
+/**
+ * The lane started since the last snapshot: it is preparing or running, and was not already (a lane back from its
+ * usage-limit sleep started before it slept). For the live region and the chronicle alike.
+ */
+export function startedSince(lane: Pick<UiLane, "state">, was: Pick<UiLane, "state"> | undefined): boolean {
+  return STARTED.has(lane.state) && !(was !== undefined && RESUMING.has(was.state));
+}
 
 /** What the live region says about the change from one snapshot to the next; nothing for the first. */
 export function announcements(prev: UiSnapshot | null, next: UiSnapshot): string[] {
@@ -215,7 +260,7 @@ export function announcements(prev: UiSnapshot | null, next: UiSnapshot): string
   for (const lane of next.lanes) {
     const was = before.get(lane.name);
     // A lane coming back from its usage-limit sleep was already announced when it started.
-    if (STARTED.has(lane.state) && !(was && RESUMING.has(was.state))) out.push(`${lane.name} started`);
+    if (startedSince(lane, was)) out.push(`${lane.name} started`);
     if (lane.state === "finished" && was && was.state !== "finished") out.push(`${lane.name} finished: ${lane.endState ?? "unknown"}`);
   }
   const landed = new Set(prev.integrations.filter((i) => i.landedAt !== null).map((i) => i.name));

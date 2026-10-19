@@ -1,145 +1,116 @@
-// The page script (DESIGN.md §19): thin glue between the browser, the scene, the renderer and the DOM. It reads the
-// browser from globalThis once, at the bottom; startPage takes everything as parameters so tests drive it with fakes.
-// Its import graph must never reach a node: module (scripts/build.mjs bundles it for the browser).
+// The page script (DESIGN.md §19): thin glue between the browser, the scene, the renderer and the HUD components in
+// hud/. It reads the browser from globalThis once, at the bottom; startPage takes everything as parameters so tests
+// drive it with fakes. Its import graph must never reach a node: module (scripts/build.mjs bundles it for the browser).
 import type { UiLane, UiSnapshot } from "../../protocol";
 import { UI_EVENTS, UI_ROUTES, UI_TOKEN_PARAM } from "../../protocol";
 import type { Actor, Block } from "../model";
 import { HEIGHT, WIDTH } from "../model";
-import { castOf, createScene } from "../scene";
+import { createScene } from "../scene";
 import type {
   AudioContextConstructor,
   CanvasElementLike,
   DocumentLike,
   ElementLike,
   EventSourceConstructor,
+  FetchLike,
   LocationLike,
   MediaQueryListLike,
   PageEnv,
+  ResponseLike,
   StorageLike,
   WindowLike,
 } from "./browser";
-import {
-  announcements,
-  computeScale,
-  crew,
-  formatState,
-  header,
-  parseProblem,
-  parseSnapshot,
-  parseToken,
-  tableRow,
-  tooltipLines,
-} from "./hud";
+import { announcements, header, parseProblem, parseSnapshot, parseToken, sceneSize, stageRoom, tooltipLines } from "./hud";
+import { captionKey, sceneCaption } from "./hud/caption";
+import type { ChronicleEntry } from "./hud/chronicle";
+import { chronicleDiff, mergeChronicle, seedChronicle } from "./hud/chronicle";
+import { mountChronicle } from "./hud/chronicle-panel";
+import { moreBelow, mountCrew } from "./hud/crew";
+import { asCanvas, devicePixels, make, sizeCanvas } from "./hud/dom";
+import { gaugeView, mountGauge } from "./hud/gauge";
+import { drawGrid, PYRAMID_GRID } from "./hud/icons";
+import { mountKpis } from "./hud/kpi";
+import { mountLedger } from "./hud/ledger";
+import { mountMonument } from "./hud/monument";
+import { createPixelText } from "./hud/pixel-text";
+import type { Connection } from "./hud/status";
+import { CLOSED_MESSAGE, closedMessage, connectionLabel } from "./hud/status";
+import { TOKENS } from "./hud/tokens";
 import { PAGE_IDS } from "./page";
 import { renderWorld } from "./render";
 import { createSound } from "./sound";
+import { createSpriteSet } from "./sprites";
+
+export { CLOSED_MESSAGE, NOT_RUNNING_MESSAGE, TOO_MANY_MESSAGE } from "./hud/status";
 
 // arbab ui prints the token only when it could not open a browser (DESIGN.md §19), so both point at the tab it opened.
 export const NO_TOKEN_MESSAGE =
   "This page needs its session token. Use the tab `arbab ui` opened, or run `arbab ui --no-open` to print a URL that carries it.";
-export const CLOSED_MESSAGE = "This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.";
 /** EventSource.CLOSED: the tsconfig has no DOM lib. */
 const EVENT_SOURCE_CLOSED = 2;
+/** How often the relative times ("2m ago") are rewritten. */
+const AGO_MS = 30_000;
+/** The title card's fade (its CSS transition), after which it is hidden outright. */
+export const TITLE_CARD_MS = 600;
 
 export interface PageHandle {
   stop(): void;
 }
 
-interface CrewItem {
-  li: ElementLike;
-  button: ElementLike;
-  chip: ElementLike;
-  name: ElementLike;
-  state: ElementLike;
+type Ids = typeof PAGE_IDS;
+
+/** Every element of PAGE_IDS, or null when one is missing. */
+function elements(doc: DocumentLike): Record<keyof Ids, ElementLike> | null {
+  const out: Partial<Record<keyof Ids, ElementLike>> = {};
+  for (const [key, id] of Object.entries(PAGE_IDS) as [keyof Ids, string][]) {
+    const el = doc.getElementById(id);
+    if (!el) return null;
+    out[key] = el;
+  }
+  return out as Record<keyof Ids, ElementLike>;
 }
 
-function asCanvas(element: ElementLike | null): CanvasElementLike | null {
-  return element && typeof (element as Partial<CanvasElementLike>).getContext === "function" ? (element as CanvasElementLike) : null;
+function drawLogo(canvas: CanvasElementLike | null, scale: number, dpr: number): void {
+  if (!canvas) return;
+  sizeCanvas(canvas, 16 * scale, 16 * scale, dpr);
+  const ctx = canvas.getContext("2d");
+  if (ctx) drawGrid(ctx, PYRAMID_GRID, 0, 0, scale * dpr);
 }
 
 /** Wires the page up. Returns null when it cannot run (no token, a missing element, no 2D canvas). */
 export function startPage(env: PageEnv): PageHandle | null {
   const doc = env.document;
-  const get = (id: string): ElementLike | null => doc.getElementById(id);
-  const els = {
-    header: get(PAGE_IDS.header),
-    title: get(PAGE_IDS.title),
-    counts: get(PAGE_IDS.counts),
-    cost: get(PAGE_IDS.cost),
-    quota: get(PAGE_IDS.quota),
-    held: get(PAGE_IDS.held),
-    connection: get(PAGE_IDS.connection),
-    sound: get(PAGE_IDS.sound),
-    banner: get(PAGE_IDS.banner),
-    stage: get(PAGE_IDS.stage),
-    tooltip: get(PAGE_IDS.tooltip),
-    notice: get(PAGE_IDS.notice),
-    crew: get(PAGE_IDS.crew),
-    table: get(PAGE_IDS.table),
-    hidden: get(PAGE_IDS.hidden),
-    live: get(PAGE_IDS.live),
-  };
-  const canvas = asCanvas(get(PAGE_IDS.canvas));
-  const {
-    header: headerEl,
-    title,
-    counts,
-    cost,
-    quota,
-    held,
-    connection,
-    sound: soundButton,
-    banner,
-    stage,
-    tooltip,
-    notice,
-    crew: crewList,
-    table,
-    hidden,
-    live,
-  } = els;
-  if (
-    !canvas ||
-    !headerEl ||
-    !title ||
-    !counts ||
-    !cost ||
-    !quota ||
-    !held ||
-    !connection ||
-    !soundButton ||
-    !banner ||
-    !stage ||
-    !tooltip ||
-    !notice ||
-    !crewList ||
-    !table ||
-    !hidden ||
-    !live
-  ) {
-    return null;
-  }
+  const els = elements(doc);
+  const canvas = asCanvas(doc.getElementById(PAGE_IDS.canvas));
+  if (!els || !canvas) return null;
+  const { stage, tooltip, notice, banner, connection, live, site } = els;
 
-  const setConnection = (state: "connecting" | "live" | "lost" | "closed"): void => {
-    connection.setAttribute("data-state", state);
-    connection.textContent = state === "lost" ? "reconnecting" : state === "closed" ? "disconnected" : state;
-  };
+  const dpr = devicePixels(env.devicePixelRatio);
   const showNotice = (text: string): void => {
     notice.textContent = text;
     notice.hidden = false;
   };
 
+  // The connection pill.
+  const pill = createPixelText(doc, { scale: 1, color: TOKENS.muted, dpr });
+  connection.replaceChildren(pill.el);
+  const setConnection = (state: Connection): void => {
+    connection.setAttribute("data-state", state);
+    const { text, color } = connectionLabel(state);
+    pill.set(text, color);
+  };
+  setConnection("connecting");
+
   const token = parseToken(env.location.hash);
   if (!token) {
     showNotice(NO_TOKEN_MESSAGE);
-    counts.textContent = "no session token";
-    setConnection("lost");
-    connection.textContent = "not connected";
+    els.project.textContent = "no session token";
+    setConnection("closed");
     return null;
   }
   const ctx = canvas.getContext("2d");
   if (!ctx) {
-    showNotice("This browser cannot draw the scene; the lanes table below still works.");
+    showNotice("This browser cannot draw the scene; the ledger below still works.");
     return null;
   }
   canvas.width = WIDTH;
@@ -152,39 +123,74 @@ export function startPage(env: PageEnv): PageHandle | null {
     reducedMotion = false;
   }
   const scene = createScene({ reducedMotion, random: Math.random });
+  const sprites = createSpriteSet();
+
+  // The brand, the titles and the title card.
+  drawLogo(asCanvas(els.logo), 2, dpr);
+  drawLogo(asCanvas(els.titleCardLogo), 4, dpr);
+  els.title.replaceChildren(createPixelText(doc, { scale: 3, color: TOKENS.gold, dpr }, "ARBAB").el);
+  els.titleCardWord.replaceChildren(createPixelText(doc, { scale: 6, color: TOKENS.gold, dpr }, "ARBAB").el);
+  els.siteTitle.replaceChildren(createPixelText(doc, { scale: 2, color: TOKENS.gold, dpr }, "THE SITE").el);
+  const caption = createPixelText(doc, { scale: 1, color: TOKENS.sand, dpr }, "THE SITE IS QUIET");
+  els.caption.replaceChildren(caption.el);
+  let captioned = "";
+  const writeCaption = (snapshot: UiSnapshot, nowMs: number): void => {
+    captioned = captionKey(scene.world);
+    caption.set(sceneCaption(snapshot, nowMs, scene.world));
+  };
+  const gauges = [mountGauge(doc, els.gauge5h, "5h", dpr), mountGauge(doc, els.gauge7d, "7d", dpr)] as const;
+  const kpis = mountKpis(doc, els.kpis, { dpr, reducedMotion });
 
   // Sound: off until the viewer turns it on.
   const sound = createSound({ AudioContext: env.AudioContext, storage: env.storage, now: env.now });
   const showSound = (): void => {
-    soundButton.setAttribute("aria-pressed", String(sound.enabled));
-    soundButton.textContent = sound.enabled ? "sound on" : "sound off";
+    els.sound.setAttribute("aria-pressed", String(sound.enabled));
+    els.sound.textContent = sound.enabled ? "sound on" : "sound off";
   };
   showSound();
-  soundButton.addEventListener("click", () => {
+  els.sound.addEventListener("click", () => {
     sound.toggle();
     showSound();
   });
-  doc.addEventListener("pointerdown", () => sound.unlock());
-  doc.addEventListener("keydown", (event) => {
-    sound.unlock();
-    if (event.key === "Escape" && pinned !== null) {
-      pinned = null;
-      refreshCrewPressed();
-      applyHighlight();
-      refreshTooltip();
+
+  // Full screen: the scene card's own button, where the browser has the API.
+  const fullscreen = (): boolean => doc.fullscreenElement !== undefined && doc.fullscreenElement !== null && doc.fullscreenElement === site;
+  els.siteFullscreen.hidden = typeof site.requestFullscreen !== "function";
+  els.siteFullscreen.addEventListener("click", () => {
+    // A refused request (it can throw or reject) leaves the page as it is.
+    try {
+      const pending = fullscreen() && typeof doc.exitFullscreen === "function" ? doc.exitFullscreen() : site.requestFullscreen?.();
+      if (pending instanceof Promise) pending.catch(() => undefined);
+    } catch {
+      // As above.
     }
   });
 
-  // Scale: the largest integer that fits, snapped to device pixels.
-  let scale = 1;
+  // The crew scrolls inside its panel; a fade at its bottom edge says there is more below.
+  const showCrewFade = (): void => els.crewPanel.setAttribute("data-more", String(moreBelow(els.crewScroll)));
+  els.crewScroll.addEventListener("scroll", showCrewFade);
+
+  // Scale: whole device pixels per art pixel, as large as the first screen holds; below 1×, the stage's width.
+  // Full screen, the whole stage.
   const resize = (): void => {
-    scale = computeScale(stage.getBoundingClientRect().width, env.window.innerHeight, headerEl.getBoundingClientRect().height);
-    const dpr = env.devicePixelRatio > 0 ? env.devicePixelRatio : 1;
-    canvas.style.width = `${Math.round(WIDTH * scale * dpr) / dpr}px`;
-    canvas.style.height = `${Math.round(HEIGHT * scale * dpr) / dpr}px`;
+    const box = stage.getBoundingClientRect();
+    const room = fullscreen()
+      ? box.height
+      : stageRoom(
+          env.window.innerHeight,
+          els.header.getBoundingClientRect().height,
+          els.kpis.getBoundingClientRect().height,
+          site.getBoundingClientRect().height - box.height,
+        );
+    const size = sceneSize(box.width, room, env.devicePixelRatio);
+    canvas.className = size.fluid ? "fluid" : "";
+    canvas.style.width = size.fluid ? "100%" : `${size.width}px`;
+    canvas.style.height = size.fluid ? "auto" : `${size.height}px`;
+    showCrewFade();
   };
   resize();
   env.window.addEventListener("resize", resize);
+  doc.addEventListener("fullscreenchange", resize);
 
   // State from the snapshots.
   let last: UiSnapshot | null = null;
@@ -192,8 +198,12 @@ export function startPage(env: PageEnv): PageHandle | null {
   let offsetMs = 0;
   let hovered: string | null = null;
   let focused: string | null = null;
+  /** The panel `focused` came from: a crew card goes when its lane finishes, a ledger row only with its lane. */
+  let focusedIn: "crew" | "ledger" = "crew";
   let pinned: string | null = null;
   let pointer: { x: number; y: number } | null = null;
+  let chronicle: ChronicleEntry[] = [];
+  const serverNow = (): number => env.now() + offsetMs;
 
   const showBanner = (text: string): void => {
     banner.textContent = text;
@@ -206,15 +216,29 @@ export function startPage(env: PageEnv): PageHandle | null {
 
   const applyHighlight = (): void => scene.highlight(hovered ?? focused ?? pinned);
 
-  /** Where a lane is on the canvas, in CSS px of the stage: its worker, else its block. */
-  const anchorOf = (lane: string): { x: number; y: number } => {
-    const actor: Actor | undefined = scene.world.actors.find((a) => a.lane === lane);
-    if (actor) return { x: actor.x * scale, y: (actor.y - 20) * scale };
-    const block: Block | undefined = scene.world.pyramid.blocks.find((b) => b.lane === lane);
-    if (block) return { x: (block.x + block.w) * scale, y: block.y * scale };
-    return { x: 8, y: 8 };
+  /** The canvas's top-left corner in the stage (it is centered there). */
+  const canvasOffset = (): { x: number; y: number } => {
+    const c = canvas.getBoundingClientRect();
+    const s = stage.getBoundingClientRect();
+    return { x: c.left - s.left, y: c.top - s.top };
   };
 
+  /** Where a lane is in the stage, in CSS px: its worker, else its block. */
+  const anchorOf = (lane: string): { x: number; y: number } => {
+    const off = canvasOffset();
+    const shown = canvas.getBoundingClientRect().width;
+    const scale = shown > 0 ? shown / WIDTH : 1;
+    const actor: Actor | undefined = scene.world.actors.find((a) => a.lane === lane);
+    if (actor) return { x: off.x + actor.x * scale, y: off.y + (actor.y - 20) * scale };
+    const block: Block | undefined = scene.world.pyramid.blocks.find((b) => b.lane === lane);
+    if (block) return { x: off.x + (block.x + block.w) * scale, y: off.y + block.y * scale };
+    return { x: off.x + 8, y: off.y + 8 };
+  };
+
+  // The tooltip: a framed panel, the lane's name in the pixel font, then its facts.
+  const tipTitle = createPixelText(doc, { scale: 1, color: TOKENS.gold, dpr });
+  const tipHead = make(doc, "div", "tip-title");
+  tipHead.appendChild(tipTitle.el);
   const refreshTooltip = (): void => {
     const name = hovered ?? focused ?? pinned;
     const lane = name === null ? undefined : lanes.get(name);
@@ -222,20 +246,66 @@ export function startPage(env: PageEnv): PageHandle | null {
       tooltip.hidden = true;
       return;
     }
-    const lines = tooltipLines(lane, env.now(), offsetMs);
-    tooltip.replaceChildren(
-      ...lines.map((line) => {
-        const div = doc.createElement("div");
-        div.textContent = line;
-        return div;
-      }),
-    );
+    const [first = name, ...lines] = tooltipLines(lane, env.now(), offsetMs);
+    tipTitle.set(first);
+    tooltip.replaceChildren(tipHead, ...lines.map((line) => make(doc, "div", "", line)));
     const at = hovered !== null && pointer ? pointer : anchorOf(name);
     const width = stage.getBoundingClientRect().width;
-    tooltip.style.left = `${Math.max(0, Math.min(width - 200, at.x + 12))}px`;
+    tooltip.style.left = `${Math.max(0, Math.min(width - 220, at.x + 12))}px`;
     tooltip.style.top = `${Math.max(0, at.y + 12)}px`;
     tooltip.hidden = false;
   };
+
+  const setPinned = (name: string | null): void => {
+    pinned = name;
+    crew.setPinned(name);
+    ledger.setPinned(name);
+    applyHighlight();
+    refreshTooltip();
+  };
+  const handlers = (panel: "crew" | "ledger") => ({
+    enter(name: string) {
+      focused = name;
+      focusedIn = panel;
+      applyHighlight();
+      refreshTooltip();
+    },
+    leave(name: string) {
+      if (focused === name) focused = null;
+      applyHighlight();
+      refreshTooltip();
+    },
+    // A click or Enter pins the lane's tooltip; again unpins it.
+    toggle(name: string) {
+      setPinned(pinned === name ? null : name);
+    },
+  });
+
+  const crew = mountCrew(
+    doc,
+    { title: els.crewTitle, list: els.crew, empty: els.crewEmpty, recentGroup: els.recentGroup, recentTitle: els.recentTitle, recent: els.recent },
+    sprites,
+    dpr,
+    handlers("crew"),
+  );
+  const monument = mountMonument(doc, { title: els.monumentTitle, body: els.monument }, dpr);
+  const chroniclePanel = mountChronicle(doc, { title: els.chronicleTitle, list: els.chronicle, empty: els.chronicleEmpty }, dpr);
+  const ledger = mountLedger(doc, { title: els.ledgerTitle, head: els.ledgerHead, body: els.table }, dpr, handlers("ledger"));
+
+  /**
+   * A card, row or worker removed under the pointer fires no mouseleave or blur, so after an update forget a lane whose
+   * card left the crew or that left the snapshot; it would otherwise override the pinned lane's highlight and tooltip.
+   */
+  const forgetGone = (): void => {
+    if (focused !== null && !(focusedIn === "crew" ? crew.order().includes(focused) : lanes.has(focused))) focused = null;
+    if (hovered !== null && !lanes.has(hovered)) hovered = null;
+  };
+
+  doc.addEventListener("pointerdown", () => sound.unlock());
+  doc.addEventListener("keydown", (event) => {
+    sound.unlock();
+    if (event.key === "Escape" && pinned !== null) setPinned(null);
+  });
 
   // Hover on the canvas.
   canvas.addEventListener("pointermove", (event) => {
@@ -256,96 +326,6 @@ export function startPage(env: PageEnv): PageHandle | null {
     refreshTooltip();
   });
 
-  // The crew list, keyed by lane so a focused button survives a snapshot.
-  const items = new Map<string, CrewItem>();
-  let order: string[] = [];
-  const refreshCrewPressed = (): void => {
-    for (const [name, item] of items) item.button.setAttribute("aria-pressed", String(pinned === name));
-  };
-  const crewItem = (name: string): CrewItem => {
-    const li = doc.createElement("li");
-    const button = doc.createElement("button");
-    button.setAttribute("type", "button");
-    button.setAttribute("aria-pressed", "false");
-    const chip = doc.createElement("span");
-    chip.setAttribute("aria-hidden", "true");
-    const label = doc.createElement("span");
-    label.className = "name";
-    const state = doc.createElement("span");
-    state.className = "state";
-    button.appendChild(chip);
-    button.appendChild(label);
-    button.appendChild(state);
-    li.appendChild(button);
-    const enter = (): void => {
-      focused = name;
-      applyHighlight();
-      refreshTooltip();
-    };
-    const leave = (): void => {
-      if (focused === name) focused = null;
-      applyHighlight();
-      refreshTooltip();
-    };
-    button.addEventListener("focus", enter);
-    button.addEventListener("mouseenter", enter);
-    button.addEventListener("blur", leave);
-    button.addEventListener("mouseleave", leave);
-    // Enter (or a click) pins the lane's tooltip; again unpins it.
-    button.addEventListener("click", () => {
-      pinned = pinned === name ? null : name;
-      refreshCrewPressed();
-      applyHighlight();
-      refreshTooltip();
-    });
-    return { li, button, chip, name: label, state };
-  };
-  const updateCrew = (snapshot: UiSnapshot): void => {
-    const list = crew(snapshot);
-    const names = list.map((lane) => lane.name);
-    const keep = new Set(names);
-    for (const [name, item] of items) {
-      if (!keep.has(name)) {
-        item.li.remove();
-        items.delete(name);
-      }
-    }
-    for (const lane of list) {
-      let item = items.get(lane.name);
-      if (!item) {
-        item = crewItem(lane.name);
-        items.set(lane.name, item);
-      }
-      item.chip.className = `chip cast-${castOf(lane)}`;
-      item.name.textContent = lane.name;
-      item.state.textContent = formatState(lane);
-    }
-    if (names.length !== order.length || names.some((name, i) => order[i] !== name)) {
-      for (const name of names) {
-        const item = items.get(name);
-        if (item) crewList.appendChild(item.li);
-      }
-      order = names;
-    }
-    if (pinned !== null && !keep.has(pinned)) pinned = null;
-    refreshCrewPressed();
-  };
-
-  const updateTable = (snapshot: UiSnapshot): void => {
-    table.replaceChildren(
-      ...snapshot.lanes.map((lane) => {
-        const tr = doc.createElement("tr");
-        tableRow(lane).forEach((cell, i) => {
-          const td = doc.createElement(i === 0 ? "th" : "td");
-          if (i === 0) td.setAttribute("scope", "row");
-          td.textContent = cell;
-          tr.appendChild(td);
-        });
-        return tr;
-      }),
-    );
-  };
-
   const onSnapshot = (data: string): void => {
     const parsed = parseSnapshot(data);
     if (!parsed.ok) {
@@ -355,28 +335,73 @@ export function startPage(env: PageEnv): PageHandle | null {
     const snapshot = parsed.snapshot;
     hideBanner();
     setConnection("live");
-    const serverNow = Date.parse(snapshot.now);
-    offsetMs = Number.isNaN(serverNow) ? 0 : serverNow - env.now();
+    const sent = Date.parse(snapshot.now);
+    offsetMs = Number.isNaN(sent) ? 0 : sent - env.now();
+    const now = serverNow();
     try {
       scene.apply(snapshot);
     } catch {
-      showBanner("The scene could not show this snapshot; the lanes table is up to date.");
+      showBanner("The scene could not show this snapshot; the ledger is up to date.");
     }
+    if (last === null) {
+      // The fade is CSS; the timer hides the card even where a renderer never runs the transition (or motion is off).
+      els.titleCard.className = "title-card gone";
+      const hide = (): void => {
+        els.titleCard.hidden = true;
+      };
+      if (reducedMotion) hide();
+      else env.setTimeout(hide, TITLE_CARD_MS);
+    }
+
     const h = header(snapshot);
-    title.textContent = h.title;
-    counts.textContent = h.counts;
-    cost.textContent = h.cost;
-    quota.textContent = h.quota;
-    held.hidden = !h.held;
-    hidden.textContent = h.hidden;
+    els.project.textContent = h.project;
+    els.version.textContent = h.version;
+    els.held.hidden = !h.held;
+    els.footer.textContent = h.footer;
+    const nowSec = now / 1000;
+    gauges[0].update(gaugeView("5h", snapshot.quota.fiveHour, snapshot.quota.holdAbove.fiveHour, nowSec));
+    gauges[1].update(gaugeView("7d", snapshot.quota.sevenDay, snapshot.quota.holdAbove.sevenDay, nowSec));
+    kpis.update(snapshot, env.now());
+    writeCaption(snapshot, now);
+
     lanes = new Map(snapshot.lanes.map((lane) => [lane.name, lane]));
-    updateCrew(snapshot);
-    updateTable(snapshot);
+    if (pinned !== null && !lanes.has(pinned)) pinned = null;
+    crew.update(snapshot, now);
+    showCrewFade();
+    ledger.update(snapshot, now);
+    forgetGone();
+    monument.update(snapshot, now);
+    chronicle = mergeChronicle(chronicle, last === null ? seedChronicle(snapshot) : chronicleDiff(last, snapshot));
+    chroniclePanel.update(chronicle, now);
+
     const said = announcements(last, snapshot);
     if (said.length > 0) live.textContent = said.join(". ");
     last = snapshot;
-    applyHighlight();
-    refreshTooltip();
+    setPinned(pinned);
+  };
+
+  // A closed stream: ask the snapshot route, with the same token, why.
+  let stopped = false;
+  const explainClosed = (): void => {
+    const fetcher: FetchLike | null = env.fetch;
+    if (!fetcher) {
+      showNotice(CLOSED_MESSAGE);
+      return;
+    }
+    let probe: Promise<ResponseLike>;
+    try {
+      probe = fetcher(`${UI_ROUTES.snapshot}?${UI_TOKEN_PARAM}=${encodeURIComponent(token)}`);
+    } catch {
+      probe = Promise.reject(new Error("fetch threw"));
+    }
+    probe.then(
+      (res) => {
+        if (!stopped) showNotice(closedMessage(res));
+      },
+      () => {
+        if (!stopped) showNotice(closedMessage(null));
+      },
+    );
   };
 
   const source = new env.EventSource(`${UI_ROUTES.events}?${UI_TOKEN_PARAM}=${encodeURIComponent(token)}`);
@@ -384,33 +409,47 @@ export function startPage(env: PageEnv): PageHandle | null {
   source.addEventListener(UI_EVENTS.snapshot, (event) => onSnapshot(event.data));
   source.addEventListener(UI_EVENTS.problem, (event) => showBanner(parseProblem(event.data)));
   // EventSource retries by itself (the server sends retry: 2000) while it is CONNECTING. CLOSED means it gave up: the
-  // server answered with an error (a new session's token, a server gone and another on the port).
+  // server answered with an error (a new session's token, the client limit, a server gone and another on the port).
   source.addEventListener("error", () => {
     if (source.readyState === EVENT_SOURCE_CLOSED) {
       setConnection("closed");
-      showNotice(CLOSED_MESSAGE);
+      explainClosed();
     } else {
       setConnection("lost");
     }
   });
 
-  // The loop: step the scene, draw it, play its events.
-  let stopped = false;
+  // The loop: step the scene, draw it, play its events, count the KPIs, and tick the clocks.
   let previous: number | null = null;
-  let tick = 0;
+  let second = 0;
+  let ago = 0;
   const frame = (time: number): void => {
     if (stopped) return;
     const dt = previous === null ? 16 : Math.max(0, time - previous);
     previous = time;
     scene.step(dt);
     renderWorld(ctx, scene.world);
+    // The caption follows the World between snapshots too (a capstone rising, then set).
+    if (last && captionKey(scene.world) !== captioned) writeCaption(last, serverNow());
     const events = scene.world.events;
     for (const event of events) sound.play(event.kind);
     events.length = 0;
-    // The tooltip's elapsed time counts on.
-    if (time - tick >= 1000) {
-      tick = time;
+    kpis.tick(env.now());
+    if (time - second >= 1000) {
+      second = time;
+      const now = serverNow();
+      crew.tick(now);
+      ledger.tick(now);
       if (!tooltip.hidden) refreshTooltip();
+    }
+    if (time - ago >= AGO_MS) {
+      ago = time;
+      const now = serverNow();
+      chroniclePanel.refresh(now);
+      if (last) {
+        monument.update(last, now);
+        writeCaption(last, now);
+      }
     }
     env.requestAnimationFrame(frame);
   };
@@ -434,11 +473,13 @@ function browserEnv(): PageEnv | null {
   const raf = g.requestAnimationFrame as (callback: (time: number) => void) => unknown;
   const media = typeof g.matchMedia === "function" ? (g.matchMedia as (query: string) => MediaQueryListLike) : null;
   const audio = typeof g.AudioContext === "function" ? g.AudioContext : typeof g.webkitAudioContext === "function" ? g.webkitAudioContext : null;
+  const fetcher = typeof g.fetch === "function" ? (g.fetch as (url: string) => Promise<ResponseLike>) : null;
   return {
     document: doc as DocumentLike,
     window: win as WindowLike,
     location: g.location as LocationLike,
     EventSource: g.EventSource as EventSourceConstructor,
+    fetch: fetcher ? (url) => fetcher.call(win, url) : null,
     AudioContext: audio as AudioContextConstructor | null,
     storage: () => {
       try {
@@ -449,6 +490,7 @@ function browserEnv(): PageEnv | null {
     },
     matchMedia: (query) => (media ? media.call(win, query) : { matches: false }),
     requestAnimationFrame: (callback) => raf.call(win, callback),
+    setTimeout: (callback, ms) => (g.setTimeout as (callback: () => void, ms: number) => unknown).call(win, callback, ms),
     devicePixelRatio: typeof g.devicePixelRatio === "number" ? g.devicePixelRatio : 1,
     now: () => Date.now(),
   };

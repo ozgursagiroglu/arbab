@@ -5,7 +5,7 @@ import { UI_PROTOCOL, type UiSnapshot } from "../protocol";
 import { MAX_URL_LENGTH, SECURITY_HEADERS, startUiServer, type UiServer, type UiServerOptions } from "./http";
 
 const TOKEN = "0123456789abcdef0123456789abcdef";
-const ASSETS = { html: "<!doctype html><title>t</title>", css: "body{}", js: "console.log(1)" };
+const ASSETS = { html: "<!doctype html><title>t</title>", css: "body{}", js: "console.log(1)", icon: "<svg/>" };
 
 function snapshot(lanes = 0, now = "2026-10-18T12:00:00.000Z"): UiSnapshot {
   return {
@@ -240,6 +240,16 @@ describe("startUiServer: the routes", () => {
     expect(await get(port, "/app.css")).toMatchObject({ status: 200, body: ASSETS.css, headers: { "content-type": "text/css; charset=utf-8" } });
     // The query does not change the route; the public routes need no token.
     expect((await get(port, "/?x=1")).body).toBe(ASSETS.html);
+  });
+
+  it("serves the icon as SVG with the headers and no token", async () => {
+    const { port } = await start();
+    const icon = await get(port, "/icon.svg");
+    expect(icon).toMatchObject({ status: 200, body: ASSETS.icon });
+    expect(icon.headers["content-type"]).toBe("image/svg+xml; charset=utf-8");
+    expectSecurityHeaders(icon.headers);
+    expect((await get(port, "/icon.svg?x=1")).status).toBe(200);
+    expect((await get(port, "/icon.svg", { method: "HEAD" })).body).toBe("");
   });
 
   it("answers /favicon.ico with 204 and anything else with 404, both with the headers", async () => {

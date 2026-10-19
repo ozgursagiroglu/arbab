@@ -1,5 +1,7 @@
 // Tool calls of a running attempt, counted from its growing stream.jsonl (DESIGN.md §19): a byte offset per lane, so a
-// tick reads only what was appended since the last one, never the whole stream.
+// tick reads only what was appended since the last one. The first count of an attempt reads at most 8 chunks
+// (FIRST_READ_CHUNKS) of maxBytesPerCall (64 MiB at the default), every later count at most one chunk: the reads are synchronous,
+// and a long run's stream must not stall the server's event loop.
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { REPORT_TOOL, toolUses } from "../../stream";
 import { ArbabError } from "../../util/errors";
@@ -10,19 +12,27 @@ export interface LiveCount {
 }
 
 export interface ToolCallCounter {
-  /** The attempt's tool calls so far; reads only the bytes appended since the last call for this attempt. */
+  /**
+   * The attempt's tool calls so far, from the bytes appended since the last call for this attempt. The first call of an
+   * attempt (or of a file that started over) reads at most 8 chunks of maxBytesPerCall (64 MiB at the default), a
+   * later one at most one chunk; what is left waits for the next calls.
+   */
   count(lane: string, attempt: number, streamPath: string): LiveCount;
   /** Forgets every lane not in `lanes` (lanes that left the window). */
   retain(lanes: ReadonlySet<string>): void;
 }
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+/** Chunks the first count of an attempt may read, so a short stream is counted whole by the first snapshot. */
+export const FIRST_READ_CHUNKS = 8;
 const NEWLINE = 0x0a;
 
 interface Tail {
   attempt: number;
   path: string;
   offset: number;
+  /** The first count of the attempt (or of the file since it started over) is done; it may read FIRST_READ_CHUNKS chunks. */
+  primed: boolean;
   /** The unfinished last line, as bytes: decoding it now could cut a multi-byte character. */
   pending: Buffer;
   seen: Set<string>;
@@ -34,6 +44,7 @@ const fresh = (attempt: number, path: string): Tail => ({
   attempt,
   path,
   offset: 0,
+  primed: false,
   pending: Buffer.alloc(0),
   seen: new Set(),
   toolCalls: 0,
@@ -91,6 +102,21 @@ function readMore(tail: Tail, max: number): Buffer | null {
   }
 }
 
+/** Counts the complete lines of a chunk read at the tail's offset and keeps the unfinished last one. */
+function consume(tail: Tail, chunk: Buffer): void {
+  if (chunk.length === 0) return;
+  tail.offset += chunk.length;
+  const bytes = tail.pending.length > 0 ? Buffer.concat([tail.pending, chunk]) : chunk;
+  let start = 0;
+  for (let end = bytes.indexOf(NEWLINE, start); end !== -1; end = bytes.indexOf(NEWLINE, start)) {
+    // A newline byte never occurs inside a UTF-8 sequence, so each complete line decodes on its own.
+    countLine(tail, bytes.toString("utf8", start, end));
+    start = end + 1;
+  }
+  // A copy, so the pending line does not pin the whole chunk.
+  tail.pending = Buffer.from(bytes.subarray(start));
+}
+
 export function createToolCallCounter(options: { maxBytesPerCall?: number } = {}): ToolCallCounter {
   const max = options.maxBytesPerCall ?? DEFAULT_MAX_BYTES;
   if (!Number.isSafeInteger(max) || max < 1) throw new ArbabError("usage", `maxBytesPerCall ${max} must be a positive integer`);
@@ -103,23 +129,21 @@ export function createToolCallCounter(options: { maxBytesPerCall?: number } = {}
         tail = fresh(attempt, streamPath);
         tails.set(lane, tail);
       }
-      const chunk = readMore(tail, max);
-      if (chunk === null) {
-        tails.set(lane, fresh(attempt, streamPath));
-        return { toolCalls: 0, lastTool: null };
-      }
-      if (chunk.length > 0) {
-        tail.offset += chunk.length;
-        const bytes = tail.pending.length > 0 ? Buffer.concat([tail.pending, chunk]) : chunk;
-        let start = 0;
-        for (let end = bytes.indexOf(NEWLINE, start); end !== -1; end = bytes.indexOf(NEWLINE, start)) {
-          // A newline byte never occurs inside a UTF-8 sequence, so each complete line decodes on its own.
-          countLine(tail, bytes.toString("utf8", start, end));
-          start = end + 1;
+      // The first count of an attempt (or of a file that started over) reads up to FIRST_READ_CHUNKS max-sized chunks,
+      // so the first snapshot counts all of a stream that is not huge; later counts read at most one chunk each. A
+      // file that started over unprimes the tail inside readMore, so its count gets the first-read budget too.
+      let chunk: Buffer | null;
+      let reads = 0;
+      do {
+        chunk = readMore(tail, max);
+        if (chunk === null) {
+          tails.set(lane, fresh(attempt, streamPath));
+          return { toolCalls: 0, lastTool: null };
         }
-        // A copy, so the pending line does not pin the whole chunk.
-        tail.pending = Buffer.from(bytes.subarray(start));
-      }
+        consume(tail, chunk);
+        reads++;
+      } while (chunk.length === max && reads < (tail.primed ? 1 : FIRST_READ_CHUNKS));
+      tail.primed = true;
       return { toolCalls: tail.toolCalls, lastTool: tail.lastTool };
     },
     retain(lanes) {

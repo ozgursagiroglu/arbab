@@ -691,7 +691,7 @@ session's first launch.
   - The opener carries the URL in its argv, where other local users can read it with `ps`: briefly on macOS
     (`open` exits at once), and for the browser's life on Linux (`xdg-open`, and a browser it starts). On a shared
     machine, use `--no-open`.
-- The page, `/app.js` and `/app.css` are public code; they are served from memory, never from a path.
+- The page, `/app.js`, `/app.css` and `/icon.svg` are public code; they are served from memory, never from a path.
 - Every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
   img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
@@ -704,8 +704,9 @@ session's first launch.
 - The **window**: a lane is in the snapshot when it is not finished, its state changed within `--hours`, or it was
   merged into an integration that is not landed or landed within `--hours`. At most 300 lanes, the newest by
   `firstSeen`; the rest, and lanes whose records do not parse, are counted in `hiddenLanes`.
-- A running attempt's tool calls are counted from its stream incrementally (a byte offset per attempt, never the whole
-  stream per tick), the way `digestStream` counts them: one per `tool_use` id, `StructuredOutput` excluded.
+- A running attempt's tool calls are counted from its stream incrementally, the way `digestStream` counts them: one
+  per `tool_use` id, `StructuredOutput` excluded. The counter keeps a byte offset per attempt. Its first read of an
+  attempt takes at most 64 MiB, and each later read one chunk of 8 MiB, so no tick blocks on a long run's stream.
 - A snapshot carries states, counts, costs, names and enums (`src/ui/protocol.ts`): never a brief, report text,
   stream content, an environment value or a path. The exceptions are a state's `reason` (cut to 200 characters) and the
   project directory's name. A tool name outside `^[A-Za-z0-9_.:-]{1,64}$` becomes null.
@@ -740,8 +741,9 @@ A worker's day:
    **stalled** on a `partial` or `blocked` report, and **falls** otherwise (its stones tumble to the foot as rubble;
    the slot stays an empty gap until the lane runs again). The worker walks back to arbab and they talk. With success it
    takes its ration from the table, by its cost (`costDeltaUsd`, else `costUsd`): under $1 a loaf, under $5 a loaf and
-   a jug, else a basket and a jug; a `partial` report gets a loaf. A `blocked` report or any other end state leaves
-   empty-handed, slumped. Then it walks off the left edge.
+   a jug, else a basket and a jug; a `partial` report gets a loaf. As it takes its ration, coins jump from the treasury
+   with a clink (the `pay` event, owner's request). A `blocked` report or any other end state leaves empty-handed,
+   slumped. Then it walks off the left edge.
 6. `orphaned`: a pale ghost where it stood, with a question mark, until the lane changes.
 
 The first snapshot sets the scene as it stands, without walks: workers stand where their state puts them, finished
@@ -770,8 +772,9 @@ the five-hour window. The treasury's coin pile is `min(48, round(6·√(total co
   accessible equivalent of the canvas) and a polite live region that announces finishes and landings.
 - Text goes in with `textContent` only; nothing from a snapshot is ever parsed as HTML. `prefers-reduced-motion` moves
   actors at once and drops particles.
-- Sound: a drum and a horn synthesized with WebAudio (no files), off by default; the toggle is remembered in
-  `localStorage`.
+- Sound: a drum, a horn and coins synthesized with WebAudio (no files), off by default; the toggle is remembered in
+  `localStorage`. A brief and a report sound the horn, a stone the drum (at most 3 a second), a set block a fanfare, a
+  fall a thud, a capstone a fanfare and a drum roll, and a ration coins clinking into the chest (at most 2 a second).
 - The renderer draws with solid `fillRect`s and `globalAlpha` only, so the same code rasterizes the scene into PNG
   frames in tests. `docs/ui/*.png` are those frames: the README's pictures and the renderer's goldens (compared by
   pixel, so another zlib cannot fail them).
@@ -791,7 +794,7 @@ The owner chose a dashboard around the scene, not a full-screen game HUD.
 
 **Page.** A dark night-desert game interface with gold accents:
 - **Top bar**: the logo (a pixel pyramid) and the wordmark, the project and version, two stone-tablet quota gauges (5h
-  and 7d, each with a tick at its hold threshold), a pulsing LIVE pill, and the sound and full-screen buttons.
+  and 7d, each with a tick at its hold threshold), a pulsing LIVE pill, and the sound button.
 - **KPI cards**: at work (running and preparing), waiting (queued and held), asleep (waiting-reset), finished (✓ and
   ✗), and the treasury (the spend in view). Each has a pixel icon, a big pixel-font number that counts up when it
   changes, and a label.

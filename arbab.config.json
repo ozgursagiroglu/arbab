@@ -65,6 +65,11 @@
       ]
     ]
   },
+  "review": {
+    "lenses": {
+      "accuracy": "Every claim, command, flag, number and output in the changed docs is true of the code, DESIGN.md and plans/readme-facts.md. Nothing is promised that arbab does not do. Every link and anchor resolves."
+    }
+  },
   "maxParallel": 6,
   "quota": {
     "holdAbove": {

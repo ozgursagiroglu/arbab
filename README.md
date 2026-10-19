@@ -1,121 +1,125 @@
 # arbab
 
-**Run fenced, headless Claude Code workers from your interactive session.**
+**Turn one Claude Code session into a controlled engineering team.**
 
-arbab is a [Claude Code](https://docs.claude.com/en/docs/claude-code) plugin for long or multi-part work. Your
-interactive session plans and decides. arbab runs the parts as headless `claude -p` workers, each in its own git
-worktree behind a sandboxed fence. It waits out usage limits and resumes, then takes the results through
-integrate → verify → review → readiness → land, with a human decision at the end.
+Give arbab a large engineering task. Your interactive Claude Code session splits it into independent lanes and runs
+each one as a headless Claude Code worker, in parallel, in its own git worktree behind a sandbox. arbab then verifies
+the result inside the fence, has it adversarially reviewed, and prepares a merge that the skill lands only on your yes.
+
+**Parallel lanes · isolated worktrees · sandboxed workers · human-controlled merges**
 
 [![ci](https://github.com/ozgursagiroglu/arbab/actions/workflows/ci.yml/badge.svg)](https://github.com/ozgursagiroglu/arbab/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![Zero runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
 
-> *arbab*: master, the one who gives the orders. Your session is the arbab; the headless workers do the work.
+![arbab ui during a real run: workers take their briefs from arbab and build the pyramid while the dashboard tracks the crew, the chronicle and the ledger](docs/ui/demo.gif)
 
-## Why
+*The run that wrote this README, at 1.5× speed.*
 
-Long interactive sessions drift. One session plans, implements, waits on tools and tests, and fills its own context
-until every step gets slower. Subagents inside that session share its limits.
-
-arbab splits the roles:
-
-- **You and your interactive session** plan, write narrow briefs, and decide.
-- **Headless workers** each take one brief, in their own worktree and fence, with a budget and a clock. They run in
-  parallel and report back in a fixed schema.
-- **The arbab runner** does the mechanics:
-  - worktrees, sandbox profiles and quota holds;
-  - auto-resume after usage limits;
-  - stream accounting: what was refused, what it cost, how hard the model thought;
-  - integration, fenced verification, adversarial review and landing.
-
-On the machines where the method was first measured, headless workers finished 7 of 7 parts in minutes. The same
-work through the in-session Workflow tool had finished 0 of 7 after 73 minutes. This was not a controlled benchmark:
-the Workflow run was stopped at that point, and 5 of the 7 headless lanes started from digests of the stopped work
-(the two that did not were still among the fastest). [REQUIREMENTS.md §1](REQUIREMENTS.md#1-problem-measured) has
-every measurement and confound. arbab packages that method so it is repeatable and safe.
-
-## How it works
-
-```
- you ──▶ interactive Claude Code session (the orchestrator, using the /arbab skill)
-              │  plan · briefs · decisions
-              ▼
-          arbab runner ──▶ shepherd ──▶ claude -p worker   (worktree .arbab/worktrees/<lane>, fenced)
-              │            shepherd ──▶ claude -p worker   (…)
-              │            usage limit? wait for the reset, resume the same session
-              ▼
-          integrate ──▶ verify (gates inside the fence) ──▶ review (lenses + skeptics)
-              ──▶ readiness report ──▶ you approve ──▶ land (merge into main; never pushes)
+```text
+                                          ┌─> worker ─┐
+you ──> your Claude Code session + arbab ─┼─> worker ─┼─> verify ─> review ─> you approve ─> merge
+                                          └─> worker ─┘
 ```
 
-- **Lanes.** A lane is one unit of work: a brief (task, scope, facts, acceptance), a role (`implementer`,
-  `verifier`, `reviewer`, `researcher`, `probe`), and limits.
-- **Plans.** A plan is a DAG of lanes; `arbab plan next` launches every phase whose dependencies succeeded.
-- **The fence.** Each worker runs under Claude Code's sandbox with:
-  - `dontAsk` permissions and a role's exact tool list;
-  - an allowlist of project commands;
-  - no background shells;
-  - no writes to the shared `.git`.
+> *arbab*: master, the one who gives the orders.
+> You give the order. arbab runs the team. Claude writes the code.
 
-  Refused calls are counted, not guessed at.
-- **Verification runs inside the fence.** `arbab verify` runs your gates (`pnpm typecheck`, `pnpm test`, …) in a
-  probe lane without file-editing tools. Exit codes are read from the stream, never from the model's summary.
-- **Reviews with a depth floor.** `arbab review` runs one reviewer per lens (correctness, security, contracts, or
-  your own), then skeptics that try to refute every MEDIUM+ finding. The readiness report lists what was verified,
-  what was skipped and every remaining risk.
-- **Landing is yours.** `arbab land` merges only a tree that was verified, into a clean base. It never pushes; push
-  and deploy stay human actions.
+arbab does not replace Claude Code: it gives your session a controlled way to delegate real engineering work. Every
+worker is the unmodified `claude` binary, running under your own login.
 
-**Watch it build.** `arbab ui` serves a live, read-only page of your lanes on 127.0.0.1: a pixel-art scene inside a
-game-style dashboard.
-- **The scene**: every lane is a worker building a pyramid, and arbab is the foreman at the front. Workers walk up to
-  talk when they take a brief, and again when they deliver the report.
-- **The stones**: each tool call sets a stone. A finished lane's block is set, or its stones fall.
-- **Landings**: a landing hoists the capstone in a beam of light, and landed integrations stand on the horizon. While
-  nothing is under way, the last one stands as a monument.
-- **The quota and the spend**: held lanes wait in the camp, the sky dusks when launches are held for the quota, and
-  the coin pile grows with the spend.
-- **Around the scene**: KPI cards, quota gauges, the crew with their avatars, the integration's progress, a chronicle
-  of what happened, and a ledger of every lane.
+## Why arbab
 
-![arbab ui: workers building the pyramid while arbab talks to a worker at the front](docs/ui/day.png)
+One long session plans, implements, waits on tools and tests, and fills its own context until every step slows down.
+Subagents inside that session share its limits.
 
-![The arbab ui dashboard: KPI cards, the scene, the crew and the integration, the chronicle and the ledger](docs/ui/page.png)
+arbab splits the roles four ways:
 
-`arbab status` after part of arbab's own M3 build. Each role runs at its own effort; costs are Claude Code's
-API-equivalent estimates, and the run was on a subscription.
+- **You** decide.
+- **Your Claude Code session** plans, writes narrow briefs and reacts as lanes finish.
+- **Headless workers** each take one brief in their own worktree and fence, with a budget and a clock.
+- **The arbab runner** does the mechanics: worktrees, sandbox profiles, quota holds, auto-resume, integration, fenced
+  verification, review and landing.
 
+### Does running in parallel help?
+
+|                | Workflow agents in one session | Headless arbab workers |
+| -------------- | ------------------------------ | ---------------------- |
+| Lanes finished | 0 of 7                         | 7 of 7                 |
+| Time           | stopped after 73 min           | 1.9–6.4 min each       |
+
+This was not a controlled benchmark:
+
+- the Workflow run was stopped at 73 minutes;
+- 5 of the 7 headless lanes started from digests of the stopped work, and the two that did not were still among the
+  fastest;
+- approval waits took 62–70% of the Workflow's wall time.
+
+[REQUIREMENTS.md §1](REQUIREMENTS.md#1-problem-measured) has every measurement and confound.
+
+The point is not a speed-up number, but that independent work stops competing for one session's context and turn loop.
+
+## How a task flows
+
+```text
+                               a task
+                                 │
+                                 ▼
+                   your Claude Code session
+                       (plan and briefs)
+                                 │
+            ┌────────────────────┼────────────────────┐
+            ▼                    ▼                    ▼
+         [ lane A ]           [ lane B ]           [ lane C ]
+     worktree + sandbox   worktree + sandbox   worktree + sandbox
+            │                    │                    │
+            └────────────────────┼────────────────────┘
+                                 ▼
+                            integration
+                                 │
+                                 ▼
+                 verification (inside the fence)
+                                 │
+                                 ▼
+                         adversarial review
+                                 │
+                                 ▼
+                          readiness report
+                                 │
+                                 ▼
+                           your approval
+                                 │
+                                 ▼
+                      merge (never pushed)
 ```
-lane                    state               attempt  elapsed  turns  calls  last tool  effort  failed  cost   quota
-m3-fix-hostgit          finished (success)  1        13m27s   59     127    Bash       high    4       $4.12  7d 12%
-m3-fix-trust            finished (success)  1        14m52s   54     110    Bash       high    3       $4.14  7d 14%
-m3-fix-verify           finished (success)  1        7m51s    51     100    Bash       high    0       $2.91  7d 9%
-m3-package              finished (success)  1        2m04s    14     30     Bash       medium  0       $0.45  7d 7%
-m3-review-security      finished (success)  14       7m42s    29     41     Grep       high    1       $2.84  5h 9% · 7d 28%
-m3-skeptic-security     finished (success)  14       51s      6      9      Read       high    0       $0.31  5h 9% · 7d 29%
-m3-verify               finished (success)  16       1m14s    4      3      Bash       low     0       $0.00  5h 7% · 7d 28%
-quota: 5h 40% (resets Oct 11 01:30Z) · 7d 35% (resets Oct 16 18:00Z)
-```
 
-## Install
+- **lane**: one brief, one worker, one worktree.
+- **plan**: lanes in dependency waves.
+- **fence**: the worker's sandbox and exact permissions.
+- **integration**: the lanes' branches merged for verification and review.
+- **readiness**: the report you decide on.
 
-Requirements:
+## Get started
+
+You need:
 
 - [Claude Code](https://docs.claude.com/en/docs/claude-code) 2.1.290 or newer;
 - Node.js 20 or newer, and git;
 - macOS (tested; the fence uses Claude Code's sandbox). Linux is untested.
+
+Install the plugin:
 
 ```sh
 claude plugin marketplace add ozgursagiroglu/arbab
 claude plugin install arbab@arbab
 ```
 
-The install copies only `plugin/`: the skill and a single-file runner (the `arbab ui` page included), about
-450 KB, with zero runtime dependencies. To update: `claude plugin marketplace update arbab`.
+The install copies only `plugin/`: the skill and a single-file runner (the `arbab ui` page included), about 550 KB,
+with zero runtime dependencies. To update, refresh the marketplace with `claude plugin marketplace update arbab`, then
+run `claude plugin update arbab@arbab`.
 
-## Quick start
+Then:
 
 1. **Configure the project.** Add an `arbab.config.json` at its root:
 
@@ -137,17 +141,15 @@ The install copies only `plugin/`: the skill and a single-file runner (the `arba
    - `commands` are the only project commands each role may run.
    - `gates` are what `verify` runs.
 
-   The skill's "Before the first launch" section explains every field. [arbab.config.json](arbab.config.json) is
-   this repository's own.
-2. **Open Claude Code in the project and run the skill:** `/arbab`. Ask it to check the setup first; it runs
+   The skill's "Before the first launch" section explains the fields that matter first.
+   [arbab.config.json](arbab.config.json) is this repository's own.
+2. **Run the skill.** Open Claude Code in the project and type `/arbab`. Ask it to check the setup first; it runs
    `arbab doctor` (node, git, the claude binary, the sandbox, the config, the ignored roots).
-3. **Hand it the work:** "Plan this and run it with arbab." The orchestrator:
-   - splits the work into lanes and writes their briefs;
-   - lints them and launches them;
-   - reacts as each one finishes.
-4. **Watch:** the skill starts `arbab ui`, which opens the lanes in your browser as workers building a pyramid.
-   `arbab status` shows the same as a table: each lane's state, turns, tool calls, refusals, cost and the quota.
-5. **Land:** the orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
+3. **Hand it the work:** "Plan this and run it with arbab." The orchestrator splits the work into lanes, writes their
+   briefs, lints and launches them, and reacts as each one finishes.
+4. **Watch.** The skill starts `arbab ui`, which opens the lanes in your browser as workers building a pyramid.
+   `arbab status` shows the same as a table.
+5. **Land.** The orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
    lands.
 
 Two steps are always yours:
@@ -157,6 +159,245 @@ Two steps are always yours:
   terminal. The CLI refuses that confirmation without a terminal, so an agent cannot give it for you.
 - **Landing.** `land` is the orchestrator's command, but the skill asks you first. It never pushes.
 
+## A real run
+
+This is how arbab built part of itself: the `ui2` milestone, the game-studio pass of `arbab ui`, from the first check
+to the landing. The outputs are real, trimmed, and their paths shortened. The commands are what the orchestrator ran,
+shown as `arbab <command>`; the skill's own form of each is `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`.
+
+**1. Ask for it.** In Claude Code, type `/arbab`, then "Plan this and run it with arbab." The session writes a plan and
+one brief per lane.
+
+**2. Check the plan.** `arbab plan check plans/ui2.json` lints every phase and prints the waves.
+
+```text
+ui2-font: ok
+ui2-scene: ok
+ui2-art: ok
+ui2-hud: ok
+ui2-wire: ok
+wave 0: ui2-font, ui2-scene
+wave 1: ui2-art, ui2-hud
+wave 2: ui2-wire
+plan ui2: ok
+```
+
+**3. Launch the first wave.** `arbab plan next plans/ui2.json` launches every phase whose dependencies have all
+succeeded. The orchestrator runs it again after each finish, so the next wave starts as soon as it can.
+
+```text
+launched ui2-font  run ~/arbab/.arbab/runs/ui2-font  shepherd 20399
+launched ui2-scene  run ~/arbab/.arbab/runs/ui2-scene  shepherd 20436
+blocked ui2-art  waiting for ui2-font
+blocked ui2-hud  waiting for ui2-font
+blocked ui2-wire  waiting for ui2-font, ui2-scene, ui2-art, ui2-hud
+```
+
+**4. Wait for a finish.** The orchestrator runs `arbab wait --any` in the background. It prints a line when a lane
+finishes.
+
+```text
+ui2-art#1 success 45m37s turns=115 calls=248 failed=12 cost=$15.46 report=~/arbab/.arbab/runs/ui2-art/attempt-1/report.json
+```
+
+**5. Look at every lane.** `arbab status`, given the milestone's lanes, prints one row per lane, then the quota.
+
+```text
+lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
+ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
+ui2-scene            finished (success)  1        11m02s   31     51     Bash       high    2       $2.58   5h 35% · 7d 62%
+ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
+ui2-hud              finished (success)  1        24m02s   64     107    Bash       high    3       $7.38   5h 50% · 7d 65%
+ui2-wire             finished (success)  1        24m59s   124    262    Bash       high    11      $10.30  5h 82% · 7d 70%
+…
+ui2-verify           finished (success)  2        1m34s    4      3      Bash       low     0       $0.00   5h 92% · 7d 72%
+quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)
+```
+
+**6. Integrate.** `arbab integrate ui2 --plan plans/ui2.json` merges the lane branches into `integrate/ui2`, wave by
+wave.
+
+```text
+merged ui2-font 5b75f913e3e6ee406f3b63080b596d360d3906a3
+merged ui2-scene 849e12a888014de8d7aed8a33518589dc5cf38d7
+merged ui2-art a75312440e7a7a5269ac1f427a3a5b60189a7570
+merged ui2-hud c1394dfed9827a88b802365187699ab5c1e2ab98
+merged ui2-wire 973e88ef59097e2f018c2336611443e4312d85c2
+head 2016972fe34166fb7addfb9aa44078218ca9f310  (integrate/ui2 in ~/arbab/.arbab/worktrees/integrate-ui2)
+```
+
+**7. Verify.** Five more lanes were integrated after these five (polish, build, pay, fix and a second build), so
+verify ran on the final head. `arbab verify ui2` runs the gates inside the fence, in a lane that has no file-editing
+tools.
+
+```text
+launched ui2-verify; waiting
+exit 0    gate   pnpm typecheck
+exit 0    gate   pnpm test
+exit 0    gate   pnpm build
+verify ui2: passed at 2eee5ebfb9021b5214ad39f0be0e18bc9bb6e96d (lane ui2-verify success)
+```
+
+**8. Review.** This is `arbab review ui` on the first `arbab ui` integration. One reviewer lane runs per lens, then
+skeptics check the findings.
+
+```text
+launched ui-review-correctness, ui-review-security, ui-review-contracts; waiting
+launched ui-skeptic-correctness, ui-skeptic-security, ui-skeptic-contracts; waiting
+correctness  review   ui-review-correctness  success  22 paths
+security  review   ui-review-security  success  32 paths
+contracts  review   ui-review-contracts  success  20 paths
+correctness  skeptic  ui-skeptic-correctness  success
+security  skeptic  ui-skeptic-security  success
+contracts  skeptic  ui-skeptic-contracts  success
+confirmed (6)
+  correctness-1  MEDIUM  test/assemble-plugin.test.ts:125  Committed plugin/ was not rebuilt: the marketplace bundle has no `arbab ui` …
+  correctness-2  LOW  src/ui/server/snapshot.ts:139  reportStatus and findings come from an older attempt when the latest attempt …
+  security-1  LOW  skills/arbab/SKILL.md:178  The skill's background `arbab ui` call writes the session token to disk, …
+  contracts-1  MEDIUM  plugin/skills/arbab/SKILL.md:178  Committed plugin/ was not rebuilt: the marketplace install …
+  contracts-2  LOW  src/ui/client/scene/scene.ts:57  Preflight probes keep the probed lane's role, so the scene draws them …
+  contracts-3  LOW  src/ui/server/snapshot.ts:139  reportStatus and findings come from an older attempt when the newest …
+…
+```
+
+Every confirmed finding was fixed by a fix lane before landing.
+
+**9. Readiness.** `arbab readiness ui2` writes `readiness.md`. Its head:
+
+```text
+# Readiness report — ui2
+
+Tier: medium · Head: `2eee5ebfb9021b5214ad39f0be0e18bc9bb6e96d` · Date: 2026-10-19
+
+## Verified
+
+| Check | Result |
+| --- | --- |
+| `verify:pnpm typecheck` | gate: exit 0 |
+| `verify:pnpm test` | gate: exit 0 |
+| `verify:pnpm build` | gate: exit 0 |
+| `review:correctness` | lens ran, 27 paths checked |
+| `review:security` | lens ran, 27 paths checked |
+| `findings` | 0 confirmed, 0 refuted, 3 unverified |
+```
+
+**10. Land.** The human said yes, and the orchestrator ran `arbab land ui2`. It merges into `main` and removes the
+worktrees. It never pushes.
+
+```text
+landed ui2: 2eee5ebfb9021b5214ad39f0be0e18bc9bb6e96d into main as be2be12beb53e8f59cfca733ac579a6e1e42124a
+Not pushed. To publish: git push origin main
+removed worktree ~/arbab/.arbab/worktrees/ui2-font
+…
+```
+
+What the fence refuses is in [Safe by construction](#safe-by-construction); how to watch the lanes as they run is in
+[Know what your workers are doing](#know-what-your-workers-are-doing).
+
+## Safe by construction
+
+**Workers can write code. They cannot touch your working tree, your git history or your remote.**
+
+Every worker gets:
+
+- **Its own git worktree and branch.** A lane can instead borrow another lane's worktree, as a verifier does after its
+  builder. Your checkout is never its working directory.
+- **Claude Code's sandbox.** Writes stay in its worktree and the few shared places Claude Code's sandbox allows, such
+  as the per-user temp directory and `~/.npm/_logs`; keep nothing you trust there while lanes run. There is no
+  network unless the lane is a researcher. A sandbox that cannot start is fatal, never a silent fallback.
+- **`dontAsk` permissions with its role's exact tools.** A tool left out of the role does not exist for the worker.
+- **An allowlist of project commands.** The lint refuses "any code" prefixes such as bare `node` or `pnpm`. An allowed
+  command can still run code the worker wrote (`pnpm test` runs its tests), so the sandbox is what contains that code.
+  A lane can opt into the `sandbox-auto` fence, which drops the allowlist and leaves the sandbox as the only wall.
+- **No background shells.**
+- **No writes to the repository's shared `.git`.** Git writes are denied, and the runner commits.
+- **A scrubbed environment, with credential paths denied.** The environment is built from scratch, and paths such as
+  `~/.ssh`, `~/.aws` and `**/.env*` cannot be read or edited.
+- **A budget and a clock.** Every attempt has a dollar cap, a wall-clock limit and an idle limit.
+
+On your machine:
+
+- **Tests run in the fence.** `verify` runs the gates in a sandboxed lane without file-editing tools, and the tree must
+  be clean after the run.
+- **Installs happen only on trusted commits.** The dependency command runs on the host, so it only runs on a commit
+  from your base branch or one you confirmed. Worker code is merged after the install.
+- **Host git never runs worker code.** No hooks, no `core.fsmonitor`, no submodule recursion. Checkpoints never commit
+  nested repositories.
+- **Refusals are counted, never retried in secret.** A call the fence refuses shows up in `status`, not as a hidden
+  retry.
+- **`land` lands only the verified tree, and never pushes.** It prints the push command and leaves it to you.
+
+The workers can work aggressively. Your repository stays under your control. The full threat model and the review
+history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.md).
+
+## Reviews that try to prove you wrong
+
+**Don't ask one agent whether its own work is correct.**
+
+- **One reviewer lane per lens:** `correctness`, `security`, `contracts`, or your own from `review.lenses` in the
+  config.
+- **A depth floor.** Every changed file is read in full, and every finding names a file, a line, a failure scenario
+  and evidence.
+- **A skeptic lane per lens** tries to refute each MEDIUM or HIGH finding.
+- **Verdicts:** each finding ends `confirmed`, `refuted` or `unverified`.
+- **A readiness report** lists what was verified, what was skipped, and every risk.
+- **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
+  cannot be waived. The skill waives one only when you name it.
+
+On arbab's own `arbab ui`, the first review round confirmed six findings. The two MEDIUM ones were the same problem,
+found by two lenses independently. All six were fixed before landing. Milestone M3 went through 14 review rounds,
+and its review lanes found two paths by which worker code could have run on the host.
+
+## Know what your workers are doing
+
+`arbab status` prints one row per lane: its state, attempt, time, work, effort, failures, cost and the quota it saw.
+This is part of the `ui2` build of arbab's own page:
+
+```text
+lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
+ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
+ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
+ui2-wire             finished (success)  1        24m59s   124    262    Bash       high    11      $10.30  5h 82% · 7d 70%
+ui2-fix              finished (success)  1        8m21s    45     88     Bash       high    3       $2.94   5h 91% · 7d 72%
+ui2-review-security  finished (success)  2        2m33s    23     39     Grep       high    1       $1.77   5h 92% · 7d 73%
+ui2-verify           finished (success)  2        1m34s    4      3      Bash       low     0       $0.00   5h 92% · 7d 72%
+quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)
+```
+
+- **turns**: the model's turns, counted as distinct assistant messages.
+- **calls** and **last tool**: the tool calls the worker made, and the one it made last.
+- **effort**: how hard the model thought, measured from the session transcript, not just the level requested.
+- **failed**: tool calls that failed, refusals by the fence included. Each attempt's `summary.json` splits them by
+  cause: the permission mode, a deny rule, the scope, the sandbox, a real error, and others.
+- **cost**: the session's cost so far, and the share of it that each attempt added.
+- **quota**: the five-hour (5h) and seven-day (7d) windows as the lane last saw them. The last line is the account's
+  newest snapshot, with each window's reset time.
+
+### Costs and the quota
+
+- Costs are Claude Code's API-equivalent estimates; on a subscription they are notional. Each attempt has a budget,
+  passed to Claude Code as `--max-budget-usd`. It is a client-side cost estimate and does not cap subscription quota.
+- Launches wait in the `held` state while the five-hour window is at or above its threshold (85% by default) or the
+  seven-day window is at or above its own (95% by default). A held lane checks again every minute and after each
+  reset. Parallel workers spend quota in proportion: N workers use it about N times as fast as one.
+- A worker that hits a usage limit waits for the reset and resumes its own session; it does not start over.
+
+### Watch it build
+
+`arbab ui` serves a live, read-only page of your lanes on 127.0.0.1: a pixel-art scene inside a dashboard.
+
+- **The scene**: each lane is a worker building a pyramid, and arbab is the foreman at the front. A worker walks up to
+  talk when it takes its brief, and again when it delivers its report.
+- **The stones**: each tool call sets a stone. When a lane finishes, its block is set, or its stones fall.
+- **Landings**: a landing hoists the capstone in a beam of light. Landed integrations stand on the horizon.
+- **The quota and the spend**: held lanes wait in the camp, and the sky turns to dusk while launches are held and to
+  night while the account is rejected. Sleeping workers wait for the reset. The coin pile grows with the spend.
+- **Around the scene**: quota gauges, KPI cards, the crew, the integration's progress, a chronicle of what happened,
+  and a ledger of every lane.
+
+Sound is off until you turn it on. Then a horn sounds for each brief and report, a drum for each stone, and coins
+clink as a finished worker takes its pay.
+
 ## Commands
 
 | Command | What it does |
@@ -164,42 +405,41 @@ Two steps are always yours:
 | `doctor` | Checks node, git, the claude binary, the sandbox, the config, the ignored roots and `~/.arbab`. |
 | `lint <lane.json>` | Lints the profile, brief and schema. Exit 1 on errors. |
 | `launch <lane.json>` | Lints the lane, then starts its shepherd. |
-| `plan check \| next \| status <plan.json>` | Validates a plan, launches the ready phases, or shows the waves. |
-| `status [lane…]` | One row per lane: state, attempt, elapsed, turns, calls, last tool, effort, refusals, cost, quota. |
-| `wait [--any\|--all] [lane…]` | Reports finished lanes not yet seen. Exit 3 on timeout. |
-| `resume <lane> [--prompt f \| --digest]` | Starts a new attempt in the same session, or a fresh one seeded with a digest. |
+| `plan check <plan.json>` | Validates a plan, lints every phase and prints the waves. Exit 1 on errors. |
+| `plan next <plan.json>` | Launches every phase whose dependencies all succeeded and that never ran. |
+| `plan status <plan.json>` | One row per phase: wave, state, end state, dependencies. |
+| `status [lane…]` | One row per lane, then the quota. |
+| `wait [--any\|--all] [--timeout-min N] [lane…]` | Reports finished lanes not yet acknowledged. Exit 3 on timeout. |
+| `resume <lane> [--prompt <file> \| --digest]` | Starts a new attempt in the latest session. `--digest` starts a fresh session seeded with the latest attempt's digest. |
 | `stop <lane>` | Stops the lane's shepherd and worker. |
-| `preflight <lane.json>` | Probes the lane's fence and model before a long run. |
-| `quota [--reset]` | Shows the account snapshot and the hold decision. Use `--reset` after switching accounts. |
-| `cleanup [--worktrees]` | Reaps orphans and releases stale locks. `--worktrees` removes merged, clean worktrees. |
-| `integrate <name> --lanes a,b \| --plan p` | Merges lane branches into `integrate/<name>`. |
-| `verify <name>` | Runs the gates inside the fence on the integration head. |
-| `review <name> [--lenses a,b]` | One reviewer per lens, then skeptics for MEDIUM+ findings. |
-| `readiness <name> [--tier low\|medium\|high]` | Writes the readiness report: verified, skipped, risks. |
-| `land <name>` | Merges a ready integration into the base. Never pushes. |
+| `preflight <lane.json> [--timeout-min N]` | Probes the lane's fence and model. Exit 1 on any failed check. |
+| `quota [--reset]` | Shows the account snapshot and the hold decision. `--reset` deletes the snapshot after you switch accounts. |
+| `cleanup [--worktrees]` | Reaps orphans and releases stale pool entries. `--worktrees` also removes finished lanes' merged, clean worktrees (lane branches stay) and landed integrations' worktrees and branches. |
+| `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
+| `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. |
+| `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
+| `review <name> [--lenses a,b] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. |
+| `readiness <name> [--tier low\|medium\|high] [--waive id,…]` | Writes the readiness report: verified, skipped, risks. Exit 1 unless ready. |
+| `land <name> [--keep-worktrees]` | Merges a ready integration into the base. Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
 | `ui [--port N] [--hours N] [--no-open]` | Serves the live pyramid scene on 127.0.0.1, read-only, until stopped. |
+| `help`, `--help` | Prints the command list. |
+| `version`, `--version` | Prints the arbab version. |
+
+Every command except `help` and `version` also takes `--json`, which prints JSON instead of text.
 
 The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`. From a clone, run
 `node dist/arbab.mjs <command>` after `pnpm build`.
 
-## Safety model
+## What arbab is not
 
-Workers write code, and that code is untrusted until a human lands it. arbab never runs it on your machine outside
-the fence:
-
-- **Tests run in the fence.** `verify` runs the gates in a sandboxed lane without file-editing tools, and the tree
-  must be clean after the run.
-- **Installs happen only on trusted commits.** The dependency command runs on the host, so it only ever runs on a
-  commit from your base branch, or one you confirmed. Worker code is merged after the install.
-- **Host git never runs worker code.** No hooks, no `core.fsmonitor`, no submodule recursion. Checkpoints never
-  commit nested repositories or arbab's own state.
-- **Refusals are surfaced, not bypassed.** Worker runs that hit the fence show up in `status`, never as a hidden
-  retry.
-- **Every gate is checked, nothing is pushed.** A readiness report lists every confirmed or unverified risk, and
-  `land` lands only the tree that was verified.
-
-The full threat model and the review history are in [DESIGN.md](DESIGN.md). Found a hole? See
-[SECURITY.md](SECURITY.md).
+- **Not another coding agent.** The workers are the unmodified Claude Code binary (`claude -p`), under your own
+  login. arbab decides how they run, fences them and checks their work.
+- **Not a replacement for Claude Code.** It is a plugin for the session you already use: a skill plus a runner.
+- **Not an autonomous deploy bot.** Workers cannot push or deploy. The skill lands only on your yes, and `land` never
+  pushes.
+- **Not a generic agent framework.** It is opinionated about software work: worktrees, sandboxes, verification,
+  review and controlled integration. For a short fan-out inside your session, Claude Code's Workflows are the simpler
+  tool; the [FAQ](#faq) compares them.
 
 ## Built with itself
 
@@ -208,7 +448,12 @@ worker attempts and 5,091 tool calls. Only 1.3% of those calls were refused by t
 machines measured 5.8–15%. The notional API-equivalent cost was about $225, run on a subscription.
 
 M3 alone went through 14 review rounds, 10 of them with all three lenses. Among what the review lanes found and the
-fix lanes closed were two paths by which worker code could have run on the host. Every run is in [bench/RUNS.md](bench/RUNS.md), with notes in [bench/README.md](bench/README.md).
+fix lanes closed were two paths by which worker code could have run on the host. Every run is in
+[bench/RUNS.md](bench/RUNS.md), with notes in [bench/README.md](bench/README.md).
+
+`arbab ui` was built the same way, in two plans: 46 worker attempts and 2,177 tool calls, at about $105
+API-equivalent on a subscription. The second plan was the game-studio pass. In it, an orchestrator checked every page
+in a real browser and sent the fixes back as lanes.
 
 ## FAQ
 
@@ -222,24 +467,34 @@ Subagents run inside your session and share its context, limits and lifetime. ar
 a worker waits for the reset and resumes the same session. Their work is reviewed and landed through gates instead of
 being merged as it comes.
 
-**How is it different from Workflows, agent teams and agent view?**
-As of Claude Code 2.1.295:
+**How is it different from Workflows, agent teams, agent view and Projects?**
+Claude Code's docs list five ways to work on several tasks at once: subagents, agent view, agent teams, dynamic
+workflows and Projects. As of Claude Code 2.1.295 and its docs in October 2026:
 
-- [Workflows](https://code.claude.com/docs/en/workflows) run their agents inside your session, under one sandbox.
-  They document no per-agent effort or $ cap, and `parallel()` waits for every agent before the script continues.
+- [Workflows](https://code.claude.com/docs/en/workflows) run many subagents from a script and cross-check their
+  results, inside your session and under one sandbox. They document no per-agent effort or $ cap, and `parallel()`
+  waits for every agent before the script continues.
 - [Agent teams](https://code.claude.com/docs/en/agent-teams) are experimental, and teammates inherit the lead's
   effort level.
 - [Agent view](https://code.claude.com/docs/en/agent-view) runs background sessions (`--bg`), which cannot be
   combined with `-p`. They get no budget cap and no report schema, and Claude Code's usage-limit wait does not apply
   to them.
+- [Projects](https://code.claude.com/docs/en/claude-projects) are one ongoing conversation that starts a thread for
+  each task, mostly in the cloud. They are in public beta on Pro and Max plans.
 
-For a short fan-out inside your session, Workflows are the simpler tool. arbab is for long, risky or unattended work
-that has to survive usage limits and land through gates.
+For a short fan-out inside your session, Workflows are the simpler tool. arbab is for long, risky or unattended work:
+local headless `claude -p` workers that survive usage limits, gates and review on the result, and a landing that the
+skill makes only on your yes.
 
-**How is it different from claude-squad, Conductor and other worktree managers?**
-They give each agent a worktree and a UI, and you drive each agent yourself. With arbab your interactive session
-drives the workers: it writes the briefs, launches the lanes, reacts as each one finishes, and takes the results
-through verify, review and readiness before you decide.
+**How is it different from claude-squad, ccmanager, container-use and other worktree managers?**
+They give each agent its own worktree or container and a UI, and you drive and review each agent yourself. With arbab
+your interactive session drives the workers: it writes the briefs, launches the lanes, reacts as each one finishes,
+and takes the results through verify, review and readiness before you decide.
+
+**How is it different from orchestrators that review before merging?**
+Some, such as [claude-orchestrator](https://github.com/indiekitai/claude-orchestrator), have another model review
+each batch of worktree agents before merging. In arbab, every worker also runs behind Claude Code's sandbox, and the
+skill lands nothing until you say yes.
 
 **Does it work with a Claude subscription or the API?**
 Both. It runs the unmodified `claude` binary under your own login, on your machine. It never reads, stores or
@@ -249,7 +504,8 @@ Costs in the reports are Claude Code's API-equivalent estimates.
 
 **Is it safe to let workers run unattended?**
 Workers are fenced by Claude Code's sandbox and an exact permission profile. arbab never runs their code on the host
-outside that fence, and nothing lands without your approval. See the safety model above.
+outside that fence, except a dependency install you confirmed, and the skill lands nothing without your approval.
+See [Safe by construction](#safe-by-construction).
 
 **Does arbab push to my remote?**
 Never. `land` merges locally and prints the push command.

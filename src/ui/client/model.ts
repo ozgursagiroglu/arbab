@@ -183,7 +183,15 @@ export interface Sky {
 }
 
 /** What happened in the scene, for sounds: a brief handed out, a stone placed, a report delivered, … */
-export type SceneEventKind = "brief" | "stone" | "report" | "set" | "fall" | "capstone";
+export type SceneEventKind =
+  | "brief"
+  | "stone"
+  | "report"
+  | "set"
+  | "fall"
+  | "capstone"
+  /** A worker takes its ration from the table, and coins drop from the treasury. */
+  | "pay";
 
 export interface SceneEvent {
   kind: SceneEventKind;

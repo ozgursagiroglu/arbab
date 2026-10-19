@@ -1031,6 +1031,8 @@ describe("the capstone", () => {
     // Then int2's starts from the sledge, with its own flag, and sets in about 3 s.
     expect(cap).toMatchObject({ state: "hoisting", integration: "int2", flag: "failed", ready: false, ...PLACES.sledge });
     expect(cap.glow).toBe(0);
+    // The pyramid int's capstone finished waits, dotted, for int2's.
+    expect(s.world.pyramid.blocks.filter((b) => b.lane === null).every((b) => b.look === "empty")).toBe(true);
     const took = until(s, () => cap.state === "set", 4);
     expect(took).toBeGreaterThanOrEqual(2.95);
     expect(took).toBeLessThanOrEqual(3.1);
@@ -1048,6 +1050,49 @@ describe("the capstone", () => {
     expect(s.world.pyramid.capstone).toMatchObject({ state: "set", ...s.world.pyramid.apex });
     expect(s.world.events).toEqual([]);
     expect(s.world.actors[0]!.pose).toBe("idle");
+  });
+
+  it("finishes the pyramid under a set capstone: every slot without a lane a set block, dotted again after", () => {
+    const free = (s: Scene): Block[] => s.world.pyramid.blocks.filter((b) => b.lane === null);
+    const finished = (s: Scene): boolean => free(s).every((b) => b.look === "set" && b.fill === 1);
+    const dotted = (s: Scene): boolean => free(s).every((b) => b.look === "empty" && b.fill === 0);
+    const s = newScene();
+    const open = uiIntegration({ name: "int", lanes: ["a", "b"], verify: "passed" });
+    s.apply(uiSnapshot({ lanes, integrations: [open] }));
+    // Two lanes on a base-4 pyramid: eight slots without one.
+    expect(free(s)).toHaveLength(8);
+    expect(s.world.pyramid.capstone.state).toBe("waiting");
+    expect(dotted(s)).toBe(true);
+    // Still dotted while it rises; finished the moment it sets, with the lanes' own blocks untouched.
+    s.apply(uiSnapshot({ lanes, integrations: [{ ...open, landedAt: at(1) }], now: at(2) }));
+    expect(s.world.pyramid.capstone.state).toBe("hoisting");
+    expect(dotted(s)).toBe(true);
+    until(s, () => s.world.pyramid.capstone.state === "set", 4);
+    expect(finished(s)).toBe(true);
+    expect(s.world.pyramid.blocks.filter((b) => b.lane !== null).map((b) => b.lane)).toEqual(["a", "b"]);
+    expect(s.pick(free(s)[0]!.x + 1, free(s)[0]!.y + 1)).toBeNull();
+    // Another snapshot rebuilds the pyramid: still finished.
+    s.apply(uiSnapshot({ lanes, integrations: [{ ...open, landedAt: at(1) }], now: at(10) }));
+    expect(finished(s)).toBe(true);
+    // Once the landing is old and new work starts, the capstone is gone and the free slots are dotted again.
+    s.apply(uiSnapshot({ lanes: [builder("new")], integrations: [{ ...open, landedAt: at(1) }], now: at(1200) }));
+    expect(s.world.pyramid.capstone.state).toBe("none");
+    expect(free(s).length).toBeGreaterThan(0);
+    expect(dotted(s)).toBe(true);
+  });
+
+  it("finishes the pyramid at once under a capstone set at the baseline or in reduced motion", () => {
+    const free = (s: Scene): Block[] => s.world.pyramid.blocks.filter((b) => b.lane === null);
+    const baseline = newScene();
+    baseline.apply(uiSnapshot({ lanes, integrations: [uiIntegration({ name: "int", lanes: ["a", "b"], landedAt: at(-60) })] }));
+    expect(baseline.world.pyramid.capstone.state).toBe("set");
+    expect(free(baseline).map((b) => [b.look, b.fill])).toEqual(Array.from({ length: 8 }, () => ["set", 1]));
+    const reduced = newScene(true);
+    const open = uiIntegration({ name: "int", lanes: ["a", "b"] });
+    reduced.apply(uiSnapshot({ lanes, integrations: [open] }));
+    reduced.apply(uiSnapshot({ lanes, integrations: [{ ...open, landedAt: at(1) }], now: at(2) }));
+    expect(reduced.world.pyramid.capstone.state).toBe("set");
+    expect(free(reduced).every((b) => b.look === "set" && b.fill === 1)).toBe(true);
   });
 
   it("stands landed integrations on the horizon", () => {

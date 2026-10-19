@@ -102,9 +102,15 @@ describe("PAGE_CSS", () => {
   it("makes the side column as tall as the scene card: the crew grows and scrolls, the monument keeps its height", () => {
     const wide = /@media \(min-width: 1280px\) \{\n {2}\.grid[^@]*/.exec(PAGE_CSS)?.[0] ?? "";
     expect(wide).toMatch(/\.side \{[^}]*grid-template-rows: minmax\(0, 1fr\) auto;[^}]*contain: size;/);
+    // Stretched, or the crew panel shrinks to its title around a zero-basis list (the shared rule says start).
+    expect(wide).toMatch(/\.side \{[^}]*align-items: stretch;/);
     expect(wide).toMatch(/\.crew-panel \{ display: flex; flex-direction: column; min-height: 0; \}/);
-    expect(wide).toMatch(/\.crew-panel \.crew-scroll \{ flex: 1 1 0; max-height: none; \}/);
-    expect(PAGE_CSS).toMatch(/\.crew-scroll \{[^}]*overflow: auto;/);
+    expect(wide).toContain(".crew-panel > .titlebar { flex: none; }");
+    expect(wide).toMatch(/\.crew-panel \.crew-scroll \{ flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; \}/);
+    // Stacked (under 1280 px), the list keeps its own cap and scroll.
+    expect(PAGE_CSS).toMatch(/\.crew-scroll \{[^}]*max-height: 640px; overflow: auto;/);
+    // The empty state sits in the scroll box, so it gets the same height.
+    expect(PAGE_HTML).toMatch(/<div id="crew-scroll" class="crew-scroll">[\s\S]*<div id="crew-empty" class="crew-empty"><\/div>[\s\S]*<\/section>/);
     expect(PAGE_CSS).toMatch(/\.crew-panel\[data-more="true"\]::after \{[^}]*linear-gradient\(to bottom, transparent, var\(--panel\)\)/);
     // The crew comes first in the column, the monument after it.
     expect(PAGE_HTML.indexOf('class="frame panel crew-panel"')).toBeLessThan(PAGE_HTML.indexOf('class="frame panel monument-panel"'));

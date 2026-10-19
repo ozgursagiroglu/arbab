@@ -379,6 +379,12 @@ describe("the live scene", () => {
     const set = moment("capstone").world.pyramid;
     expect(set.capstone).toMatchObject({ state: "set", ...set.apex });
     expect(moment("capstone").actors[0]?.pose).toBe("cheer");
+    // Set, it stands on a finished pyramid: the slots without a lane are set blocks, dotted while it rose.
+    const free = (p: typeof set): string[] => p.blocks.filter((b) => b.lane === null).map((b) => `${b.look} ${b.fill}`);
+    for (const [p, look] of [[hoist, "empty 0"], [set, "set 1"], [moment("capstone-glow").world.pyramid, "set 1"]] as const) {
+      expect(free(p).length).toBeGreaterThan(0);
+      expect(new Set(free(p))).toEqual(new Set([look]));
+    }
   });
 
   it("talk: the hovered worker's nameplate stands above its bubble", () => {

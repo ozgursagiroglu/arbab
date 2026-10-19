@@ -10,7 +10,7 @@ import { FIRE_AT } from "./art/props";
 import { sunColors } from "./art/sky";
 import type { Canvas2D } from "./browser";
 import { actor, arbab, dayWorld, duskWorld, FRAMES, nightWorld } from "./fixtures";
-import { BUBBLE, GOLD, LIMESTONE, MOON, OUTLINE, parseHex, PLATE, VIGNETTE, WOOD } from "./palette";
+import { BUBBLE, FLAG, GOLD, LIMESTONE, MOON, OUTLINE, parseHex, PLATE, VIGNETTE, WOOD } from "./palette";
 import type { Raster } from "./raster";
 import { createRaster } from "./raster";
 import {
@@ -434,6 +434,30 @@ describe("the scene's life and light", () => {
     for (let c = x - 8; c < x + 8; c++) if (pixel(r, c, 30) !== pixel(plain, c, 30)) wide++;
     expect(wide).toBeGreaterThanOrEqual(8);
     expect(wide).toBeLessThanOrEqual(12);
+  });
+
+  it("flies the verify pennant on the sledge only while the capstone waits there", () => {
+    const l = pyramidLayout(10);
+    const pennant = (state: World["pyramid"]["capstone"]["state"], flag: "passed" | "failed"): Op[] => {
+      const w = dayWorld();
+      const at = state === "waiting" || state === "hoisting" ? PLACES.sledge : l.apex;
+      const ctx = recorder();
+      renderWorld(ctx, { ...w, pyramid: { ...w.pyramid, apex: l.apex, capstone: { ...w.pyramid.capstone, state, ...at, flag } } });
+      const color = flag === "passed" ? FLAG.green : FLAG.red;
+      return ctx.ops.filter((op) => op.color === color && op.x > PLACES.sledge.x + 15 && op.x <= PLACES.sledge.x + 22 && op.y < PLACES.sledge.y + 5);
+    };
+    expect(pennant("waiting", "passed").length).toBeGreaterThan(0);
+    expect(pennant("waiting", "failed").length).toBeGreaterThan(0);
+    for (const state of ["hoisting", "set"] as const) {
+      expect(pennant(state, "passed"), state).toEqual([]);
+      expect(pennant(state, "failed"), state).toEqual([]);
+    }
+    // A monument's capstone is set too: an empty sledge.
+    const idle = FRAMES.idle();
+    const ctx = recorder();
+    renderWorld(ctx, idle);
+    expect(idle.pyramid.capstone.flag).toBe("passed");
+    expect(ctx.ops.filter((op) => op.color === FLAG.green && op.x > PLACES.sledge.x + 15 && op.x <= PLACES.sledge.x + 22)).toEqual([]);
   });
 
   it("puts a nameplate over a highlighted actor only, inside the canvas", () => {

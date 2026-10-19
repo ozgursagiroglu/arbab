@@ -1,0 +1,10 @@
+{
+  "name": "readme-fix",
+  "role": "implementer",
+  "brief": "lanes/readme-fix.md",
+  "base": "integrate/readme",
+  "effort": "medium",
+  "budgetUsd": 2,
+  "wallMin": 15,
+  "idleMin": 5
+}

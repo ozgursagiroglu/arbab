@@ -4,7 +4,7 @@
 
 Give arbab a large engineering task. Your interactive Claude Code session splits it into independent lanes and runs
 each one as a headless Claude Code worker, in parallel, in its own git worktree behind a sandbox. arbab then verifies
-the result inside the fence, has it adversarially reviewed, and prepares a merge that lands only when you say yes.
+the result inside the fence, has it adversarially reviewed, and prepares a merge that the skill lands only on your yes.
 
 **Parallel lanes · isolated worktrees · sandboxed workers · human-controlled merges**
 
@@ -226,7 +226,9 @@ merged ui2-wire 973e88ef59097e2f018c2336611443e4312d85c2
 head 2016972fe34166fb7addfb9aa44078218ca9f310  (integrate/ui2 in ~/arbab/.arbab/worktrees/integrate-ui2)
 ```
 
-**7. Verify.** `arbab verify ui2` runs the gates inside the fence, in a lane that has no file-editing tools.
+**7. Verify.** Five more lanes were integrated after these five (polish, build, pay, fix and a second build), so
+verify ran on the final head. `arbab verify ui2` runs the gates inside the fence, in a lane that has no file-editing
+tools.
 
 ```text
 launched ui2-verify; waiting
@@ -298,10 +300,11 @@ What the fence refuses is in [Safe by construction](#safe-by-construction); how 
 
 Every worker gets:
 
-- **Its own git worktree and branch.** Your checkout is never its working directory.
-- **Claude Code's sandbox.** Writes stay in its worktree and the shared per-user temp directory, so keep nothing you
-  trust there while lanes run. There is no network unless the lane is a researcher. A sandbox that cannot start is
-  fatal, never a silent fallback.
+- **Its own git worktree and branch.** A lane can instead borrow another lane's worktree, as a verifier does after its
+  builder. Your checkout is never its working directory.
+- **Claude Code's sandbox.** Writes stay in its worktree and the few shared places Claude Code's sandbox allows, such
+  as the per-user temp directory and `~/.npm/_logs`; keep nothing you trust there while lanes run. There is no
+  network unless the lane is a researcher. A sandbox that cannot start is fatal, never a silent fallback.
 - **`dontAsk` permissions with its role's exact tools.** A tool left out of the role does not exist for the worker.
 - **An allowlist of project commands.** The lint refuses "any code" prefixes such as bare `node` or `pnpm`. An allowed
   command can still run code the worker wrote (`pnpm test` runs its tests), so the sandbox is what contains that code.
@@ -480,8 +483,8 @@ workflows and Projects. As of Claude Code 2.1.295 and its docs in October 2026:
   each task, mostly in the cloud. They are in public beta on Pro and Max plans.
 
 For a short fan-out inside your session, Workflows are the simpler tool. arbab is for long, risky or unattended work:
-local headless `claude -p` workers that survive usage limits, gates and review on the result, and a landing only on
-your yes.
+local headless `claude -p` workers that survive usage limits, gates and review on the result, and a landing that the
+skill makes only on your yes.
 
 **How is it different from claude-squad, ccmanager, container-use and other worktree managers?**
 They give each agent its own worktree or container and a UI, and you drive and review each agent yourself. With arbab

@@ -20,12 +20,12 @@ import type {
   StorageLike,
   WindowLike,
 } from "./browser";
-import { announcements, computeScale, header, parseProblem, parseSnapshot, parseToken, tooltipLines } from "./hud";
-import { sceneCaption } from "./hud/caption";
+import { announcements, header, parseProblem, parseSnapshot, parseToken, sceneSize, stageRoom, tooltipLines } from "./hud";
+import { captionKey, sceneCaption } from "./hud/caption";
 import type { ChronicleEntry } from "./hud/chronicle";
 import { chronicleDiff, mergeChronicle, seedChronicle } from "./hud/chronicle";
 import { mountChronicle } from "./hud/chronicle-panel";
-import { mountCrew } from "./hud/crew";
+import { moreBelow, mountCrew } from "./hud/crew";
 import { asCanvas, devicePixels, make, sizeCanvas } from "./hud/dom";
 import { gaugeView, mountGauge } from "./hud/gauge";
 import { drawGrid, PYRAMID_GRID } from "./hud/icons";
@@ -50,6 +50,8 @@ export const NO_TOKEN_MESSAGE =
 const EVENT_SOURCE_CLOSED = 2;
 /** How often the relative times ("2m ago") are rewritten. */
 const AGO_MS = 30_000;
+/** The title card's fade (its CSS transition), after which it is hidden outright. */
+export const TITLE_CARD_MS = 600;
 
 export interface PageHandle {
   stop(): void;
@@ -131,6 +133,11 @@ export function startPage(env: PageEnv): PageHandle | null {
   els.siteTitle.replaceChildren(createPixelText(doc, { scale: 2, color: TOKENS.gold, dpr }, "THE SITE").el);
   const caption = createPixelText(doc, { scale: 1, color: TOKENS.sand, dpr }, "THE SITE IS QUIET");
   els.caption.replaceChildren(caption.el);
+  let captioned = "";
+  const writeCaption = (snapshot: UiSnapshot, nowMs: number): void => {
+    captioned = captionKey(scene.world);
+    caption.set(sceneCaption(snapshot, nowMs, scene.world));
+  };
   const gauges = [mountGauge(doc, els.gauge5h, "5h", dpr), mountGauge(doc, els.gauge7d, "7d", dpr)] as const;
   const kpis = mountKpis(doc, els.kpis, { dpr, reducedMotion });
 
@@ -146,32 +153,40 @@ export function startPage(env: PageEnv): PageHandle | null {
     showSound();
   });
 
-  // Full screen: the scene card, where the browser has the API.
+  // Full screen: the scene card's own button, where the browser has the API.
   const fullscreen = (): boolean => doc.fullscreenElement !== undefined && doc.fullscreenElement !== null && doc.fullscreenElement === site;
-  const canFullscreen = typeof site.requestFullscreen === "function";
-  for (const button of [els.fullscreen, els.siteFullscreen]) {
-    button.hidden = !canFullscreen;
-    button.addEventListener("click", () => {
-      // A refused request (it can throw or reject) leaves the page as it is.
-      try {
-        const pending = fullscreen() && typeof doc.exitFullscreen === "function" ? doc.exitFullscreen() : site.requestFullscreen?.();
-        if (pending instanceof Promise) pending.catch(() => undefined);
-      } catch {
-        // As above.
-      }
-    });
-  }
+  els.siteFullscreen.hidden = typeof site.requestFullscreen !== "function";
+  els.siteFullscreen.addEventListener("click", () => {
+    // A refused request (it can throw or reject) leaves the page as it is.
+    try {
+      const pending = fullscreen() && typeof doc.exitFullscreen === "function" ? doc.exitFullscreen() : site.requestFullscreen?.();
+      if (pending instanceof Promise) pending.catch(() => undefined);
+    } catch {
+      // As above.
+    }
+  });
 
-  // Scale: the largest integer that fits, snapped to device pixels; full screen, the whole stage.
-  let scale = 1;
+  // The crew scrolls inside its panel; a fade at its bottom edge says there is more below.
+  const showCrewFade = (): void => els.crewPanel.setAttribute("data-more", String(moreBelow(els.crewScroll)));
+  els.crewScroll.addEventListener("scroll", showCrewFade);
+
+  // Scale: whole device pixels per art pixel, as large as the first screen holds; below 1×, the stage's width.
+  // Full screen, the whole stage.
   const resize = (): void => {
     const box = stage.getBoundingClientRect();
-    scale = fullscreen()
-      ? computeScale(box.width, box.height, 0)
-      : computeScale(box.width, env.window.innerHeight, els.header.getBoundingClientRect().height);
-    const ratio = env.devicePixelRatio > 0 ? env.devicePixelRatio : 1;
-    canvas.style.width = `${Math.round(WIDTH * scale * ratio) / ratio}px`;
-    canvas.style.height = `${Math.round(HEIGHT * scale * ratio) / ratio}px`;
+    const room = fullscreen()
+      ? box.height
+      : stageRoom(
+          env.window.innerHeight,
+          els.header.getBoundingClientRect().height,
+          els.kpis.getBoundingClientRect().height,
+          site.getBoundingClientRect().height - box.height,
+        );
+    const size = sceneSize(box.width, room, env.devicePixelRatio);
+    canvas.className = size.fluid ? "fluid" : "";
+    canvas.style.width = size.fluid ? "100%" : `${size.width}px`;
+    canvas.style.height = size.fluid ? "auto" : `${size.height}px`;
+    showCrewFade();
   };
   resize();
   env.window.addEventListener("resize", resize);
@@ -209,6 +224,8 @@ export function startPage(env: PageEnv): PageHandle | null {
   /** Where a lane is in the stage, in CSS px: its worker, else its block. */
   const anchorOf = (lane: string): { x: number; y: number } => {
     const off = canvasOffset();
+    const shown = canvas.getBoundingClientRect().width;
+    const scale = shown > 0 ? shown / WIDTH : 1;
     const actor: Actor | undefined = scene.world.actors.find((a) => a.lane === lane);
     if (actor) return { x: off.x + actor.x * scale, y: off.y + (actor.y - 20) * scale };
     const block: Block | undefined = scene.world.pyramid.blocks.find((b) => b.lane === lane);
@@ -314,7 +331,15 @@ export function startPage(env: PageEnv): PageHandle | null {
     } catch {
       showBanner("The scene could not show this snapshot; the ledger is up to date.");
     }
-    if (last === null) els.titleCard.className = "title-card gone";
+    if (last === null) {
+      // The fade is CSS; the timer hides the card even where a renderer never runs the transition (or motion is off).
+      els.titleCard.className = "title-card gone";
+      const hide = (): void => {
+        els.titleCard.hidden = true;
+      };
+      if (reducedMotion) hide();
+      else env.setTimeout(hide, TITLE_CARD_MS);
+    }
 
     const h = header(snapshot);
     els.project.textContent = h.project;
@@ -325,11 +350,12 @@ export function startPage(env: PageEnv): PageHandle | null {
     gauges[0].update(gaugeView("5h", snapshot.quota.fiveHour, snapshot.quota.holdAbove.fiveHour, nowSec));
     gauges[1].update(gaugeView("7d", snapshot.quota.sevenDay, snapshot.quota.holdAbove.sevenDay, nowSec));
     kpis.update(snapshot, env.now());
-    caption.set(sceneCaption(snapshot, now));
+    writeCaption(snapshot, now);
 
     lanes = new Map(snapshot.lanes.map((lane) => [lane.name, lane]));
     if (pinned !== null && !lanes.has(pinned)) pinned = null;
     crew.update(snapshot, now);
+    showCrewFade();
     ledger.update(snapshot, now);
     monument.update(snapshot, now);
     chronicle = mergeChronicle(chronicle, last === null ? seedChronicle(snapshot) : chronicleDiff(last, snapshot));
@@ -390,6 +416,8 @@ export function startPage(env: PageEnv): PageHandle | null {
     previous = time;
     scene.step(dt);
     renderWorld(ctx, scene.world);
+    // The caption follows the World between snapshots too (a capstone rising, then set).
+    if (last && captionKey(scene.world) !== captioned) writeCaption(last, serverNow());
     const events = scene.world.events;
     for (const event of events) sound.play(event.kind);
     events.length = 0;
@@ -407,7 +435,7 @@ export function startPage(env: PageEnv): PageHandle | null {
       chroniclePanel.refresh(now);
       if (last) {
         monument.update(last, now);
-        caption.set(sceneCaption(last, now));
+        writeCaption(last, now);
       }
     }
     env.requestAnimationFrame(frame);
@@ -449,6 +477,7 @@ function browserEnv(): PageEnv | null {
     },
     matchMedia: (query) => (media ? media.call(win, query) : { matches: false }),
     requestAnimationFrame: (callback) => raf.call(win, callback),
+    setTimeout: (callback, ms) => (g.setTimeout as (callback: () => void, ms: number) => unknown).call(win, callback, ms),
     devicePixelRatio: typeof g.devicePixelRatio === "number" ? g.devicePixelRatio : 1,
     now: () => Date.now(),
   };

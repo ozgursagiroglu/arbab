@@ -26,6 +26,8 @@ export const TOKENS = {
   "st-success": "#3faf5a",
   "st-failed": "#d04040",
   "st-orphaned": "#85827a",
+  /** The failed badge's ground: darker than st-failed, so light ink reads on it. */
+  "badge-failed": "#b23a3a",
 } as const;
 
 export type Token = keyof typeof TOKENS;
@@ -41,8 +43,13 @@ export const CHIPS = {
   scout: "#2f6b4f",
 } as const;
 
-/** Ink on a state badge: dark on every state color, which are all light enough for it. */
+/** Ink on a state badge: dark on every state color, which are all light enough for it, but the failed one. */
 export const BADGE_INK = TOKENS.bg;
+
+/** A badge's ground and ink: light ink on the failed badge's dark red, dark ink on the rest (4.5:1 or better). */
+export function badgeColors(tone: BadgeTone): { ground: string; ink: string } {
+  return tone === "failed" ? { ground: TOKENS["badge-failed"], ink: TOKENS.text } : { ground: toneColor(tone), ink: BADGE_INK };
+}
 
 export type BadgeTone = "running" | "preparing" | "waiting" | "asleep" | "success" | "failed" | "orphaned";
 

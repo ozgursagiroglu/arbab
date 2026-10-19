@@ -1,40 +1,46 @@
-// The caption under the scene (DESIGN.md §19): which pyramid stands and how far along it is, in the pixel font.
-import type { UiIntegration, UiSnapshot } from "../../../protocol";
-import { foreground } from "../../scene/scene";
+// The caption under the scene (DESIGN.md §19): which pyramid stands and how far along it is, in the pixel font. It
+// reads the World the canvas draws, so the words never disagree with the picture; the snapshot only dates a monument.
+import type { UiSnapshot } from "../../../protocol";
+import type { Pyramid, World } from "../../model";
 import { formatAgo } from "./chronicle";
-import { isSet } from "./crew";
 
-function landedMs(i: UiIntegration): number {
-  const t = i.landedAt === null ? Number.NaN : Date.parse(i.landedAt);
-  return Number.isFinite(t) ? t : -Infinity;
+const CAPSTONE: Readonly<Record<Pyramid["capstone"]["state"], string>> = {
+  none: "",
+  waiting: "capstone waiting",
+  hoisting: "capstone rising",
+  set: "capstone set",
+};
+
+/** What the caption depends on in the World: when it changes, the caption is written again. */
+export function captionKey(world: Pick<World, "pyramid">): string {
+  const p = world.pyramid;
+  const lanes = p.blocks.filter((b) => b.lane !== null);
+  const set = lanes.filter((b) => b.look === "set").length;
+  return `${p.monument ?? ""}|${set}/${lanes.length}|${p.capstone.state}|${p.capstone.integration ?? ""}|${p.capstone.flag}`;
 }
 
 /**
  * `UI2 · 3/10 BLOCKS SET · CAPSTONE WAITING · VERIFY ✓` while lanes build; `MONUMENT · UI · 8 BLOCKS · LANDED 11H
- * AGO` while the newest landed integration stands alone; else `THE SITE IS QUIET`.
+ * AGO` while a landed integration stands alone; else `THE SITE IS QUIET`.
  */
-export function sceneCaption(snapshot: UiSnapshot, nowMs: number): string {
-  const fg = foreground(snapshot);
-  if (fg.lanes.length > 0) {
-    const set = fg.lanes.filter(isSet).length;
-    const parts: string[] = [];
-    if (fg.capstone) parts.push(fg.capstone.name);
-    parts.push(`${set}/${fg.lanes.length} blocks set`);
-    if (fg.capstone) {
-      parts.push(fg.capstoneLanded ? "capstone set" : "capstone waiting");
-      parts.push(`verify ${fg.capstone.verify === "passed" ? "✓" : fg.capstone.verify === "failed" ? "✗" : "·"}`);
-    }
-    return parts.join(" · ").toUpperCase();
-  }
-  let monument: UiIntegration | null = null;
-  for (const i of snapshot.integrations) {
-    if (i.landedAt !== null && (monument === null || landedMs(i) >= landedMs(monument))) monument = i;
-  }
-  if (monument) {
-    const at = landedMs(monument);
+export function sceneCaption(snapshot: UiSnapshot, nowMs: number, world: Pick<World, "pyramid">): string {
+  const p = world.pyramid;
+  if (p.monument !== null) {
+    const integration = snapshot.integrations.find((i) => i.name === p.monument);
+    const at = integration?.landedAt ? Date.parse(integration.landedAt) : Number.NaN;
     const ago = Number.isFinite(at) ? ` · landed ${formatAgo(nowMs - at)}` : "";
-    const n = monument.lanes.length;
-    return `monument · ${monument.name} · ${n} ${n === 1 ? "block" : "blocks"}${ago}`.toUpperCase();
+    const n = integration ? integration.lanes.length : p.blocks.filter((b) => b.lane !== null).length;
+    return `monument · ${p.monument} · ${n} ${n === 1 ? "block" : "blocks"}${ago}`.toUpperCase();
   }
-  return "THE SITE IS QUIET";
+  const lanes = p.blocks.filter((b) => b.lane !== null);
+  const cap = p.capstone;
+  if (lanes.length === 0 && cap.state === "none") return "THE SITE IS QUIET";
+  const parts: string[] = [];
+  if (cap.state !== "none" && cap.integration !== null) parts.push(cap.integration);
+  parts.push(`${lanes.filter((b) => b.look === "set").length}/${lanes.length} blocks set`);
+  if (cap.state !== "none") {
+    parts.push(CAPSTONE[cap.state]);
+    parts.push(`verify ${cap.flag === "passed" ? "✓" : cap.flag === "failed" ? "✗" : "·"}`);
+  }
+  return parts.join(" · ").toUpperCase();
 }

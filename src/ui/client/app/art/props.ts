@@ -1,7 +1,7 @@
 // The props of the plain (DESIGN.md §19, the game-studio pass): the camp's tents, fire and resting camel, the quarry,
 // swaying palms, the well, arbab's dais under its canopy, braziers and torches. Each stands on a line, so actors pass
 // in front of and behind it, and casts a shadow; flames are drawn in their own light.
-import { PLACES } from "../../model";
+import { PLACES, PYRAMID_AREA } from "../../model";
 import {
   BRONZE,
   CAMEL,
@@ -517,11 +517,44 @@ const BRAZIERS = [
   { x: 103, y: 259, seed: 1 },
   { x: 129, y: 259, seed: 2 },
 ] as const;
-/** At the site's foot: left of the widest pyramid, and right of the capstone's sledge (clear of the surveyor's spot). */
-const TORCHES = [
-  { x: 150, y: 218, seed: 0 },
-  { x: 422, y: 214, seed: 2 },
-] as const;
+/** Right of the capstone's sledge (clear of the surveyor's spot); the site's own two follow the pyramid's foot. */
+const TORCHES = [{ x: 422, y: 214, seed: 2 }] as const;
+
+export interface Torch {
+  x: number;
+  y: number;
+  seed: number;
+}
+
+/** Bottom-course width of the smallest pyramid (base 4 of 32 px blocks), for a pyramid that has no size yet. */
+const SMALLEST_FOOT = 128;
+const SITE_TORCH_LIGHT = 26;
+
+/**
+ * The two torches that light the site: 7 px out from the bottom course's corners, so the night's work stands in their
+ * light whatever the pyramid's size, the right one kept clear of the sledge and its surveyor.
+ */
+export function siteTorches(pyramid: { base: number; blockW: number }): Torch[] {
+  const width = pyramid.base > 0 && pyramid.blockW > 0 ? pyramid.base * pyramid.blockW : SMALLEST_FOOT;
+  const half = Math.min(PYRAMID_AREA.maxWidth, width) / 2;
+  const y = PYRAMID_AREA.baseY + 6;
+  return [
+    { x: Math.round(PYRAMID_AREA.centerX - half - 7), y, seed: 0 },
+    { x: Math.min(Math.round(PYRAMID_AREA.centerX + half + 7), PLACES.sledge.x - 26), y, seed: 1 },
+  ];
+}
+
+export function torchScenery(t: Torch): Scenery {
+  return { y: t.y, draw: (p, time, light) => drawStand(p, TORCH, t.x, t.y, t.seed, time, light) };
+}
+
+export function torchLight(t: Torch): LightSpot {
+  return { x: t.x, y: t.y - 16, radius: SITE_TORCH_LIGHT, seed: t.seed + 3 };
+}
+
+export function torchShadow(t: Torch): ShadowSpot {
+  return { cx: t.x, y: t.y, rx: 3, ry: 1 };
+}
 
 function drawStand(p: Painter, body: Sprite, x: number, y: number, seed: number, time: number, light: ((color: string) => string) | null): void {
   const pos = at(body, x, y);

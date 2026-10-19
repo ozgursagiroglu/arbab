@@ -12,23 +12,65 @@ import {
   laneElapsedMs,
   parseProblem,
   parseSnapshot,
+  PAGE_GAPS,
   parseToken,
+  sceneSize,
+  stageRoom,
   tooltipLines,
   totalCost,
 } from "./hud";
 
 describe("computeScale", () => {
-  it("is the largest integer that fits the stage width and the window below the header", () => {
-    expect(computeScale(1000, 900, 50)).toBe(2);
-    expect(computeScale(2000, 900, 50)).toBe(3);
-    expect(computeScale(2000, 600, 50)).toBe(2);
-    expect(computeScale(1440, 2000, 0)).toBe(3);
+  it("is floor(min(w / 480, h / 270) × dpr) / dpr: whole device pixels per art pixel", () => {
+    expect(computeScale(1000, 850, 1)).toBe(2);
+    expect(computeScale(2000, 850, 1)).toBe(3);
+    expect(computeScale(2000, 550, 1)).toBe(2);
+    expect(computeScale(1440, 2000, 1)).toBe(3);
+    // A dpr-2 screen gets the half steps: 2.5× CSS is 5× device.
+    expect(computeScale(1200, 2000, 2)).toBe(2.5);
+    expect(computeScale(1199, 2000, 2)).toBe(2);
+    expect(computeScale(1000, 850, 2)).toBe(2);
+    expect(computeScale(1120, 2000, 3)).toBe(7 / 3);
   });
 
-  it("is at least 1", () => {
-    expect(computeScale(100, 100, 50)).toBe(1);
-    expect(computeScale(0, 0, 0)).toBe(1);
-    expect(computeScale(Number.NaN, 900, 0)).toBe(1);
+  it("is below 1 on a narrow stage, 0 when nothing fits, and reads a bad dpr as 1", () => {
+    expect(computeScale(400, 900, 1)).toBe(0);
+    expect(computeScale(400, 900, 2)).toBe(0.5);
+    expect(computeScale(0, 0, 1)).toBe(0);
+    expect(computeScale(Number.NaN, 900, 1)).toBe(0);
+    expect(computeScale(1000, 850, Number.NaN)).toBe(2);
+    expect(computeScale(1000, 850, 0)).toBe(2);
+  });
+});
+
+describe("sceneSize", () => {
+  it("is a fixed size at 1× and up", () => {
+    expect(sceneSize(1000, 850, 1)).toEqual({ fluid: false, scale: 2, width: 960, height: 540 });
+    expect(sceneSize(1200, 2000, 2)).toEqual({ fluid: false, scale: 2.5, width: 1200, height: 675 });
+  });
+
+  it("takes the stage's width below 1× on a narrow stage, and keeps 1× on a wide but short one", () => {
+    expect(sceneSize(380, 900, 2)).toEqual({ fluid: true });
+    expect(sceneSize(380, 900, 1)).toEqual({ fluid: true });
+    expect(sceneSize(1200, 200, 1)).toEqual({ fluid: false, scale: 1, width: 480, height: 270 });
+    expect(sceneSize(Number.NaN, 900, 1)).toEqual({ fluid: true });
+  });
+});
+
+describe("stageRoom", () => {
+  it("leaves the stage the viewport less the top bar, the KPI row, the card's chrome and the page's gaps", () => {
+    expect(stageRoom(900, 56, 100, 120)).toBe(900 - 56 - 100 - 120 - PAGE_GAPS);
+    expect(stageRoom(100, 56, 100, 120)).toBe(0);
+    expect(stageRoom(Number.NaN, 56, 100, 120)).toBe(0);
+  });
+
+  it("reaches 3× at 1920 × 1080 (dpr 1) with the trimmed layout: a 1452-px stage, a one-row KPI strip, lean chrome", () => {
+    // The top bar 56; KPI cards 44 + 2 × 8 padding + 2 × 4 margins; the card: 2 × 8 padding, a 44-px title bar, a 33-px caption.
+    const room = stageRoom(1080, 56, 68, 93);
+    expect(room).toBeGreaterThanOrEqual(810);
+    expect(computeScale(1452, room, 1)).toBe(3);
+    // 1440 × 900: 2×.
+    expect(computeScale(1012, stageRoom(900, 56, 68, 93), 1)).toBe(2);
   });
 });
 

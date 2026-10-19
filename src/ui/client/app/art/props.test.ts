@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { ARBAB_BOX, CAMP, HEIGHT, PLACES, WIDTH } from "../../model";
+import { ARBAB_BOX, CAMP, HEIGHT, PLACES, PYRAMID_AREA, WIDTH } from "../../model";
+import { pyramidLayout } from "../../scene/layout";
 import type { Canvas2D } from "../browser";
 import { CANOPY, FIRE } from "../palette";
 import { painter } from "./paint";
@@ -20,6 +21,10 @@ import {
   smokePuffs,
   SMOKE_LOOP,
   SWAY_PERIOD,
+  siteTorches,
+  torchLight,
+  torchScenery,
+  torchShadow,
 } from "./props";
 
 interface Op {
@@ -159,12 +164,34 @@ describe("the props on the plain", () => {
   it("give every prop a shadow and every fire a pool of 18–26 px", () => {
     expect(PROP_SHADOWS.length).toBeGreaterThan(12);
     for (const s of PROP_SHADOWS) expect(s.rx).toBeGreaterThan(0);
-    // The camp fire, two braziers and two torches.
-    expect(LIGHTS).toHaveLength(5);
-    for (const l of LIGHTS) {
+    // The camp fire, two braziers and the sledge's torch; the site's two follow the pyramid.
+    expect(LIGHTS).toHaveLength(4);
+    for (const l of [...LIGHTS, ...siteTorches({ base: 4, blockW: 32 }).map(torchLight)]) {
       expect(l.radius).toBeGreaterThanOrEqual(18);
       expect(l.radius).toBeLessThanOrEqual(26);
     }
+  });
+
+  it("stand the site's torches just outside the bottom course, clear of the sledge, at any size", () => {
+    for (const lanes of [1, 8, 30, 300]) {
+      const l = pyramidLayout(lanes);
+      const half = (l.base * l.blockW) / 2;
+      const [left, right] = siteTorches(l);
+      expect(left?.x).toBeLessThan(PYRAMID_AREA.centerX - half);
+      expect(left?.x).toBeGreaterThan(PYRAMID_AREA.centerX - half - 12);
+      expect(right?.x).toBeGreaterThan(PYRAMID_AREA.centerX + half);
+      expect(right?.x).toBeLessThanOrEqual(PLACES.sledge.x - 26);
+      for (const t of [left, right]) expect(t?.y).toBeGreaterThan(PYRAMID_AREA.baseY);
+      // Their light reaches the bottom course's corner blocks.
+      const light = left ? torchLight(left) : null;
+      expect((light?.x ?? 0) + (light?.radius ?? 0)).toBeGreaterThan(PYRAMID_AREA.centerX - half + l.blockW / 2);
+    }
+    // A pyramid with no size yet: the smallest one's foot.
+    expect(siteTorches({ base: 0, blockW: 0 })).toEqual(siteTorches({ base: 4, blockW: 32 }));
+    const t = siteTorches({ base: 4, blockW: 32 })[0];
+    if (!t) throw new Error("no torch");
+    expect(torchShadow(t)).toMatchObject({ cx: t.x, y: t.y });
+    expect(torchScenery(t).y).toBe(t.y);
   });
 
   it("changes with the clock: flames, smoke, palms and banners", () => {

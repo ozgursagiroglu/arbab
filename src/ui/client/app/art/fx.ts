@@ -152,12 +152,18 @@ export function drawVignette(p: Painter, phase: Phase): void {
 // ---------------------------------------------------------------------------------------------------------------
 // The capstone's beam
 
-/** Gold light falling from the top of the canvas onto the capstone, with a few rays, while its glow lasts. */
+/** How far above the capstone's base its tip stands: the beam ends there. */
+const CAPSTONE_TIP = 6;
+
+/**
+ * Gold light falling from the top of the canvas onto the capstone's tip, with a few rays, while its glow lasts. The
+ * caller draws the capstone again over it, so the light haloes the stone instead of washing it out.
+ */
 export function drawGlowBeam(p: Painter, cap: Capstone, apex: { x: number; y: number }): void {
   const glow = Number.isFinite(cap.glow) ? Math.min(1, cap.glow) : 0;
   if (!(glow > 0) || cap.state === "none") return;
   const cx = Math.round(cap.state === "set" ? apex.x : cap.x);
-  const foot = Math.round(cap.state === "set" ? apex.y : cap.y) - 3;
+  const foot = Math.round(cap.state === "set" ? apex.y : cap.y) - CAPSTONE_TIP;
   const a = glow * 0.5;
   p.alpha(a);
   // Ten pixels wide: a gold sheath, a pale core, a white heart, dithered at its edges.

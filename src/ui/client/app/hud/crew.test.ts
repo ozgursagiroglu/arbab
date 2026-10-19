@@ -2,7 +2,20 @@ import { describe, expect, it } from "vitest";
 import { fillFor } from "../../scene/scene";
 import { lane, snapshot } from "../fixtures";
 import { createSpriteSet } from "../sprites";
-import { AVATAR, avatarPose, blockFill, createAvatar, crewOrder, crewTitle, drawSprite, mountCrew, recentlyFinished } from "./crew";
+import {
+  AVATAR,
+  AVATAR_ARBAB,
+  avatarPose,
+  blockFill,
+  createAvatar,
+  crewOrder,
+  crewTitle,
+  drawAvatar,
+  drawSprite,
+  moreBelow,
+  mountCrew,
+  recentlyFinished,
+} from "./crew";
 import type { FakeElement } from "./fake-dom";
 import { FakeCanvas, fakeDocument } from "./fake-dom";
 
@@ -45,6 +58,17 @@ describe("avatarPose", () => {
   });
 });
 
+describe("moreBelow", () => {
+  it("is true while a scroll container holds more below what it shows", () => {
+    expect(moreBelow({ scrollHeight: 900, clientHeight: 300, scrollTop: 0 })).toBe(true);
+    expect(moreBelow({ scrollHeight: 900, clientHeight: 300, scrollTop: 598 })).toBe(true);
+    expect(moreBelow({ scrollHeight: 900, clientHeight: 300, scrollTop: 599.5 })).toBe(false);
+    expect(moreBelow({ scrollHeight: 300, clientHeight: 300, scrollTop: 0 })).toBe(false);
+    expect(moreBelow({})).toBe(false);
+    expect(moreBelow({ scrollHeight: Number.NaN, clientHeight: 300, scrollTop: 0 })).toBe(false);
+  });
+});
+
 describe("blockFill and crewTitle", () => {
   it("is the scene's fill for the calls, and full for a set block", () => {
     expect(blockFill(lane({ name: "a", toolCalls: 93 }))).toBe(fillFor(93));
@@ -77,6 +101,26 @@ describe("drawSprite and createAvatar", () => {
     expect(drawSprite(new FakeCanvas(), sleep, AVATAR.w, AVATAR.h, AVATAR.scale, 2)).toBe(2);
   });
 
+  it("lays a sleeper on the bottom edge at 2× with the zzz above it; other poses draw the sprite alone", () => {
+    const sleep = sprites.frames("laborer", "sleep", 0, false)[0];
+    const sit = sprites.frames("laborer", "sit", 0, false)[0];
+    if (!sleep || !sit) throw new Error("no sprite");
+    const canvas = new FakeCanvas();
+    canvas.width = AVATAR.w * 2;
+    canvas.height = AVATAR.h * 2;
+    expect(drawAvatar(canvas, sleep, "sleep", 2)).toBe(2);
+    expect(Math.max(...canvas.fills.map((f) => f.y + f.h))).toBe(AVATAR.h * 2);
+    expect(canvas.fills.length).toBeGreaterThan(sleep.runs.length);
+    // The zzz floats above the lying figure, inside the canvas.
+    const figureTop = (AVATAR.h - (sleep.h - sleep.top) * 2) * 2;
+    const above = canvas.fills.filter((f) => f.y + f.h <= figureTop);
+    expect(above.length).toBeGreaterThan(5);
+    for (const f of canvas.fills) expect(f.x >= 0 && f.y >= 0 && f.x + f.w <= AVATAR.w * 2).toBe(true);
+    const plain = new FakeCanvas();
+    drawAvatar(plain, sit, "sit", 1);
+    expect(plain.fills).toHaveLength(sit.runs.length);
+  });
+
   it("tints the tile with the cast and redraws only when the look changes", () => {
     const avatar = createAvatar(fakeDocument(), sprites, 1);
     const tile = avatar.el as FakeElement;
@@ -107,14 +151,20 @@ function crewPage() {
 }
 
 describe("mountCrew", () => {
-  it("shows the sleeping worker and what to run when the site is quiet", () => {
+  it("shows arbab waiting and what to run when the site is quiet", () => {
     const { els, panel } = crewPage();
     panel.update(snapshot(), 0);
     expect(els.empty.hidden).toBe(false);
     expect(els.empty.text()).toContain("The site is quiet.");
     expect(els.empty.text()).toContain("arbab launch");
     expect(els.empty.text()).toContain("arbab plan next");
-    expect(els.empty.find("tile")[0]?.className).toBe("tile cast-laborer");
+    const tile = els.empty.find("tile")[0];
+    expect(tile?.className).toBe("tile tile-arbab");
+    // arbab's idle sprite at 3×: every fill a multiple of 3 px tall.
+    const canvas = tile?.children[0] as FakeCanvas;
+    expect([canvas.width, canvas.height]).toEqual([AVATAR_ARBAB.w, AVATAR_ARBAB.h]);
+    expect(canvas.fills.length).toBeGreaterThan(20);
+    expect(canvas.fills.every((f) => f.h === 3)).toBe(true);
     expect(els.recentGroup.hidden).toBe(true);
     expect(els.title.text()).toBe("CREW · 0 AT WORK");
   });

@@ -8,7 +8,7 @@ import { formatUsd, laneElapsedMs } from "../hud";
 import { make, reorder } from "./dom";
 import type { PixelText } from "./pixel-text";
 import { createPixelText } from "./pixel-text";
-import { BADGE_INK, badgeOf, TOKENS } from "./tokens";
+import { BADGE_INK, badgeColors, badgeOf, TOKENS } from "./tokens";
 
 export type LedgerKey = "lane" | "role" | "state" | "attempt" | "calls" | "lastTool" | "elapsed" | "cost";
 export type SortDir = "ascending" | "descending";
@@ -184,7 +184,7 @@ export function mountLedger(
       if (column.key === "state") {
         const { tone, label } = badgeOf(r.lane);
         r.badge.el.className = `pxt badge tone-${tone}`;
-        r.badge.set(label, BADGE_INK);
+        r.badge.set(label, badgeColors(tone).ink);
         return;
       }
       const cell = r.cells[i];

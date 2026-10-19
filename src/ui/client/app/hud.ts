@@ -8,7 +8,10 @@ import { HEIGHT, WIDTH } from "../model";
 
 const UNKNOWN = "—";
 
-/** The largest integer scale that fits the stage's width and the window below the header; at least 1. */
+/**
+ * The largest integer scale that fits the stage's width and the window below the header; at least 1. Full screen, it
+ * is the stage's own size with no header.
+ */
 export function computeScale(stageWidth: number, windowHeight: number, headerHeight: number): number {
   const byWidth = Math.floor(stageWidth / WIDTH);
   const byHeight = Math.floor((windowHeight - headerHeight) / HEIGHT);
@@ -133,24 +136,29 @@ export function totalCost(lanes: readonly UiLane[]): number {
 }
 
 export interface Header {
-  title: string;
+  project: string;
+  version: string;
+  /** The text equivalent of the KPI row and the gauges, for the document title and tests. */
   counts: string;
   cost: string;
   quota: string;
   held: boolean;
-  hidden: string;
+  /** `Read-only · arbab 0.2.0 · 3 older lanes not shown` */
+  footer: string;
 }
 
 export function header(snapshot: UiSnapshot): Header {
   const nowMs = Date.parse(snapshot.now);
   const nowSec = Number.isNaN(nowMs) ? 0 : nowMs / 1000;
+  const hidden = snapshot.hiddenLanes > 0 ? ` · ${snapshot.hiddenLanes} older ${snapshot.hiddenLanes === 1 ? "lane" : "lanes"} not shown` : "";
   return {
-    title: `${snapshot.project} · ${snapshot.version}`,
+    project: snapshot.project,
+    version: `v${snapshot.version}`,
     counts: formatCounts(laneCounts(snapshot.lanes)),
     cost: formatUsd(totalCost(snapshot.lanes)),
     quota: formatWindows(snapshot.quota.fiveHour, snapshot.quota.sevenDay, nowSec),
     held: snapshot.quota.hold.hold === true,
-    hidden: snapshot.hiddenLanes > 0 ? `${snapshot.hiddenLanes} older lanes are not shown.` : "",
+    footer: `Read-only · arbab ${snapshot.version}${hidden}`,
   };
 }
 
@@ -192,16 +200,6 @@ export function tooltipLines(lane: UiLane, clientNowMs: number, offsetMs: number
   if (lane.hold) lines.push(`held for ${lane.hold === "quota" ? "the quota" : "a free slot"}`);
   if (lane.reason) lines.push(lane.reason);
   return lines;
-}
-
-/** One row of the lanes table: lane, role, state, end state, attempt, calls, cost. */
-export function tableRow(lane: UiLane): string[] {
-  return [lane.name, lane.role, lane.state, lane.endState ?? UNKNOWN, String(lane.attempt), String(lane.toolCalls), formatUsd(lane.costUsd)];
-}
-
-/** The lanes in the crew list: every lane not finished. */
-export function crew(snapshot: UiSnapshot): UiLane[] {
-  return snapshot.lanes.filter((lane) => lane.state !== "finished");
 }
 
 const STARTED = new Set(["preparing", "running"]);

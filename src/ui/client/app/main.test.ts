@@ -1,84 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import type { Canvas2D, ElementLike, EventLike, EventSourceLike, MessageEventLike, PageEnv, StyleLike } from "./browser";
-import { lane, snapshot } from "./fixtures";
-import { CLOSED_MESSAGE, NO_TOKEN_MESSAGE, startPage } from "./main";
+import type { EventSourceLike, FetchLike, MessageEventLike, PageEnv } from "./browser";
+import { integration, lane, snapshot } from "./fixtures";
+import type { FakeCanvas, FakeDocument, FakeElement } from "./hud/fake-dom";
+import { fakeDocument } from "./hud/fake-dom";
+import { CLOSED_MESSAGE, NO_TOKEN_MESSAGE, NOT_RUNNING_MESSAGE, startPage, TOO_MANY_MESSAGE } from "./main";
 import { PAGE_IDS } from "./page";
-
-type Listener = (event: EventLike) => void;
-
-class FakeElement implements ElementLike {
-  textContent: string | null = "";
-  hidden = false;
-  className = "";
-  readonly style: StyleLike = { width: "", height: "", left: "", top: "" };
-  readonly attributes = new Map<string, string>();
-  children: FakeElement[] = [];
-  parent: FakeElement | null = null;
-  rect = { left: 0, top: 0, width: 0, height: 0 };
-  private readonly listeners = new Map<string, Listener[]>();
-
-  constructor(readonly tag: string) {}
-
-  // Text goes in through textContent only: anything else is a test failure.
-  set innerHTML(_value: string) {
-    throw new Error("innerHTML used");
-  }
-
-  setAttribute(name: string, value: string): void {
-    this.attributes.set(name, value);
-  }
-  appendChild(child: ElementLike): unknown {
-    const c = child as FakeElement;
-    c.remove();
-    c.parent = this;
-    this.children.push(c);
-    return c;
-  }
-  replaceChildren(...children: ElementLike[]): void {
-    for (const c of this.children) c.parent = null;
-    this.children = [];
-    for (const c of children) this.appendChild(c);
-  }
-  remove(): void {
-    if (this.parent) this.parent.children = this.parent.children.filter((c) => c !== this);
-    this.parent = null;
-  }
-  addEventListener(type: string, listener: Listener): void {
-    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-  }
-  dispatch(type: string, event: Partial<EventLike> = {}): void {
-    for (const l of this.listeners.get(type) ?? []) l({ type, ...event });
-  }
-  getBoundingClientRect() {
-    return this.rect;
-  }
-  text(): string {
-    return (this.textContent ?? "") + this.children.map((c) => c.text()).join(" ");
-  }
-}
-
-class FakeCanvas extends FakeElement {
-  width = 0;
-  height = 0;
-  rects = 0;
-  readonly ctx: Canvas2D;
-  constructor() {
-    super("canvas");
-    const self = this;
-    this.ctx = {
-      fillStyle: "#000000",
-      globalAlpha: 1,
-      imageSmoothingEnabled: true,
-      fillRect() {
-        self.rects++;
-      },
-      clearRect() {},
-    };
-  }
-  getContext(): Canvas2D {
-    return this.ctx;
-  }
-}
 
 class FakeEventSource implements EventSourceLike {
   static last: FakeEventSource | null = null;
@@ -104,45 +30,56 @@ interface Page {
   el: (id: string) => FakeElement;
   canvas: FakeCanvas;
   frames: ((time: number) => void)[];
-  doc: FakeElement;
+  doc: FakeDocument;
   window: FakeElement & { innerWidth: number; innerHeight: number };
+  fetched: string[];
+  clock: { now: number };
 }
 
-function page(hash = "#token=00112233445566778899aabbccddeeff"): Page {
-  const els = new Map<string, FakeElement>();
-  const canvas = new FakeCanvas();
-  for (const id of Object.values(PAGE_IDS)) els.set(id, id === PAGE_IDS.canvas ? canvas : new FakeElement("div"));
-  const stage = els.get(PAGE_IDS.stage);
-  if (stage) stage.rect = { left: 0, top: 0, width: 1000, height: 600 };
-  const top = els.get(PAGE_IDS.header);
-  if (top) top.rect = { left: 0, top: 0, width: 1000, height: 50 };
+const CANVAS_IDS = [PAGE_IDS.canvas, PAGE_IDS.logo, PAGE_IDS.titleCardLogo];
+
+function page(hash = "#token=00112233445566778899aabbccddeeff", fetch: FetchLike | null = null): Page {
+  const doc = fakeDocument(Object.values(PAGE_IDS), CANVAS_IDS);
+  const el = (id: string): FakeElement => {
+    const e = doc.byId.get(id);
+    if (!e) throw new Error(`no #${id}`);
+    return e;
+  };
+  const canvas = el(PAGE_IDS.canvas) as FakeCanvas;
+  el(PAGE_IDS.stage).rect = { left: 0, top: 0, width: 1000, height: 600 };
+  el(PAGE_IDS.header).rect = { left: 0, top: 0, width: 1000, height: 50 };
   canvas.rect = { left: 0, top: 0, width: 960, height: 540 };
-  const doc = new FakeElement("document");
-  const win = Object.assign(new FakeElement("window"), { innerWidth: 1200, innerHeight: 900 });
+  const win = Object.assign(fakeDocument().root, { innerWidth: 1200, innerHeight: 900 });
   const frames: ((time: number) => void)[] = [];
+  const fetched: string[] = [];
+  const clock = { now: Date.parse("2026-10-19T10:05:00.000Z") };
   const env: PageEnv = {
-    document: {
-      getElementById: (id) => els.get(id) ?? null,
-      createElement: (tag) => new FakeElement(tag),
-      addEventListener: (type, listener) => doc.addEventListener(type, listener),
-    },
+    document: doc,
     window: win,
     location: { hash },
     EventSource: FakeEventSource,
+    fetch: fetch
+      ? (url) => {
+          fetched.push(url);
+          return fetch(url);
+        }
+      : null,
     AudioContext: null,
     storage: () => null,
     matchMedia: () => ({ matches: false }),
     requestAnimationFrame: (callback) => frames.push(callback),
     devicePixelRatio: 1,
-    now: () => Date.parse("2026-10-19T10:05:00.000Z"),
+    now: () => clock.now,
   };
-  const el = (id: string): FakeElement => {
-    const e = els.get(id);
-    if (!e) throw new Error(`no #${id}`);
-    return e;
-  };
-  return { env, el, canvas, frames, doc, window: win };
+  return { env, el, canvas, frames, doc, window: win, fetched, clock };
 }
+
+function emit(s: unknown): void {
+  FakeEventSource.last?.emit("snapshot", JSON.stringify(s));
+}
+
+/** Lets settled promises run their callbacks. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 beforeEach(() => {
   FakeEventSource.last = null;
@@ -154,6 +91,7 @@ describe("startPage", () => {
     expect(startPage(p.env)).toBeNull();
     expect(p.el(PAGE_IDS.notice).textContent).toBe(NO_TOKEN_MESSAGE);
     expect(p.el(PAGE_IDS.notice).hidden).toBe(false);
+    expect(p.el(PAGE_IDS.connection).text()).toBe("OFFLINE");
     expect(FakeEventSource.last).toBeNull();
     expect(p.frames).toHaveLength(0);
   });
@@ -172,43 +110,124 @@ describe("startPage", () => {
     expect(FakeEventSource.last?.closed).toBe(true);
   });
 
-  it("puts a snapshot into the header, the crew list and the table", () => {
+  it("draws the logo, the wordmark and the titles in pixels, with their text beside them", () => {
+    const p = page();
+    startPage(p.env);
+    expect((p.el(PAGE_IDS.logo) as FakeCanvas).fills.length).toBeGreaterThan(10);
+    expect(p.el(PAGE_IDS.logo).style.width).toBe("32px");
+    expect(p.el(PAGE_IDS.title).text()).toBe("ARBAB");
+    expect(p.el(PAGE_IDS.siteTitle).text()).toBe("THE SITE");
+    expect(p.el(PAGE_IDS.crewTitle).text()).toBe("CREW");
+    expect(p.el(PAGE_IDS.ledgerTitle).text()).toBe("LEDGER");
+    expect(p.el(PAGE_IDS.kpis).children).toHaveLength(5);
+    expect(p.el(PAGE_IDS.connection).text()).toBe("CONNECTING");
+  });
+
+  it("puts a snapshot into the top bar, the KPIs, the crew, the ledger, the monument and the chronicle", () => {
     const p = page();
     startPage(p.env);
     const s = snapshot({
       lanes: [
-        lane({ name: "ui-art", costUsd: 1.5 }),
+        lane({ name: "ui-art", costUsd: 1.5, toolCalls: 40 }),
         lane({ name: "ui-scene", role: "verifier", state: "held", hold: "quota" }),
-        lane({ name: "old", state: "finished", endState: "success", costUsd: 0.25 }),
+        lane({ name: "old", state: "finished", endState: "success", costUsd: 0.25, since: "2026-10-19T09:00:00.000Z" }),
       ],
+      integrations: [integration({ name: "int-1", lanes: ["old"], verify: "passed", headSha: "abcdef0123456789" })],
       quota: { ...snapshot().quota, hold: { hold: true, reason: "quota", until: null } },
+      hiddenLanes: 2,
     });
-    FakeEventSource.last?.emit("snapshot", JSON.stringify(s));
-    expect(p.el(PAGE_IDS.title).textContent).toBe("demo · 0.2.0");
-    expect(p.el(PAGE_IDS.counts).textContent).toBe("1 running · 1 waiting · ✓ 1");
-    expect(p.el(PAGE_IDS.cost).textContent).toBe("$1.75");
+    emit(s);
+    expect(p.el(PAGE_IDS.project).textContent).toBe("demo");
+    expect(p.el(PAGE_IDS.version).textContent).toBe("v0.2.0");
     expect(p.el(PAGE_IDS.held).hidden).toBe(false);
-    expect(p.el(PAGE_IDS.connection).textContent).toBe("live");
+    expect(p.el(PAGE_IDS.connection).text()).toBe("LIVE");
+    expect(p.el(PAGE_IDS.connection).attributes.get("data-state")).toBe("live");
+    expect(p.el(PAGE_IDS.footer).textContent).toBe("Read-only · arbab 0.2.0 · 2 older lanes not shown");
+    expect(p.el(PAGE_IDS.titleCard).className).toBe("title-card gone");
+    // The crew: lanes at work, running before held.
     const crew = p.el(PAGE_IDS.crew).children;
-    expect(crew.map((li) => li.text())).toEqual([expect.stringContaining("ui-art"), expect.stringContaining("ui-scene")]);
-    expect(crew[1]?.children[0]?.children[0]?.className).toBe("chip cast-mason");
+    expect(crew.map((li) => li.find("name")[0]?.textContent)).toEqual(["ui-art", "ui-scene"]);
+    expect(crew[1]?.find("tile")[0]?.className).toBe("tile cast-mason");
+    expect(p.el(PAGE_IDS.crewTitle).text()).toBe("CREW · 1 AT WORK");
+    expect(p.el(PAGE_IDS.crewEmpty).hidden).toBe(true);
+    expect(p.el(PAGE_IDS.recentGroup).hidden).toBe(false);
+    expect(p.el(PAGE_IDS.recent).children).toHaveLength(1);
+    // The ledger has every lane.
     expect(p.el(PAGE_IDS.table).children).toHaveLength(3);
-    expect(p.el(PAGE_IDS.table).children[2]?.text()).toContain("success");
+    expect(p.el(PAGE_IDS.table).text()).toContain("✓ DONE");
+    expect(p.el(PAGE_IDS.monument).text()).toContain("int-1 abcdef0");
+    expect(p.el(PAGE_IDS.chronicle).children).toHaveLength(3);
+    expect(p.el(PAGE_IDS.chronicle).text()).toContain("old finished: success · $0.25");
+    expect(p.el(PAGE_IDS.chronicleEmpty).hidden).toBe(true);
+    expect(p.el(PAGE_IDS.caption).text()).toBe("INT-1 · 1/3 BLOCKS SET · CAPSTONE WAITING · VERIFY ✓");
+    expect(p.el(PAGE_IDS.gauge5h).text()).toBe("5H —");
   });
 
-  it("keeps a crew button across snapshots and announces changes politely", () => {
+  it("counts the KPI numbers up over 0.6 s", () => {
     const p = page();
     startPage(p.env);
-    const es = FakeEventSource.last;
-    es?.emit("snapshot", JSON.stringify(snapshot({ lanes: [lane({ name: "a", state: "queued" })] })));
+    emit(snapshot({ lanes: ["a", "b", "c", "d"].map((name) => lane({ name })) }));
+    const atWork = p.el(PAGE_IDS.kpis).children[0];
+    const number = (): string => atWork?.find("kpi-number")[0]?.text() ?? "";
+    expect(number()).toBe("0");
+    p.clock.now += 100;
+    p.frames[0]?.(16);
+    expect(Number(number())).toBeGreaterThan(0);
+    expect(Number(number())).toBeLessThan(4);
+    p.clock.now += 500;
+    p.frames[1]?.(32);
+    expect(number()).toBe("4");
+  });
+
+  it("keeps a focused crew card in place while the crew around it changes", () => {
+    const p = page();
+    startPage(p.env);
+    emit(snapshot({ lanes: [lane({ name: "a", state: "queued" }), lane({ name: "b", state: "queued" }), lane({ name: "c", state: "queued" })] }));
+    const list = p.el(PAGE_IDS.crew);
+    const cardOf = (name: string): FakeElement | undefined => list.children.find((li) => li.find("name")[0]?.textContent === name);
+    const a = cardOf("a");
+    if (!a) throw new Error("no card a");
+    a.children[0]?.dispatch("focus");
+    const before = a.insertions;
+    // a is orphaned (it sorts last), c starts running (first), d joins: everything moves around a, never a itself.
+    emit(
+      snapshot({
+        lanes: [
+          lane({ name: "a", state: "orphaned" }),
+          lane({ name: "b", state: "queued" }),
+          lane({ name: "c", state: "running" }),
+          lane({ name: "d", state: "queued" }),
+        ],
+      }),
+    );
+    expect(list.children.map((li) => li.find("name")[0]?.textContent)).toEqual(["c", "b", "d", "a"]);
+    expect(cardOf("a")).toBe(a);
+    expect(a.insertions).toBe(before);
+    expect(p.el(PAGE_IDS.tooltip).hidden).toBe(false);
+    // b leaves: nothing else moves.
+    const c = cardOf("c");
+    const cBefore = c?.insertions;
+    emit(snapshot({ lanes: [lane({ name: "a", state: "orphaned" }), lane({ name: "c", state: "running" }), lane({ name: "d", state: "queued" })] }));
+    expect(list.children.map((li) => li.find("name")[0]?.textContent)).toEqual(["c", "d", "a"]);
+    expect(c?.insertions).toBe(cBefore);
+    expect(a.insertions).toBe(before);
+  });
+
+  it("keeps crew cards across snapshots and announces changes politely", () => {
+    const p = page();
+    startPage(p.env);
+    emit(snapshot({ lanes: [lane({ name: "a", state: "queued" })] }));
     const first = p.el(PAGE_IDS.crew).children[0];
     expect(p.el(PAGE_IDS.live).textContent).toBe("");
-    es?.emit("snapshot", JSON.stringify(snapshot({ lanes: [lane({ name: "a", state: "running" })] })));
+    emit(snapshot({ lanes: [lane({ name: "a", state: "running" })] }));
     expect(p.el(PAGE_IDS.crew).children[0]).toBe(first);
     expect(p.el(PAGE_IDS.live).textContent).toBe("a started");
-    es?.emit("snapshot", JSON.stringify(snapshot({ lanes: [lane({ name: "a", state: "finished", endState: "failed" })] })));
+    emit(snapshot({ lanes: [lane({ name: "a", state: "finished", endState: "failed" })] }));
     expect(p.el(PAGE_IDS.crew).children).toHaveLength(0);
+    expect(p.el(PAGE_IDS.crewEmpty).hidden).toBe(false);
+    expect(p.el(PAGE_IDS.crewEmpty).text()).toContain("The site is quiet.");
     expect(p.el(PAGE_IDS.live).textContent).toBe("a finished: failed");
+    expect(p.el(PAGE_IDS.chronicle).children[0]?.text()).toContain("a finished: failed");
   });
 
   it("shows problems, other protocols and reconnects in the page", () => {
@@ -221,12 +240,12 @@ describe("startPage", () => {
     es?.emit("snapshot", JSON.stringify({ ...snapshot(), protocol: 9 }));
     expect(p.el(PAGE_IDS.banner).textContent).toMatch(/protocol 1 and the server speaks 9/);
     es?.emit("error");
-    expect(p.el(PAGE_IDS.connection).textContent).toBe("reconnecting");
+    expect(p.el(PAGE_IDS.connection).text()).toBe("RECONNECTING");
     es?.emit("snapshot", JSON.stringify(snapshot()));
     expect(p.el(PAGE_IDS.banner).hidden).toBe(true);
   });
 
-  it("says reconnecting while the stream retries, and that the session ended once it is closed", () => {
+  it("says reconnecting while the stream retries", () => {
     const p = page();
     startPage(p.env);
     const es = FakeEventSource.last;
@@ -236,21 +255,57 @@ describe("startPage", () => {
     notice.hidden = true;
     es.readyState = 1;
     es.emit("open");
-    expect(connection.textContent).toBe("live");
-    // CONNECTING: EventSource retries by itself.
+    expect(connection.text()).toBe("LIVE");
     es.readyState = 0;
     es.emit("error");
-    expect(connection.textContent).toBe("reconnecting");
+    expect(connection.text()).toBe("RECONNECTING");
     expect(connection.attributes.get("data-state")).toBe("lost");
     expect(notice.hidden).toBe(true);
-    // CLOSED: it gave up, as when the server refused the token of a session that restarted.
-    es.readyState = 2;
-    es.emit("error");
-    expect(connection.textContent).toBe("disconnected");
-    expect(connection.attributes.get("data-state")).toBe("closed");
-    expect(notice.hidden).toBe(false);
-    expect(notice.textContent).toBe(CLOSED_MESSAGE);
-    expect(CLOSED_MESSAGE).toBe("This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.");
+  });
+
+  describe("a closed stream asks the snapshot route why", () => {
+    const close = async (fetch: FetchLike | null): Promise<Page> => {
+      const p = page("#token=deadbeefdeadbeef", fetch);
+      startPage(p.env);
+      const es = FakeEventSource.last;
+      if (!es) throw new Error("no event source");
+      p.el(PAGE_IDS.notice).hidden = true;
+      es.readyState = 2;
+      es.emit("error");
+      expect(p.el(PAGE_IDS.connection).text()).toBe("OFFLINE");
+      expect(p.el(PAGE_IDS.connection).attributes.get("data-state")).toBe("closed");
+      await settle();
+      return p;
+    };
+
+    it("200: the server is up and the token good, so this tab is one too many", async () => {
+      const p = await close(() => Promise.resolve({ status: 200 }));
+      expect(p.fetched).toEqual(["/snapshot.json?token=deadbeefdeadbeef"]);
+      expect(p.el(PAGE_IDS.notice).hidden).toBe(false);
+      expect(p.el(PAGE_IDS.notice).textContent).toBe(TOO_MANY_MESSAGE);
+      expect(TOO_MANY_MESSAGE).toBe("This page is one too many: arbab ui serves 16 at once. Close another of its tabs and reload.");
+    });
+
+    it("401: the session ended or restarted", async () => {
+      const p = await close(() => Promise.resolve({ status: 401 }));
+      expect(p.el(PAGE_IDS.notice).textContent).toBe(CLOSED_MESSAGE);
+      expect(CLOSED_MESSAGE).toBe("This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.");
+    });
+
+    it("a failed fetch: arbab ui is not running", async () => {
+      const p = await close(() => Promise.reject(new TypeError("Failed to fetch")));
+      expect(p.el(PAGE_IDS.notice).textContent).toBe(NOT_RUNNING_MESSAGE);
+      expect(NOT_RUNNING_MESSAGE).toBe("arbab ui is not running.");
+    });
+
+    it("a fetch that throws, or none at all", async () => {
+      const thrown = await close(() => {
+        throw new Error("blocked");
+      });
+      expect(thrown.el(PAGE_IDS.notice).textContent).toBe(NOT_RUNNING_MESSAGE);
+      const none = await close(null);
+      expect(none.el(PAGE_IDS.notice).textContent).toBe(CLOSED_MESSAGE);
+    });
   });
 
   it("draws every animation frame and asks for the next", () => {
@@ -258,7 +313,7 @@ describe("startPage", () => {
     startPage(p.env);
     expect(p.frames).toHaveLength(1);
     p.frames[0]?.(16);
-    expect(p.canvas.rects).toBeGreaterThan(100);
+    expect(p.canvas.fills.length).toBeGreaterThan(100);
     expect(p.canvas.width).toBe(480);
     expect(p.canvas.height).toBe(270);
     expect(p.frames).toHaveLength(2);
@@ -274,6 +329,47 @@ describe("startPage", () => {
     expect(p.canvas.style.width).toBe("480px");
   });
 
+  it("goes full screen on the scene card, at the largest scale the screen holds", () => {
+    const p = page();
+    const site = p.el(PAGE_IDS.site);
+    let requested = 0;
+    site.requestFullscreen = () => {
+      requested++;
+      p.doc.fullscreenElement = site;
+    };
+    startPage(p.env);
+    expect(p.el(PAGE_IDS.siteFullscreen).hidden).toBe(false);
+    p.el(PAGE_IDS.siteFullscreen).dispatch("click");
+    expect(requested).toBe(1);
+    p.el(PAGE_IDS.stage).rect = { left: 0, top: 0, width: 1920, height: 1100 };
+    p.doc.root.dispatch("fullscreenchange");
+    expect(p.canvas.style.width).toBe("1920px");
+    expect(p.canvas.style.height).toBe("1080px");
+    // Again leaves it.
+    p.el(PAGE_IDS.fullscreen).dispatch("click");
+    expect(p.doc.fullscreenElement).toBeNull();
+  });
+
+  it("leaves the page as it is when the browser refuses full screen", async () => {
+    const p = page();
+    p.el(PAGE_IDS.site).requestFullscreen = () => Promise.reject(new TypeError("denied"));
+    startPage(p.env);
+    p.el(PAGE_IDS.fullscreen).dispatch("click");
+    await settle();
+    p.el(PAGE_IDS.site).requestFullscreen = () => {
+      throw new Error("denied");
+    };
+    p.el(PAGE_IDS.siteFullscreen).dispatch("click");
+    expect(p.canvas.style.width).toBe("960px");
+  });
+
+  it("hides the full-screen buttons where the browser has no Fullscreen API", () => {
+    const p = page();
+    startPage(p.env);
+    expect(p.el(PAGE_IDS.fullscreen).hidden).toBe(true);
+    expect(p.el(PAGE_IDS.siteFullscreen).hidden).toBe(true);
+  });
+
   it("toggles sound with aria-pressed", () => {
     const p = page();
     startPage(p.env);
@@ -286,20 +382,36 @@ describe("startPage", () => {
   it("shows a crew lane's tooltip on focus, pins it on Enter and unpins on Escape", () => {
     const p = page();
     startPage(p.env);
-    FakeEventSource.last?.emit("snapshot", JSON.stringify(snapshot({ lanes: [lane({ name: "ui-art", toolCalls: 9 })] })));
+    emit(snapshot({ lanes: [lane({ name: "ui-art", toolCalls: 9 })] }));
     const button = p.el(PAGE_IDS.crew).children[0]?.children[0];
     if (!button) throw new Error("no crew button");
     const tooltip = p.el(PAGE_IDS.tooltip);
     button.dispatch("focus");
     expect(tooltip.hidden).toBe(false);
+    expect(tooltip.children[0]?.text()).toBe("ui-art");
     expect(tooltip.text()).toContain("tool calls 9");
     button.dispatch("click");
     expect(button.attributes.get("aria-pressed")).toBe("true");
+    expect(p.el(PAGE_IDS.table).children[0]?.className).toBe("pinned");
     button.dispatch("blur");
     expect(tooltip.hidden).toBe(false);
-    p.doc.dispatch("keydown", { key: "Escape" });
+    p.doc.root.dispatch("keydown", { key: "Escape" });
     expect(button.attributes.get("aria-pressed")).toBe("false");
     expect(tooltip.hidden).toBe(true);
+  });
+
+  it("highlights a ledger row's lane on hover and pins it on click", () => {
+    const p = page();
+    startPage(p.env);
+    emit(snapshot({ lanes: [lane({ name: "done", state: "finished", endState: "success" })] }));
+    const row = p.el(PAGE_IDS.table).children[0];
+    if (!row) throw new Error("no row");
+    row.dispatch("mouseenter");
+    expect(p.el(PAGE_IDS.tooltip).hidden).toBe(false);
+    row.dispatch("click");
+    row.dispatch("mouseleave");
+    expect(p.el(PAGE_IDS.tooltip).hidden).toBe(false);
+    expect(row.className).toBe("pinned");
   });
 
   it("hides the tooltip when the pointer finds no lane", () => {

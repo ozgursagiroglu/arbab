@@ -242,6 +242,16 @@ describe("startUiServer: the routes", () => {
     expect((await get(port, "/?x=1")).body).toBe(ASSETS.html);
   });
 
+  it("serves the icon as SVG with the headers and no token", async () => {
+    const { port } = await start();
+    const icon = await get(port, "/icon.svg");
+    expect(icon).toMatchObject({ status: 200, body: ASSETS.icon });
+    expect(icon.headers["content-type"]).toBe("image/svg+xml; charset=utf-8");
+    expectSecurityHeaders(icon.headers);
+    expect((await get(port, "/icon.svg?x=1")).status).toBe(200);
+    expect((await get(port, "/icon.svg", { method: "HEAD" })).body).toBe("");
+  });
+
   it("answers /favicon.ico with 204 and anything else with 404, both with the headers", async () => {
     const { port } = await start();
     const icon = await get(port, "/favicon.ico");

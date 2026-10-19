@@ -1,6 +1,8 @@
 // The page's colors (DESIGN.md §19, the game-studio pass). PAGE_CSS writes them as CSS variables and the canvases
 // (pixel text, icons, avatars) draw with the same hex values: a canvas cannot read a CSS variable.
 import type { LaneState } from "../../../../types";
+import type { Cast } from "../../model";
+import { HEADCLOTH } from "../palette";
 
 export const TOKENS = {
   bg: "#120d0a",
@@ -32,16 +34,10 @@ export const TOKENS = {
 
 export type Token = keyof typeof TOKENS;
 
-/** The cast chips (and the avatar tiles' tint). */
-export const CHIPS = {
-  laborer: "#c9a46b",
-  mason: "#3c6fb0",
-  scribe: "#6e4c9e",
-  skeptic: "#b23a3a",
-  surveyor: "#3f8f5a",
-  waterboy: "#e2b23a",
-  scout: "#2f6b4f",
-} as const;
+/** The cast chips (and the avatar tiles' tint): each cast's headcloth in the scene, lower-cased like TOKENS. */
+export const CHIPS = Object.fromEntries(
+  Object.entries(HEADCLOTH).map(([cast, color]) => [cast, color.toLowerCase()]),
+) as Readonly<Record<Exclude<Cast, "arbab">, string>>;
 
 /** Ink on a state badge: dark on every state color, which are all light enough for it, but the failed one. */
 export const BADGE_INK = TOKENS.bg;

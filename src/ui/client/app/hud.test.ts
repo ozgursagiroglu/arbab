@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { UiQuota, UiSnapshot } from "../../protocol";
+import type { UiLane, UiQuota, UiSnapshot } from "../../protocol";
 import { integration, lane, snapshot } from "./fixtures";
 import {
   announcements,
@@ -15,7 +15,9 @@ import {
   PAGE_GAPS,
   parseToken,
   sceneSize,
+  STATE_RANK,
   stageRoom,
+  startedSince,
   tooltipLines,
   totalCost,
 } from "./hud";
@@ -247,6 +249,26 @@ describe("tooltip", () => {
   it("formats states", () => {
     expect(formatState({ state: "finished", endState: null, hold: null })).toBe("finished");
     expect(formatState({ state: "held", endState: null, hold: null })).toBe("held");
+  });
+});
+
+describe("startedSince and STATE_RANK", () => {
+  it("is a lane preparing or running that was not already, nor asleep until the quota reset", () => {
+    const s = (state: UiLane["state"]): Pick<UiLane, "state"> => ({ state });
+    expect(startedSince(s("running"), undefined)).toBe(true);
+    expect(startedSince(s("preparing"), s("queued"))).toBe(true);
+    expect(startedSince(s("running"), s("held"))).toBe(true);
+    expect(startedSince(s("running"), s("finished"))).toBe(true);
+    expect(startedSince(s("running"), s("preparing"))).toBe(false);
+    expect(startedSince(s("running"), s("running"))).toBe(false);
+    expect(startedSince(s("running"), s("waiting-reset"))).toBe(false);
+    expect(startedSince(s("queued"), undefined)).toBe(false);
+    expect(startedSince(s("waiting-reset"), s("running"))).toBe(false);
+  });
+
+  it("orders the states at work first, finished last", () => {
+    const states = Object.keys(STATE_RANK).sort((a, b) => STATE_RANK[a as UiLane["state"]] - STATE_RANK[b as UiLane["state"]]);
+    expect(states).toEqual(["running", "preparing", "waiting-reset", "held", "queued", "orphaned", "finished"]);
   });
 });
 

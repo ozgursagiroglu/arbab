@@ -198,6 +198,8 @@ export function startPage(env: PageEnv): PageHandle | null {
   let offsetMs = 0;
   let hovered: string | null = null;
   let focused: string | null = null;
+  /** The panel `focused` came from: a crew card goes when its lane finishes, a ledger row only with its lane. */
+  let focusedIn: "crew" | "ledger" = "crew";
   let pinned: string | null = null;
   let pointer: { x: number; y: number } | null = null;
   let chronicle: ChronicleEntry[] = [];
@@ -261,9 +263,10 @@ export function startPage(env: PageEnv): PageHandle | null {
     applyHighlight();
     refreshTooltip();
   };
-  const handlers = {
+  const handlers = (panel: "crew" | "ledger") => ({
     enter(name: string) {
       focused = name;
+      focusedIn = panel;
       applyHighlight();
       refreshTooltip();
     },
@@ -276,18 +279,27 @@ export function startPage(env: PageEnv): PageHandle | null {
     toggle(name: string) {
       setPinned(pinned === name ? null : name);
     },
-  };
+  });
 
   const crew = mountCrew(
     doc,
     { title: els.crewTitle, list: els.crew, empty: els.crewEmpty, recentGroup: els.recentGroup, recentTitle: els.recentTitle, recent: els.recent },
     sprites,
     dpr,
-    handlers,
+    handlers("crew"),
   );
   const monument = mountMonument(doc, { title: els.monumentTitle, body: els.monument }, dpr);
   const chroniclePanel = mountChronicle(doc, { title: els.chronicleTitle, list: els.chronicle, empty: els.chronicleEmpty }, dpr);
-  const ledger = mountLedger(doc, { title: els.ledgerTitle, head: els.ledgerHead, body: els.table }, dpr, handlers);
+  const ledger = mountLedger(doc, { title: els.ledgerTitle, head: els.ledgerHead, body: els.table }, dpr, handlers("ledger"));
+
+  /**
+   * A card, row or worker removed under the pointer fires no mouseleave or blur, so after an update forget a lane whose
+   * card left the crew or that left the snapshot; it would otherwise override the pinned lane's highlight and tooltip.
+   */
+  const forgetGone = (): void => {
+    if (focused !== null && !(focusedIn === "crew" ? crew.order().includes(focused) : lanes.has(focused))) focused = null;
+    if (hovered !== null && !lanes.has(hovered)) hovered = null;
+  };
 
   doc.addEventListener("pointerdown", () => sound.unlock());
   doc.addEventListener("keydown", (event) => {
@@ -357,6 +369,7 @@ export function startPage(env: PageEnv): PageHandle | null {
     crew.update(snapshot, now);
     showCrewFade();
     ledger.update(snapshot, now);
+    forgetGone();
     monument.update(snapshot, now);
     chronicle = mergeChronicle(chronicle, last === null ? seedChronicle(snapshot) : chronicleDiff(last, snapshot));
     chroniclePanel.update(chronicle, now);

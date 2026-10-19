@@ -1,20 +1,67 @@
 import { describe, expect, it } from "vitest";
-import { integration, snapshot } from "../fixtures";
+import type { UiSnapshot } from "../../../protocol";
+import { createScene } from "../../scene/scene";
+import { seededRandom } from "../../scene/testkit";
+import { integration, lane, snapshot } from "../fixtures";
+import { sceneCaption } from "./caption";
 import type { FakeElement } from "./fake-dom";
 import { fakeDocument } from "./fake-dom";
-import { formatReview, monumentSteps, mountMonument, pickMonument, STEP_COLORS } from "./monument";
+import { formatReview, monumentSteps, mountMonument, STEP_COLORS } from "./monument";
 
 const NOW = Date.parse("2026-10-19T22:00:00.000Z");
 
-describe("pickMonument", () => {
-  it("is the newest integration not landed, else the newest landed one", () => {
-    const old = integration({ name: "old", landedAt: "2026-10-19T08:00:00.000Z" });
-    const newer = integration({ name: "newer", landedAt: "2026-10-19T09:00:00.000Z" });
-    const open1 = integration({ name: "open1", updatedAt: "2026-10-19T10:00:00.000Z" });
-    const open2 = integration({ name: "open2", updatedAt: "2026-10-19T09:30:00.000Z" });
-    expect(pickMonument([old, open1, newer, open2])?.name).toBe("open1");
-    expect(pickMonument([newer, old])?.name).toBe("newer");
-    expect(pickMonument([])).toBeNull();
+/** The integration the panel names for a snapshot, and the caption under the scene the page draws of it. */
+function shown(s: UiSnapshot): { panel: string | null; caption: string } {
+  const doc = fakeDocument();
+  const body = doc.createElement("div") as FakeElement;
+  mountMonument(doc, { title: doc.createElement("h2"), body }, 1).update(s, Date.parse(s.now));
+  const [head] = body.children;
+  const scene = createScene({ reducedMotion: false, random: seededRandom(3) });
+  scene.apply(s);
+  return { panel: head?.hidden ? null : (head?.children[0]?.textContent ?? null), caption: sceneCaption(s, Date.parse(s.now), scene.world) };
+}
+
+describe("the integration the panel names", () => {
+  it("is the recent landing the scene hoists, not the newer integration open beside it", () => {
+    const s = snapshot({
+      lanes: [lane({ name: "a", state: "finished", endState: "success", integration: "landed" }), lane({ name: "b", integration: "open" })],
+      integrations: [
+        integration({ name: "landed", lanes: ["a"], updatedAt: "2026-10-19T10:03:00.000Z", landedAt: "2026-10-19T10:04:00.000Z" }),
+        integration({ name: "open", lanes: ["b"], updatedAt: "2026-10-19T10:04:30.000Z" }),
+      ],
+    });
+    const { panel, caption } = shown(s);
+    expect(panel).toBe("landed");
+    expect(caption).toBe("LANDED · 1/2 BLOCKS SET · CAPSTONE SET · VERIFY ·");
+  });
+
+  it("is the open integration that merged a foreground builder, not a newer one that merged none", () => {
+    const s = snapshot({
+      lanes: [
+        lane({ name: "a", state: "finished", endState: "success", integration: "built" }),
+        lane({ name: "rev", role: "reviewer", kind: "review", integration: "reviewed" }),
+      ],
+      integrations: [
+        integration({ name: "built", lanes: ["a"], updatedAt: "2026-10-19T10:00:00.000Z" }),
+        integration({ name: "reviewed", lanes: ["rev"], updatedAt: "2026-10-19T10:04:00.000Z" }),
+      ],
+    });
+    const { panel, caption } = shown(s);
+    expect(panel).toBe("built");
+    expect(caption).toBe("BUILT · 1/1 BLOCKS SET · CAPSTONE WAITING · VERIFY ·");
+  });
+
+  it("is the monument the scene stands, else the newest open integration, else the newest landed one", () => {
+    const old = integration({ name: "old", lanes: ["z"], landedAt: "2026-10-19T08:00:00.000Z" });
+    const idle = integration({ name: "idle", updatedAt: "2026-10-19T10:04:00.000Z" });
+    const standing = shown(snapshot({ integrations: [old, idle] }));
+    expect(standing.panel).toBe("old");
+    expect(standing.caption).toMatch(/^MONUMENT · OLD · /);
+    // Work in the foreground that no integration merged: no capstone and no monument.
+    const busy = [lane({ name: "new" })];
+    expect(shown(snapshot({ lanes: busy, integrations: [old, idle] })).panel).toBe("idle");
+    expect(shown(snapshot({ lanes: busy, integrations: [old] })).panel).toBe("old");
+    expect(shown(snapshot({ lanes: busy })).panel).toBeNull();
   });
 });
 

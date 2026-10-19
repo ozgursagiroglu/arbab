@@ -1,12 +1,11 @@
 // The crew panel (DESIGN.md §19): a card per lane at work, with its worker's sprite as an avatar, and a folded group of
 // the lanes that finished last. Cards are keyed by lane and moved only when out of order, so a focused card keeps focus.
 import { formatElapsed } from "../../../../registry/status";
-import type { LaneState } from "../../../../types";
 import type { UiLane, UiSnapshot } from "../../../protocol";
 import type { Cast, Pose } from "../../model";
-import { castOf, fillFor } from "../../scene/scene";
+import { castOf, fillFor, isSet } from "../../scene/scene";
 import type { Canvas2D, CanvasElementLike, DocumentLike, ElementLike } from "../browser";
-import { formatUsd, laneElapsedMs } from "../hud";
+import { formatUsd, laneElapsedMs, STATE_RANK } from "../hud";
 import type { Sprite, SpriteSet } from "../sprites";
 import { compileProp, ICONS } from "../sprites";
 import { make, makeCanvas, reorder } from "./dom";
@@ -20,21 +19,11 @@ export const AVATAR = { w: 36, h: 54, scale: 3 } as const;
 export const AVATAR_ARBAB = { w: 48, h: 78, scale: 3 } as const;
 export const RECENT_MAX = 6;
 
-const RANK: Readonly<Record<LaneState, number>> = {
-  running: 0,
-  preparing: 1,
-  "waiting-reset": 2,
-  held: 3,
-  queued: 4,
-  orphaned: 5,
-  finished: 6,
-};
-
 const byName = (a: UiLane, b: UiLane): number => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
 /** Every lane not finished: running, preparing, waiting-reset, held, queued, orphaned, then by name. */
 export function crewOrder(lanes: readonly UiLane[]): UiLane[] {
-  return lanes.filter((lane) => lane.state !== "finished").sort((a, b) => (RANK[a.state] ?? 9) - (RANK[b.state] ?? 9) || byName(a, b));
+  return lanes.filter((lane) => lane.state !== "finished").sort((a, b) => (STATE_RANK[a.state] ?? 9) - (STATE_RANK[b.state] ?? 9) || byName(a, b));
 }
 
 function epochMs(iso: string): number {
@@ -65,11 +54,6 @@ export function avatarPose(lane: Pick<UiLane, "state">): { pose: Pose; ghost: bo
     default:
       return { pose: "idle", ghost: false };
   }
-}
-
-/** A builder's block is set when it finished with success and a `done` report, or none (the scene's rule). */
-export function isSet(lane: Pick<UiLane, "state" | "endState" | "reportStatus">): boolean {
-  return lane.state === "finished" && lane.endState === "success" && (lane.reportStatus === null || lane.reportStatus === "done");
 }
 
 /** The lane's block: full once set, else the scene's fill for its tool calls. */
@@ -341,6 +325,8 @@ export function mountCrew(doc: DocumentLike, els: CrewElements, sprites: SpriteS
       order = reorder(els.list, order, names, (name) => cards.get(name)?.li, focused);
       const keep = new Set(names);
       for (const name of [...cards.keys()]) if (!keep.has(name)) cards.delete(name);
+      // A removed card fires no blur.
+      if (focused !== null && !keep.has(focused)) focused = null;
       els.empty.hidden = list.length > 0;
       updateRecent(snapshot, serverNowMs);
       if (pinned !== null && !keep.has(pinned)) pinned = null;

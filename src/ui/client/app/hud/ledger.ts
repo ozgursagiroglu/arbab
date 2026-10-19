@@ -1,10 +1,9 @@
 // The ledger (DESIGN.md §19): every lane in the snapshot in a sortable table, the accessible equivalent of the scene.
 // Rows are keyed by lane and moved only when out of order.
 import { formatElapsed } from "../../../../registry/status";
-import type { LaneState } from "../../../../types";
 import type { UiLane, UiSnapshot } from "../../../protocol";
 import type { DocumentLike, ElementLike } from "../browser";
-import { formatUsd, laneElapsedMs } from "../hud";
+import { formatUsd, laneElapsedMs, STATE_RANK } from "../hud";
 import { make, reorder } from "./dom";
 import type { PixelText } from "./pixel-text";
 import { createPixelText } from "./pixel-text";
@@ -31,16 +30,6 @@ export const LEDGER_COLUMNS: readonly { key: LedgerKey; label: string; numeric: 
 
 /** By state (at work first), then name. */
 export const DEFAULT_SORT: LedgerSort = { key: "state", dir: "ascending" };
-
-const STATE_RANK: Readonly<Record<LaneState, number>> = {
-  running: 0,
-  preparing: 1,
-  "waiting-reset": 2,
-  held: 3,
-  queued: 4,
-  orphaned: 5,
-  finished: 6,
-};
 
 function stateRank(lane: UiLane): number {
   const rank = STATE_RANK[lane.state] ?? 9;

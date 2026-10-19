@@ -2,6 +2,7 @@
 // strings into elements with textContent.
 // registry/status, never the registry index: the index pulls node:fs into the bundle.
 import { formatElapsed, formatWindows, isLive } from "../../../registry/status";
+import type { LaneState } from "../../../types";
 import type { UiLane, UiSnapshot } from "../../protocol";
 import { UI_PROTOCOL } from "../../protocol";
 import { HEIGHT, WIDTH } from "../model";
@@ -229,8 +230,27 @@ export function tooltipLines(lane: UiLane, clientNowMs: number, offsetMs: number
   return lines;
 }
 
-const STARTED = new Set(["preparing", "running"]);
-const RESUMING = new Set(["preparing", "running", "waiting-reset"]);
+/** The order of lane states on the page, at work first: the crew's cards and the ledger's state column. */
+export const STATE_RANK: Readonly<Record<LaneState, number>> = {
+  running: 0,
+  preparing: 1,
+  "waiting-reset": 2,
+  held: 3,
+  queued: 4,
+  orphaned: 5,
+  finished: 6,
+};
+
+const STARTED: ReadonlySet<LaneState> = new Set<LaneState>(["preparing", "running"]);
+const RESUMING: ReadonlySet<LaneState> = new Set<LaneState>(["preparing", "running", "waiting-reset"]);
+
+/**
+ * The lane started since the last snapshot: it is preparing or running, and was not already (a lane back from its
+ * usage-limit sleep started before it slept). For the live region and the chronicle alike.
+ */
+export function startedSince(lane: Pick<UiLane, "state">, was: Pick<UiLane, "state"> | undefined): boolean {
+  return STARTED.has(lane.state) && !(was !== undefined && RESUMING.has(was.state));
+}
 
 /** What the live region says about the change from one snapshot to the next; nothing for the first. */
 export function announcements(prev: UiSnapshot | null, next: UiSnapshot): string[] {
@@ -240,7 +260,7 @@ export function announcements(prev: UiSnapshot | null, next: UiSnapshot): string
   for (const lane of next.lanes) {
     const was = before.get(lane.name);
     // A lane coming back from its usage-limit sleep was already announced when it started.
-    if (STARTED.has(lane.state) && !(was && RESUMING.has(was.state))) out.push(`${lane.name} started`);
+    if (startedSince(lane, was)) out.push(`${lane.name} started`);
     if (lane.state === "finished" && was && was.state !== "finished") out.push(`${lane.name} finished: ${lane.endState ?? "unknown"}`);
   }
   const landed = new Set(prev.integrations.filter((i) => i.landedAt !== null).map((i) => i.name));

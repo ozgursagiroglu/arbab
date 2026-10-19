@@ -299,8 +299,9 @@ What the fence refuses is in [Safe by construction](#safe-by-construction); how 
 Every worker gets:
 
 - **Its own git worktree and branch.** Your checkout is never its working directory.
-- **Claude Code's sandbox.** Writes stay in its worktree, and there is no network unless the lane is a researcher. A
-  sandbox that cannot start is fatal, never a silent fallback.
+- **Claude Code's sandbox.** Writes stay in its worktree and the shared per-user temp directory, so keep nothing you
+  trust there while lanes run. There is no network unless the lane is a researcher. A sandbox that cannot start is
+  fatal, never a silent fallback.
 - **`dontAsk` permissions with its role's exact tools.** A tool left out of the role does not exist for the worker.
 - **An allowlist of project commands.** The lint refuses "any code" prefixes such as bare `node` or `pnpm`. An allowed
   command can still run code the worker wrote (`pnpm test` runs its tests), so the sandbox is what contains that code.
@@ -393,10 +394,6 @@ quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)
 
 Sound is off until you turn it on. Then a horn sounds for each brief and report, a drum for each stone, and coins
 clink as a finished worker takes its pay.
-
-![arbab ui by day: workers build the pyramid while arbab, at the front, talks to one of them](docs/ui/day.png)
-
-![arbab ui at night: the workers sleep at their work while the account waits for its reset](docs/ui/night.png)
 
 ## Commands
 

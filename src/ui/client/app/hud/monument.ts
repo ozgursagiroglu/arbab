@@ -1,39 +1,13 @@
 // The monument panel (DESIGN.md §19): the current integration as a vertical stepper, integrated → verify → review →
 // ready → landed.
 import type { UiIntegration, UiSnapshot } from "../../../protocol";
+import { epochMs, featuredIntegration } from "../../scene/scene";
 import type { DocumentLike, ElementLike } from "../browser";
 import { formatAgo } from "./chronicle";
 import { make } from "./dom";
 import type { PixelText } from "./pixel-text";
 import { createPixelText } from "./pixel-text";
 import { TOKENS } from "./tokens";
-
-function epochMs(iso: string | null): number {
-  if (iso === null) return -Infinity;
-  const t = Date.parse(iso);
-  return Number.isFinite(t) ? t : -Infinity;
-}
-
-/** The last of the newest by key: integrations come oldest first, so a tie goes to the later one. */
-function newest(items: readonly UiIntegration[], key: (i: UiIntegration) => number): UiIntegration | null {
-  let best: UiIntegration | null = null;
-  let bestKey = -Infinity;
-  for (const item of items) {
-    const k = key(item);
-    if (best === null || k >= bestKey) {
-      best = item;
-      bestKey = k;
-    }
-  }
-  return best;
-}
-
-/** The newest integration not landed, else the newest landed one; null without any. */
-export function pickMonument(integrations: readonly UiIntegration[]): UiIntegration | null {
-  const open = integrations.filter((i) => i.landedAt === null);
-  if (open.length > 0) return newest(open, (i) => epochMs(i.updatedAt));
-  return newest(integrations, (i) => epochMs(i.landedAt));
-}
 
 export type StepState = "done" | "failed" | "pending";
 
@@ -114,7 +88,8 @@ export function mountMonument(doc: DocumentLike, els: { title: ElementLike; body
   els.body.replaceChildren(head, list, empty);
   return {
     update(snapshot, nowMs) {
-      const integration = pickMonument(snapshot.integrations);
+      // The scene's rule, so the panel names the integration the scene and its caption show.
+      const integration = featuredIntegration(snapshot);
       head.hidden = integration === null;
       list.hidden = integration === null;
       empty.hidden = integration !== null;

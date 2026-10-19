@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { WIDTH } from "../model";
+import { pyramidLayout } from "../scene/layout";
 import type { EventSourceLike, FetchLike, MessageEventLike, PageEnv } from "./browser";
 import { integration, lane, snapshot } from "./fixtures";
 import type { FakeCanvas, FakeDocument, FakeElement } from "./hud/fake-dom";
@@ -480,6 +482,69 @@ describe("startPage", () => {
     row.dispatch("mouseleave");
     expect(p.el(PAGE_IDS.tooltip).hidden).toBe(false);
     expect(row.className).toBe("pinned");
+  });
+
+  it("forgets a crew card removed under the pointer, so the pinned lane keeps the tooltip", () => {
+    const p = page();
+    startPage(p.env);
+    emit(snapshot({ lanes: [lane({ name: "a" }), lane({ name: "b" }), lane({ name: "c" })] }));
+    const buttonOf = (name: string): FakeElement => {
+      const button = p.el(PAGE_IDS.crew).children.find((li) => li.find("name")[0]?.textContent === name)?.children[0];
+      if (!button) throw new Error(`no card ${name}`);
+      return button;
+    };
+    const tooltip = p.el(PAGE_IDS.tooltip);
+    const tipName = (): string | undefined => tooltip.children[0]?.text();
+    buttonOf("b").dispatch("click");
+    // The pointer rests on a's card, then a finishes: its card goes without a mouseleave.
+    buttonOf("a").dispatch("mouseenter");
+    expect(tipName()).toBe("a");
+    emit(snapshot({ lanes: [lane({ name: "a", state: "finished", endState: "success" }), lane({ name: "b" }), lane({ name: "c" })] }));
+    expect(tooltip.hidden).toBe(false);
+    expect(tipName()).toBe("b");
+    // Keyboard focus on c's card, then c leaves the snapshot: no blur either.
+    buttonOf("c").dispatch("focus");
+    expect(tipName()).toBe("c");
+    emit(snapshot({ lanes: [lane({ name: "a", state: "finished", endState: "success" }), lane({ name: "b" })] }));
+    expect(tipName()).toBe("b");
+  });
+
+  it("keeps a hovered ledger row's lane while its row stays, and forgets it when the lane leaves", () => {
+    const p = page();
+    startPage(p.env);
+    emit(snapshot({ lanes: [lane({ name: "a" }), lane({ name: "b" })] }));
+    const rowOf = (name: string): FakeElement => {
+      const row = p.el(PAGE_IDS.table).children.find((tr) => tr.children[0]?.textContent === name);
+      if (!row) throw new Error(`no row ${name}`);
+      return row;
+    };
+    const tooltip = p.el(PAGE_IDS.tooltip);
+    rowOf("b").dispatch("click");
+    rowOf("a").dispatch("mouseenter");
+    // a finishes: its crew card goes, its row stays under the pointer.
+    emit(snapshot({ lanes: [lane({ name: "a", state: "finished", endState: "success" }), lane({ name: "b" })] }));
+    expect(tooltip.children[0]?.text()).toBe("a");
+    emit(snapshot({ lanes: [lane({ name: "b" })] }));
+    expect(tooltip.children[0]?.text()).toBe("b");
+  });
+
+  it("forgets a lane hovered on the canvas once it leaves the snapshot", () => {
+    const p = page();
+    startPage(p.env);
+    // a builds the only block; b, a queued researcher, sits in the camp.
+    emit(snapshot({ lanes: [lane({ name: "a" }), lane({ name: "b", role: "researcher", state: "queued" })] }));
+    p.el(PAGE_IDS.crew)
+      .children.find((li) => li.find("name")[0]?.textContent === "b")
+      ?.children[0]?.dispatch("click");
+    const slot = pyramidLayout(1).slots[0];
+    if (!slot) throw new Error("no slot");
+    const css = p.canvas.rect.width / WIDTH;
+    p.canvas.dispatch("pointermove", { clientX: (slot.x + slot.w / 2) * css, clientY: (slot.y + slot.h - 1) * css });
+    const tooltip = p.el(PAGE_IDS.tooltip);
+    expect(tooltip.children[0]?.text()).toBe("a");
+    emit(snapshot({ lanes: [lane({ name: "b", role: "researcher", state: "queued" })] }));
+    expect(tooltip.hidden).toBe(false);
+    expect(tooltip.children[0]?.text()).toBe("b");
   });
 
   it("hides the tooltip when the pointer finds no lane", () => {

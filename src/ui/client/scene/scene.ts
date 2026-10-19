@@ -109,14 +109,14 @@ export interface Foreground {
 }
 
 /** Epoch ms of an ISO time; -Infinity when missing or unparsable, so it sorts oldest. */
-function epochMs(iso: string | null): number {
+export function epochMs(iso: string | null): number {
   if (iso === null) return -Infinity;
   const t = Date.parse(iso);
   return Number.isFinite(t) ? t : -Infinity;
 }
 
 /** The last of the newest by key: integrations come oldest first, so a tie goes to the later one. */
-function newest<T>(items: T[], key: (item: T) => number): T | null {
+export function newest<T>(items: readonly T[], key: (item: T) => number): T | null {
   let best: T | null = null;
   let bestKey = -Infinity;
   for (const item of items) {
@@ -160,6 +160,20 @@ export function foreground(snapshot: UiSnapshot): Foreground {
   return { lanes, capstone, capstoneLanded: latest !== null, monument, far };
 }
 
+/**
+ * The integration the page features, by one rule for the scene, its caption and the Monument panel: the capstone's
+ * (a recent landing, else the newest open integration that merged a foreground lane), else the monument's, else the
+ * newest open integration, else the newest landed one; null without any.
+ */
+export function featuredIntegration(snapshot: UiSnapshot): UiIntegration | null {
+  const fg = foreground(snapshot);
+  if (fg.capstone !== null) return fg.capstone;
+  if (fg.monument !== null) return fg.monument;
+  const open = snapshot.integrations.filter((i) => i.landedAt === null);
+  if (open.length > 0) return newest(open, (i) => epochMs(i.updatedAt));
+  return newest(snapshot.integrations, (i) => epochMs(i.landedAt));
+}
+
 /** min(0.95, 1 − e^(−calls/40)) */
 export function fillFor(toolCalls: number): number {
   const calls = Number.isFinite(toolCalls) ? Math.max(0, toolCalls) : 0;
@@ -180,7 +194,7 @@ function rationOnLeaving(lane: UiLane): 0 | 1 | 2 | 3 {
   return lane.endState === "success" ? rationFor(lane) : 0;
 }
 
-function lookFor(lane: UiLane): BlockLook {
+function lookFor(lane: Pick<UiLane, "state" | "endState" | "reportStatus">): BlockLook {
   switch (lane.state) {
     case "running":
       return "building";
@@ -194,6 +208,11 @@ function lookFor(lane: UiLane): BlockLook {
     default:
       return "planned";
   }
+}
+
+/** A builder's block is set: it finished with success and a `done` report, or none. */
+export function isSet(lane: Pick<UiLane, "state" | "endState" | "reportStatus">): boolean {
+  return lookFor(lane) === "set";
 }
 
 function costOf(lane: UiLane): number {

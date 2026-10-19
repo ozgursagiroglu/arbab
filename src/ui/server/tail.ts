@@ -1,5 +1,7 @@
 // Tool calls of a running attempt, counted from its growing stream.jsonl (DESIGN.md §19): a byte offset per lane, so a
-// tick reads only what was appended since the last one, never the whole stream.
+// tick reads only what was appended since the last one. The first count of an attempt reads at most 8 chunks
+// (FIRST_READ_CHUNKS) of maxBytesPerCall (64 MiB at the default), every later count at most one chunk: the reads are synchronous,
+// and a long run's stream must not stall the server's event loop.
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { REPORT_TOOL, toolUses } from "../../stream";
 import { ArbabError } from "../../util/errors";
@@ -10,20 +12,26 @@ export interface LiveCount {
 }
 
 export interface ToolCallCounter {
-  /** The attempt's tool calls so far; reads only the bytes appended since the last call for this attempt. */
+  /**
+   * The attempt's tool calls so far, from the bytes appended since the last call for this attempt. The first call of an
+   * attempt (or of a file that started over) reads at most 8 chunks of maxBytesPerCall (64 MiB at the default), a
+   * later one at most one chunk; what is left waits for the next calls.
+   */
   count(lane: string, attempt: number, streamPath: string): LiveCount;
   /** Forgets every lane not in `lanes` (lanes that left the window). */
   retain(lanes: ReadonlySet<string>): void;
 }
 
 const DEFAULT_MAX_BYTES = 8 * 1024 * 1024;
+/** Chunks the first count of an attempt may read, so a short stream is counted whole by the first snapshot. */
+export const FIRST_READ_CHUNKS = 8;
 const NEWLINE = 0x0a;
 
 interface Tail {
   attempt: number;
   path: string;
   offset: number;
-  /** The file was read to its end once; until then a count reads on past maxBytesPerCall. */
+  /** The first count of the attempt (or of the file since it started over) is done; it may read FIRST_READ_CHUNKS chunks. */
   primed: boolean;
   /** The unfinished last line, as bytes: decoding it now could cut a multi-byte character. */
   pending: Buffer;
@@ -121,9 +129,11 @@ export function createToolCallCounter(options: { maxBytesPerCall?: number } = {}
         tail = fresh(attempt, streamPath);
         tails.set(lane, tail);
       }
-      // The first read of an attempt (or of a file that started over) goes to the end in max-sized chunks, so the
-      // first snapshot counts the whole stream; later reads take at most one chunk per call.
+      // The first count of an attempt (or of a file that started over) reads up to FIRST_READ_CHUNKS max-sized chunks,
+      // so the first snapshot counts all of a stream that is not huge; later counts read at most one chunk each. A
+      // file that started over unprimes the tail inside readMore, so its count gets the first-read budget too.
       let chunk: Buffer | null;
+      let reads = 0;
       do {
         chunk = readMore(tail, max);
         if (chunk === null) {
@@ -131,7 +141,8 @@ export function createToolCallCounter(options: { maxBytesPerCall?: number } = {}
           return { toolCalls: 0, lastTool: null };
         }
         consume(tail, chunk);
-      } while (!tail.primed && chunk.length === max);
+        reads++;
+      } while (chunk.length === max && reads < (tail.primed ? 1 : FIRST_READ_CHUNKS));
       tail.primed = true;
       return { toolCalls: tail.toolCalls, lastTool: tail.lastTool };
     },

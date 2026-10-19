@@ -3,7 +3,7 @@ import type { Actor, Block, Particle, Pose, Scene } from "../model";
 import { PLACES, PYRAMID_AREA, WIDTH } from "../model";
 import type { UiLane, UiSnapshot } from "../../protocol";
 import { campSeat, farPyramidPlace, pyramidLayout, workSpot } from "./layout";
-import { castOf, createScene, fillFor, foreground, isBuilder, rationFor } from "./scene";
+import { castOf, createScene, epochMs, featuredIntegration, fillFor, foreground, isBuilder, isSet, newest, rationFor } from "./scene";
 import { at, finishedLane, seededRandom, T0, uiIntegration, uiLane, uiQuota, uiSnapshot } from "./testkit";
 
 const GROUND_Y = PYRAMID_AREA.baseY + 2;
@@ -267,6 +267,65 @@ describe("foreground", () => {
   it("leaves out lanes whose integration the snapshot no longer carries", () => {
     const fg = foreground(uiSnapshot({ lanes: [finishedLane({ name: "a", integration: "gone" })] }));
     expect(fg.lanes).toEqual([]);
+  });
+});
+
+describe("featuredIntegration", () => {
+  it("is the capstone's: a recent landing, even with a newer integration open", () => {
+    const landed = uiIntegration({ name: "landed", lanes: ["a"], updatedAt: at(-200), landedAt: at(-60) });
+    const open = uiIntegration({ name: "open", lanes: ["b"], updatedAt: at(-10) });
+    const lanes = [finishedLane({ name: "a", integration: "landed" }), uiLane({ name: "b", state: "running", integration: "open" })];
+    expect(featuredIntegration(uiSnapshot({ lanes, integrations: [landed, open] }))?.name).toBe("landed");
+  });
+
+  it("is the capstone's: the open integration that merged a foreground builder, not a newer one that merged none", () => {
+    const built = uiIntegration({ name: "built", lanes: ["a"], updatedAt: at(-300) });
+    const reviewed = uiIntegration({ name: "reviewed", lanes: ["rev"], updatedAt: at(-10) });
+    const lanes = [finishedLane({ name: "a", integration: "built" }), uiLane({ name: "rev", role: "reviewer", kind: "review", integration: "reviewed" })];
+    expect(featuredIntegration(uiSnapshot({ lanes, integrations: [built, reviewed] }))?.name).toBe("built");
+  });
+
+  it("is the monument's while it stands, even with an integration open that holds no foreground lane", () => {
+    const old = uiIntegration({ name: "old", lanes: ["z"], landedAt: at(-4000) });
+    const idle = uiIntegration({ name: "idle", lanes: [], updatedAt: at(-10) });
+    expect(featuredIntegration(uiSnapshot({ integrations: [old, idle] }))?.name).toBe("old");
+  });
+
+  it("is the newest open integration without a capstone or a monument, else the newest landed one", () => {
+    const lanes = [uiLane({ name: "new", state: "running" })];
+    const older = uiIntegration({ name: "older", updatedAt: at(-300) });
+    const newer = uiIntegration({ name: "newer", updatedAt: at(-100) });
+    const landedA = uiIntegration({ name: "landed-a", landedAt: at(-5000) });
+    const landedB = uiIntegration({ name: "landed-b", landedAt: at(-4000) });
+    expect(featuredIntegration(uiSnapshot({ lanes, integrations: [newer, landedB, older] }))?.name).toBe("newer");
+    expect(featuredIntegration(uiSnapshot({ lanes, integrations: [landedB, landedA] }))?.name).toBe("landed-b");
+    expect(featuredIntegration(uiSnapshot({ lanes }))).toBeNull();
+    expect(featuredIntegration(uiSnapshot())).toBeNull();
+  });
+});
+
+describe("epochMs, newest and isSet", () => {
+  it("reads an ISO time, and sorts a missing or unparsable one oldest", () => {
+    expect(epochMs(T0)).toBe(Date.parse(T0));
+    expect(epochMs(null)).toBe(-Infinity);
+    expect(epochMs("not a time")).toBe(-Infinity);
+  });
+
+  it("takes the newest by key, the later one at a tie, and null from nothing", () => {
+    expect(newest([3, 1, 2], (n) => n)).toBe(3);
+    const items = [{ id: "a", k: 1 }, { id: "b", k: 1 }, { id: "c", k: 0 }];
+    expect(newest(items, (i) => i.k)?.id).toBe("b");
+    expect(newest([{ id: "x" }], () => -Infinity)?.id).toBe("x");
+    expect(newest([], () => 0)).toBeNull();
+  });
+
+  it("sets a block on success with a done report or none, never on a partial or blocked one or before the finish", () => {
+    expect(isSet(finishedLane())).toBe(true);
+    expect(isSet(finishedLane({ reportStatus: null }))).toBe(true);
+    expect(isSet(finishedLane({ reportStatus: "partial" }))).toBe(false);
+    expect(isSet(finishedLane({ reportStatus: "blocked" }))).toBe(false);
+    expect(isSet(finishedLane({ endState: "failed" }))).toBe(false);
+    expect(isSet(uiLane({ state: "running", endState: "success", reportStatus: "done" }))).toBe(false);
   });
 });
 

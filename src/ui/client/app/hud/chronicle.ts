@@ -1,7 +1,7 @@
 // The chronicle (DESIGN.md §19): what happened, newest first. Seeded from the first snapshot, then grown by each
 // snapshot's changes. Pure: the panel only draws these entries.
 import type { UiIntegration, UiLane, UiSnapshot } from "../../../protocol";
-import { formatUsd } from "../hud";
+import { formatUsd, startedSince } from "../hud";
 
 export const CHRONICLE_MAX = 60;
 
@@ -105,9 +105,6 @@ export function seedChronicle(snapshot: UiSnapshot): ChronicleEntry[] {
   return mergeChronicle([], out);
 }
 
-const STARTED = new Set(["preparing", "running"]);
-const RESUMING = new Set(["preparing", "running", "waiting-reset"]);
-
 /** What changed from one snapshot to the next: starts, finishes, landings, verify results and quota holds. */
 export function chronicleDiff(prev: UiSnapshot, next: UiSnapshot): ChronicleEntry[] {
   const now = snapshotMs(next);
@@ -116,7 +113,7 @@ export function chronicleDiff(prev: UiSnapshot, next: UiSnapshot): ChronicleEntr
   for (const lane of next.lanes) {
     const was = before.get(lane.name);
     // A lane back from its usage-limit sleep already started.
-    if (STARTED.has(lane.state) && !(was && RESUMING.has(was.state))) out.push(started(lane, now));
+    if (startedSince(lane, was)) out.push(started(lane, now));
     if (lane.state === "finished" && was && was.state !== "finished") out.push(finished(lane, now));
     if (lane.state === "held" && lane.hold === "quota" && !(was && was.state === "held" && was.hold === "quota")) out.push(waiting(lane, now));
   }

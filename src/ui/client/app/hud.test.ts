@@ -4,7 +4,6 @@ import { integration, lane, snapshot } from "./fixtures";
 import {
   announcements,
   computeScale,
-  crew,
   formatCounts,
   formatState,
   formatUsd,
@@ -14,7 +13,6 @@ import {
   parseProblem,
   parseSnapshot,
   parseToken,
-  tableRow,
   tooltipLines,
   totalCost,
 } from "./hud";
@@ -115,13 +113,19 @@ describe("header", () => {
       },
     });
     expect(header(s)).toEqual({
-      title: "demo · 0.2.0",
+      project: "demo",
+      version: "v0.2.0",
       counts: "3 running",
       cost: "$3.75",
       quota: "5h 62% · 7d 40%",
       held: true,
-      hidden: "3 older lanes are not shown.",
+      footer: "Read-only · arbab 0.2.0 · 3 older lanes not shown",
     });
+  });
+
+  it("leaves the hidden lanes out of the footer when there are none", () => {
+    expect(header(snapshot()).footer).toBe("Read-only · arbab 0.2.0");
+    expect(header(snapshot({ hiddenLanes: 1 })).footer).toBe("Read-only · arbab 0.2.0 · 1 older lane not shown");
   });
 
   it("leaves out quota windows that have reset", () => {
@@ -201,26 +205,6 @@ describe("tooltip", () => {
   it("formats states", () => {
     expect(formatState({ state: "finished", endState: null, hold: null })).toBe("finished");
     expect(formatState({ state: "held", endState: null, hold: null })).toBe("held");
-  });
-});
-
-describe("crew and table", () => {
-  it("lists every lane not finished", () => {
-    const s = snapshot({ lanes: [lane({ name: "a" }), lane({ name: "b", state: "finished", endState: "success" }), lane({ name: "c", state: "queued" })] });
-    expect(crew(s).map((l) => l.name)).toEqual(["a", "c"]);
-  });
-
-  it("makes a table row", () => {
-    expect(tableRow(lane({ name: "a", role: "verifier", state: "finished", endState: "failed", attempt: 3, toolCalls: 7, costUsd: 0.5 }))).toEqual([
-      "a",
-      "verifier",
-      "finished",
-      "failed",
-      "3",
-      "7",
-      "$0.50",
-    ]);
-    expect(tableRow(lane({ name: "b" }))[3]).toBe("—");
   });
 });
 

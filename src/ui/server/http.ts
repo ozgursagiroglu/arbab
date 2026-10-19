@@ -192,6 +192,8 @@ export function startUiServer(options: UiServerOptions): Promise<UiServer> {
         return reply(req, res, 200, "text/javascript; charset=utf-8", options.assets.js);
       case UI_ROUTES.style:
         return reply(req, res, 200, "text/css; charset=utf-8", options.assets.css);
+      case UI_ROUTES.icon:
+        return reply(req, res, 200, "image/svg+xml; charset=utf-8", options.assets.icon);
       case "/favicon.ico":
         res.writeHead(204, SECURITY_HEADERS);
         return void res.end();

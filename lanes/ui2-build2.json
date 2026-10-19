@@ -1,0 +1,10 @@
+{
+  "name": "ui2-build2",
+  "role": "implementer",
+  "brief": "lanes/ui2-build.md",
+  "base": "integrate/ui2",
+  "model": "haiku",
+  "effort": "low",
+  "budgetUsd": 3,
+  "wallMin": 30
+}

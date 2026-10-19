@@ -845,6 +845,23 @@ with the text beside them for screen readers). It has no font file.
 
 All of it stays deterministic: the goldens fix `World.time`.
 
+Decided while building it (plan `ui2`):
+- The scene's scale is whole device pixels: `floor(min(stageW / 480, stageH / 270) · dpr) / dpr`, where the stage's
+  height is what is left of the first screen. That allows half steps on a dpr-2 screen and 3× at 1920×1080. Below 1×
+  the canvas takes the stage's width.
+- From 1280 px the side column (360 px) is as tall as the scene card: the crew list scrolls inside it, with a fade
+  while there is more. KPI cards turn into single rows. Narrower layouts stack.
+- A landed pyramid is complete: while a capstone is set, every slot without a lane is a set block. The verify
+  pennant stands by the sledge only while the capstone waits there.
+- The monument's plaque stands on the ground in front of the pyramid. The site's torches follow the pyramid's size,
+  so the work stays lit at night.
+- An asleep worker's avatar carries the scene's zzz. Failed badges use their own darker red (`#b23a3a`) under light
+  ink.
+- The title card leaves at the first snapshot, after 0.6 s (at once with reduced motion), by a timer as well as its
+  transition.
+- When the event stream closes, the page asks `/snapshot.json` why: 200 means too many tabs, 401 means the session
+  ended or restarted, and no answer means arbab ui is not running.
+
 ## 20. Open items
 
 - Can `sandbox.filesystem.denyWrite` take globs, so other sessions' scratchpads under `/tmp/claude-<uid>` become

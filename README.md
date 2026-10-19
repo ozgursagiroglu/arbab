@@ -13,7 +13,9 @@ the result inside the fence, has it adversarially reviewed, and prepares a merge
 ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757)
 ![Zero runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)
 
-![The arbab ui dashboard: workers building a pyramid, with the crew, the chronicle and the ledger](docs/ui/page.png)
+![arbab ui during a real run: workers take their briefs from arbab and build the pyramid while the dashboard tracks the crew, the chronicle and the ledger](docs/ui/demo.gif)
+
+*The run that wrote this README, at 1.5× speed.*
 
 ```text
                                           ┌─> worker ─┐
@@ -335,8 +337,8 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
 - **A skeptic lane per lens** tries to refute each MEDIUM or HIGH finding.
 - **Verdicts:** each finding ends `confirmed`, `refuted` or `unverified`.
 - **A readiness report** lists what was verified, what was skipped, and every risk.
-- **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id. The skill
-  waives one only when you name it.
+- **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
+  cannot be waived. The skill waives one only when you name it.
 
 On arbab's own `arbab ui`, the first review round confirmed six findings. The two MEDIUM ones were the same problem,
 found by two lenses independently. All six were fixed before landing. Milestone M3 went through 14 review rounds,
@@ -502,8 +504,8 @@ Costs in the reports are Claude Code's API-equivalent estimates.
 
 **Is it safe to let workers run unattended?**
 Workers are fenced by Claude Code's sandbox and an exact permission profile. arbab never runs their code on the host
-outside that fence, and the skill lands nothing without your approval. See
-[Safe by construction](#safe-by-construction).
+outside that fence, except a dependency install you confirmed, and the skill lands nothing without your approval.
+See [Safe by construction](#safe-by-construction).
 
 **Does arbab push to my remote?**
 Never. `land` merges locally and prints the push command.

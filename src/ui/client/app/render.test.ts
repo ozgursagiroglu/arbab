@@ -1,13 +1,31 @@
 import { describe, expect, it } from "vitest";
+import type { UiLane } from "../../protocol";
 import type { Actor, World } from "../model";
-import { ACTOR_BOX, HEIGHT, PLACES, PYRAMID_AREA, WIDTH } from "../model";
-import type { Canvas2D } from "./browser";
+import { ACTOR_BOX, HEIGHT, HORIZON_Y, PLACES, PYRAMID_AREA, WIDTH } from "../model";
 import { pyramidLayout, workSpot } from "../scene/layout";
+import { createScene } from "../scene/scene";
+import { finishedLane, seededRandom, uiLane, uiSnapshot } from "../scene/testkit";
+import { plaqueBox, shakeOffset } from "./art/fx";
+import { FIRE_AT } from "./art/props";
+import { sunColors } from "./art/sky";
+import type { Canvas2D } from "./browser";
 import { actor, arbab, dayWorld, duskWorld, FRAMES, nightWorld } from "./fixtures";
-import { BUBBLE, GOLD, LIMESTONE, OUTLINE, parseHex, WOOD } from "./palette";
+import { BUBBLE, GOLD, LIMESTONE, MOON, OUTLINE, parseHex, PLATE, VIGNETTE, WOOD } from "./palette";
 import type { Raster } from "./raster";
 import { createRaster } from "./raster";
-import { coinRects, frameIndex, GROUND_Y, ladderTop, prng, renderWorld, stoneLayout, sunPosition } from "./render";
+import {
+  coinRects,
+  frameIndex,
+  GROUND_Y,
+  ladderTop,
+  MOON_AT,
+  PLAQUE_FOOT,
+  prng,
+  renderWorld,
+  shineOffset,
+  stoneLayout,
+  sunPosition,
+} from "./render";
 
 interface Op {
   x: number;
@@ -166,11 +184,13 @@ describe("renderWorld", () => {
   });
 
   it("mirrors an actor facing −1", () => {
-    const base = rasterize(empty());
+    // The sun straight overhead, so the actor's shadow falls under its feet and mirrors with it.
+    const overhead = (): World => ({ ...empty(), sky: { phase: "day", sun: 0.5 } });
+    const base = rasterize(overhead());
     const at = { x: 240, y: 240 };
-    const right = empty();
+    const right = overhead();
     right.actors = [actor({ id: "a", cast: "laborer", ...at, facing: 1 })];
-    const left = empty();
+    const left = overhead();
     left.actors = [actor({ id: "a", cast: "laborer", ...at, facing: -1 })];
     const r = rasterize(right);
     const l = rasterize(left);
@@ -319,13 +339,19 @@ describe("renderWorld", () => {
   });
 
   it("shows the sun by day and the moon at night", () => {
+    const covers = (ops: Op[], x: number, y: number, color: string): boolean =>
+      ops.some((op) => op.color === color && op.alpha === 1 && op.x <= x && x < op.x + op.w && op.y <= y && y < op.y + op.h);
     const world = empty();
     world.sky = { phase: "day", sun: 0.5 };
-    const day = rasterize(world);
+    const day = recorder();
+    renderWorld(day, world);
     const sun = sunPosition(0.5);
-    expect(pixel(day, Math.round(sun.x), Math.round(sun.y))).toBe(hex("#FFE07A"));
-    const night = rasterize(nightWorld());
-    expect(pixel(night, 400, 30)).toBe(hex("#E8E6D8"));
+    expect(covers(day.ops, Math.round(sun.x), Math.round(sun.y), sunColors(sun.y).core)).toBe(true);
+    expect(day.ops.some((op) => op.color === MOON)).toBe(false);
+    const night = recorder();
+    renderWorld(night, nightWorld());
+    expect(covers(night.ops, MOON_AT.x, MOON_AT.y, MOON)).toBe(true);
+    expect(night.ops.some((op) => op.color === sunColors(sun.y).core)).toBe(false);
   });
 
   it("draws the same frame for the same world", () => {
@@ -341,6 +367,205 @@ describe("renderWorld", () => {
     const ctx = recorder();
     expect(() => renderWorld(ctx, world)).not.toThrow();
     expect(ctx.globalAlpha).toBe(1);
+  });
+});
+
+describe("the scene's life and light", () => {
+  const diff = (a: Raster, b: Raster, x0: number, y0: number, x1: number, y1: number): number => {
+    let n = 0;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) if (pixel(a, x, y) !== pixel(b, x, y)) n++;
+    return n;
+  };
+
+  it("moves the life that carries no data with world.time, and nothing else", () => {
+    const at = (time: number): Raster => rasterize({ ...empty(), time });
+    const a = at(8);
+    const b = at(9);
+    // Clouds and birds in the sky, glints and the felucca on the river, the fire and its smoke at the camp.
+    expect(diff(a, b, 0, 0, WIDTH, HORIZON_Y)).toBeGreaterThan(50);
+    expect(diff(a, b, 0, HORIZON_Y, WIDTH, 136)).toBeGreaterThan(5);
+    expect(diff(a, b, FIRE_AT.x - 6, FIRE_AT.y - 40, FIRE_AT.x + 12, FIRE_AT.y)).toBeGreaterThan(3);
+    // The same clock draws the same frame.
+    expect(Buffer.from(at(8).data).equals(Buffer.from(a.data))).toBe(true);
+  });
+
+  it("offsets the whole scene by the camera shake, and keeps the vignette still", () => {
+    const still = { ...dayWorld(), time: 3.1 };
+    const shaken = { ...still, shake: 3 };
+    const { dx, dy } = shakeOffset(3, 3.1);
+    expect(dx !== 0 || dy !== 0).toBe(true);
+    const a = rasterize(still);
+    const b = rasterize(shaken);
+    for (let y = 40; y < 230; y += 3) {
+      for (let x = 40; x < 440; x += 3) expect(pixel(b, x + dx, y + dy), `${x},${y}`).toBe(pixel(a, x, y));
+    }
+    const vignette = (world: World): string => {
+      const ctx = recorder();
+      renderWorld(ctx, world);
+      return JSON.stringify(ctx.ops.filter((op) => op.color === VIGNETTE.day));
+    };
+    expect(vignette(shaken)).toBe(vignette(still));
+    // Still, every pixel is covered even at the edges the shake uncovers.
+    for (let i = 3; i < b.data.length; i += 4) expect(b.data[i]).toBe(255);
+  });
+
+  it("draws the capstone's beam only while it glows", () => {
+    const world = (glow: number): World => {
+      const w = dayWorld();
+      const l = pyramidLayout(10);
+      return { ...w, pyramid: { ...w.pyramid, apex: l.apex, capstone: { ...w.pyramid.capstone, state: "set", ...l.apex, glow } } };
+    };
+    const beam = (w: World): Op[] => {
+      const ctx = recorder();
+      renderWorld(ctx, w);
+      const x = w.pyramid.apex.x;
+      // What is laid over the apex's column on row 20: below the vignette's band, above the clouds of this frame.
+      return ctx.ops.filter((op) => op.y <= 20 && 20 < op.y + op.h && op.x <= x && x < op.x + op.w && op.alpha < 1);
+    };
+    expect(beam(world(0))).toEqual([]);
+    const lit = beam(world(0.8));
+    expect(lit.length).toBeGreaterThan(0);
+    expect(lit.every((op) => Math.abs(op.alpha - 0.4) < 1e-9)).toBe(true);
+    // About ten pixels wide.
+    const r = rasterize(world(0.8));
+    const plain = rasterize(world(0));
+    const x = world(0).pyramid.apex.x;
+    let wide = 0;
+    for (let c = x - 8; c < x + 8; c++) if (pixel(r, c, 30) !== pixel(plain, c, 30)) wide++;
+    expect(wide).toBeGreaterThanOrEqual(8);
+    expect(wide).toBeLessThanOrEqual(12);
+  });
+
+  it("puts a nameplate over a highlighted actor only, inside the canvas", () => {
+    const plates = (world: World): Op[] => {
+      const ctx = recorder();
+      renderWorld(ctx, world);
+      return ctx.ops.filter((op) => op.color === PLATE.fill);
+    };
+    const one = (fields: Partial<Actor>): World => ({ ...empty(), actors: [actor({ id: "lane-x", cast: "laborer", x: 240, y: 240, ...fields })] });
+    expect(plates(one({ highlight: false }))).toEqual([]);
+    expect(plates(one({ highlight: true })).length).toBeGreaterThan(0);
+    // In each corner, the plate and its letters stay on the canvas.
+    for (const at of [
+      { x: 2, y: 30 },
+      { x: WIDTH - 2, y: 30 },
+      { x: 2, y: HEIGHT },
+      { x: WIDTH - 2, y: HEIGHT },
+    ]) {
+      const ctx = recorder();
+      renderWorld(ctx, { ...one({ ...at, highlight: true, icon: "hourglass", bubble: { seed: 3, open: 1 } }), shake: 4, time: 1.3 });
+      const plate = ctx.ops.filter((op) => op.color === PLATE.fill);
+      expect(plate.length).toBeGreaterThan(0);
+      for (const op of ctx.ops) expect(op.x >= 0 && op.y >= 0 && op.x + op.w <= WIDTH && op.y + op.h <= HEIGHT, JSON.stringify(op)).toBe(true);
+      const text = ctx.ops.filter((op) => op.color === PLATE.text);
+      expect(text.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("puts the nameplate above the actor's icon and bubble", () => {
+    const ctx = recorder();
+    renderWorld(ctx, { ...empty(), actors: [actor({ id: "lane-x", cast: "laborer", x: 240, y: 240, highlight: true, icon: "dots", bubble: { seed: 3, open: 1 } })] });
+    const plateBottom = Math.max(...ctx.ops.filter((op) => op.color === PLATE.fill).map((op) => op.y + op.h));
+    const bubbleTop = Math.min(...ctx.ops.filter((op) => op.color === BUBBLE.fill).map((op) => op.y));
+    expect(plateBottom).toBeLessThan(bubbleTop);
+  });
+
+  it("stands the monument's plaque at the pyramid's foot only while there is a monument", () => {
+    const idle = FRAMES.idle();
+    const name = idle.pyramid.monument ?? "";
+    const box = plaqueBox(name, PLAQUE_FOOT.x, PLAQUE_FOOT.y);
+    const without = rasterize({ ...idle, pyramid: { ...idle.pyramid, monument: null } });
+    const withIt = rasterize(idle);
+    expect(diff(without, withIt, box.x, box.y, box.x + box.w, box.y + box.h)).toBeGreaterThan(box.w * box.h * 0.5);
+    // Centered under the apex, below the bottom course.
+    expect(Math.abs(box.x + box.w / 2 - PYRAMID_AREA.centerX)).toBeLessThanOrEqual(1);
+    expect(box.y).toBeGreaterThanOrEqual(PYRAMID_AREA.baseY);
+    // Its letters are the name in capitals, in gold.
+    const ctx = recorder();
+    renderWorld(ctx, idle);
+    expect(ctx.ops.filter((op) => op.color === GOLD.light && op.y >= box.y && op.y < box.y + box.h).length).toBeGreaterThan(10);
+  });
+
+  it("casts a shadow under an actor, away from the sun", () => {
+    const at = { x: 240, y: 240 };
+    const lone = (sun: number, fields: Partial<Actor> = {}): World => ({ ...empty(), sky: { phase: "day", sun }, actors: [actor({ id: "a", cast: "laborer", ...at, ...fields })] });
+    const darker = (a: Raster, b: Raster, x: number, y: number): boolean => {
+      const sum = (r: Raster): number => pixel(r, x, y).split(",").reduce((s, v) => s + Number(v), 0);
+      return sum(a) < sum(b);
+    };
+    const plain = rasterize({ ...empty(), sky: { phase: "day", sun: 0.1 } });
+    const morning = rasterize(lone(0.1));
+    // Under the feet, and leaning right of them with the sun on the left.
+    expect(darker(morning, plain, at.x, at.y)).toBe(true);
+    expect(darker(morning, plain, at.x + 6, at.y)).toBe(true);
+    expect(darker(morning, plain, at.x - 7, at.y)).toBe(false);
+    // A climber on its ladder casts none, and an invisible actor none.
+    const none = rasterize(lone(0.1, { alpha: 0 }));
+    expect(darker(none, plain, at.x, at.y)).toBe(false);
+  });
+
+  it("draws the same frame for the same world, clock included", () => {
+    const idle = FRAMES.idle();
+    expect(Buffer.from(rasterize(idle).data).equals(Buffer.from(rasterize(FRAMES.idle()).data))).toBe(true);
+  });
+
+  it("keeps a 300-lane world under 60,000 fillRect calls a frame, at any hour", () => {
+    const states = ["running", "running", "running", "queued", "held", "waiting-reset", "orphaned", "preparing"] as const;
+    const lanes: UiLane[] = [];
+    for (const role of ["reviewer", "probe", "researcher"] as const) {
+      for (let i = 0; i < 4; i += 1) lanes.push(uiLane({ name: `${role}-${i}`, role, state: "running" }));
+    }
+    for (let i = lanes.length; i < 300; i += 1) {
+      const name = `lane-${String(i).padStart(3, "0")}`;
+      if (i % 5 === 4) lanes.push(finishedLane({ name, endState: i % 10 === 4 ? "failed" : "success", reportStatus: null }));
+      else lanes.push(uiLane({ name, state: states[i % states.length] ?? "running", hold: "quota", toolCalls: i % 60 }));
+    }
+    const scene = createScene({ reducedMotion: false, random: seededRandom(3) });
+    scene.apply(uiSnapshot({ lanes }));
+    let most = 0;
+    for (const phase of ["day", "dusk", "night"] as const) {
+      for (let f = 0; f < 40; f += 1) {
+        scene.step(1000 / 60);
+        const fills = { n: 0 };
+        const ctx: Canvas2D = { fillStyle: "#000000", globalAlpha: 1, imageSmoothingEnabled: false, fillRect: () => void fills.n++, clearRect() {} };
+        // A clock that visits the felucca, the caravan, the birds and a shooting star, and a capstone in its glow.
+        const world = scene.world;
+        renderWorld(ctx, { ...world, sky: { phase, sun: 0.3 }, time: 49 + f * 3.01, shake: f % 2, pyramid: { ...world.pyramid, capstone: { ...world.pyramid.capstone, glow: 0.5 } } });
+        most = Math.max(most, fills.n);
+      }
+    }
+    expect(scene.world.actors.length).toBeGreaterThan(200);
+    expect(most).toBeLessThan(60_000);
+  });
+});
+
+describe("shineOffset", () => {
+  it("sweeps the shine across a set block as its flash fades", () => {
+    expect(shineOffset(1, 32, 16)).toBe(-2);
+    expect(shineOffset(0, 32, 16)).toBe(50);
+    expect(shineOffset(0.5, 32, 16)).toBeGreaterThan(shineOffset(0.9, 32, 16));
+    expect(shineOffset(Number.NaN, 32, 16)).toBe(50);
+  });
+
+  it("draws a bright diagonal band on a set block while it flashes", () => {
+    const world = (flash: number): World => {
+      const w = empty();
+      const l = pyramidLayout(10);
+      const s = l.slots[0];
+      if (!s) throw new Error("no slot");
+      return { ...w, pyramid: { ...w.pyramid, blocks: [{ lane: "a", x: s.x, y: s.y, w: s.w, h: s.h, look: "set", fill: 1, flash, highlight: false }] } };
+    };
+    const ops = (w: World): Op[] => {
+      const ctx = recorder();
+      renderWorld(ctx, w);
+      return ctx.ops.filter((op) => op.color === "#FFFFFF" && op.alpha === 0.75);
+    };
+    expect(ops(world(0))).toEqual([]);
+    const band = ops(world(0.5));
+    expect(band.length).toBeGreaterThan(4);
+    // Each row's piece sits further left as the rows go down: a diagonal.
+    const rows = [...band].sort((a, b) => a.y - b.y);
+    expect((rows[rows.length - 1]?.x ?? 0) < (rows[0]?.x ?? 0)).toBe(true);
   });
 });
 

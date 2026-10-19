@@ -1,0 +1,39 @@
+{
+  "name": "readme",
+  "base": "readme-base",
+  "defaults": { "role": "implementer", "effort": "medium", "budgetUsd": 4, "wallMin": 25, "idleMin": 10 },
+  "phases": [
+    { "name": "readme-hero", "brief": "lanes/readme-hero.md", "scope": ["docs/readme/01-hero.md"] },
+    { "name": "readme-why", "brief": "lanes/readme-why.md", "scope": ["docs/readme/02-why.md"] },
+    { "name": "readme-run", "brief": "lanes/readme-run.md", "scope": ["docs/readme/03-run.md"] },
+    { "name": "readme-trust", "brief": "lanes/readme-trust.md", "scope": ["docs/readme/04-trust.md"] },
+    { "name": "readme-watch", "brief": "lanes/readme-watch.md", "scope": ["docs/readme/05-watch.md"] },
+    { "name": "readme-not", "brief": "lanes/readme-not.md", "scope": ["docs/readme/06-not.md"] },
+    {
+      "name": "readme-scout",
+      "role": "researcher",
+      "brief": "lanes/readme-scout.md",
+      "scope": ["docs/readme/scout.none"],
+      "checkpoint": true,
+      "budgetUsd": 3,
+      "wallMin": 20
+    },
+    {
+      "name": "readme-assemble",
+      "brief": "lanes/readme-assemble.md",
+      "scope": ["README.md", "docs/readme/**"],
+      "dependsOn": [
+        "readme-hero",
+        "readme-why",
+        "readme-run",
+        "readme-trust",
+        "readme-watch",
+        "readme-not",
+        "readme-scout"
+      ],
+      "effort": "high",
+      "budgetUsd": 6,
+      "wallMin": 30
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "ui-build",
+  "role": "implementer",
+  "brief": "lanes/ui-build.md",
+  "base": "integrate/ui",
+  "model": "haiku",
+  "effort": "low",
+  "budgetUsd": 3,
+  "wallMin": 30
+}

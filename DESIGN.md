@@ -333,6 +333,8 @@ arbab plan check|next|status <plan>  M2 (§16)
 arbab integrate <name> (--lanes a,b | --plan p | --deps-installed <sha>)
 arbab verify <name>  arbab review <name> [--lenses a,b]  arbab readiness <name> [--tier t] [--waive ids]
 arbab land <name> [--keep-worktrees] M3 (§17)
+arbab ui [--port N] [--hours N] [--no-open] [--json]
+                                     the pyramid scene on 127.0.0.1 (§19)
 arbab __shepherd <root> <lane> <mode-json>
                                      internal
 ```
@@ -651,7 +653,138 @@ would copy `node_modules`, `.arbab/` and the private research.
   A researcher without `domains` keeps WebSearch and WebFetch only. It has no local file tools either way, so prompt
   injection finds nothing local to send.
 
-## 19. Open items
+## 19. `arbab ui` — the pyramid scene
+
+The fleet at a glance, for the human next to the orchestrator: a local page where every lane is a worker building a
+pyramid and arbab is the foreman. The owner's idea (2026-10-11) and decisions (2026-10-18): arbab stands at the front
+of the scene and *talks* to each worker (speech bubbles of meaningless glyphs) when it hands out a brief and when it
+takes a report; a pyramid is an integration; sound is off until the viewer turns it on.
+
+### Command
+
+`arbab ui [--port N] [--hours N] [--no-open] [--json]` serves the project's scene until SIGINT or SIGTERM.
+
+- It opens the page, `http://127.0.0.1:<port>/#token=<token>`, in the browser, then prints only
+  `http://127.0.0.1:<port>/`. The page counts as opened when the opener (`open` on macOS, `xdg-open` on Linux) exits
+  0, or is still running after 5 s (some `xdg-open`s wait for the browser they start).
+- With `--no-open`, or when no browser could be opened (no opener, a spawn error, a non-zero exit), it prints the URL
+  with its token instead.
+- `--json` prints `{"url", "port"}`, the URL with its token, because it is asked for.
+
+Claude Code keeps a background command's output on disk and in the session transcript. So the token goes to the
+browser, and onto stdout only when a person has to open the page by hand.
+
+`--port` is 0 (the default: the system picks) or 1024–65535; a browser leaves port 80 out of `Host` and `Origin`,
+which the server's checks would refuse. `--hours` (default 24, 1–720) is the window. It is read-only: it writes
+nothing under `.arbab/` or `~/.arbab/` and signals no process. The skill starts it as a background Bash call before a
+session's first launch.
+
+### Server (`src/ui/server`)
+
+- It listens on `127.0.0.1` only. Every request must carry `Host: 127.0.0.1:<port>` or `localhost:<port>` (a DNS
+  rebinding page carries its own host), use GET or HEAD (405 otherwise), and have a URL of at most 2,048 characters. A
+  `Sec-Fetch-Site: cross-site` request or one whose `Origin` is not the server's own is refused (403).
+- The session token is 128 random bits in hex.
+  - arbab never writes it to disk. It is printed only as the Command section says.
+  - It is required, as `?token=`, by the data routes `/events` and `/snapshot.json` (compared in constant time; 401
+    otherwise).
+  - The opener carries the URL in its argv, where other local users can read it with `ps`: briefly on macOS
+    (`open` exits at once), and for the browser's life on Linux (`xdg-open`, and a browser it starts). On a shared
+    machine, use `--no-open`.
+- The page, `/app.js` and `/app.css` are public code; they are served from memory, never from a path.
+- Every response carries `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
+  img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store`,
+  `X-Frame-Options: DENY`, `Cross-Origin-Resource-Policy: same-origin` and `Cross-Origin-Opener-Policy: same-origin`,
+  and no CORS header.
+- `/events` is server-sent events: `retry: 2000`, a snapshot at once, then one whenever a tick (1 s) finds it changed
+  (ignoring `now`), and at least every 30 s. At most 16 clients (503); a client more than 4 MiB behind is dropped.
+  Snapshots are built only while a client listens, once per tick for all of them; a build that throws is skipped,
+  and three in a row send a `problem` event.
+- The **window**: a lane is in the snapshot when it is not finished, its state changed within `--hours`, or it was
+  merged into an integration that is not landed or landed within `--hours`. At most 300 lanes, the newest by
+  `firstSeen`; the rest, and lanes whose records do not parse, are counted in `hiddenLanes`.
+- A running attempt's tool calls are counted from its stream incrementally (a byte offset per attempt, never the whole
+  stream per tick), the way `digestStream` counts them: one per `tool_use` id, `StructuredOutput` excluded.
+- A snapshot carries states, counts, costs, names and enums (`src/ui/protocol.ts`): never a brief, report text,
+  stream content, an environment value or a path. The exceptions are a state's `reason` (cut to 200 characters) and the
+  project directory's name. A tool name outside `^[A-Za-z0-9_.:-]{1,64}$` becomes null.
+
+### Scene (`src/ui/client/scene`, model in `src/ui/client/model.ts`)
+
+The cast:
+
+| Lane | Worker | Builds a block | Works |
+| --- | --- | --- | --- |
+| implementer | laborer | yes | at its block |
+| verifier, own worktree | mason | yes | at its block |
+| verifier in another lane's worktree | mason | no | at that lane's block |
+| reviewer generated by `review` | scribe | no | walks the pyramid's foot and lower courses, writing |
+| skeptic generated by `review` | skeptic | no | like a scribe, talking now and then |
+| other reviewer | scribe | no | like a scribe |
+| probe generated by `verify` | surveyor | no | measures at the pyramid's right foot |
+| probe generated by `preflight` (whatever its role), other probe | water carrier | no | walks between the well and the site |
+| researcher | scout | no | walks off past the dunes and back |
+
+A worker's day:
+
+1. It comes in from the village path at the left edge. `queued` and `held` sit in the camp (an hourglass above a lane
+   held for the quota, dots above one held for a slot).
+2. `preparing` or `running`: it walks to arbab and they talk (alternating bubbles of glyph gibberish), then a builder
+   carries a stone to its block, climbs to it and works; the others go to their place. One worker talks at a time;
+   at most six wait in line behind it, and the rest wait where they are until a place frees up.
+3. `running`: one stroke per new tool call (at most six queued), a stone placed per stroke, with dust. A building
+   block's fill is `min(0.95, 1 − e^(−calls/40))`.
+4. `waiting-reset`: it sleeps where it works (zzz).
+5. `finished`: at once, a builder's block is **set** (fill 1, a shine) on success with a `done` report (or none), is
+   **stalled** on a `partial` or `blocked` report, and **falls** otherwise (its stones tumble to the foot as rubble;
+   the slot stays an empty gap until the lane runs again). The worker walks back to arbab and they talk. With success it
+   takes its ration from the table, by its cost (`costDeltaUsd`, else `costUsd`): under $1 a loaf, under $5 a loaf and
+   a jug, else a basket and a jug; a `partial` report gets a loaf. A `blocked` report or any other end state leaves
+   empty-handed, slumped. Then it walks off the left edge.
+6. `orphaned`: a pale ghost where it stood, with a question mark, until the lane changes.
+
+The first snapshot sets the scene as it stands, without walks: workers stand where their state puts them, finished
+lanes have no worker, and blocks show their outcome. A lane that leaves the window fades out.
+
+Pyramids:
+
+- The **foreground pyramid** holds the building lanes not in a landed integration, plus those of every integration
+  landed within the last 10 minutes (so its capstone can be seen; the newest landing holds the capstone, and one that
+  lands during another's hoist waits for it to set). Blocks fill the bottom course first, left to right, in
+  `firstSeen` order: the oldest work is the foundation. The base is `max(4, the least b with b(b+1)/2 ≥ lanes)`; slots
+  no lane has taken are drawn as a faint outline.
+- The **capstone** belongs to the newest integration that is not landed and merged a foreground lane: it waits on a
+  sledge at the right foot with a green or red flag once `verify` ran on its head, and gleams when readiness is ready.
+  When the integration lands, it is hoisted to the apex.
+- Landed integrations stand as up to three small finished pyramids on the left horizon, the newest nearest the site.
+
+The sky is day, dusk while launches are held, and night while the account is rejected; the sun crosses its arc over
+the five-hour window. The treasury's coin pile is `min(48, round(6·√(total cost of the lanes in view)))`.
+
+### Page (`src/ui/client/app`)
+
+- One canvas of 480×270 logical pixels, scaled by an integer and drawn pixelated. All text lives in the DOM: a header
+  (project, lanes by state, total cost, quota, connection, sound toggle), a tooltip with the lane's facts on hover, a
+  crew list (each lane focusable; focus or hover highlights its worker and block), a table of the lanes (the
+  accessible equivalent of the canvas) and a polite live region that announces finishes and landings.
+- Text goes in with `textContent` only; nothing from a snapshot is ever parsed as HTML. `prefers-reduced-motion` moves
+  actors at once and drops particles.
+- Sound: a drum and a horn synthesized with WebAudio (no files), off by default; the toggle is remembered in
+  `localStorage`.
+- The renderer draws with solid `fillRect`s and `globalAlpha` only, so the same code rasterizes the scene into PNG
+  frames in tests. `docs/ui/*.png` are those frames: the README's pictures and the renderer's goldens (compared by
+  pixel, so another zlib cannot fail them).
+
+### Build
+
+`scripts/build.mjs` bundles `src/ui/client/app/main.ts` for the browser (IIFE, minified) and, inside the runner
+bundle, replaces `src/ui/client/app/bundle.ts` with it. Run from source (tests), that file's `null` makes the server
+send a placeholder script.
+
+Not in this version: actions from the page (stop, resume), several projects in one page, history beyond the window.
+
+## 20. Open items
 
 - Can `sandbox.filesystem.denyWrite` take globs, so other sessions' scratchpads under `/tmp/claude-<uid>` become
   unwritable from a worker? (M4 hardening; probe.)

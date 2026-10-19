@@ -1,0 +1,9 @@
+{
+  "name": "ui-fix2",
+  "role": "implementer",
+  "brief": "lanes/ui-fix2.md",
+  "base": "integrate/ui",
+  "effort": "high",
+  "budgetUsd": 10,
+  "wallMin": 60
+}

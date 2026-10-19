@@ -114,7 +114,8 @@ claude plugin install arbab@arbab
 ```
 
 The install copies only `plugin/`: the skill and a single-file runner (the `arbab ui` page included), about 550 KB,
-with zero runtime dependencies. To update: `claude plugin marketplace update arbab`.
+with zero runtime dependencies. To update, refresh the marketplace with `claude plugin marketplace update arbab`, then
+run `claude plugin update arbab@arbab`.
 
 Then:
 
@@ -138,8 +139,8 @@ Then:
    - `commands` are the only project commands each role may run.
    - `gates` are what `verify` runs.
 
-   The skill's "Before the first launch" section explains every field. [arbab.config.json](arbab.config.json) is
-   this repository's own.
+   The skill's "Before the first launch" section explains the fields that matter first.
+   [arbab.config.json](arbab.config.json) is this repository's own.
 2. **Run the skill.** Open Claude Code in the project and type `/arbab`. Ask it to check the setup first; it runs
    `arbab doctor` (node, git, the claude binary, the sandbox, the config, the ignored roots).
 3. **Hand it the work:** "Plan this and run it with arbab." The orchestrator splits the work into lanes, writes their
@@ -299,8 +300,9 @@ Every worker gets:
 - **Claude Code's sandbox.** Writes stay in its worktree, and there is no network unless the lane is a researcher. A
   sandbox that cannot start is fatal, never a silent fallback.
 - **`dontAsk` permissions with its role's exact tools.** A tool left out of the role does not exist for the worker.
-- **An allowlist of project commands.** The lint refuses "any code" prefixes such as bare `node` or `pnpm`, so an allow
-  rule cannot run whatever the worker writes.
+- **An allowlist of project commands.** The lint refuses "any code" prefixes such as bare `node` or `pnpm`. An allowed
+  command can still run code the worker wrote (`pnpm test` runs its tests), so the sandbox is what contains that code.
+  A lane can opt into the `sandbox-auto` fence, which drops the allowlist and leaves the sandbox as the only wall.
 - **No background shells.**
 - **No writes to the repository's shared `.git`.** Git writes are denied, and the runner commits.
 - **A scrubbed environment, with credential paths denied.** The environment is built from scratch, and paths such as
@@ -333,7 +335,8 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
 - **A skeptic lane per lens** tries to refute each MEDIUM or HIGH finding.
 - **Verdicts:** each finding ends `confirmed`, `refuted` or `unverified`.
 - **A readiness report** lists what was verified, what was skipped, and every risk.
-- **Only you can waive a skipped check.** `land` refuses while one is left.
+- **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id. The skill
+  waives one only when you name it.
 
 On arbab's own `arbab ui`, the first review round confirmed six findings. The two MEDIUM ones were the same problem,
 found by two lenses independently. All six were fixed before landing. Milestone M3 went through 14 review rounds,
@@ -409,7 +412,7 @@ clink as a finished worker takes its pay.
 | `stop <lane>` | Stops the lane's shepherd and worker. |
 | `preflight <lane.json> [--timeout-min N]` | Probes the lane's fence and model. Exit 1 on any failed check. |
 | `quota [--reset]` | Shows the account snapshot and the hold decision. `--reset` deletes the snapshot after you switch accounts. |
-| `cleanup [--worktrees]` | Reaps orphans and releases stale pool entries. `--worktrees` also removes finished lanes' merged, clean worktrees and landed integrations' worktrees. |
+| `cleanup [--worktrees]` | Reaps orphans and releases stale pool entries. `--worktrees` also removes finished lanes' merged, clean worktrees (lane branches stay) and landed integrations' worktrees and branches. |
 | `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
 | `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. |
 | `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
@@ -430,7 +433,8 @@ The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`.
 - **Not another coding agent.** The workers are the unmodified Claude Code binary (`claude -p`), under your own
   login. arbab decides how they run, fences them and checks their work.
 - **Not a replacement for Claude Code.** It is a plugin for the session you already use: a skill plus a runner.
-- **Not an autonomous deploy bot.** Workers cannot push or deploy. Landing needs your yes, and `land` never pushes.
+- **Not an autonomous deploy bot.** Workers cannot push or deploy. The skill lands only on your yes, and `land` never
+  pushes.
 - **Not a generic agent framework.** It is opinionated about software work: worktrees, sandboxes, verification,
   review and controlled integration. For a short fan-out inside your session, Claude Code's Workflows are the simpler
   tool; the [FAQ](#faq) compares them.
@@ -487,8 +491,8 @@ and takes the results through verify, review and readiness before you decide.
 
 **How is it different from orchestrators that review before merging?**
 Some, such as [claude-orchestrator](https://github.com/indiekitai/claude-orchestrator), have another model review
-each batch of worktree agents before merging. arbab adds two things: every worker runs behind Claude Code's sandbox,
-and nothing lands until you say yes.
+each batch of worktree agents before merging. In arbab, every worker also runs behind Claude Code's sandbox, and the
+skill lands nothing until you say yes.
 
 **Does it work with a Claude subscription or the API?**
 Both. It runs the unmodified `claude` binary under your own login, on your machine. It never reads, stores or
@@ -498,7 +502,8 @@ Costs in the reports are Claude Code's API-equivalent estimates.
 
 **Is it safe to let workers run unattended?**
 Workers are fenced by Claude Code's sandbox and an exact permission profile. arbab never runs their code on the host
-outside that fence, and nothing lands without your approval. See [Safe by construction](#safe-by-construction).
+outside that fence, and the skill lands nothing without your approval. See
+[Safe by construction](#safe-by-construction).
 
 **Does arbab push to my remote?**
 Never. `land` merges locally and prints the push command.

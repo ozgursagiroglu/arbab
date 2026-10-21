@@ -876,3 +876,112 @@ Decided while building it (plan `ui2`):
 - `arbab quota --reset` clears the old account's snapshot, but a lane still running on the old account can write a new
   one, which holds the other lanes again until a newer reading replaces it. Reset after the old account's lanes stop.
 - `integrate` does not check that a lane's run ended in success; the orchestrator decides from `status`.
+
+## 21. Field fixes (2026-10-21)
+
+Measured in real use: two machines, a dozen repositories, about 2,200 attempts between October 9 and 21. Workers
+almost always ended `success`; the time and the risk went elsewhere, at the orchestrator and at the fence's edges.
+The decisions below answer what that use showed.
+
+### Orchestrator approvals
+
+- A skill's `allowed-tools` grant lasts only for the turn that invoked the skill (Claude Code docs), and orchestrators
+  wrapped runner calls (`cd <repo> && … 2>&1 | tail`), which no allow rule matches. About nine runner calls in ten
+  waited for a person's click; overnight runs stalled on them.
+- The plugin ships `hooks/hooks.json`: a PreToolUse hook on Bash (`"if": "Bash(node *)"`, exec form) runs
+  `arbab hook pre-tool-use`. It approves a call only when the command is a bare invocation of this runner,
+  `node "<plugin>/dist/arbab.mjs" [-C <dir>] <command> [args]` with the same file by real path, and every argument is
+  a plain or quoted word without shell syntax (`;`, `&`, `|`, `$`, backticks, `<`, `>`, parentheses, braces,
+  newlines, backslashes). Anything else gets no answer and goes through the normal permission flow. Deny and ask
+  rules still apply: Claude Code evaluates them whatever a hook answers.
+- Global option `-C <dir>`: the project is found from `<dir>` instead of the working directory, so an orchestrator
+  started in a parent folder of several repositories calls the runner bare.
+- `status --active` (lanes not finished) and per-command help (`arbab <command> --help`) remove the other reasons to
+  wrap a call.
+
+### Ownership
+
+- The CLI and the shepherd read `CLAUDE_CODE_SESSION_ID` (Claude Code sets it in Bash tool and hook processes) at
+  their edge. A run's `shepherd.json` records it as `owner`.
+- `wait --any` waits for runs owned by this session or by none (runs started before §21); `--all` waits for every
+  run. `status --mine` and `cleanup --mine` filter the same way.
+- Machine registries under `~/.arbab/`: `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while
+  `arbab wait` runs, `projects/<sha1(root)>.json` for each project that launched a lane. Entries of dead pids are
+  ignored and removed.
+- A Stop hook (`arbab hook stop`) keeps the orchestrator from ending its turn when it owns live shepherds and no live
+  waiter, once: `stop_hook_active` lets the next stop through.
+
+### Fence
+
+- Reviewers (skeptics included) get loopback: they run tests to check findings, and tests listen on 127.0.0.1.
+- Settings carry `bashOutputMaxChars` (config `fence.bashOutputMaxChars`, default 100,000). Claude Code saves longer
+  output under `~/.claude/projects/…/tool-results/`, which the credential deny on `~/.claude/**` keeps the worker from
+  reading. The tool belt says so.
+- Worker environment: `CLAUDE_CODE_SHELL=/bin/bash`, because the host's zsh fails on unquoted `[slug]` globs.
+  `NPM_CONFIG_USERCONFIG` points at an empty file and `YARN_CACHE_FOLDER`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` at
+  `.arbab-tmp/`, so package managers stop reading the denied `~/.npmrc` and `~/.config`. The tool belt asks for quoted
+  paths with `[ ] ( )`.
+- `fence.readableEnvFiles` lists tracked templates such as `.env.example` (checked with `git ls-files`). When it is
+  set, the blanket `**/.env*` deny becomes explicit secret patterns (`**/.env`, `**/.env.local`, `**/.env.*.local`,
+  `**/.env.development*`, `**/.env.production*`, `**/.env.staging*`, `**/.env.test*`, `**/.envrc`) plus every other
+  `.env*` file found in the worktree and the main checkout, by absolute path. A tracked template's content is in git
+  already.
+
+### Shepherd
+
+- The quota is checked before a slot is taken and again after: a lane held for quota holds no slot, so `no free slot`
+  means what it says.
+- `~/.arbab/machine.json` (`{ "maxParallel": n }`) caps every project's `maxParallel`; held shepherds re-read it on
+  every poll.
+- `runs/<lane>/events.jsonl` logs every state change; a run's first `started.json` carries `heldMs` and `prepareMs`.
+- A lane's `inputs` are copied into `.arbab-tmp/inputs/` before its first attempt and listed in its brief.
+- The writer lock's directory goes with its entry, and `cleanup` removes empty lock directories.
+- Summaries carry `tokens` and `maxGapMs`, killed attempts included.
+
+### Integration and landing
+
+- A manifest change counts only when it can change an install: lockfiles, `.npmrc` and `.pnpmfile.*`, and in
+  `package.json` the dependency fields, `overrides`, `resolutions`, `pnpm`, `workspaces`, `packageManager` and the
+  install-time scripts (`preinstall`, `install`, `postinstall`, `prepare` and their `pre`/`post` forms). An `exports`
+  or `version` edit no longer needs `--deps-installed`.
+- `integrate <name> --adopt <ref> [--base <ref>]` makes an integration of an existing branch, so work done outside
+  lanes gets verify and review.
+- `land --squash` (config `landing.squash`) makes one commit; `--message <file>` sets the commit message.
+  `landing.json` lists the lanes it carried, so `cleanup` recognises them after a squash or a reshaped base.
+- `land` refuses tracked changes and untracked files the merge would write; other untracked files no longer block it.
+- arbab excludes `.arbab/` as a whole (and `.arbab-tmp/`), and writes `.arbab/.eslintrc.json` with `"root": true`,
+  which stops ESLint 8's config cascade at `.arbab/`: a worktree's own config otherwise loads the main checkout's too.
+- `verify --ref <branch>` runs the gates on a branch head with no integration: the check after landing.
+
+### Review and readiness
+
+- Every review writes `reviews/<round>.json` beside `review.json`, and a `--lenses` subset keeps the other lenses'
+  findings from the same head. Readiness shows each round's severity counts.
+- `review --lens-file <name>=<file>` takes a lens text from a file, with no config edit; `--since <sha>` reviews what
+  changed since a fix round.
+- A re-run of `verify` or `review` adopts its generated lanes' results when they finished after a timeout, and waits
+  for them when they still run.
+- A review stays current when the head differs from the reviewed head only by a clean merge of the base (no hand
+  resolution); readiness says it carried the review over.
+- `--waive` requires a terminal, as `--deps-installed` does: waivers are the human's.
+- `hostGates` and `arbab host-check <name>` (terminal only) record the checks the fence cannot run; readiness lists
+  them until they pass on the head.
+- Readiness groups repeated lane notes (one sandbox limit named in twenty reports is one risk) and orders risks by
+  weight.
+
+### Plans, preflight, doctor and the status commands
+
+- `plan next --retry <phase>` relaunches a failed phase. Scope overlap compares glob segments, not only fixed prefixes.
+- Preflight probes run the project's `preflight.steps` as exact allow rules whatever the lane's role, and remove the
+  probe worktrees they created.
+- `doctor` also checks: the plugin hook is present; `.arbab/` is excluded; lint and test configs that would scan
+  `.arbab/`; gates against the repository's check scripts and CI; worktree and lock-directory counts; tracked env
+  templates missing from `fence.readableEnvFiles`; the machine cap.
+- New commands: `summary [--all] [--json]` (plans, lanes by state, integrations by stage, what needs the human);
+  `report <lane>`; `quota --refresh` (one call on the cheapest model reads the current account's windows after an
+  account switch); `wait --notify` (a desktop notification per finished lane).
+- Config may live at `.arbab/config.json` when the repository has no `arbab.config.json`, so a client repository
+  carries no arbab file.
+
+Not done: worktrees outside the project tree. The failures seen (ESLint's cascade, tools that scan `.arbab/`) are
+covered by the root marker and by doctor; `worktreeRoot` stays inside the project.

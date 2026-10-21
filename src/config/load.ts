@@ -66,7 +66,9 @@ export function defaultConfig(): ProjectConfig {
     minClaudeVersion: "2.1.290",
     verify: { smoke: null },
     review: { lenses: {} },
-    landing: { tier: "medium" },
+    landing: { tier: "medium", squash: false },
+    fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
+    hostGates: [],
   };
 }
 
@@ -125,7 +127,7 @@ export function loadConfig(projectRoot: string): ProjectConfig {
   if (obj.landing !== undefined) {
     const l = record(obj.landing, "landing");
     knownKeys(l, ["tier"], "landing");
-    if (l.tier !== undefined) config.landing = { tier: tier(l.tier) };
+    if (l.tier !== undefined) config.landing = { ...config.landing, tier: tier(l.tier) };
   }
   return config;
 }

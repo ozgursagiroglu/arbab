@@ -144,7 +144,9 @@ describe("loadConfig", () => {
       minClaudeVersion: "2.1.290",
       verify: { smoke: null },
       review: { lenses: {} },
-      landing: { tier: "medium" },
+      landing: { tier: "medium", squash: false },
+      fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
+      hostGates: [],
     });
   });
 
@@ -194,7 +196,7 @@ describe("loadConfig", () => {
     expect(config.quota.holdAbove).toEqual({ fiveHour: 1, sevenDay: 0.95 });
     expect(config.verify).toEqual({ smoke: ["make", "smoke"] });
     expect(config.review.lenses).toEqual({ perf: "Hot paths that allocate per request." });
-    expect(config.landing).toEqual({ tier: "high" });
+    expect(config.landing).toEqual({ tier: "high", squash: false });
     expect(config.resources["redis-db"]).toEqual({ range: [0, 15] });
     expect(config.roles.probe).toEqual({ effort: "medium", loopback: false, maxAttempts: 2 });
   });

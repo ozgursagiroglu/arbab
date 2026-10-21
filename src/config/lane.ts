@@ -43,6 +43,7 @@ const LANE_KEYS: readonly (keyof LaneSpec)[] = [
   "coordination",
   "upstream",
   "mergeBranches",
+  "inputs",
 ];
 
 /** The lane fields a plan's defaults and phases may set (PhaseLaneFields). */
@@ -62,6 +63,7 @@ export const PHASE_LANE_KEYS: readonly (keyof PhaseLaneFields)[] = [
   "checkpoint",
   "autoResume",
   "maxAttempts",
+  "inputs",
 ];
 
 const FENCES: readonly FenceLevel[] = ["strict", "sandbox-auto"];
@@ -134,7 +136,24 @@ export function phaseLaneFields(
   if (obj.maxAttempts !== undefined) {
     out.maxAttempts = integerIn(obj.maxAttempts, 1, MAX_ATTEMPTS, f("maxAttempts"));
   }
+  if (obj.inputs !== undefined) out.inputs = inputList(obj.inputs, f("inputs"));
   return out;
+}
+
+export const MAX_INPUTS = 20;
+
+/**
+ * A lane's `inputs`: at most MAX_INPUTS paths, each a non-empty string without NUL or newline. Whether they exist is
+ * checked when the shepherd copies them, which may be on another day than the lane was written.
+ */
+export function inputList(v: unknown, field: string): string[] {
+  if (!Array.isArray(v)) fail(field, "must be an array of paths");
+  if (v.length > MAX_INPUTS) fail(field, `must list at most ${MAX_INPUTS} paths`);
+  return v.map((item, i) => {
+    if (typeof item !== "string" || item === "") fail(`${field}[${i}]`, "must be a non-empty string");
+    if (/[\0\n\r]/.test(item)) fail(`${field}[${i}]`, "must not contain NUL or a newline");
+    return item;
+  });
 }
 
 /**

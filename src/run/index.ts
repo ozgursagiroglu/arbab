@@ -39,3 +39,6 @@ export { createWatcher, fileRange, fileSize } from "./watch";
 export type { Watcher, WatcherInput, WatcherState, WatcherTick } from "./watch";
 export { checkpoint } from "./checkpoint";
 export type { CheckpointInput } from "./checkpoint";
+export { WORKER_TMP_DIR, ensureWorkerTmp, workerTmpPaths } from "./workertmp";
+export type { WorkerTmpPaths } from "./workertmp";
+export { ARBAB_DIR, ESLINT_MARKER, arbabIgnoreEntries, ensureArbabMarkers } from "./project-files";

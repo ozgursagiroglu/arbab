@@ -2,7 +2,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { INTEGRATION_WORKTREE_PREFIX, PHASE_LANE_KEYS, loadLane, phaseLaneFields, toolList, worktreeName } from "./lane";
+import {
+  INTEGRATION_WORKTREE_PREFIX,
+  MAX_INPUTS,
+  PHASE_LANE_KEYS,
+  inputList,
+  loadLane,
+  phaseLaneFields,
+  toolList,
+  worktreeName,
+} from "./lane";
 
 let dir: string;
 beforeEach(() => {
@@ -44,6 +53,7 @@ describe("phaseLaneFields", () => {
         "effort",
         "fence",
         "idleMin",
+        "inputs",
         "maxAttempts",
         "model",
         "resources",
@@ -109,6 +119,48 @@ describe("loadLane", () => {
     for (const [tools, message] of cases) {
       expect(() => loadLane(dir, writeLane({ name: "m3-a", tools })), JSON.stringify(tools)).toThrow(message);
     }
+  });
+});
+
+describe("inputs", () => {
+  const writeLane = (lane: Record<string, unknown>): string => {
+    writeFileSync(join(dir, "lanes", "brief.md"), "## Task\n");
+    writeFileSync(join(dir, "lanes", "l.json"), JSON.stringify({ name: "m3-a", role: "implementer", brief: "lanes/brief.md", ...lane }));
+    return "lanes/l.json";
+  };
+
+  it("keeps the paths as written, without checking that they exist", () => {
+    const inputs = ["/abs/design", "~/notes/handoff.md", "docs/missing.md"];
+    expect(loadLane(dir, writeLane({ inputs })).inputs).toEqual(inputs);
+    expect(loadLane(dir, writeLane({ inputs: [] })).inputs).toEqual([]);
+    expect(phaseLaneFields(dir, { inputs: ["a"] })).toEqual({ inputs: ["a"] });
+  });
+
+  it("accepts MAX_INPUTS paths and refuses one more", () => {
+    const many = Array.from({ length: MAX_INPUTS }, (_, i) => `f${i}`);
+    expect(inputList(many, "inputs")).toEqual(many);
+    expect(() => inputList([...many, "x"], "inputs")).toThrow(/^inputs: must list at most 20 paths$/);
+  });
+
+  it("refuses a non-array and bad entries as config errors", () => {
+    const cases: Array<[unknown, RegExp]> = [
+      ["a", /^inputs: must be an array of paths$/],
+      [[""], /^inputs\[0\]: must be a non-empty string$/],
+      [["a", 3], /^inputs\[1\]: must be a non-empty string$/],
+      [["a\nb"], /^inputs\[0\]: must not contain NUL or a newline$/],
+      [["a\0b"], /^inputs\[0\]: must not contain NUL or a newline$/],
+    ];
+    for (const [inputs, message] of cases) {
+      let err: unknown;
+      try {
+        loadLane(dir, writeLane({ inputs }));
+      } catch (e) {
+        err = e;
+      }
+      expect(err, JSON.stringify(inputs)).toMatchObject({ code: "config" });
+      expect((err as Error).message).toMatch(message);
+    }
+    expect(() => phaseLaneFields(dir, { inputs: [""] }, "phases[1]")).toThrow(/^phases\[1\]\.inputs\[0\]:/);
   });
 });
 

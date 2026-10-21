@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,65 @@ export interface CommandContext {
    * opener could not start or failed.
    */
   openUrl: (url: string) => Promise<boolean>;
+  /** The runner file this CLI runs from (opts.scriptPath). */
+  scriptPath: string;
+  /** All of stdin as UTF-8; "" when stdin is a TTY. */
+  readStdin: () => Promise<string>;
+  /** A desktop notification; resolves whether it was shown. Never throws. */
+  notify: (title: string, body: string) => Promise<boolean>;
+}
+
+/** How long a notifier may run before arbab gives up on it. */
+export const NOTIFY_TIMEOUT_MS = 5000;
+
+/** The part of `execFile` makeNotify uses, so tests can inject a fake. */
+export type NotifyExec = (file: string, args: string[], opts: { timeout: number }, done: (err: Error | null) => void) => void;
+
+const nodeNotifyExec: NotifyExec = (file, args, opts, done) => {
+  execFile(file, args, { timeout: opts.timeout, windowsHide: true }, (err) => done(err));
+};
+
+/** A string inside an AppleScript double-quoted literal. */
+export function appleScriptString(s: string): string {
+  return `"${s.replace(/[\\"]/g, "\\$&")}"`;
+}
+
+/**
+ * `osascript -e 'display notification …'` on macOS, `notify-send` on Linux; false on any other platform. Any error,
+ * a non-zero exit or the timeout resolves false: a notification is never worth failing a command for.
+ */
+export function makeNotify(platform: NodeJS.Platform, execFileImpl: NotifyExec = nodeNotifyExec): CommandContext["notify"] {
+  return (title, body) => {
+    let argv: [string, string[]];
+    if (platform === "darwin") {
+      argv = ["osascript", ["-e", `display notification ${appleScriptString(body)} with title ${appleScriptString(title)}`]];
+    } else if (platform === "linux") {
+      // "--": a title starting with "-" is text, not an option.
+      argv = ["notify-send", ["--", title, body]];
+    } else {
+      return Promise.resolve(false);
+    }
+    return new Promise((resolve) => {
+      try {
+        execFileImpl(argv[0], argv[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve(err === null || err === undefined));
+      } catch {
+        resolve(false);
+      }
+    });
+  };
+}
+
+/** Reads `stdin` to its end as UTF-8; "" without reading when it is a TTY (nobody would ever end it). */
+export function makeReadStdin(stdin: NodeJS.ReadableStream & { isTTY?: boolean }): CommandContext["readStdin"] {
+  return () => {
+    if (stdin.isTTY === true) return Promise.resolve("");
+    return new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      stdin.on("data", (chunk: Buffer | string) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
+      stdin.once("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+      stdin.once("error", (err) => reject(new ArbabError("io", `cannot read stdin: ${err.message}`, { cause: err })));
+    });
+  };
 }
 
 /** How long an opener may run before it counts as opened: some `xdg-open`s wait for the browser they start. */
@@ -165,5 +224,8 @@ export function defaultContext(opts: { scriptPath: string; version: string }): C
     version: opts.version,
     interactive: process.stdin.isTTY === true && process.stdout.isTTY === true,
     openUrl: makeOpenUrl(process.platform),
+    scriptPath: opts.scriptPath,
+    readStdin: makeReadStdin(process.stdin),
+    notify: makeNotify(process.platform),
   };
 }

@@ -287,6 +287,8 @@ export interface BriefContext {
   schema: JsonSchema | null;
   /** BASH_MAX_TIMEOUT_MS in minutes, named in the tool belt. */
   bashMaxTimeoutMin: number;
+  /** Names of the lane inputs copied into `.arbab-tmp/inputs/` (DESIGN.md §21); absent or empty when none. */
+  inputs?: string[];
 }
 
 /** The JSON Schema subset arbab validates (and Claude Code's --json-schema enforces). */

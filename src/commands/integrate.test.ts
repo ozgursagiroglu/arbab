@@ -236,3 +236,44 @@ describe("runIntegrate", () => {
     await expect(runIntegrate(["Bad Name", "--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage" });
   });
 });
+
+describe("runIntegrate --adopt", () => {
+  it("makes an integration of an existing branch and prints it", async () => {
+    p = makeProject();
+    const main = p.ok(["rev-parse", "main"]).trim();
+    const sha = branchWith(p, "feature", "f.txt", "f\n");
+    expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(record).toMatchObject({ branch: "integrate/rel", base: "main", baseSha: main, headSha: sha, merged: [], manifests: [], depsConfirmed: true });
+    expect(p.stdout()).toBe(`adopted feature as integrate/rel (base main at ${main})\n` + formatIntegration(record));
+    expect(p.ok(["rev-parse", "integrate/rel"]).trim()).toBe(sha);
+
+    // An adopted integration takes lanes like any other.
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    expect(recordOf(p, "rel").merged.map((m) => m.lane)).toEqual(["a"]);
+  });
+
+  it("takes --base and prints the record with --json", async () => {
+    p = makeProject();
+    p.ok(["branch", "release", "main"]);
+    const sha = branchWith(p, "feature", "f.txt", "f\n");
+    expect(await runIntegrate(["rel", "--adopt", sha, "--base", "release", "--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).toEqual(recordOf(p, "rel"));
+    expect(recordOf(p, "rel")).toMatchObject({ base: "release", headSha: sha });
+  });
+
+  it("refuses --lanes, --plan or --deps-installed with --adopt, --base without it, an existing name and an unknown ref", async () => {
+    p = makeProject();
+    branchWith(p, "feature", "f.txt", "f\n");
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--adopt takes no --lanes or --plan/) });
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--plan", "plans/p.json"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--adopt takes no --lanes or --plan/) });
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--deps-installed", "a".repeat(40)], p.ctx)).rejects.toThrow(/--deps-installed and --adopt exclude each other/);
+    await expect(runIntegrate(["rel", "--lanes", "a", "--base", "main"], p.ctx)).rejects.toThrow(/^--base goes with --adopt/);
+    await expect(runIntegrate(["rel", "--adopt", "nowhere"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--adopt nowhere does not name a commit/) });
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel"))).toBe(false);
+
+    expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
+    await expect(runIntegrate(["rel", "--adopt", "feature"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^integration rel already exists/) });
+  });
+});

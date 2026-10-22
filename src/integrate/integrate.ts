@@ -7,13 +7,13 @@ import {
   ensureArbabMarkers,
   ensureIgnored,
   explicitGit,
-  isDependencyManifest,
   prepareDependencies,
   untrustedTree,
   verifyWorktreeGit,
   worktreeStatus,
 } from "../run";
 import type { ArgvRunner, GitRunner } from "../run";
+import { installRelevantPaths } from "../run/deps";
 import { INTEGRATIONS_DIR, type IntegrationRecord, type ProjectConfig } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, ensureDir, readJson, writeJsonAtomic } from "../util/fs";
@@ -365,23 +365,26 @@ export function integrate(input: IntegrateInput): IntegrateResult {
   let baseSha = mergeBase();
   let confirmedAt = previous?.depsConfirmedAt ?? null;
 
-  /** The dependency manifests among the paths `git diff <range>` lists, once each, sorted. */
-  const manifestsIn = (range: string[], what: string): string[] => {
-    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...range, "--"]);
+  /**
+   * The dependency manifests that differ between two commits in a way an install sees (installRelevantChange), once
+   * each, sorted.
+   */
+  const manifestsBetween = (from: string, to: string, what: string): string[] => {
+    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", from, to, "--"]);
     if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${what} (${diff.code}): ${output(diff)}`);
-    return [...new Set(diff.stdout.split("\0").filter((p) => p !== "" && isDependencyManifest(p)))].sort();
+    return installRelevantPaths(wt, from, to, diff.stdout.split("\0").filter((p) => p !== ""));
   };
   // A confirmation covers the head it was given at and later commits that change no manifest.
   const stillConfirmed = (at: string): boolean =>
     commitOf(wt, at, paths.worktree) !== null &&
     isAncestor(wt, at, headSha, paths.worktree) &&
-    manifestsIn([at, headSha], `${paths.branch} changed since ${at}`).length === 0;
+    manifestsBetween(at, headSha, `${paths.branch} changed since ${at}`).length === 0;
 
   const record = (): IntegrationRecord => {
     baseSha = mergeBase();
     // Every commit on the branch counts, not only arbab's merges: a hand-resolved conflict or a merge whose record
     // was lost changes manifests too.
-    const manifests = manifestsIn([baseSha, headSha], `${paths.branch} changed since ${baseSha}`);
+    const manifests = manifestsBetween(baseSha, headSha, `${paths.branch} changed since ${baseSha}`);
     if (confirmedAt !== null && !stillConfirmed(confirmedAt)) confirmedAt = null;
     const depsConfirmedAt = confirmedAt;
     const rec: IntegrationRecord = {
@@ -412,7 +415,9 @@ export function integrate(input: IntegrateInput): IntegrateResult {
       // commits changed.
       alreadyIn.push(lane);
       if (merged.some((m) => m.lane === lane && m.sha === sha)) continue;
-      const manifests = manifestsIn([`${baseSha}...${sha}`], `${lane} changed since ${baseSha}`);
+      // What `git diff <base>...<sha>` compares: the lane's fork point with the base, and the lane.
+      const fork = must(wt, ["merge-base", baseSha, sha], paths.worktree).trim();
+      const manifests = manifestsBetween(fork, sha, `${lane} changed since ${baseSha}`);
       merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests }]);
       record();
       continue;
@@ -434,12 +439,81 @@ export function integrate(input: IntegrateInput): IntegrateResult {
     // What the merge changed on the integration branch: the lane's own changes, not every difference between them.
     const before = headSha;
     headSha = head();
-    const manifests = manifestsIn([before, headSha], `${lane} changed in ${paths.branch}`);
+    const manifests = manifestsBetween(before, headSha, `${lane} changed in ${paths.branch}`);
     // A lane merged again (its branch moved on) keeps one entry.
     merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests }]);
     record();
   }
   return { record: record(), alreadyIn };
+}
+
+export interface AdoptInput extends Omit<IntegrateInput, "lanes"> {
+  /** The branch or commit the integration takes as its head. */
+  ref: string;
+  /** What it lands into; config.baseBranch when absent. */
+  base?: string;
+}
+
+function assertRevision(rev: string, what: string): void {
+  if (rev === "" || rev.startsWith("-") || /\s/.test(rev)) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+}
+
+/**
+ * Makes a new integration of an existing branch (`integrate <name> --adopt <ref>`): integrate/<name> ends at the
+ * commit `ref` names, with no lane merged, so work done outside lanes gets verify, review and land. The worktree is
+ * created and its dependencies prepared at the fork point of `ref` and the base, a commit of the base and so trusted,
+ * and then fast-forwarded to `ref` with hooks off: `ref` may hold anyone's code. Its manifests are recorded as for any
+ * integration. Refused: a name that has an integration record, branch or worktree, a landed name, and a ref or base
+ * that names no commit or that share no history.
+ */
+export function adoptIntegration(input: AdoptInput): IntegrateResult {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  const { git, projectRoot } = input;
+  const base = input.base ?? input.config.baseBranch;
+  assertRevision(input.ref, "--adopt");
+  assertRevision(base, input.base === undefined ? "baseBranch" : "--base");
+
+  refuseLanded(paths);
+  refuseLaneWorktree(paths, git);
+  const existing = [
+    existsSync(paths.integration) ? paths.integration : null,
+    commitOf(git, `refs/heads/${paths.branch}`, projectRoot) !== null ? `branch ${paths.branch}` : null,
+    existsSync(paths.worktree) ? paths.worktree : null,
+  ].filter((e) => e !== null);
+  if (existing.length > 0) {
+    throw new ArbabError("usage", `integration ${paths.name} already exists (${existing.join(", ")}); choose a new name to adopt ${input.ref}`);
+  }
+  const sha = commitOf(git, input.ref, projectRoot);
+  if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
+  const baseSha = commitOf(git, base, projectRoot);
+  if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
+  const fork = git(["merge-base", sha, baseSha], projectRoot);
+  if (fork.code !== 0 || !SHA.test(fork.stdout.trim())) {
+    if (fork.code === 1) throw new ArbabError("usage", `${input.ref} shares no history with ${base}: there is nothing to land it into`);
+    throw new ArbabError("git", `git merge-base ${sha} ${baseSha} failed (${fork.code}): ${output(fork)}`);
+  }
+  const start = fork.stdout.trim();
+
+  must(git, ["worktree", "prune"], projectRoot);
+  ensureDir(dirname(paths.worktree));
+  must(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
+  try {
+    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+    if (!deps.ok) {
+      const tail = deps.output.trim().split("\n").slice(-5).join("\n");
+      throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
+    }
+    if (sha !== start) {
+      const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
+      must(git, [...prefix, "merge", "--ff-only", "--no-verify", sha], paths.worktree);
+    }
+  } catch (err) {
+    // Without the worktree and the branch, adopting again starts over.
+    removeWorktree(git, paths);
+    git([...untrustedTree(), "branch", "-D", paths.branch], projectRoot);
+    throw err;
+  }
+  return integrate({ ...input, config: { ...input.config, baseBranch: base }, lanes: [] });
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

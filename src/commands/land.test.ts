@@ -7,7 +7,7 @@ import { writeJsonAtomic } from "../util/fs";
 import type { WorktreeCleanup } from "./cleanup";
 import { markGenerated } from "./generated";
 import { runIntegrate } from "./integrate";
-import { assertBaseInHead, assertCleanBase, assertReadinessCurrent, assertTier, firstRemote, runLand } from "./land";
+import { assertBaseInHead, assertCleanBase, assertReadinessCurrent, assertTier, firstRemote, readMessage, runLand } from "./land";
 import { runReadiness } from "./readiness";
 import { DEFAULT_CONFIG, branchWith, makeProject, passedVerify, writeLaneRun, type TestProject } from "./testkit";
 
@@ -29,8 +29,8 @@ function laneWorktree(t: TestProject, lane: string, from?: string): string {
 }
 
 /** An integration of lane a that verified and is ready at tier low. */
-async function ready(): Promise<{ t: TestProject; head: string }> {
-  const t = makeProject({ config: { ...DEFAULT_CONFIG, landing: { tier: "low" } } });
+async function ready(landing: Record<string, unknown> = { tier: "low" }): Promise<{ t: TestProject; head: string }> {
+  const t = makeProject({ config: { ...DEFAULT_CONFIG, landing } });
   // A real shepherd ignores the run dirs the tests write; the main checkout must stay clean to land.
   appendFileSync(join(t.root, ".git", "info", "exclude"), ".arbab/runs/\n");
   branchWith(t, "arbab/a", "a.txt", "a\n");
@@ -65,12 +65,63 @@ describe("firstRemote", () => {
 });
 
 describe("assertCleanBase", () => {
-  it("passes on a clean base branch and refuses another branch or changes", () => {
+  it("passes on a clean base branch and refuses another branch or tracked changes", () => {
     p = makeProject();
-    expect(() => assertCleanBase(p.git, p.root, "main")).not.toThrow();
-    expect(() => assertCleanBase(p.git, p.root, "trunk")).toThrow(/is on main, not trunk/);
-    p.write("stray.txt", "x");
-    expect(() => assertCleanBase(p.git, p.root, "main")).toThrow(/uncommitted changes \(\?\? stray\.txt\)/);
+    const head = branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(assertCleanBase(p.git, p.root, "main", head)).toEqual([]);
+    expect(() => assertCleanBase(p.git, p.root, "trunk", head)).toThrow(/is on main, not trunk/);
+    p.write("lanes/demo.md", "changed\n");
+    expect(() => assertCleanBase(p.git, p.root, "main", head)).toThrow(/uncommitted changes \( M lanes\/demo\.md\)/);
+    p.ok(["checkout", "--", "lanes/demo.md"]);
+    // A staged rename is one entry, named by its new path.
+    p.ok(["mv", "lanes/demo.md", "lanes/moved.md"]);
+    expect(() => assertCleanBase(p.git, p.root, "main", head)).toThrow(/uncommitted changes \(R  lanes\/moved\.md\)$/);
+  });
+
+  it("returns untracked files the merge does not write, and refuses those it does", () => {
+    p = makeProject();
+    const head = branchWith(p, "arbab/a", "pkg/new/x.txt", "x\n");
+    p.write("scratch.txt", "mine\n");
+    p.write("notes/todo.md", "mine\n");
+    // lanes/ holds tracked files, so an untracked file there is listed by itself.
+    p.write("lanes/draft.md", "mine\n");
+    expect(assertCleanBase(p.git, p.root, "main", head)).toEqual(["lanes/draft.md", "notes/", "scratch.txt"]);
+
+    // The very path the merge writes.
+    p.write("pkg/new/x.txt", "mine\n");
+    const refusal = /^not landed: the main checkout .* has untracked files where the merge writes \(pkg\/\); move them away and land again$/;
+    expect(() => assertCleanBase(p.git, p.root, "main", head)).toThrow(refusal);
+    rmSync(join(p.root, "pkg"), { recursive: true });
+    // Under a directory the merge creates.
+    p.write("pkg/new/other.txt", "mine\n");
+    expect(() => assertCleanBase(p.git, p.root, "main", head)).toThrow(refusal);
+    rmSync(join(p.root, "pkg"), { recursive: true });
+    // A file where the merge needs a directory.
+    p.write("pkg", "mine\n");
+    expect(() => assertCleanBase(p.git, p.root, "main", head)).toThrow(/untracked files where the merge writes \(pkg\)/);
+    rmSync(join(p.root, "pkg"));
+    expect(assertCleanBase(p.git, p.root, "main", head)).toHaveLength(3);
+  });
+
+  it("refuses an untracked file that lies under a directory the merge creates inside a tracked one", () => {
+    p = makeProject();
+    const head = branchWith(p, "arbab/a", "lanes/new/x.md", "x\n");
+    p.write("lanes/new/mine.md", "mine\n");
+    expect(() => assertCleanBase(p.git, p.root, "main", head)).toThrow(/where the merge writes \(lanes\/new\/\)/);
+  });
+});
+
+describe("readMessage", () => {
+  it("reads an absolute or project-relative file and refuses a missing or blank one", () => {
+    p = makeProject();
+    writeFileSync(join(p.dir, "msg.txt"), "Ship it\n\nBody.\n");
+    p.write("notes/msg.txt", "Relative\n");
+    expect(readMessage(p.root, join(p.dir, "msg.txt"))).toBe("Ship it\n\nBody.\n");
+    expect(readMessage(p.root, "notes/msg.txt")).toBe("Relative\n");
+    expect(() => readMessage(p.root, "missing.txt")).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/cannot read the --message file .*missing\.txt/) }));
+    expect(() => readMessage(p.root, "notes")).toThrow(/cannot read the --message file/);
+    p.write("blank.txt", " \n\n");
+    expect(() => readMessage(p.root, "blank.txt")).toThrow(/--message file .*blank\.txt is empty/);
   });
 });
 
@@ -107,7 +158,17 @@ describe("runLand", () => {
 
     const landing = readRecord<LandingRecord>(join(dir(p), "landing.json"));
     const mergeSha = p.ok(["rev-parse", "main"]).trim();
-    expect(landing).toEqual({ name: "rel", into: "main", integrationHead: head, mergeSha, landedAt: "2026-10-09T12:00:00.000Z", pushed: false });
+    const a = p.ok(["rev-parse", "arbab/a"]).trim();
+    expect(landing).toEqual({
+      name: "rel",
+      into: "main",
+      integrationHead: head,
+      mergeSha,
+      landedAt: "2026-10-09T12:00:00.000Z",
+      pushed: false,
+      squash: false,
+      lanes: [{ lane: "a", sha: a }],
+    });
     expect(p.ok(["log", "-1", "--format=%s%n%P", "main"]).trim().split("\n")).toEqual(["Land rel", expect.stringContaining(head)]);
     expect(existsSync(join(p.root, "a.txt"))).toBe(true);
     expect(p.stdout()).toBe(
@@ -276,14 +337,41 @@ describe("runLand", () => {
 
   it("refuses when the main checkout is dirty or on another branch, and when the head already landed", async () => {
     ({ t: p } = await ready());
-    p.write("stray.txt", "x");
+    p.write("lanes/demo.md", "changed\n");
     await expect(runLand(["rel"], p.ctx)).rejects.toThrow(/uncommitted changes/);
     p.ok(["checkout", "-q", "-b", "side"]);
     await expect(runLand(["rel"], p.ctx)).rejects.toThrow(/is on side, not main/);
     p.ok(["checkout", "-q", "main"]);
-    rmSync(join(p.root, "stray.txt"));
+    p.ok(["checkout", "--", "lanes/demo.md"]);
     expect(await runLand(["rel"], p.ctx)).toBe(0);
     await expect(runLand(["rel"], p.ctx)).rejects.toThrow(/already in main/);
+  });
+
+  it("leaves untracked files the merge does not write alone and names the first five", async () => {
+    ({ t: p } = await ready());
+    for (const n of [1, 2, 3, 4, 5, 6, 7]) p.write(`scratch${n}.txt`, "mine\n");
+    expect(await runLand(["rel"], p.ctx)).toBe(0);
+    expect(p.stdout().split("\n")[2]).toBe("left alone: scratch1.txt, scratch2.txt, scratch3.txt, scratch4.txt, scratch5.txt, and 2 more");
+    expect(readFileSync(join(p.root, "scratch7.txt"), "utf8")).toBe("mine\n");
+    expect(p.ok(["status", "--porcelain"]).trim().split("\n")).toHaveLength(7);
+  });
+
+  it("lists the untracked files left alone in --json", async () => {
+    ({ t: p } = await ready());
+    p.write("notes/todo.md", "mine\n");
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { leftAlone: string[] }).leftAlone).toEqual(["notes/"]);
+  });
+
+  it("refuses an untracked file the merge would write, and lands nothing", async () => {
+    ({ t: p } = await ready());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    p.write("a.txt", "mine\n");
+    p.write("scratch.txt", "mine\n");
+    await expect(runLand(["rel"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/untracked files where the merge writes \(a\.txt\)/) });
+    expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
+    expect(readFileSync(join(p.root, "a.txt"), "utf8")).toBe("mine\n");
+    expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
   });
 
   it("refuses when the base moved past what the integration holds, and lands once it is merged in and verified again", async () => {
@@ -387,6 +475,169 @@ describe("runLand", () => {
     });
     expect(calls).toContainEqual([...untrustedTree(), "merge", "--abort"]);
     expect(calls.find((args) => args.includes("--no-ff"))?.slice(0, untrustedTree().length + 1)).toEqual([...untrustedTree(), "merge"]);
+    expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+  });
+});
+
+describe("runLand --squash and --message", () => {
+  const tree = (t: TestProject, rev: string): string => t.ok(["rev-parse", `${rev}^{tree}`]).trim();
+
+  it("--squash lands one commit on the old base holding the head's tree, and records it", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    const before = p.ok(["rev-parse", "main"]).trim();
+    const a = p.ok(["rev-parse", "arbab/a"]).trim();
+    expect(await runLand(["rel", "--squash"], p.ctx)).toBe(0);
+
+    const mergeSha = p.ok(["rev-parse", "main"]).trim();
+    expect(p.ok(["rev-list", "--parents", "-1", mergeSha]).trim().split(" ")).toEqual([mergeSha, before]);
+    expect(tree(p, mergeSha)).toBe(tree(p, head));
+    expect(p.ok(["log", "-1", "--format=%s", "main"]).trim()).toBe("Land rel");
+    expect(p.ok(["rev-list", "--count", `${before}..main`]).trim()).toBe("1");
+    expect(readRecord<LandingRecord>(join(dir(p), "landing.json"))).toEqual({
+      name: "rel",
+      into: "main",
+      integrationHead: head,
+      mergeSha,
+      landedAt: T,
+      pushed: false,
+      squash: true,
+      lanes: [{ lane: "a", sha: a }],
+    });
+    expect(p.stdout()).toBe(
+      `landed rel: ${head} into main as ${mergeSha}\nNot pushed. To publish: git push <remote> main (no remote configured)\n` +
+        `removed worktree ${join(p.worktreeRoot, "integrate-rel")}\ndeleted branch integrate/rel\n`,
+    );
+    expect(p.ok(["status", "--porcelain"])).toBe("");
+    // Landed: the head is not in main, but the record says what landed.
+    await expect(runLand(["rel", "--squash"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^not landed: rel already landed \(.*landing\.json\)$/) });
+  });
+
+  it("removes the landed lanes' worktrees and the generated lanes' and the integration's branches after a squash", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    const a = laneWorktree(p, "a");
+    const verify = laneWorktree(p, "rel-verify", head);
+    markGenerated(p.runsRoot, "rel-verify", { integration: "rel", branch: "integrate/rel", head }, T);
+    const unrelated = laneWorktree(p, "unrelated", "main");
+    const integration = join(p.worktreeRoot, "integrate-rel");
+    const real = p.ctx.git;
+    const calls: string[][] = [];
+    p.ctx.git = (args, cwd) => {
+      calls.push(args);
+      return real(args, cwd);
+    };
+
+    expect(await runLand(["rel", "--squash", "--json"], p.ctx)).toBe(0);
+    // `git branch -d` refuses them, as they are not in main; they go where the landed head holds them.
+    expect(calls).toContainEqual([...untrustedTree(), "update-ref", "-d", "refs/heads/integrate/rel", head]);
+    expect(calls).toContainEqual([...untrustedTree(), "update-ref", "-d", "refs/heads/arbab/rel-verify", head]);
+    const out = JSON.parse(p.stdout()) as { cleanup: WorktreeCleanup; landing: LandingRecord };
+    expect(out.landing.squash).toBe(true);
+    expect(out.cleanup).toEqual({
+      worktreesRemoved: [a, verify, integration],
+      branchesDeleted: ["arbab/rel-verify", "integrate/rel"],
+      worktreesKept: [],
+      branchesKept: [],
+      warnings: [],
+    });
+    for (const path of [a, verify, integration]) expect(existsSync(path)).toBe(false);
+    for (const branch of ["arbab/rel-verify", "integrate/rel"]) expect(hasBranch(p, branch)).toBe(false);
+    expect(hasBranch(p, "arbab/a")).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
+  it("keeps after a squash a lane whose branch moved past what landed, and a generated branch that did", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    const a = laneWorktree(p, "a");
+    writeFileSync(join(a, "later.txt"), "later\n");
+    p.ok(["add", "--", "later.txt"], a);
+    p.ok(["commit", "-q", "-m", "after the integration"], a);
+    const verify = laneWorktree(p, "rel-verify", head);
+    markGenerated(p.runsRoot, "rel-verify", { integration: "rel", branch: "integrate/rel", head }, T);
+    p.ok(["worktree", "remove", verify]);
+    p.ok(["branch", "-f", "arbab/rel-verify", "arbab/a"]);
+
+    expect(await runLand(["rel", "--squash", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as { cleanup: WorktreeCleanup };
+    expect(out.cleanup.worktreesKept).toEqual([{ path: a, reason: `branch arbab/a is not merged into ${head}` }]);
+    expect(out.cleanup.branchesKept).toEqual([{ branch: "arbab/rel-verify", reason: `branch arbab/rel-verify is not merged into ${head}` }]);
+    expect(out.cleanup.branchesDeleted).toEqual(["integrate/rel"]);
+    expect(hasBranch(p, "arbab/rel-verify")).toBe(true);
+  });
+
+  it("follows config landing.squash, and --squash squashes when the config does not", async () => {
+    ({ t: p } = await ready({ tier: "low", squash: true }));
+    const before = p.ok(["rev-parse", "main"]).trim();
+    expect(await runLand(["rel"], p.ctx)).toBe(0);
+    expect(p.ok(["rev-list", "--parents", "-1", "main"]).trim().split(" ")).toHaveLength(2);
+    expect(p.ok(["rev-parse", "main~1"]).trim()).toBe(before);
+    expect(readRecord<LandingRecord>(join(dir(p), "landing.json")).squash).toBe(true);
+    p.dispose();
+
+    ({ t: p } = await ready({ tier: "low", squash: false }));
+    expect(await runLand(["rel", "--squash"], p.ctx)).toBe(0);
+    expect(p.ok(["rev-list", "--parents", "-1", "main"]).trim().split(" ")).toHaveLength(2);
+    expect(readRecord<LandingRecord>(join(dir(p), "landing.json")).squash).toBe(true);
+  });
+
+  it("--message sets the commit message of a merge and of a squash", async () => {
+    ({ t: p } = await ready());
+    writeFileSync(join(p.dir, "msg.txt"), "Release 1.2\n\nWith a body.\n");
+    expect(await runLand(["rel", "--message", join(p.dir, "msg.txt")], p.ctx)).toBe(0);
+    expect(p.ok(["log", "-1", "--format=%B", "main"]).trim()).toBe("Release 1.2\n\nWith a body.");
+    expect(p.ok(["rev-list", "--parents", "-1", "main"]).trim().split(" ")).toHaveLength(3);
+    p.dispose();
+
+    ({ t: p } = await ready());
+    // Project-relative; an untracked file the merge does not write.
+    p.write("msg.txt", "Squashed rel\n");
+    expect(await runLand(["rel", "--squash", "--message", "msg.txt"], p.ctx)).toBe(0);
+    expect(p.ok(["log", "-1", "--format=%B", "main"]).trim()).toBe("Squashed rel");
+    expect(p.stdout()).toContain("left alone: msg.txt\n");
+  });
+
+  it("refuses a missing or empty --message file before anything lands", async () => {
+    ({ t: p } = await ready());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    await expect(runLand(["rel", "--message", "nope.txt"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/cannot read the --message file/) });
+    writeFileSync(join(p.dir, "empty.txt"), "");
+    await expect(runLand(["rel", "--squash", "--message", join(p.dir, "empty.txt")], p.ctx)).rejects.toThrow(/is empty/);
+    expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
+    expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+  });
+
+  it("squashes without the repository's hooks", async () => {
+    ({ t: p } = await ready());
+    const hooks = join(p.root, ".git", "hooks");
+    mkdirSync(hooks, { recursive: true });
+    for (const hook of ["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-merge"]) {
+      writeFileSync(join(hooks, hook), `#!/bin/sh\necho ${hook} >> "${join(p.dir, "hooks-ran")}"\nexit 1\n`, { mode: 0o755 });
+    }
+    expect(await runLand(["rel", "--squash"], p.ctx)).toBe(0);
+    expect(existsSync(join(p.dir, "hooks-ran"))).toBe(false);
+  });
+
+  it("resets the squash and fails with a git error when the commit fails", async () => {
+    ({ t: p } = await ready());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    const real = p.ctx.git;
+    const calls: string[][] = [];
+    p.ctx.git = (args, cwd) => {
+      calls.push(args);
+      if (args.includes("commit")) return { code: 1, stdout: "", stderr: "fatal: cannot commit" };
+      return real(args, cwd);
+    };
+    await expect(runLand(["rel", "--squash"], p.ctx)).rejects.toMatchObject({
+      code: "git",
+      message: "squashing integrate/rel into main failed (1): fatal: cannot commit; the squash was reset",
+    });
+    expect(calls).toContainEqual([...untrustedTree(), "merge", "--squash", expect.any(String)]);
+    expect(calls).toContainEqual([...untrustedTree(), "reset", "--merge"]);
+    p.ctx.git = real;
+    expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
+    expect(p.ok(["status", "--porcelain"])).toBe("");
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
   });
 });

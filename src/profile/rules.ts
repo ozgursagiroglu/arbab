@@ -21,10 +21,21 @@ export function commandRules(prefix: string): string[] {
 /**
  * Read and Edit denies for the built-in credential paths, then the project's extra ones. The `**\/.env*` deny stays
  * even when templates are readable: those are re-opened for sandboxed commands only, by path (DESIGN.md §21).
+ *
+ * A relative `**\/` pattern covers only the worker's working directory in the sandbox (measured), so each one gets
+ * copies anchored at the home directory and, given its normalised absolute path, the project's main checkout.
  */
-export function credentialDenies(extra: string[]): string[] {
+export function credentialDenies(extra: string[], projectRoot?: string): string[] {
   const rules: string[] = [];
-  for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) rules.push(`Read(${path})`, `Edit(${path})`);
+  for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) {
+    const paths = [path];
+    if (path.startsWith("**/")) {
+      paths.push(`~/${path}`);
+      // `//` makes the path absolute; a single `/` would be relative to the settings file.
+      if (projectRoot !== undefined) paths.push(`/${projectRoot}/${path}`);
+    }
+    for (const p of paths) rules.push(`Read(${p})`, `Edit(${p})`);
+  }
   return dedupe(rules);
 }
 

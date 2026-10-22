@@ -15,7 +15,8 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
   if (!isAbsolute(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
-  const gitDir = input.gitCommonDir === undefined ? undefined : sharedGitDir(input.gitCommonDir);
+  const gitDir = input.gitCommonDir === undefined ? undefined : absoluteDir("gitCommonDir", input.gitCommonDir);
+  const projectRoot = input.projectRoot === undefined ? undefined : absoluteDir("projectRoot", input.projectRoot);
   const tmp = workerTmpPaths(input.worktree);
   let allow = dedupe([
     ...input.tools.filter((t) => FILE_TOOLS.has(t) && (!WRITE_TOOLS.has(t) || WRITERS.includes(input.role))),
@@ -32,7 +33,7 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
     : { denyWrite: gitDir === undefined ? [] : [gitDir], ...(allowRead.length === 0 ? {} : { allowRead }) };
   const deny = dedupe([
     // The `**/.env*` deny stays whatever readableEnvFiles says; allowRead re-opens the tracked templates only.
-    ...credentialDenies(input.credentialPaths),
+    ...credentialDenies(input.credentialPaths, projectRoot),
     // `//` makes the path absolute; a single `/` would be relative to the settings file.
     ...(gitDir === undefined ? [] : [`Edit(/${gitDir}/**)`, `Write(/${gitDir}/**)`]),
     BACKGROUND_DENY,
@@ -70,13 +71,13 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
   return { tools: input.tools, settings };
 }
 
-/** The shared git directory, normalised (no trailing slash, no `..`); it must be absolute. */
-function sharedGitDir(dir: string): string {
+/** The shared git directory or the project root, normalised (no trailing slash, no `..`); it must be absolute. */
+function absoluteDir(field: "gitCommonDir" | "projectRoot", dir: string): string {
   if (!isAbsolute(dir)) {
-    throw new ArbabError("usage", `gitCommonDir ${JSON.stringify(dir)} must be an absolute path`);
+    throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
   const normal = resolve(dir);
-  if (normal === "/") throw new ArbabError("usage", "gitCommonDir must not be the filesystem root");
+  if (normal === "/") throw new ArbabError("usage", `${field} must not be the filesystem root`);
   return normal;
 }
 

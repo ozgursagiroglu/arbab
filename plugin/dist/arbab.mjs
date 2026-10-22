@@ -3729,9 +3729,16 @@ function commandRules(prefix) {
   }
   return [`Bash(${prefix})`, `Bash(${prefix} *)`];
 }
-function credentialDenies(extra) {
+function credentialDenies(extra, projectRoot) {
   const rules = [];
-  for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) rules.push(`Read(${path})`, `Edit(${path})`);
+  for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) {
+    const paths = [path];
+    if (path.startsWith("**/")) {
+      paths.push(`~/${path}`);
+      if (projectRoot !== void 0) paths.push(`/${projectRoot}/${path}`);
+    }
+    for (const p of paths) rules.push(`Read(${p})`, `Edit(${p})`);
+  }
   return dedupe(rules);
 }
 function dedupe(items) {
@@ -3747,7 +3754,8 @@ function compileProfile(input) {
   if (!isAbsolute5(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
-  const gitDir = input.gitCommonDir === void 0 ? void 0 : sharedGitDir(input.gitCommonDir);
+  const gitDir = input.gitCommonDir === void 0 ? void 0 : absoluteDir("gitCommonDir", input.gitCommonDir);
+  const projectRoot = input.projectRoot === void 0 ? void 0 : absoluteDir("projectRoot", input.projectRoot);
   const tmp = workerTmpPaths(input.worktree);
   let allow = dedupe([
     ...input.tools.filter((t) => FILE_TOOLS2.has(t) && (!WRITE_TOOLS2.has(t) || WRITERS.includes(input.role))),
@@ -3760,7 +3768,7 @@ function compileProfile(input) {
   const filesystem = gitDir === void 0 && allowRead.length === 0 ? void 0 : { denyWrite: gitDir === void 0 ? [] : [gitDir], ...allowRead.length === 0 ? {} : { allowRead } };
   const deny = dedupe([
     // The `**/.env*` deny stays whatever readableEnvFiles says; allowRead re-opens the tracked templates only.
-    ...credentialDenies(input.credentialPaths),
+    ...credentialDenies(input.credentialPaths, projectRoot),
     // `//` makes the path absolute; a single `/` would be relative to the settings file.
     ...gitDir === void 0 ? [] : [`Edit(/${gitDir}/**)`, `Write(/${gitDir}/**)`],
     BACKGROUND_DENY,
@@ -3796,12 +3804,12 @@ function compileProfile(input) {
   };
   return { tools: input.tools, settings };
 }
-function sharedGitDir(dir) {
+function absoluteDir(field, dir) {
   if (!isAbsolute5(dir)) {
-    throw new ArbabError("usage", `gitCommonDir ${JSON.stringify(dir)} must be an absolute path`);
+    throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
   const normal = resolve8(dir);
-  if (normal === "/") throw new ArbabError("usage", "gitCommonDir must not be the filesystem root");
+  if (normal === "/") throw new ArbabError("usage", `${field} must not be the filesystem root`);
   return normal;
 }
 function envAllowReads(worktree, paths) {
@@ -9497,6 +9505,8 @@ function profileInput(ctx) {
     env: { ...config.env, ...leaseEnv(ctx.leases) },
     worktree: ctx.worktree,
     gitCommonDir: ctx.gitCommonDir,
+    // Anchors the relative credential denies at the main checkout, whose .env files the sandbox would not cover.
+    projectRoot: ctx.projectRoot,
     readableEnvFiles: readable,
     bashOutputMaxChars: config.fence.bashOutputMaxChars,
     // Each listed template costs a git call; with none listed there is nothing to re-open.

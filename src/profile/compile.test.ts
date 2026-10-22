@@ -180,6 +180,35 @@ describe("compileProfile, fence strict", () => {
     expect(deny.indexOf("Edit(~/.vault/**)")).toBeLessThan(deny.indexOf("Bash(run_in_background:true)"));
   });
 
+  it("anchors the relative credential patterns at home and at the normalised project root", () => {
+    const deny = compileProfile(input("implementer", { projectRoot: "/work/repo/./", credentialPaths: ["**/*.secret"] }))
+      .settings.permissions.deny;
+    expect(deny.slice(0, credentialDenies(["**/*.secret"], "/work/repo").length)).toEqual(
+      credentialDenies(["**/*.secret"], "/work/repo"),
+    );
+    for (const rule of ["Read(~/**/.env*)", "Edit(~/**/.env*)", "Read(//work/repo/**/.env*)", "Edit(//work/repo/**/.env*)"]) {
+      expect(deny).toContain(rule);
+    }
+    expect(deny).toContain("Read(//work/repo/**/*.secret)");
+    expect(deny).toContain("Edit(~/**/*.secret)");
+  });
+
+  it("adds only the home-anchored copies without a project root", () => {
+    const deny = compileProfile(input("implementer")).settings.permissions.deny;
+    expect(deny).toContain("Read(~/**/.env*)");
+    expect(deny.filter((r) => r.startsWith("Read(//") || r.startsWith("Edit(//"))).toEqual([]);
+  });
+
+  it.each(["relative/repo", "", "/"])("refuses the project root %j", (projectRoot) => {
+    let code: unknown;
+    try {
+      compileProfile(input("implementer", { projectRoot }));
+    } catch (err) {
+      code = err instanceof ArbabError ? err.code : err;
+    }
+    expect(code).toBe("usage");
+  });
+
   it("lets the fixed env keys win over config env", () => {
     const env = compileProfile(
       input("implementer", {
@@ -256,6 +285,14 @@ describe("compileProfile, fence strict", () => {
         }),
       );
       expect(profile.settings.sandbox.filesystem).toEqual({ denyWrite: ["/work/repo/.git"], allowRead: TEMPLATES });
+    });
+
+    it("keeps allowRead as it is when the project root anchors the env deny", () => {
+      const over = { gitCommonDir: "/work/repo/.git", readableEnvFiles: [".env.example"], envFileAllowReads: TEMPLATES };
+      const plain = compileProfile(input("implementer", over));
+      const anchored = compileProfile(input("implementer", { ...over, projectRoot: "/work/repo" }));
+      expect(anchored.settings.sandbox).toEqual(plain.settings.sandbox);
+      expect(anchored.settings.permissions.deny).toContain("Read(//work/repo/**/.env*)");
     });
 
     it("writes allowRead without a shared git directory, and no allowRead without templates", () => {

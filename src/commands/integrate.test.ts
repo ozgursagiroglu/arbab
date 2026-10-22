@@ -299,6 +299,19 @@ describe("runIntegrate --adopt", () => {
     expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
     expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
   });
+
+  it("refuses a --base that is not a branch: land merges into it", async () => {
+    p = makeProject();
+    const main = p.ok(["rev-parse", "main"]).trim();
+    branchWith(p, "feature", "f.txt", "f\n");
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--base", main], p.ctx)).rejects.toMatchObject({
+      code: "usage",
+      message: expect.stringMatching(new RegExp(`^--base ${main} is not a branch: land merges the integration into its base`)),
+    });
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel"))).toBe(false);
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+  });
 });
 
 describe("runIntegrate --refresh", () => {

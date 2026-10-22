@@ -199,8 +199,12 @@ export interface ClaudeSettings {
     autoAllowBashIfSandboxed: boolean;
     allowUnsandboxedCommands: boolean;
     network: { allowLocalBinding: boolean };
-    /** Absolute paths no sandboxed command may write: the repository's shared git directory (measured, M1 review). */
-    filesystem?: { denyWrite: string[] };
+    /**
+     * `denyWrite`: absolute paths no sandboxed command may write: the repository's shared git directory (measured, M1
+     * review). `allowRead`: absolute paths sandboxed commands may read although a Read deny covers them: the tracked
+     * env templates of fence.readableEnvFiles (DESIGN.md §21).
+     */
+    filesystem?: { denyWrite: string[]; allowRead?: string[] };
   };
   env: Record<string, string>;
   permissions: { allow: string[]; deny: string[] };
@@ -227,10 +231,15 @@ export interface ProfileInput {
    * lets a worktree's worker write there, refs and objects included, so the fence denies it (M1 review, measured).
    */
   gitCommonDir?: string;
-  /** config.fence.readableEnvFiles; non-empty replaces the `**\/.env*` deny (DESIGN.md §21). */
+  /** config.fence.readableEnvFiles (DESIGN.md §21). */
   readableEnvFiles?: string[];
-  /** Absolute paths of env files to deny explicitly when readableEnvFiles is non-empty (src/profile/envfiles.ts). */
+  /** @deprecated Replaced by envFileAllowReads in the review fix round; removed once nothing uses it. */
   envFileDenies?: string[];
+  /**
+   * Absolute paths, in the worktree, of the readableEnvFiles that git tracks there: compiled into
+   * `sandbox.filesystem.allowRead`. The `**\/.env*` deny stays in place for every other path (DESIGN.md §21).
+   */
+  envFileAllowReads?: string[];
   /** config.fence.bashOutputMaxChars, written to the settings as `bashOutputMaxChars`. */
   bashOutputMaxChars?: number;
 }

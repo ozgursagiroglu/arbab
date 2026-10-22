@@ -12780,7 +12780,7 @@ ${HELP}`);
 
 // src/cli.ts
 function readVersion2() {
-  if (true) return "0.1.0";
+  if (true) return "0.2.0";
   try {
     const pkg = JSON.parse(readFileSync10(new URL("../package.json", import.meta.url), "utf8"));
     return typeof pkg.version === "string" ? pkg.version : "0.0.0";

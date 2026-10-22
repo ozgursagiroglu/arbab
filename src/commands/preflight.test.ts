@@ -3,8 +3,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadLane } from "../config";
 import { compileProfile } from "../profile";
-import { runPaths } from "../registry";
-import type { AttemptSummary, InitFacts } from "../types";
+import { stopDecision } from "../hook/stop";
+import { listWaiters, registerShepherd, runPaths } from "../registry";
+import type { AttemptSummary, InitFacts, WaiterEntry } from "../types";
 import { LAUNCH_POLL_MS } from "./launch";
 import { openProject } from "./project";
 import {
@@ -19,11 +20,14 @@ import {
   runPreflight,
   stepCommands,
   toolsBrief,
+  whileWaiting,
   writeProbeLanes,
   type PreflightInput,
   type ProbeResult,
 } from "./preflight";
-import { DEFAULT_CONFIG, makeProject, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+import { CLI_PID, DEFAULT_CONFIG, makeProject, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 
 // The real compiler, spied on so tests can see the ProfileInput each lint compiled.
 vi.mock("../profile", async (importOriginal) => {
@@ -343,6 +347,31 @@ function goodRuns(t: TestProject, sha = head(t)): Record<string, (pid: number) =
   };
 }
 
+describe("whileWaiting", () => {
+  it("registers this process as its session's waiter on the project until the wait ends, even when it throws", async () => {
+    p = makeProject();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    const during: WaiterEntry[][] = [];
+    expect(await whileWaiting(p.ctx, p.root, async () => during.push(listWaiters(p.home, p.ctx.alive)))).toBe(1);
+    expect(during).toEqual([[{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: "2026-10-09T12:00:00.000Z" }]]);
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+
+    const failing = whileWaiting(p.ctx, p.root, async () => {
+      throw new Error("boom");
+    });
+    await expect(failing).rejects.toThrow("boom");
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+  });
+
+  it("registers an ownerless waiter outside a Claude Code session", async () => {
+    p = makeProject();
+    p.alive.add(CLI_PID);
+    const owners = await whileWaiting(p.ctx, p.root, async () => listWaiters(p.home, p.ctx.alive).map((w) => w.owner));
+    expect(owners).toEqual([null]);
+  });
+});
+
 describe("runPreflight", () => {
   it("launches both probes, waits, prints every check and exits 0 when all pass", async () => {
     p = makeProject();
@@ -416,6 +445,30 @@ describe("runPreflight", () => {
     simulateShepherds(p, {});
     expect(await runPreflight(["--timeout-min", "1", "lanes/demo.json"], p.ctx)).toBe(3);
     expect(p.stderr()).toContain("did not finish in time");
+  });
+
+  it("is a waiter of its session while it waits, so the Stop hook lets the turn wait", async () => {
+    p = makeProject();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    simulateShepherds(p, {});
+    registerShepherd(p.home, { pid: 9000, lane: "demo-pf-tools", project: p.root, owner: SESSION, startedAt: "2026-10-09T12:00:00.000Z" });
+    const stop = (): string | null =>
+      stopDecision(JSON.stringify({ session_id: SESSION, cwd: p.root }), { home: p.home, alive: p.ctx.alive, scriptPath: "/x/arbab.mjs", cwd: p.root });
+    const seen: Array<{ waiters: WaiterEntry[]; stop: string | null }> = [];
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      if (ms !== LAUNCH_POLL_MS) seen.push({ waiters: listWaiters(p.home, p.ctx.alive), stop: stop() });
+      await sleep(ms);
+    };
+    expect(await runPreflight(["--timeout-min", "0.1", "lanes/demo.json"], p.ctx)).toBe(3);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const tick of seen) {
+      expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+      expect(tick.stop).toBeNull();
+    }
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+    expect(stop()).not.toBeNull();
   });
 
   it("fails when a shepherd died before writing any state", async () => {

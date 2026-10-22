@@ -1,11 +1,15 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { IntegrationRecord, LaneSpec, ReviewFinding, ReviewRecord } from "../types";
+import { listWaiters } from "../registry";
+import type { IntegrationRecord, LaneSpec, ReviewFinding, ReviewRecord, WaiterEntry } from "../types";
 import { runIntegrate } from "./integrate";
+import { LAUNCH_POLL_MS } from "./launch";
 import { readReviewHistory } from "./records";
 import { applyLensVerdicts, formatFindings, formatReview, readLensFiles, reviewLenses, runReview, sinceCommit } from "./review";
-import { DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+import { CLI_PID, DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -48,13 +52,31 @@ describe("reviewLenses", () => {
 });
 
 describe("readLensFiles", () => {
-  it("reads each lens's file, project-relative or absolute, trimmed", () => {
-    p = makeProject({ files: { "lenses/perf.md": "  Hot paths.\n" } });
-    const abs = join(p.dir, "abs.md");
-    writeFileSync(abs, "Absolute.");
+  it("reads each lens's file, project-relative or absolute inside the project, trimmed", () => {
+    p = makeProject({ files: { "lenses/perf.md": "  Hot paths.\n", "lenses/abs.md": "Absolute." } });
+    const abs = join(p.root, "lenses", "abs.md");
     expect(readLensFiles(p.root, ["perf=lenses/perf.md", `security=${abs}`])).toEqual({ perf: "Hot paths.", security: "Absolute." });
     expect(readLensFiles(p.root, [])).toEqual({});
     expect(() => readLensFiles(p.root, ["perf=lenses"])).toThrow(/cannot read the file of lens perf, lenses/);
+    expect(() => readLensFiles(p.root, ["perf=lenses/missing.md"])).toThrow(/the file of lens perf, lenses\/missing.md, does not exist/);
+  });
+
+  it("refuses a file outside the project, by path or through a symlink, and a .env file", () => {
+    p = makeProject();
+    p.write(".env.local", "TOKEN=x\n");
+    p.write("config/.env", "TOKEN=x\n");
+    const outside = join(p.dir, "outside.md");
+    writeFileSync(outside, "Outside.");
+    symlinkSync(outside, join(p.root, "link.md"));
+    symlinkSync(join(p.root, ".env.local"), join(p.root, "env-link.md"));
+    const usage = (message: RegExp) => ({ code: "usage", message: expect.stringMatching(message) });
+    const read = (option: string) => () => readLensFiles(p.root, [option]);
+    expect(read(`perf=${outside}`)).toThrow(expect.objectContaining(usage(/--lens-file perf=.*must be inside the project root/)));
+    expect(read("perf=../outside.md")).toThrow(expect.objectContaining(usage(/must be inside the project root/)));
+    expect(read("perf=link.md")).toThrow(expect.objectContaining(usage(/a symlink in it may not lead out/)));
+    expect(read("perf=.env.local")).toThrow(expect.objectContaining(usage(/a \.env file is not a lens/)));
+    expect(read(`perf=${join(p.root, "config", ".env")}`)).toThrow(expect.objectContaining(usage(/a \.env file is not a lens/)));
+    expect(read("perf=env-link.md")).toThrow(expect.objectContaining(usage(/a \.env file is not a lens/)));
   });
 });
 
@@ -231,6 +253,24 @@ describe("runReview", () => {
     expect(record.findings.map((f) => f.verdict)).toEqual(["unverified"]);
   });
 
+  it("is a waiter of its session while it waits for the reviewers and the skeptics, and no longer once it returns", async () => {
+    p = await integrated();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    simulateShepherds(p, { "rel-review-security": reviewer([finding("leak", "HIGH", 1)]) });
+    const seen: Array<{ launched: number; waiters: WaiterEntry[] }> = [];
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      if (ms !== LAUNCH_POLL_MS) seen.push({ launched: p.spawned.length, waiters: listWaiters(p.home, p.ctx.alive) });
+      await sleep(ms);
+    };
+    expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    // The skeptic's wait: the reviewer finished at once, so every tick is while the skeptic runs.
+    expect(seen.map((s) => s.launched)).toContain(2);
+    for (const tick of seen) expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+  });
+
   it("refuses unconfirmed manifest changes as verify does, whatever the dependency strategy, launching nothing", async () => {
     for (const dependencies of [{ strategy: "command", command: ["true"] }, { strategy: "none" }]) {
       p = await integrated({ dependencies }, true);
@@ -342,7 +382,7 @@ describe("runReview", () => {
   it("adds a --lens-file lens for this run only, and lets one replace a built-in's text", async () => {
     p = await integrated({ review: { lenses: { docs: "Stale docs." } } });
     p.write("lenses/perf.md", "\n## Perf\nHot paths and N+1 queries.\n");
-    const security = join(p.dir, "security-lens.md");
+    const security = join(p.root, "lenses", "security-lens.md");
     writeFileSync(security, "Only the token handling.");
     simulateShepherds(p, {});
     expect(await runReview(["rel", "--lens-file", "perf=lenses/perf.md", "--lens-file", `security=${security}`, "--timeout-min", "0.5"], p.ctx)).toBe(3);
@@ -355,19 +395,24 @@ describe("runReview", () => {
     expect(readFileSync(join(p.root, "arbab.config.json"), "utf8")).not.toMatch(/perf|token/);
   });
 
-  it("refuses a --lens-file that is malformed, missing, empty, too long, given twice or not run", async () => {
+  it("refuses a --lens-file that is malformed, missing, outside, a .env file, empty, too long, given twice or not run", async () => {
     p = await integrated();
     simulateShepherds(p, {});
     p.write("empty.md", " \n");
     p.write("long.md", "x".repeat(8_001));
     p.write("ok.md", "Look for x.");
+    p.write(".env", "TOKEN=x\n");
+    const outside = join(p.dir, "outside.md");
+    writeFileSync(outside, "Outside.");
     const refused = async (args: string[], message: RegExp): Promise<void> => {
       await expect(runReview(["rel", ...args], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(message) });
     };
     await refused(["--lens-file", "perf"], /must be <name>=<file>/);
     await refused(["--lens-file", "Perf=ok.md"], /^lens "Perf" must match/);
     await refused(["--lens-file", "perf=none.md"], /the file of lens perf, none\.md, does not exist/);
-    await refused(["--lens-file", "perf=../outside.md"], /is outside/);
+    await refused(["--lens-file", "perf=../outside.md"], /must be inside the project root/);
+    await refused(["--lens-file", `perf=${outside}`], /must be inside the project root/);
+    await refused(["--lens-file", "perf=.env"], /a \.env file is not a lens/);
     await refused(["--lens-file", "perf=empty.md"], /has 0 characters/);
     await refused(["--lens-file", "perf=long.md"], /has 8001 characters/);
     await refused(["--lens-file", "perf=ok.md", "--lens-file", "perf=ok.md"], /names lens perf twice/);

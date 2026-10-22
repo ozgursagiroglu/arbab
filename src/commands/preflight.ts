@@ -6,6 +6,7 @@
 // otherwise each gets its own, removed with its arbab/<probe> branch before the probes launch (a stale one, refused
 // when git will not remove it unforced) and after the checks are printed (what git keeps is named on stderr). The
 // tools probe runs the project's preflight steps by exact allow rules, whatever the lane's role.
+// While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Text: one line per check, `ok|fail  <check>  <detail>`.
 // --json: {"ok": boolean, "timedOut": boolean, "lanes": [string, string],
 //          "checks": [{"status": "ok" | "fail", "check": string, "detail": string}]}
@@ -13,12 +14,24 @@
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { effectiveRole } from "../config";
-import { ack, attemptFiles, effectiveState, listAttempts, readAttempt, readState, runPaths } from "../registry";
+import {
+  ack,
+  attemptFiles,
+  effectiveState,
+  listAttempts,
+  readAttempt,
+  readState,
+  registerWaiter,
+  runPaths,
+  sessionOf,
+  unregisterWaiter,
+} from "../registry";
 import { arbabIgnoreEntries, ensureArbabMarkers, ensureIgnored, untrustedTree, verifyWorktreeGit, type GitRunner } from "../run";
 import type { AttemptSummary, JsonSchema, LaneSpec } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson, readText, writeJsonAtomic, writeTextAtomic } from "../util/fs";
 import { assertValidName, isValidName } from "../util/names";
+import { isoAt } from "../util/proc";
 import type { CommandContext } from "./context";
 import { formatChecks } from "./doctor";
 import { formatIssue, hasErrors, issueSummary, lintLane, resolveGitCommonDir } from "./lint";
@@ -378,6 +391,19 @@ export async function waitForProbes(
   }
 }
 
+/**
+ * Runs `wait` registered as a waiter of this session on `root`, as `arbab wait` is (DESIGN.md §21): the lanes a command
+ * launched are this session's, and without a waiter the Stop hook would block the turn the command is waiting in.
+ */
+export async function whileWaiting<T>(ctx: CommandContext, root: string, wait: () => Promise<T>): Promise<T> {
+  registerWaiter(ctx.home, { pid: ctx.pid, project: root, owner: sessionOf(ctx.hostEnv), startedAt: isoAt(ctx.clock) });
+  try {
+    return await wait();
+  } finally {
+    unregisterWaiter(ctx.home, ctx.pid);
+  }
+}
+
 export async function runPreflight(argv: string[], ctx: CommandContext): Promise<number> {
   const { values, positionals } = parse("preflight", {
     args: argv,
@@ -428,7 +454,7 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
   }
   ctx.stderr(`preflight: launched ${probes.map((p) => p.lane).join(" and ")}; waiting\n`);
 
-  const finished = await waitForProbes(ctx, project.runsRoot, probes, timeoutMs);
+  const finished = await whileWaiting(ctx, project.root, () => waitForProbes(ctx, project.runsRoot, probes, timeoutMs));
   const lanes = probes.map((p) => p.lane);
   if (!finished) {
     if (values.json === true) printJson(ctx, { ok: false, timedOut: true, lanes, checks: [] });

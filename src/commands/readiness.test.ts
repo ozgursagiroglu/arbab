@@ -206,6 +206,38 @@ describe("runReadiness", () => {
     expect(report.risks.map((r) => r.id)).toContain("stale:review");
   });
 
+  it("carries a review over a clean merge of the integration's base when config now names another branch", async () => {
+    let reviewed: string;
+    ({ t: p, head: reviewed } = await integrated({ landing: { tier: "medium" } }));
+    writeJsonAtomic(join(dir(p), "review.json"), reviewOf(reviewed));
+    // Before main moves, so main's new commit is not on develop.
+    branchWith(p, "develop", "d.txt", "d\n");
+    p.write("base.txt", "base\n");
+    p.ok(["add", "--", "base.txt"]);
+    p.ok(["commit", "-q", "-m", "base moves"]);
+    const head = mergeIntoIntegration(p, "main");
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    p.write("arbab.config.json", JSON.stringify({ ...DEFAULT_CONFIG, baseBranch: "develop", landing: { tier: "medium" } }));
+
+    expect(await runReadiness(["rel"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json"))).toMatchObject({ ready: true, reviewCarriedOverFrom: reviewed });
+  });
+
+  it("does not carry a review over a merge of config's base branch when the integration's base is another", async () => {
+    let reviewed: string;
+    ({ t: p, head: reviewed } = await integrated({ landing: { tier: "medium" } }));
+    writeJsonAtomic(join(dir(p), "review.json"), reviewOf(reviewed));
+    branchWith(p, "develop", "d.txt", "d\n");
+    p.write("arbab.config.json", JSON.stringify({ ...DEFAULT_CONFIG, baseBranch: "develop", landing: { tier: "medium" } }));
+    const head = mergeIntoIntegration(p, "develop");
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+
+    expect(await runReadiness(["rel"], p.ctx)).toBe(1);
+    const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+    expect(report).not.toHaveProperty("reviewCarriedOverFrom");
+    expect(report.skipped.map((s) => s.id)).toEqual(["review"]);
+  });
+
   it("lists the host gates until host-checks.json passed on the head; host may be waived", async () => {
     let head: string;
     ({ t: p, head } = await integrated({ hostGates: [["docker", "build", "."]] }));

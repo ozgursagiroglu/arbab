@@ -1,21 +1,39 @@
-// arbab wait [--any|--all] [--timeout-min N] [--json] [lane…]
+// arbab wait [--any|--all] [--timeout-min N] [--notify] [--json] [lane…]
 //
 // Level-triggered: reports lane runs that finished (or were orphaned) and are not acked yet, and acks them; otherwise
-// blocks until one (--any, the default) or every named lane (--all) finishes. A run that failed before its first
-// attempt (worktree, dependencies, leases, binary, brief…) is reported too.
+// blocks until one finishes. A run that failed before its first attempt (worktree, dependencies, leases, binary,
+// brief…) is reported too.
+// Without lanes, --any (the default) waits for the runs this session owns and the ownerless ones (DESIGN.md §21);
+// --all for every run. With lanes, --any waits for one of them and --all for every one, whoever owns them.
+// When nothing is pending and none of those runs is running, it prints `no lanes are running` and exits 0.
+// While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Text: one line per finished run; the attempt part only when the run made one, the report only when there is one,
 // the reason only when state.json gives one:
 //   `<lane>[#<attempt>] <endState>[ <wall> turns=<n> calls=<n> failed=<n> cost=$<Δ>][ report=<path>][ reason: <text>]`
 // --json: {"timedOut": boolean, "finished": [{"lane", "attempt", "state", "endState", "reason", "wallMs", "turns",
 //          "toolCalls", "failed", "costDeltaUsd", "report"}]} (`attempt`, `reason` and `report` may be null; `report`
-//          is an absolute path)
+//          is an absolute path); idle: {"timedOut": false, "finished": [], "idle": true}
 // `endState` is the lane's, from state.json; the last attempt's state is only its fallback.
+// --notify: a desktop notification `<lane>: <endState>` per finished run.
 // Exit 0, or 3 on timeout.
 import { existsSync } from "node:fs";
-import { attemptFiles, formatElapsed, runPaths, waitForFinished, type FinishedItem } from "../registry";
+import {
+  attemptFiles,
+  formatElapsed,
+  ownedBy,
+  readShepherdRecord,
+  registerWaiter,
+  runPaths,
+  sessionOf,
+  unregisterWaiter,
+  waitForFinished,
+  type FinishedItem,
+  type WaitResult,
+} from "../registry";
 import type { LaneState } from "../types";
 import { ArbabError } from "../util/errors";
 import { assertValidName } from "../util/names";
+import { isoAt } from "../util/proc";
 import type { CommandContext } from "./context";
 import { openProject, parse, printJson } from "./project";
 
@@ -85,6 +103,7 @@ export async function runWait(argv: string[], ctx: CommandContext): Promise<numb
       any: { type: "boolean" },
       all: { type: "boolean" },
       "timeout-min": { type: "string" },
+      notify: { type: "boolean" },
       json: { type: "boolean" },
     },
     allowPositionals: true,
@@ -93,23 +112,40 @@ export async function runWait(argv: string[], ctx: CommandContext): Promise<numb
   const timeoutMs = parseTimeoutMin(values["timeout-min"]);
   for (const lane of positionals) assertValidName(lane, "lane");
   const project = openProject(ctx);
+  const named = positionals.length > 0;
+  const session = sessionOf(ctx.hostEnv);
 
-  const result = await waitForFinished({
-    runsRoot: project.runsRoot,
-    lanes: positionals.length > 0 ? positionals : null,
-    mode: values.all === true ? "all" : "any",
-    timeoutMs,
-    pollMs: POLL_MS,
-    clock: ctx.clock,
-    sleep: ctx.sleep,
-    alive: ctx.alive,
-  });
+  registerWaiter(ctx.home, { pid: ctx.pid, project: project.root, owner: session, startedAt: isoAt(ctx.clock) });
+  let result: WaitResult;
+  try {
+    result = await waitForFinished({
+      runsRoot: project.runsRoot,
+      lanes: named ? positionals : null,
+      // Unnamed, --any is this session's runs (and the ownerless); --all is everyone's, one at a time as --any was.
+      ...(!named && values.all !== true && { include: (lane: string) => ownedBy(readShepherdRecord(project.runsRoot, lane), session) }),
+      mode: named && values.all === true ? "all" : "any",
+      timeoutMs,
+      pollMs: POLL_MS,
+      clock: ctx.clock,
+      sleep: ctx.sleep,
+      alive: ctx.alive,
+      stopWhenIdle: true,
+    });
+  } finally {
+    unregisterWaiter(ctx.home, ctx.pid);
+  }
   const lines = result.finished.map((item) => describeFinished(project.runsRoot, item));
+  const idle = result.idle === true;
   if (values.json === true) {
-    printJson(ctx, { timedOut: result.timedOut, finished: lines });
+    printJson(ctx, idle ? { timedOut: false, finished: [], idle: true } : { timedOut: result.timedOut, finished: lines });
   } else {
     for (const line of lines) ctx.stdout(formatFinished(line) + "\n");
+    if (idle) ctx.stdout("no lanes are running\n");
     if (result.timedOut) ctx.stderr("arbab wait: timed out\n");
+  }
+  if (values.notify === true) {
+    // A notification is a courtesy: whether it showed changes nothing.
+    for (const line of lines) await ctx.notify("arbab", `${line.lane}: ${line.endState}`);
   }
   return result.timedOut ? WAIT_TIMEOUT_EXIT : 0;
 }

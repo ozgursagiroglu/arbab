@@ -7,6 +7,7 @@ import { ArbabError } from "../util/errors";
 import type { Clock } from "../util/proc";
 import { ack, ackedFile, ackRun, createAttempt, isAcked, pendingFinished, waitForFinished, writeState } from "./index";
 import type { FinishedItem, WaitOptions } from "./index";
+import { isRunning } from "./wait";
 
 const LIVE_PID = 100;
 const DEAD_PID = 200;
@@ -273,5 +274,104 @@ describe("waitForFinished", () => {
   it("refuses unknown or invalid lane names", async () => {
     await expect(waitForFinished(opts({ lanes: ["missing"] }))).rejects.toThrow(ArbabError);
     await expect(waitForFinished(opts({ lanes: ["../x"] }))).rejects.toThrow(ArbabError);
+  });
+
+  it("include: only lanes it accepts, read again on every poll", async () => {
+    lane("theirs", "finished");
+    const mine = lane("mine", "running");
+    const accepted = new Set(["mine"]);
+    const time = fakeTime({ 2: () => setState("mine", "finished", mine) });
+    const result = await waitForFinished(opts({ include: (name) => accepted.has(name), ...time }));
+    expect(result.finished.map((i) => i.lane)).toEqual(["mine"]);
+    // Not acked: its own session's waiter still gets it.
+    expect(pendingFinished(root, ["theirs"], alive).map((i) => i.lane)).toEqual(["theirs"]);
+  });
+
+  it("include: named lanes are taken as they are", async () => {
+    lane("theirs", "finished");
+    const result = await waitForFinished(opts({ lanes: ["theirs"], include: () => false }));
+    expect(result.finished.map((i) => i.lane)).toEqual(["theirs"]);
+  });
+});
+
+describe("waitForFinished with stopWhenIdle", () => {
+  it("returns idle at once when nothing is pending and nothing runs", async () => {
+    lane("a", "finished");
+    ack(root, "a", 1);
+    lane("b", "running", DEAD_PID);
+    ack(root, "b", 1);
+    const time = fakeTime();
+    expect(await waitForFinished(opts({ stopWhenIdle: true, ...time }))).toEqual({ finished: [], timedOut: false, idle: true });
+    expect(time.clock.now()).toBe(0);
+    // No lanes at all is idle too, in both modes.
+    rmSync(root, { recursive: true, force: true });
+    expect(await waitForFinished(opts({ stopWhenIdle: true }))).toMatchObject({ idle: true });
+    expect(await waitForFinished(opts({ mode: "all", stopWhenIdle: true }))).toMatchObject({ idle: true });
+  });
+
+  it("still reports what is pending rather than idle", async () => {
+    lane("a", "finished");
+    const result = await waitForFinished(opts({ stopWhenIdle: true }));
+    expect(result).toMatchObject({ timedOut: false });
+    expect(result.idle).toBeUndefined();
+    expect(result.finished.map((i) => i.lane)).toEqual(["a"]);
+  });
+
+  it("keeps waiting while a lane runs, and returns its finish", async () => {
+    const a = lane("a", "running");
+    const time = fakeTime({ 2: () => setState("a", "finished", a) });
+    const result = await waitForFinished(opts({ stopWhenIdle: true, ...time }));
+    expect(result.finished.map((i) => i.lane)).toEqual(["a"]);
+    expect(result.idle).toBeUndefined();
+    expect(time.clock.now()).toBe(2000);
+  });
+
+  it("goes idle once the last running lane is acked elsewhere", async () => {
+    const a = lane("a", "running");
+    const time = fakeTime({
+      1: () => {
+        setState("a", "finished", a);
+        ack(root, "a", a);
+      },
+    });
+    expect(await waitForFinished(opts({ stopWhenIdle: true, ...time }))).toEqual({ finished: [], timedOut: false, idle: true });
+    expect(time.clock.now()).toBe(1000);
+  });
+
+  it("ignores running lanes that include leaves out", async () => {
+    lane("theirs", "running");
+    const result = await waitForFinished(opts({ stopWhenIdle: true, include: (name) => name !== "theirs" }));
+    expect(result).toEqual({ finished: [], timedOut: false, idle: true });
+  });
+
+  it("counts a lane without a state as running while its shepherd lives", async () => {
+    createAttempt(root, "starting");
+    const shepherd = (pid: number): void => writeFileSync(join(root, "starting", "shepherd.json"), JSON.stringify({ pid, startedAt: "x" }));
+    shepherd(LIVE_PID);
+    expect(await waitForFinished(opts({ stopWhenIdle: true, timeoutMs: 0 }))).toEqual({ finished: [], timedOut: true });
+    shepherd(DEAD_PID);
+    expect(await waitForFinished(opts({ stopWhenIdle: true, timeoutMs: 0 }))).toMatchObject({ idle: true });
+  });
+
+  it("all: an acked set of named lanes is idle; a lane that never gets a state does not block the others", async () => {
+    const a = lane("a", "finished");
+    ack(root, "a", a);
+    expect(await waitForFinished(opts({ mode: "all", lanes: ["a"], stopWhenIdle: true }))).toEqual({ finished: [], timedOut: false, idle: true });
+    lane("b", "finished");
+    createAttempt(root, "never");
+    const result = await waitForFinished(opts({ mode: "all", lanes: ["a", "b", "never"], stopWhenIdle: true }));
+    expect(result).toMatchObject({ timedOut: false });
+    expect(result.finished.map((i) => i.lane)).toEqual(["b"]);
+  });
+});
+
+describe("isRunning", () => {
+  it("is true for a live state or a starting shepherd, false otherwise", () => {
+    lane("live", "running");
+    lane("held", "held");
+    lane("done", "finished");
+    lane("orphan", "running", DEAD_PID);
+    createAttempt(root, "bare");
+    expect(["live", "held", "done", "orphan", "bare"].map((name) => isRunning(root, name, alive))).toEqual([true, true, false, false, false]);
   });
 });

@@ -1,13 +1,26 @@
-import { existsSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { writeState, type FinishedItem } from "../registry";
+import { listWaiters, runPaths, writeState, type FinishedItem } from "../registry";
 import type { AttemptSummary } from "../types";
-import { makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { CLI_PID, NOW_MS, SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
 import { WAIT_TIMEOUT_EXIT, describeFinished, formatFinished, parseTimeoutMin, runWait } from "./wait";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
+
+const OWNER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+const OTHER = "99999999-8888-7777-6666-555555555555";
+
+/** Rewrites the lane's shepherd.json with an owner, as a §21 shepherd writes it. */
+function own(t: TestProject, lane: string, owner: string | null, pid = SHEPHERD_PID): void {
+  writeFileSync(runPaths(t.runsRoot, lane).shepherdFile, JSON.stringify({ pid, startedAt: "2026-10-09T11:00:00.000Z", owner }));
+}
+
+const finishedLanes = (stdout: string): string[] =>
+  (JSON.parse(stdout) as { finished: Array<{ lane: string }> }).finished.map((f) => f.lane);
+
+const waiterFile = (t: TestProject): string => join(t.home, "waiters", `${CLI_PID}.json`);
 
 const finishedSummary: Partial<AttemptSummary> = { state: "success", wallMs: 125_000, turns: 7, toolCallTotal: 11, failedTotal: 2, costDeltaUsd: 0.4321 };
 
@@ -99,9 +112,10 @@ describe("runWait", () => {
         },
       ],
     });
+    // Acked, and nothing else runs: the next wait has nothing to wait for.
     p.out.length = 0;
-    expect(await runWait(["--any", "--timeout-min", "0"], p.ctx)).toBe(WAIT_TIMEOUT_EXIT);
-    expect(p.stdout()).toBe("");
+    expect(await runWait(["--any", "--timeout-min", "0"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("no lanes are running\n");
   });
 
   it("times out with exit 3 and acks nothing", async () => {
@@ -162,6 +176,134 @@ describe("runWait", () => {
     writeLaneRun(p.runsRoot, "demo", { state: "running", shepherdPid: 500, started: {} });
     expect(await runWait(["--json", "--timeout-min", "0"], p.ctx)).toBe(3);
     expect(JSON.parse(p.stdout())).toEqual({ timedOut: true, finished: [] });
+  });
+
+  it("--any acknowledges this session's and ownerless runs, and leaves another session's alone", async () => {
+    p = makeProject();
+    for (const lane of ["mine", "theirs", "old"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success" });
+    own(p, "mine", OWNER);
+    own(p, "theirs", OTHER);
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    expect(await runWait(["--any", "--json"], p.ctx)).toBe(0);
+    expect(finishedLanes(p.stdout())).toEqual(["mine", "old"]);
+    expect(existsSync(join(p.runsRoot, "theirs", "acked.json"))).toBe(false);
+    // The other session's run is not ours to wait for: nothing of ours runs, so the default --any is idle.
+    p.out.length = 0;
+    expect(await runWait(["--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).toEqual({ timedOut: false, finished: [], idle: true });
+    // Its own session still gets it.
+    p.out.length = 0;
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OTHER };
+    expect(await runWait(["--json"], p.ctx)).toBe(0);
+    expect(finishedLanes(p.stdout())).toEqual(["theirs"]);
+  });
+
+  it("--any does not wait on another session's running lane", async () => {
+    p = makeProject();
+    p.alive.add(500);
+    writeLaneRun(p.runsRoot, "theirs", { state: "running", shepherdPid: 500, started: {} });
+    own(p, "theirs", OTHER, 500);
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    const start = p.now.ms;
+    expect(await runWait(["--any"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("no lanes are running\n");
+    expect(p.now.ms).toBe(start);
+    // --all waits for it.
+    expect(await runWait(["--all", "--timeout-min", "0"], p.ctx)).toBe(WAIT_TIMEOUT_EXIT);
+  });
+
+  it("--all acknowledges every session's runs, one wait at a time as --any", async () => {
+    p = makeProject();
+    for (const lane of ["mine", "theirs", "old"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success" });
+    own(p, "mine", OWNER);
+    own(p, "theirs", OTHER);
+    p.alive.add(500);
+    writeLaneRun(p.runsRoot, "busy", { state: "running", shepherdPid: 500, started: {} });
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    expect(await runWait(["--all", "--json"], p.ctx)).toBe(0);
+    expect(finishedLanes(p.stdout())).toEqual(["mine", "old", "theirs"]);
+  });
+
+  it("named lanes are waited for whoever owns them", async () => {
+    p = makeProject();
+    writeLaneRun(p.runsRoot, "theirs", { state: "finished", endState: "success" });
+    own(p, "theirs", OTHER);
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    expect(await runWait(["--any", "--json", "theirs"], p.ctx)).toBe(0);
+    expect(finishedLanes(p.stdout())).toEqual(["theirs"]);
+    // Once acked, a named lane that no longer runs is idle too, in both modes.
+    for (const mode of ["--any", "--all"]) {
+      p.out.length = 0;
+      expect(await runWait([mode, "theirs"], p.ctx)).toBe(0);
+      expect(p.stdout()).toBe("no lanes are running\n");
+    }
+  });
+
+  it("is idle without any lanes", async () => {
+    p = makeProject();
+    expect(await runWait([], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("no lanes are running\n");
+    expect(p.stderr()).toBe("");
+  });
+
+  it("registers the waiter while it waits and removes it after", async () => {
+    p = makeProject();
+    p.alive.add(500);
+    p.alive.add(CLI_PID);
+    writeLaneRun(p.runsRoot, "demo", { state: "running", shepherdPid: 500, started: {} });
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    const seen: unknown[] = [];
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      seen.push(listWaiters(p.home, p.ctx.alive));
+      await sleep(ms);
+      writeState(p.runsRoot, { lane: "demo", state: "finished", attempt: 1, since: "x", shepherdPid: 500, endState: "success" });
+    };
+    expect(await runWait([], p.ctx)).toBe(0);
+    expect(seen).toEqual([[{ pid: CLI_PID, project: p.root, owner: OWNER, startedAt: new Date(NOW_MS).toISOString() }]]);
+    expect(existsSync(waiterFile(p))).toBe(false);
+  });
+
+  it("removes the waiter on timeout and on error", async () => {
+    p = makeProject();
+    p.alive.add(500);
+    writeLaneRun(p.runsRoot, "demo", { state: "running", shepherdPid: 500, started: {} });
+    let registered = false;
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      registered ||= existsSync(waiterFile(p));
+      await sleep(ms);
+    };
+    expect(await runWait(["--timeout-min", "0.1"], p.ctx)).toBe(WAIT_TIMEOUT_EXIT);
+    expect(registered).toBe(true);
+    expect(existsSync(waiterFile(p))).toBe(false);
+
+    registered = false;
+    p.ctx.sleep = async () => {
+      registered = existsSync(waiterFile(p));
+      throw new Error("interrupted");
+    };
+    await expect(runWait([], p.ctx)).rejects.toThrow("interrupted");
+    expect(registered).toBe(true);
+    expect(existsSync(waiterFile(p))).toBe(false);
+  });
+
+  it("--notify shows one notification per finished lane and ignores whether it showed", async () => {
+    p = makeProject();
+    writeLaneRun(p.runsRoot, "a", { state: "finished", endState: "success", summary: finishedSummary });
+    writeLaneRun(p.runsRoot, "b", { state: "running", shepherdPid: 31337, started: {} });
+    p.notifyResult.shown = false;
+    expect(await runWait(["--notify"], p.ctx)).toBe(0);
+    expect(p.notified).toEqual([
+      { title: "arbab", body: "a: success" },
+      { title: "arbab", body: "b: orphaned" },
+    ]);
+    // Without --notify, or with nothing finished, there is none.
+    p.notified.length = 0;
+    writeLaneRun(p.runsRoot, "c", { state: "finished", endState: "failed" });
+    expect(await runWait([], p.ctx)).toBe(0);
+    expect(await runWait(["--notify"], p.ctx)).toBe(0);
+    expect(p.notified).toEqual([]);
   });
 
   it("rejects usage errors", async () => {

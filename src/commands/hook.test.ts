@@ -2,7 +2,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { APPROVAL } from "../hook/approve";
-import { registerShepherd, registerWaiter } from "../registry";
+import { registerProject, registerShepherd, registerWaiter } from "../registry";
 import { runHook } from "./hook";
 import { dispatch } from "./index";
 import { makeProject, type TestProject } from "./testkit";
@@ -22,17 +22,21 @@ function project(): TestProject {
 const bash = (command: string): string =>
   JSON.stringify({ session_id: SESSION, cwd: "/work/repo", hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command } });
 
-async function preToolUse(t: TestProject, stdin: string): Promise<string> {
+// The test project lives under the OS temp dir, which may be under /tmp: only the TMPDIR and /tmp tests keep the defaults.
+async function preToolUse(t: TestProject, stdin: string, tempDirs: readonly string[] = []): Promise<string> {
   t.stdin.text = stdin;
   t.out.length = 0;
-  expect(await runHook(["pre-tool-use"], t.ctx)).toBe(0);
+  expect(await runHook(["pre-tool-use"], t.ctx, tempDirs)).toBe(0);
   expect(t.stderr()).toBe("");
   return t.stdout();
 }
 
+const AT = "2026-10-21T10:00:00.000Z";
+
 describe("hook pre-tool-use", () => {
   it("approves the bare forms", async () => {
     p = project();
+    registerProject(p.home, p.root, AT);
     const runner = p.ctx.scriptPath;
     for (const command of [
       `node "${runner}" status`,
@@ -67,12 +71,54 @@ describe("hook pre-tool-use", () => {
       bash(call("frobnicate")),
       bash(call("hook stop")),
       bash(call(`__shepherd ${p.root} demo {}`)),
+      bash(call("land rel")),
       JSON.stringify({ tool_name: "Read", tool_input: { command: call("status") } }),
       "not json",
       "",
     ]) {
       expect(await preToolUse(p, stdin), stdin).toBe("");
     }
+  });
+
+  it("approves -C only into a registered project", async () => {
+    p = project();
+    const command = bash(`node "${p.ctx.scriptPath}" -C ${p.root} status`);
+    expect(await preToolUse(p, command)).toBe("");
+    registerProject(p.home, p.root, AT);
+    expect(await preToolUse(p, command)).toBe(APPROVAL);
+    mkdirSync(join(p.dir, "elsewhere"));
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C ${join(p.dir, "elsewhere")} status`))).toBe("");
+  });
+
+  it("refuses -C into a lane worktree, even a registered one", async () => {
+    p = project();
+    const lane = join(p.worktreeRoot, "demo");
+    mkdirSync(lane, { recursive: true });
+    registerProject(p.home, lane, AT);
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C ${lane} status`))).toBe("");
+  });
+
+  it("refuses -C under the hook's TMPDIR and under /tmp", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    p.ctx.hostEnv = { TMPDIR: p.dir };
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C ${p.root} status`))).toBe("");
+    p.ctx.hostEnv = {};
+    // /tmp itself registered: the default temp dirs still refuse it.
+    registerProject(p.home, "/tmp", AT);
+    p.stdin.text = bash(`node "${p.ctx.scriptPath}" -C /tmp status`);
+    p.out.length = 0;
+    expect(await runHook(["pre-tool-use"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("");
+    // Not refused for want of registration: without temp dirs the same call passes.
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C /tmp status`))).toBe(APPROVAL);
+  });
+
+  it("refuses land with and without -C", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" land rel`))).toBe("");
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C ${p.root} land rel --squash`))).toBe("");
   });
 
   it("prints nothing when stdin cannot be read", async () => {

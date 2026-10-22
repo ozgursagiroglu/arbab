@@ -72,9 +72,9 @@ or the `--message` file).
 | `attempt-<n>/` | `brief.md`, `settings.json`, `args.json`, `started.json`, `stream.jsonl`, `stderr.log`, `registration.json`, `exit.json`, `summary.json`, `report.json` |
 
 `started.json`: session id, pid, binary, argv, env names (never values), leases, merged branches, inputs, and on a
-run's first attempt `heldMs` (no slot, quota, semaphores, writer lock) and `prepareMs` (worktree, dependencies,
-merges, inputs). `exit.json`: `exitCode`, `signal`, `killedBy`, `finishedAt`, `wallMs`, reaped pids, `checkpoint`,
-`checkpointError`.
+run's first attempt `heldMs` (queued and held: the quota and a slot) and `prepareMs` (from `preparing` to the
+attempt: leases, semaphores, the writer lock, worktree, dependencies, merges, inputs). `exit.json`: `exitCode`,
+`signal`, `killedBy`, `finishedAt`, `wallMs`, reaped pids, `checkpoint`, `checkpointError`.
 
 `summary.json` fields:
 
@@ -100,18 +100,23 @@ merges, inputs). `exit.json`: `exitCode`, `signal`, `killedBy`, `finishedAt`, `w
 | `landing.json` | `into`, `integrationHead`, `mergeSha` (the merge or squash commit), `landedAt`, `pushed: false`, `squash`, `lanes[]` (`{lane, sha}`) |
 | `lanes/` | the generated lanes' files and briefs |
 
-`verify --ref <branch>` writes `.arbab/refs/<slug>/verify.json` (name `ref:<branch>`) from lane `ref-<slug>-verify`;
-integration names starting with `ref-` are refused.
+`verify --ref <branch>` writes `.arbab/refs/<id>/verify.json` (name `ref:<branch>`) from lane `<id>-verify`, where
+`<id>` is `ref-<slug>-<hash>`: the branch lowercased with every other character `-` (at most 22), then 6 hex digits
+of the branch name's sha1. Integration names starting with `ref-` are refused.
+
+`integrate <name> --refresh` rewrites `integration.json` for the current head of `integrate/<name>` (after a hand
+commit or a base merge there) without merging or installing anything.
 
 Machine records in `~/.arbab/`: `quota.json`, `quota-reset.json`, `machine.json`, the pools (`slots/`, `semaphores/`,
-`leases/`, `locks/`), `shepherds/<pid>.json` and `waiters/<pid>.json` while those processes live, and
-`projects/<sha1(root)>.json` per project that launched a lane (what `summary --all` reads).
+`leases/`, `locks/`), `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while `wait` runs or
+`verify`, `review` or `preflight` waits for its lanes, and `projects/<sha1(root)>.json` per project that launched a
+lane (what `summary --all` reads, and the projects the hook approves `-C` into).
 
 ## Readiness rules
 
 - Verify must have passed on the head itself; it never carries over.
 - The review counts at the head, or at an earlier head when the head is a merge commit of that head and a commit of
-  the base whose tree is what git merges them into (nobody resolved anything by hand).
+  the integration's recorded `base` whose tree is what git merges them into (nobody resolved anything by hand).
 - Skipped, by tier: `low`: `verify`; `medium`: `verify` and `review` (no lens counted); `high`: `verify`,
   `review:<lens>` for every built-in and config lens, `skeptic` (MEDIUM+ findings still unverified) and `smoke`. At
   every tier: `deps` (a manifest change no human confirmed) and `host` (config `hostGates` that have not passed on
@@ -133,7 +138,8 @@ Machine records in `~/.arbab/`: `quota.json`, `quota-reset.json`, `machine.json`
 - the main checkout is on the recorded base, with no tracked change and no untracked file where the merge writes
   (other untracked files are left alone and listed);
 - the base's HEAD is an ancestor of the head; otherwise it prints the hooks-off merge to run in the integration
-  worktree.
+  worktree, then `integrate <name> --refresh` to record the new head;
+- the `--message` file, when given, is inside the project (also by its real path) and not a `.env*` file.
 
 It merges `--no-ff`, or with `--squash` (config `landing.squash`) makes one commit, hooks off; it never pushes. Then
 it removes what it landed unless `--keep-worktrees`; lane branches stay. After a squash, cleanup recognises landed

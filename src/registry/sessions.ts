@@ -1,15 +1,17 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import type { SessionActivity } from "../types";
+import { foldPath, sameOrInside } from "../util/pathcase";
 import { listShepherds, listWaiters } from "./machine";
 
 export type { SessionActivity } from "../types";
 
 // Which other sessions a landing affects (DESIGN.md §21): it moves the base under the lanes and waiters of this
 // project, and replaces the runner file under processes of other projects that run this project's runner.
+// Paths compare through foldPath: an entry may record the project in any spelling the file system takes.
 
 /** `path` through `realpath`, or as given when it cannot be resolved. */
-export function runnerPath(path: string, realpath: (path: string) => string = realpathSync): string {
+export function runnerPath(path: string, realpath: (path: string) => string = (p) => realpathSync.native(p)): string {
   try {
     return realpath(path);
   } catch {
@@ -17,11 +19,11 @@ export function runnerPath(path: string, realpath: (path: string) => string = re
   }
 }
 
-/** `path` relative to `root` with "/" separators, or null when it does not lie inside it. */
+/** `path` relative to `root`, folded and with "/" separators, or null when it does not lie strictly inside it. */
 function inside(root: string, path: string): string | null {
-  const rel = relative(root, path);
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
-  return rel.split(sep).join("/");
+  if (!sameOrInside(root, path)) return null;
+  const rel = relative(foldPath(root), foldPath(path));
+  return rel === "" ? null : rel.split(sep).join("/");
 }
 
 interface Tally {
@@ -45,7 +47,9 @@ export function otherSessions(input: {
 }): SessionActivity[] {
   const real = (path: string): string => runnerPath(path, input.realpath);
   const root = real(input.projectRoot);
-  const changed = new Set(input.changed);
+  const folded = foldPath(root);
+  // Folded path to the spelling the landing gives, which is the one reported.
+  const changed = new Map(input.changed.map((path) => [foldPath(path), path]));
   const byOwner = new Map<string | null, Tally>();
   const tally = (owner: string | null): Tally => {
     let t = byOwner.get(owner);
@@ -61,7 +65,7 @@ export function otherSessions(input: {
   ];
   for (const entry of entries) {
     if (input.session !== null && entry.owner === input.session) continue;
-    if (real(entry.project) === root) {
+    if (foldPath(real(entry.project)) === folded) {
       const t = tally(entry.owner);
       if (entry.kind === "shepherd" && entry.lane !== null) t.lanes.add(entry.lane);
       else t.waiters++;
@@ -69,10 +73,11 @@ export function otherSessions(input: {
     }
     // An entry without a runner (written before 0.2.1) counts only by its project.
     const rel = entry.runner === undefined ? null : inside(root, real(entry.runner));
-    if (rel === null || !changed.has(rel)) continue;
+    const path = rel === null ? undefined : changed.get(rel);
+    if (path === undefined) continue;
     const t = tally(entry.owner);
     t.runnerProjects.add(entry.project);
-    t.runnersChanged.add(rel);
+    t.runnersChanged.add(path);
   }
   return [...byOwner]
     .sort(([a], [b]) => (a === b ? 0 : a === null ? 1 : b === null ? -1 : a < b ? -1 : 1))

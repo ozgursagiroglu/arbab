@@ -72,6 +72,21 @@ describe("otherSessions", () => {
     ]);
   });
 
+  it("matches a project and a runner recorded in another spelling of case", () => {
+    // On a case-insensitive file system realpath gives the spelling on disk; elsewhere the path does not resolve
+    // and is folded as given. Either way the entry counts.
+    shepherd(20, OTHER, { project: join(dir, "REPO") });
+    waiter(21, OTHER, { project: join(dir, "Repo") });
+    shepherd(30, THIRD, { project: elsewhere, runner: join(dir, "Repo", "DIST", "Arbab.mjs") });
+    expect(sessions({ changed: ["dist/arbab.mjs"] })).toEqual([
+      activity(OTHER, { lanes: ["lane-20"], waiters: 1 }),
+      activity(THIRD, { runnerProjects: [elsewhere], runnersChanged: ["dist/arbab.mjs"] }),
+    ]);
+    // A name that only starts like the project's is another project.
+    shepherd(40, OTHER, { project: join(dir, "REPO-old") });
+    expect(sessions()).toEqual([activity(OTHER, { lanes: ["lane-20"], waiters: 1 })]);
+  });
+
   it("counts an entry of another project running this project's runner only when the landing changes it", () => {
     const runner = join(root, "dist", "arbab.mjs");
     shepherd(30, OTHER, { project: elsewhere, lane: "theirs", runner });

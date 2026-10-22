@@ -161,7 +161,8 @@ Then:
 4. **Watch.** The skill starts `arbab ui`, which opens the lanes in your browser as workers building a pyramid.
    `arbab status` shows the same as a table.
 5. **Land.** The orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
-   lands.
+   lands. When the landing affects another session's lanes or runner, readiness and `land` name that session, and
+   the orchestrator tells it before landing.
 
 Some steps are always yours:
 
@@ -368,6 +369,9 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
 - **A skeptic lane per lens** tries to refute each MEDIUM or HIGH finding.
 - **Verdicts:** each finding ends `confirmed`, `refuted` or `unverified`.
 - **A readiness report** lists what was verified, what was skipped, and every risk.
+- **Other sessions hear about a landing.** When another session runs lanes or waiters in the project, or
+  runs a runner file the landing replaces, readiness lists it as a `session:<id>` risk and `land` prints a warning
+  for it before merging. Neither blocks; the skill tells that session first.
 - **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
   cannot be waived. Only you can waive one: `--waive` needs a terminal.
 

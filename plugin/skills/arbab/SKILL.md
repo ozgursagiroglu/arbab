@@ -341,8 +341,9 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    - **verified**: each gate and smoke command with its exit code, the lenses that ran, the findings' verdicts;
    - **skipped**: what the tier requires that did not run or did not pass. `low`: verify. `medium` (the default,
      config `landing.tier`): verify and at least one lens. `high`: verify, every lens, the skeptic pass and smoke;
-   - **risks**: confirmed and unverified findings, the merged lanes' `open_questions` and `not_verified`, and
-     manifest changes. Add what arbab cannot see: facts from live data, an eval not re-run, a page never opened.
+   - **risks**: other sessions the landing affects (`session:<id>`), confirmed and unverified findings, the merged
+     lanes' `open_questions` and `not_verified`, and manifest changes. Add what arbab cannot see: facts from live
+     data, an eval not re-run, a page never opened.
 
    Each skipped item has an id (`verify`, `review`, `review:<lens>`, `skeptic`, `smoke`, `deps`, `host`) and stays
    until it runs or the **human** waives it by that id. Waivers are the human's: `--waive` needs a terminal, so your
@@ -353,9 +354,11 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    Checks the fence cannot run (Docker, a browser, a database) go in config `hostGates`. Readiness lists them
    (`host`) until they passed on the head; the human starts `arbab host-check <name>` in a terminal, because it runs
    worker code on the host. Never run them on the host yourself.
-5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>`. When the project wants one commit per
-   landing, use `arbab land <name> --squash --message <file>` (inside the project, no credential file), or set config
-   `landing.squash`. The plugin's hook never approves `land`.
+5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>` (one commit: `--squash --message <file>`,
+   a file inside the project and no credential file, or config `landing.squash`). The hook never approves `land`.
+   - When readiness or `land`'s warnings name other sessions, tell each before landing, with SendMessage, what the
+     landing changes and when (ListAgents lists sessions by name, usually their project directory's). Recognise one
+     by the lanes and projects named, not the 8-character id: it is not ListAgents' short ref. Hold only if one asks.
    - It refuses unless:
      - readiness is ready for the integration head, newer than its verify and review, and at least
        `config.landing.tier`;
@@ -369,13 +372,11 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    - Then it merges `--no-ff` (`Land <name>`), or makes one squash commit, with hooks disabled (the branch holds
      worker code), writes `landing.json` and prints the push command.
    - **It never pushes.** Push and deploy are human actions; say that nothing was pushed.
-   - Then it removes the worktrees of the lanes it landed, of the lanes generated for the integration and of the
-     integration itself (`--keep-worktrees` skips this), and deletes the generated lanes' and the integration's
-     branches. Lane branches stay: later plan phases merge them by name. It keeps anything active, orphaned, dirty
-     or unmerged and says why; pass what it kept on to the human.
+   - Then it removes the worktrees of the lanes it landed, the generated lanes and the integration (`--keep-worktrees`
+     skips this) and deletes the generated lanes' and the integration's branches; lane branches stay, as later plan
+     phases merge them by name. It keeps anything active, orphaned, dirty or unmerged and says why; tell the human.
    - A landed integration's name is closed: the next round gets a new name.
-6. After landing, verify the base once more, inside the fence: `arbab verify --ref <base>` runs the gates on the
-   branch head with no integration. M1's own landing found a test that failed only on `main`.
+6. After landing, `arbab verify --ref <base>` checks the base once more, in the fence: M1 had a test failing only on `main`.
 
 ## Do not
 

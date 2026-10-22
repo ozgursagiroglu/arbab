@@ -1,12 +1,26 @@
-// arbab status [--json] [lane…]
+// arbab status [--active] [--mine] [--json] [lane…]
 //
-// Text: formatStatusTable (lane, state, attempt, elapsed, turns, calls, last tool, effort, failed, cost, quota),
-// then a `quota: <formatQuota>` line.
+// Text: formatStatusTable (lane, state, attempt, elapsed, turns, calls, last tool, effort, failed, cost, quota, why),
+// then a `quota: <formatQuota>` line. The cost column shows tokens when a run has no cost; `why` is state.json's
+// reason, cut short.
 // --json: {"lanes": StatusRow[], "quota": {"snapshot": RateLimitSnapshot | null, "hold": HoldDecision}}
 // StatusRow and the others are the types of src/types.ts; `state` is the effective state (a dead shepherd's lane
 // is "orphaned").
+// --active: only lanes whose state is not finished. --mine: only runs this session owns, and the ownerless ones.
 import { existsSync } from "node:fs";
-import { attemptFiles, effectiveState, formatStatusTable, listLanes, readAttempt, readState, runPaths, statusRow } from "../registry";
+import {
+  attemptFiles,
+  effectiveState,
+  formatStatusTable,
+  listLanes,
+  ownedBy,
+  readAttempt,
+  readShepherdRecord,
+  readState,
+  runPaths,
+  sessionOf,
+  statusRow,
+} from "../registry";
 import { formatQuota, holdDecision, readQuota } from "../quota";
 import { buildAttemptSummary, digestStream, parseStream } from "../stream";
 import type { AttemptRecord } from "../registry";
@@ -74,15 +88,16 @@ export function laneStatus(project: Project, lane: string, alive: (pid: number) 
       }
     }
   }
-  return statusRow(effective, summary, nowMs);
+  return statusRow(effective, summary, nowMs, readShepherdRecord(project.runsRoot, lane)?.owner ?? null);
 }
 
 export async function runStatus(argv: string[], ctx: CommandContext): Promise<number> {
   const { values, positionals } = parse("status", {
     args: argv,
-    options: { json: { type: "boolean" } },
+    options: { json: { type: "boolean" }, active: { type: "boolean" }, mine: { type: "boolean" } },
     allowPositionals: true,
   });
+  const session = sessionOf(ctx.hostEnv);
   const project = openProject(ctx);
   const named = positionals.length > 0;
   for (const lane of positionals) {
@@ -92,9 +107,13 @@ export async function runStatus(argv: string[], ctx: CommandContext): Promise<nu
   const nowMs = ctx.clock.now();
   const rows: StatusRow[] = [];
   for (const lane of named ? positionals : listLanes(project.runsRoot)) {
+    if (values.mine === true && !ownedBy(readShepherdRecord(project.runsRoot, lane), session)) continue;
     const row = laneStatus(project, lane, ctx.alive, nowMs);
-    if (row !== null) rows.push(row);
-    else if (named) ctx.stderr(`${lane}: no state yet (the shepherd is starting)\n`);
+    if (row === null) {
+      if (named) ctx.stderr(`${lane}: no state yet (the shepherd is starting)\n`);
+    } else if (values.active !== true || row.state !== "finished") {
+      rows.push(row);
+    }
   }
   const snapshot = readQuota(ctx.home);
   const nowSec = Math.floor(nowMs / 1000);

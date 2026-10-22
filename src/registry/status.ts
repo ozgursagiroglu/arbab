@@ -1,4 +1,4 @@
-import type { AttemptSummary, LaneState, LaneStateRecord, QuotaWindow, StatusRow } from "../types";
+import type { AttemptSummary, LaneState, LaneStateRecord, QuotaWindow, StatusRow, TokenUsage } from "../types";
 
 const UNKNOWN = "—";
 
@@ -9,10 +9,10 @@ const LIVE: ReadonlySet<LaneState> = new Set<LaneState>(["queued", "held", "prep
 export const isLive = (state: LaneState): boolean => LIVE.has(state);
 
 /**
- * One status row. Pass the record with its effective state (see effectiveState) and the summary of the record's
- * attempt, if there is one.
+ * One status row. Pass the record with its effective state (see effectiveState), the summary of the record's
+ * attempt, if there is one, and the run's owner from shepherd.json.
  */
-export function statusRow(record: LaneStateRecord, summary: AttemptSummary | null, nowMs: number): StatusRow {
+export function statusRow(record: LaneStateRecord, summary: AttemptSummary | null, nowMs: number, owner: string | null = null): StatusRow {
   return {
     lane: record.lane,
     state: record.state,
@@ -29,7 +29,24 @@ export function statusRow(record: LaneStateRecord, summary: AttemptSummary | nul
     costDeltaUsd: summary?.costDeltaUsd ?? null,
     fiveHour: summary?.rateLimit?.fiveHour ?? null,
     sevenDay: summary?.rateLimit?.sevenDay ?? null,
+    owner,
+    reason: typeof record.reason === "string" ? record.reason : null,
+    // Summaries written before §21 have no tokens.
+    tokens: tokenUsage(summary?.tokens),
   };
+}
+
+/** The summary's tokens when every count is a non-negative number; summary.json is read from disk, not trusted. */
+function tokenUsage(v: unknown): TokenUsage | null {
+  if (typeof v !== "object" || v === null) return null;
+  const t = v as Record<string, unknown>;
+  const count = (k: string): number | null => {
+    const n = t[k];
+    return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const [input, cacheCreation, cacheRead, output] = [count("input"), count("cacheCreation"), count("cacheRead"), count("output")];
+  if (input === null || cacheCreation === null || cacheRead === null || output === null) return null;
+  return { input, cacheCreation, cacheRead, output };
 }
 
 function elapsed(record: LaneStateRecord, summary: AttemptSummary | null, nowMs: number): number | null {
@@ -64,11 +81,29 @@ export function formatElapsed(ms: number): string {
   return `${s}s`;
 }
 
-function formatCost(cost: number | null, delta: number | null): string {
-  if (cost === null) return UNKNOWN;
+/** `512 tok`, `41.2k tok`, `3.1M tok`: input, cache creation and output; cache reads are re-reads, left out. */
+export function formatTokens(tokens: TokenUsage): string {
+  const n = tokens.input + tokens.cacheCreation + tokens.output;
+  if (n < 1000) return `${n} tok`;
+  if (n < 999_950) return `${(n / 1000).toFixed(1)}k tok`;
+  return `${(n / 1_000_000).toFixed(1)}M tok`;
+}
+
+function formatCost(row: StatusRow): string {
+  const { costUsd: cost, costDeltaUsd: delta } = row;
+  // A subscription or a killed attempt has no cost, but its tokens say how much it worked.
+  if (cost === null) return row.tokens ? formatTokens(row.tokens) : UNKNOWN;
   const main = `$${cost.toFixed(2)}`;
   if (delta === null || delta.toFixed(2) === cost.toFixed(2)) return main;
   return `${main} (Δ$${delta.toFixed(2)})`;
+}
+
+const WHY_MAX = 40;
+
+/** The state's reason on one line, cut to WHY_MAX characters; empty without one. */
+export function formatWhy(reason: string | null | undefined): string {
+  const text = (reason ?? "").trim().replace(/\s+/g, " ");
+  return text.length > WHY_MAX ? `${text.slice(0, WHY_MAX - 1)}…` : text;
 }
 
 /** `5h 62% · 7d 60%`; windows that have already reset say nothing about now and are left out. */
@@ -83,7 +118,7 @@ export function formatWindows(fiveHour: QuotaWindow | null, sevenDay: QuotaWindo
   return parts.length > 0 ? parts.join(" · ") : UNKNOWN;
 }
 
-const HEADERS = ["lane", "state", "attempt", "elapsed", "turns", "calls", "last tool", "effort", "failed", "cost", "quota"];
+const HEADERS = ["lane", "state", "attempt", "elapsed", "turns", "calls", "last tool", "effort", "failed", "cost", "quota", "why"];
 
 /** Aligned plain-text columns, two spaces apart, no trailing blanks. */
 export function formatStatusTable(rows: StatusRow[], nowSec: number): string {
@@ -97,8 +132,9 @@ export function formatStatusTable(rows: StatusRow[], nowSec: number): string {
     row.lastTool ?? UNKNOWN,
     row.effort ?? UNKNOWN,
     String(row.failedTotal),
-    formatCost(row.costUsd, row.costDeltaUsd),
+    formatCost(row),
     formatWindows(row.fiveHour, row.sevenDay, nowSec),
+    formatWhy(row.reason),
   ]);
   const table = [HEADERS, ...cells];
   const widths = HEADERS.map((_, i) => Math.max(...table.map((line) => (line[i] ?? "").length)));

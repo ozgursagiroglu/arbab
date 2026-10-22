@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArbabError } from "../util/errors";
 import { isAlive } from "../util/proc";
 import {
@@ -21,11 +21,38 @@ import {
   type Holder,
 } from "./pool";
 
+/** How many of the next lock-entry creations lose their directory to a concurrent release. */
+const race = vi.hoisted(() => ({ removals: 0 }));
+
+vi.mock("../util/fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../util/fs")>();
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const { ArbabError: Err } = await import("../util/errors");
+  return {
+    ...actual,
+    createExclusive: (file: string, data: string): boolean => {
+      if (race.removals === 0 || !file.includes(`${path.sep}locks${path.sep}`)) return actual.createExclusive(file, data);
+      race.removals -= 1;
+      // A releaser's rmdir lands between the directory's creation and the entry's open.
+      actual.ensureDir(path.dirname(file));
+      fs.rmdirSync(path.dirname(file));
+      try {
+        fs.openSync(file, "wx");
+      } catch (err) {
+        throw new Err("io", `cannot create ${file}: ${(err as Error).message}`, { cause: err });
+      }
+      throw new Error("the open should have failed");
+    },
+  };
+});
+
 let home: string;
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "arbab-pool-"));
 });
 afterEach(() => {
+  race.removals = 0;
   rmSync(home, { recursive: true, force: true });
 });
 
@@ -211,5 +238,45 @@ describe("writer lock", () => {
   it("rejects keys that are not sha1 hex", () => {
     expect(() => acquireWriterLock(home, "../../etc", holder(10), everyoneAlive)).toThrow(ArbabError);
     expect(() => releaseWriterLock(home, "x", holder(10))).toThrow(ArbabError);
+  });
+  it("removes the key's directory with its entry, and only on its own release", () => {
+    const key = writerLockKey("/w/t");
+    const dir = join(home, "locks", key);
+    expect(acquireWriterLock(home, key, holder(10), everyoneAlive)).toBe(true);
+    expect(releaseWriterLock(home, key, holder(11))).toBe(false);
+    expect(existsSync(dir)).toBe(true);
+    expect(releaseWriterLock(home, key, holder(10))).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+    expect(readdirSync(join(home, "locks"))).toEqual([]);
+    // A vanished directory releases nothing and throws nothing.
+    expect(releaseWriterLock(home, key, holder(10))).toBe(false);
+  });
+  it("keeps a directory something else still occupies", () => {
+    const key = writerLockKey("/w/t");
+    const dir = join(home, "locks", key);
+    expect(acquireWriterLock(home, key, holder(10), everyoneAlive)).toBe(true);
+    // A reclaim's tomb, left by a reclaimer that died between rename and unlink.
+    writeFileSync(join(dir, "0.json.0a1b2c.stale"), "");
+    expect(releaseWriterLock(home, key, holder(10))).toBe(true);
+    expect(readdirSync(dir)).toEqual(["0.json.0a1b2c.stale"]);
+  });
+  it("acquires again when a release removed the directory between its creation and the entry's", () => {
+    const key = writerLockKey("/w/t");
+    const dir = join(home, "locks", key);
+    race.removals = 2;
+    expect(acquireWriterLock(home, key, holder(10), everyoneAlive)).toBe(true);
+    expect(race.removals).toBe(0);
+    expect(JSON.parse(readFileSync(join(dir, "0.json"), "utf8"))).toEqual(holder(10));
+  });
+  it("gives up after a bounded number of vanished directories", () => {
+    const key = writerLockKey("/w/t");
+    race.removals = 1_000;
+    expect(() => acquireWriterLock(home, key, holder(10), everyoneAlive)).toThrow(/cannot create/);
+    expect(race.removals).toBe(1_000 - 5);
+    // Any other failure is not retried.
+    race.removals = 0;
+    rmSync(join(home, "locks"), { recursive: true });
+    writeFileSync(join(home, "locks"), "a file where the directory goes");
+    expect(() => acquireWriterLock(home, writerLockKey("/w/u"), holder(10), everyoneAlive)).toThrow();
   });
 });

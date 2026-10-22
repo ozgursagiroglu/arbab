@@ -450,9 +450,9 @@ async function prepare(
     }
   }
   ensureWorkerTmp(worktree);
-  // Copied on every run, used worktree or not: the files outside the repository may have changed since.
-  const inputs = lane.inputs !== undefined && lane.inputs.length > 0
-    ? copyInputs({ projectRoot: root, worktree, inputs: lane.inputs, userHome })
-    : null;
+  // Copied on every run, used worktree or not: the files outside the repository may have changed since, and an input
+  // the lane dropped must not stay readable. Under the writer lock, so no worker runs here during the copy.
+  const copied = copyInputs({ projectRoot: root, worktree, inputs: lane.inputs ?? [], userHome, credentialPaths: config.credentialPaths });
+  const inputs = copied.length > 0 ? copied : null;
   return { worktree, branch: wt.branch, gitCommonDir: wt.gitCommonDir, merged, inputs };
 }

@@ -1417,15 +1417,33 @@ describe("runShepherd: slots, owners, events, timing and inputs (DESIGN.md §21)
     const cwd = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 2)).started).cwd;
     expect(readFileSync(join(cwd, ".arbab-tmp", "inputs", "spec.md"), "utf8")).toBe("v2\n");
 
+    // An input the lane dropped does not stay readable.
+    project.lane({ name: "m1-a" });
+    expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("success");
+    expect(readdirSync(join(cwd, ".arbab-tmp", "inputs"))).toEqual([]);
+
     project.lane({ name: "m1-a", inputs: ["~/.ssh/id_ed25519"] });
     mkdirSync(join(project.dir, ".ssh"));
     writeFileSync(join(project.dir, ".ssh", "id_ed25519"), "not a key\n");
     expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("failed");
     expect(stateOf("m1-a")).toMatchObject({ endState: "failed", attempt: 0, reason: expect.stringMatching(/^input ~\/\.ssh\/id_ed25519 is under ~\/\.ssh/) });
-    expect(attempts("m1-a")).toHaveLength(2);
+    expect(attempts("m1-a")).toHaveLength(3);
     expect(poolEntries("slots")).toEqual([]);
     expect(lockEntries()).toEqual([]);
     expect(poolEntries("shepherds")).toEqual([]);
+  });
+
+  it("refuses an input under one of config.credentialPaths", async () => {
+    project.cleanup();
+    project = makeProject({ credentialPaths: ["~/vault/**"] });
+    mkdirSync(join(project.dir, "vault"), { recursive: true });
+    writeFileSync(join(project.dir, "vault", "token"), "not a token\n");
+    project.scenario({ fixture: fixture("success-report") });
+    // HOME is project.dir in testDeps.
+    project.lane({ name: "m1-a", inputs: ["~/vault/token"] });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
+    expect(stateOf("m1-a")).toMatchObject({ endState: "failed", attempt: 0, reason: expect.stringMatching(/^input ~\/vault\/token is under ~\/vault/) });
+    expect(attempts("m1-a")).toHaveLength(0);
   });
 });
 

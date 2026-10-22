@@ -1,9 +1,23 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArbabError } from "../util/errors";
-import { copyInputs, isCredentialName, MAX_INPUTS_BYTES } from "./inputs";
+import { copyInputs, MAX_INPUTS_BYTES } from "./inputs";
+
+// Swapping a source between the walk and the copy needs a step just before copyInputs opens it.
+const hooks = vi.hoisted(() => ({ beforeOpen: null as ((path: string) => void) | null }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const real = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...real,
+    openSync: (...args: Parameters<typeof real.openSync>): number => {
+      hooks.beforeOpen?.(String(args[0]));
+      return real.openSync(...args);
+    },
+  };
+});
 
 let dir: string;
 let home: string;
@@ -20,6 +34,7 @@ beforeEach(() => {
   for (const d of [home, worktree, elsewhere]) mkdirSync(d, { recursive: true });
 });
 afterEach(() => {
+  hooks.beforeOpen = null;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -28,17 +43,27 @@ const write = (path: string, text = "x"): string => {
   writeFileSync(path, text);
   return path;
 };
-const copy = (inputs: string[]): string[] => copyInputs({ projectRoot, worktree, inputs, userHome: home });
+const copy = (inputs: string[], credentialPaths: string[] = []): string[] =>
+  copyInputs({ projectRoot, worktree, inputs, userHome: home, credentialPaths });
 const copied = (...parts: string[]): string => join(worktree, ".arbab-tmp", "inputs", ...parts);
-const refusal = (inputs: string[]): string => {
+const refusal = (inputs: string[], credentialPaths: string[] = []): string => {
   try {
-    copy(inputs);
+    copy(inputs, credentialPaths);
   } catch (err) {
     expect(err).toBeInstanceOf(ArbabError);
     expect((err as ArbabError).code).toBe("usage");
     return (err as Error).message;
   }
   throw new Error(`copyInputs accepted ${inputs.join(", ")}`);
+};
+/** Runs `swap` once, just before copyInputs opens the source file `file`. */
+const beforeOpening = (file: string, swap: () => void): void => {
+  const at = realpathSync(file);
+  hooks.beforeOpen = (path) => {
+    if (path !== at) return;
+    hooks.beforeOpen = null;
+    swap();
+  };
 };
 
 describe("copyInputs", () => {
@@ -55,8 +80,9 @@ describe("copyInputs", () => {
     expect(readFileSync(copied("plan.md"), "utf8")).toBe("plan\n");
   });
 
-  it("returns nothing for no inputs", () => {
+  it("returns nothing for no inputs, and leaves an empty inputs directory", () => {
     expect(copy([])).toEqual([]);
+    expect(readdirSync(copied())).toEqual([]);
   });
 
   it("replaces an earlier copy, leaving nothing of it behind", () => {
@@ -66,6 +92,17 @@ describe("copyInputs", () => {
     write(join(elsewhere, "notes", "new.txt"), "new\n");
     copy([join(elsewhere, "notes")]);
     expect(readdirSync(copied("notes"))).toEqual(["new.txt"]);
+  });
+
+  it("drops an input the lane no longer names, and anything else left in the directory", () => {
+    const a = write(join(elsewhere, "a.md"));
+    const b = write(join(elsewhere, "b.md"));
+    copy([a, b]);
+    write(copied("stray.txt"));
+    expect(copy([a])).toEqual(["a.md"]);
+    expect(readdirSync(copied())).toEqual(["a.md"]);
+    expect(copy([])).toEqual([]);
+    expect(readdirSync(copied())).toEqual([]);
   });
 
   it("keeps a file's permission bits", () => {
@@ -124,6 +161,89 @@ describe("copyInputs", () => {
     expect(statSync(copied("edge.bin")).size).toBe(MAX_INPUTS_BYTES);
   });
 
+  describe("links a worker planted under .arbab-tmp", () => {
+    // What a link pointed at: it must survive the copy untouched.
+    const victim = (): string => {
+      write(join(dir, "victim", "keep.txt"), "keep\n");
+      write(join(dir, "victim", "inputs", "spec.md"), "victim's\n");
+      return join(dir, "victim");
+    };
+    const untouched = (target: string): void => {
+      expect(readFileSync(join(target, "keep.txt"), "utf8")).toBe("keep\n");
+      expect(readFileSync(join(target, "inputs", "spec.md"), "utf8")).toBe("victim's\n");
+      expect(readdirSync(target).sort()).toEqual(["inputs", "keep.txt"]);
+    };
+    const landed = (): void => {
+      expect(lstatSync(join(worktree, ".arbab-tmp")).isDirectory()).toBe(true);
+      expect(lstatSync(copied()).isDirectory()).toBe(true);
+      expect(readFileSync(copied("spec.md"), "utf8")).toBe("spec\n");
+    };
+
+    it("replaces a link at .arbab-tmp", () => {
+      const target = victim();
+      symlinkSync(target, join(worktree, ".arbab-tmp"));
+      copy([write(join(elsewhere, "spec.md"), "spec\n")]);
+      landed();
+      untouched(target);
+    });
+
+    it("replaces a link at .arbab-tmp/inputs", () => {
+      const target = victim();
+      mkdirSync(join(worktree, ".arbab-tmp"));
+      symlinkSync(join(target, "inputs"), copied());
+      copy([write(join(elsewhere, "spec.md"), "spec\n")]);
+      landed();
+      untouched(target);
+    });
+
+    it("removes links inside inputs without following them", () => {
+      const target = victim();
+      mkdirSync(copied(), { recursive: true });
+      symlinkSync(join(target, "inputs", "spec.md"), copied("spec.md"));
+      symlinkSync(target, copied("notes"));
+      write(join(elsewhere, "notes", "keep.txt"), "mine\n");
+      copy([write(join(elsewhere, "spec.md"), "spec\n"), join(elsewhere, "notes")]);
+      landed();
+      expect(readFileSync(copied("notes", "keep.txt"), "utf8")).toBe("mine\n");
+      untouched(target);
+    });
+  });
+
+  describe("a source that changes between the walk and the copy", () => {
+    it("is refused when the file is another inode", () => {
+      const spec = write(join(elsewhere, "spec.md"), "spec\n");
+      beforeOpening(spec, () => {
+        // Written beside it first, so the new file cannot reuse the old inode.
+        write(`${spec}.new`, "swapped\n");
+        renameSync(`${spec}.new`, spec);
+      });
+      expect(refusal([spec])).toMatch(/^input .*spec\.md changed while it was copied \(spec\.md is another file\)/);
+      expect(existsSync(copied("spec.md"))).toBe(false);
+    });
+
+    it("is refused when the file became a link", () => {
+      const spec = write(join(elsewhere, "spec.md"), "spec\n");
+      const secret = write(join(dir, "secret.txt"), "secret\n");
+      beforeOpening(spec, () => {
+        rmSync(spec);
+        symlinkSync(secret, spec);
+      });
+      expect(refusal([spec])).toMatch(/changed while it was copied \(spec\.md is now a link\)/);
+    });
+
+    it("is refused when a directory of the input became a link", () => {
+      const first = write(join(elsewhere, "bundle", "a.txt"));
+      write(join(elsewhere, "bundle", "sub", "b.txt"));
+      write(join(dir, "other", "b.txt"), "other\n");
+      beforeOpening(first, () => {
+        renameSync(join(elsewhere, "bundle", "sub"), join(elsewhere, "bundle", "sub-old"));
+        symlinkSync(join(dir, "other"), join(elsewhere, "bundle", "sub"));
+      });
+      expect(refusal([join(elsewhere, "bundle")])).toMatch(/changed while it was copied \(sub\/b\.txt moved\)/);
+      expect(existsSync(copied("bundle", "sub", "b.txt"))).toBe(false);
+    });
+  });
+
   it.each([".ssh", ".aws", ".azure", ".config", ".docker", ".kube", ".gnupg", ".claude", "Library"])(
     "refuses anything under ~/%s",
     (cred) => {
@@ -134,6 +254,11 @@ describe("copyInputs", () => {
       expect(refusal([`~/${cred}/sub`])).toMatch(/where credentials live/);
     },
   );
+
+  it.each([".pypirc", ".claude.json", ".npmrc", ".netrc", ".git-credentials"])("refuses the credential file ~/%s", (name) => {
+    write(join(home, name));
+    expect(refusal([`~/${name}`])).toMatch(new RegExp(`is the credential file ~/${name.replace(/\./g, "\\.")}$`));
+  });
 
   it("refuses a credential location reached through a link in the path", () => {
     write(join(home, ".ssh", "config"));
@@ -147,7 +272,7 @@ describe("copyInputs", () => {
     expect(refusal(["."])).toMatch(/holds the worktree/);
   });
 
-  it.each([".env", ".env.local", "server.pem", "tls.key", "cert.p12", "cert.pfx", "id_rsa", "id_rsa.pub", "id_ed25519", "prod.tfstate", ".npmrc", ".netrc", ".git-credentials"])(
+  it.each([".env", ".env.local", "server.pem", "tls.key", "cert.p12", "cert.pfx", "id_rsa", "id_rsa.pub", "id_ed25519", "prod.tfstate"])(
     "refuses a file named like a credential (%s), alone or inside a directory",
     (name) => {
       const file = write(join(elsewhere, "bundle", "nested", name));
@@ -157,7 +282,44 @@ describe("copyInputs", () => {
     },
   );
 
-  it("tells credential names from ordinary ones", () => {
-    for (const name of ["README.md", "env.ts", "keys.json", "pem.txt", "my.npmrc.bak", "rsa.txt"]) expect(isCredentialName(name), name).toBe(false);
+  it("refuses a path with a directory named like a credential", () => {
+    write(join(elsewhere, "app", ".env.d", "notes.md"));
+    expect(refusal([join(elsewhere, "app", ".env.d", "notes.md")])).toMatch(/named like a credential file \(\.env\.d\)/);
+    expect(refusal([join(elsewhere, "app")])).toMatch(/holds \.env\.d, named like a credential file/);
+  });
+
+  describe("config.credentialPaths", () => {
+    it("refuses what a ~/dir/** path covers", () => {
+      write(join(home, ".vault", "token"));
+      expect(refusal(["~/.vault/token"], ["~/.vault/**"])).toMatch(/is under ~\/\.vault, where credentials live/);
+      expect(copy(["~/.vault/token"])).toEqual(["token"]);
+    });
+
+    it("refuses a file a **/<name> path names, alone or inside a directory", () => {
+      write(join(elsewhere, "notes", "db.secret"));
+      expect(refusal([join(elsewhere, "notes", "db.secret")], ["**/*.secret"])).toMatch(/named like a credential file \(db\.secret\)/);
+      expect(refusal([join(elsewhere, "notes")], ["**/*.secret"])).toMatch(/holds db\.secret, named like a credential file/);
+    });
+
+    it("refuses what any other shape matches, by the real path", () => {
+      const secrets = join(realpathSync(elsewhere), "vault", "secrets");
+      write(join(secrets, "prod.json"));
+      write(join(elsewhere, "vault", "readme.md"));
+      const rule = `/${secrets}/**`;
+      expect(refusal([join(elsewhere, "vault", "secrets", "prod.json")], [rule])).toMatch(`matches the credential path ${rule}`);
+      expect(refusal([join(elsewhere, "vault", "secrets")], [rule])).toMatch(`matches the credential path ${rule}`);
+      expect(refusal([join(elsewhere, "vault")], [rule])).toMatch(`holds secrets, which matches the credential path ${rule}`);
+      expect(refusal([join(elsewhere, "vault", "readme.md")], ["vault/*.md"])).toMatch(/matches the credential path vault\/\*\.md/);
+      expect(copy([join(elsewhere, "vault", "readme.md")], [rule])).toEqual(["readme.md"]);
+    });
+  });
+
+  it("accepts plain documents, in the home directory or elsewhere", () => {
+    const names = ["README.md", "env.ts", "keys.json", "pem.txt", "my.npmrc.bak", "rsa.txt", "claude.json.md"];
+    for (const name of names) write(join(elsewhere, "docs", name));
+    write(join(home, "notes", "spec.md"));
+    write(join(home, ".claude-notes.md"));
+    expect(copy([join(elsewhere, "docs"), "~/notes", "~/.claude-notes.md"], ["~/.vault/**", "**/*.secret"])).toEqual(["docs", "notes", ".claude-notes.md"]);
+    expect(readdirSync(copied("docs")).sort()).toEqual([...names].sort());
   });
 });

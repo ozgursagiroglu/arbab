@@ -330,6 +330,42 @@ describe("copyInputs", () => {
     expect(refused([join(elsewhere, ".envs")])).toMatch(/named like a credential file \(\.envs\)/);
   });
 
+  it("knows an input inside the project in any spelling the file system takes", () => {
+    const app = join(dir, ".envs", "app");
+    const lane = join(app, ".arbab", "worktrees", "m1-a");
+    const inApp = (inputs: string[]): string[] => copyInputs({ projectRoot: app, worktree: lane, inputs, userHome: home, credentialPaths: [] });
+    const refused = (inputs: string[]): string => {
+      try {
+        inApp(inputs);
+      } catch (err) {
+        expect(err).toBeInstanceOf(ArbabError);
+        return (err as Error).message;
+      }
+      throw new Error(`copyInputs accepted ${inputs.join(", ")}`);
+    };
+    write(join(app, "docs", "a.md"), "a\n");
+    write(join(app, ".env"));
+    write(join(dir, ".envs", "c.md"));
+    write(join(dir, ".envs", "app-old", "d.md"));
+    mkdirSync(lane, { recursive: true });
+
+    // Only a case-insensitive file system finds another spelling; elsewhere the input is missing and refused anyway.
+    if (existsSync(join(app, "DOCS"))) {
+      expect(inApp(["DOCS/a.md"])).toEqual(["a.md"]);
+      expect(readFileSync(join(lane, ".arbab-tmp", "inputs", "a.md"), "utf8")).toBe("a\n");
+      // The project's own part spelled otherwise: still inside it, so `.ENVS` above it does not count.
+      expect(inApp(["../APP/DOCS/a.md"])).toEqual(["a.md"]);
+      expect(inApp([join(dir, ".ENVS", "App", "docs", "a.md")])).toEqual(["a.md"]);
+      expect(refused([".ENV"])).toMatch(/named like a credential file \(\.ENV\)/i);
+      expect(refused(["../../.ENVS/c.md"])).toMatch(/named like a credential file \(\.envs\)/i);
+    }
+    expect(refused([".env"])).toMatch(/named like a credential file \(\.env\)/);
+    expect(refused(["../c.md"])).toMatch(/named like a credential file \(\.envs\)/);
+    expect(refused([join(dir, ".envs", "c.md")])).toMatch(/named like a credential file \(\.envs\)/);
+    // A sibling whose name starts like the project's is outside it.
+    expect(refused(["../app-old/d.md"])).toMatch(/named like a credential file \(\.envs\)/);
+  });
+
   describe("config.credentialPaths", () => {
     it("refuses what a ~/dir/** path covers", () => {
       write(join(home, ".vault", "token"));

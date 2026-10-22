@@ -3,7 +3,6 @@ export {
   BASH_INPUT_PARAMS,
   BUILTIN_CREDENTIAL_PATHS,
   DEFAULT_BASH_OUTPUT_MAX_CHARS,
-  ENV_SECRET_PATTERNS,
   FILE_UTILITIES,
   FIXED_ENV,
   GIT_READ_VERBS,
@@ -14,7 +13,7 @@ export {
 } from "./presets";
 export { commandRules, credentialDenies } from "./rules";
 export { compileProfile } from "./compile";
-export { envFileDenies } from "./envfiles";
+export { envFileAllowReads } from "./envfiles";
 export { buildClaudeArgs } from "./args";
 export { workerEnv } from "./env";
 export type { WorkerEnvOptions } from "./env";

@@ -27,26 +27,6 @@ export const BUILTIN_CREDENTIAL_PATHS: readonly string[] = [
   "**/*.tfstate",
 ];
 
-/** The blanket env-file deny that `fence.readableEnvFiles` lifts (DESIGN.md §21). */
-export const ENV_FILES_BLANKET = "**/.env*";
-
-/**
- * What replaces the blanket deny when templates are readable; other env files are denied by absolute path. The last
- * two deny `.env` and `.env.<x>` directories (a virtualenv, a dotenv folder) whole; a template is a file, so unaffected.
- */
-export const ENV_SECRET_PATTERNS: readonly string[] = [
-  "**/.env",
-  "**/.env.local",
-  "**/.env.*.local",
-  "**/.env.development*",
-  "**/.env.production*",
-  "**/.env.staging*",
-  "**/.env.test*",
-  "**/.envrc",
-  "**/.env/**",
-  "**/.env.*/**",
-];
-
 export const GIT_WRITE_VERBS: readonly string[] = [
   "commit",
   "push",

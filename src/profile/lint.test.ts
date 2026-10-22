@@ -196,11 +196,38 @@ describe("lintProfile", () => {
     it("does not reserve XDG_DATA_HOME or XDG_CACHE_HOME, which arbab leaves alone", () => {
       expect(lint({ env: { XDG_DATA_HOME: "/x", XDG_CACHE_HOME: "/x" } })).toEqual([]);
     });
-    it("accepts the absolute env-file rules the compiler writes", () => {
-      expect(lint({ readableEnvFiles: [".env.example"], envFileDenies: ["/work/repo/.env"] })).toEqual([]);
-    });
     it("accepts ordinary keys, including ones named like Object methods", () => {
       expect(lint({ env: { FOO: "1", toString: "x" } })).toEqual([]);
+    });
+  });
+
+  describe("env-template-untracked", () => {
+    const full = (over: Partial<ProfileInput>) => {
+      const inp = input(over);
+      return lintProfile(compileProfile(inp), inp);
+    };
+
+    it("warns, naming it, for each listed file the attempt did not re-open", () => {
+      const issues = full({
+        readableEnvFiles: [".env.example", "apps/web/.env.sample", ".env.template"],
+        envFileAllowReads: ["/work/lane/.env.example"],
+      });
+      expect(issues.map(({ code, severity, where }) => ({ code, severity, where }))).toEqual([
+        { code: "env-template-untracked", severity: "warning", where: "fence.readableEnvFiles" },
+        { code: "env-template-untracked", severity: "warning", where: "fence.readableEnvFiles" },
+      ]);
+      expect(issues[0]?.message).toContain("apps/web/.env.sample");
+      expect(issues[1]?.message).toContain(".env.template");
+    });
+
+    it("warns for every listed file when none was re-opened", () => {
+      expect(codes(full({ readableEnvFiles: [".env.example"] }))).toEqual(["env-template-untracked"]);
+    });
+
+    it("is quiet when every listed file is re-opened, however it is written, or none is listed", () => {
+      const envFileAllowReads = ["/work/lane/.env.example", "/work/lane/apps/web/.env.sample"];
+      expect(full({ readableEnvFiles: ["./.env.example", "apps\\web/.env.sample"], envFileAllowReads })).toEqual([]);
+      expect(full({ readableEnvFiles: [] })).toEqual([]);
     });
   });
 });

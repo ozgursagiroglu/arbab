@@ -72,7 +72,9 @@ describe("globsOverlap", () => {
     expect(overlap("src/plan/**", "src/plan/x.ts")).toBe(true);
     expect(overlap("src/**", "src/a/b.ts")).toBe(true);
     expect(overlap("src/**/b.ts", "src/a/c/b.ts")).toBe(true);
-    expect(overlap("src/**/b.ts", "src/a/c/d.ts")).toBe(false);
+    expect(overlap("src/**/b.ts", "src/a/c/*.md")).toBe(false);
+    // A bare path may be a directory, and src/a/c/d.ts/b.ts is under it.
+    expect(overlap("src/**/b.ts", "src/a/c/d.ts")).toBe(true);
   });
 
   it("overlaps ** with anything", () => {
@@ -96,7 +98,19 @@ describe("globsOverlap", () => {
     expect(overlap("src/plan/**", "src/planner/**")).toBe(false);
     expect(overlap("src/plan/x.ts", "src/plan/y.ts")).toBe(false);
     expect(overlap("src/a/**", "docs/**")).toBe(false);
-    expect(overlap("src/plan/x.ts", "src/plan")).toBe(false);
+    expect(overlap("src/plan", "src/planner.ts")).toBe(false);
+  });
+
+  it("lets a bare path cover what is under it", () => {
+    expect(overlap("src/plan", "src/plan/graph.ts")).toBe(true);
+    expect(overlap("src/plan", "src/plan/*.ts")).toBe(true);
+    expect(overlap("src/plan", "src/plan")).toBe(true);
+    expect(overlap("src/plan", "src/run")).toBe(false);
+    expect(overlap("src/plan", "src/*.ts")).toBe(false);
+    // A file cannot have children, but the name alone does not say it is a file.
+    expect(overlap("src/plan.ts", "src/plan.ts/x")).toBe(true);
+    // A glob stays what it matches.
+    expect(overlap("src/*.ts", "src/x.ts/y")).toBe(false);
   });
 
   it("keeps * and ? within one segment", () => {
@@ -331,6 +345,11 @@ describe("checkPlan", () => {
     expect(codes(braces)).toEqual(["overlapping-scope"]);
     const cased = checkPlan(plan(phase("a", ["src/Plan/**"]), phase("b", ["src/plan/x.ts"])));
     expect(codes(cased)).toEqual(["overlapping-scope"]);
+  });
+
+  it("reports a bare directory scope against a file under it", () => {
+    const issues = checkPlan(plan(phase("a", ["src/plan"]), phase("b", ["src/plan/graph.ts"])));
+    expect(issues).toEqual([expect.objectContaining({ code: "overlapping-scope", where: "a, b" })]);
   });
 
   it("reports a dependency that sets checkpoint: false, naming its dependents", () => {

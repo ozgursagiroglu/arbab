@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { CONFIG_FILE, loadConfig } from "../config";
 import type { GitRunner } from "../run";
@@ -8,18 +8,41 @@ import { ArbabError } from "../util/errors";
 import { confine } from "../util/fs";
 import type { CommandContext } from "./context";
 
-/** The nearest ancestor of `cwd` holding arbab.config.json, else the git top level, else null. */
+/** Whether an absolute path lies in a lane worktree: it has a `.arbab/worktrees` pair of components. */
+export function inLaneWorktree(path: string): boolean {
+  const parts = path.split(sep);
+  return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
+}
+
+/** A worker writes its worktree, so config found there is the worker's, not the human's: never load it. */
+function notALaneWorktree(root: string): string {
+  let real: string;
+  try {
+    real = realpathSync(root);
+  } catch {
+    real = resolve(root);
+  }
+  if (inLaneWorktree(real) || inLaneWorktree(resolve(root))) {
+    throw new ArbabError("usage", `${root} is in a lane worktree, not a project; run arbab from the project root`);
+  }
+  return root;
+}
+
+/**
+ * The nearest ancestor of `cwd` holding arbab.config.json, else the git top level, else null. A root inside a lane
+ * worktree is a usage error.
+ */
 export function findProjectRoot(cwd: string, git: GitRunner): string | null {
   let dir = resolve(cwd);
   for (;;) {
-    if (existsSync(join(dir, CONFIG_FILE))) return dir;
+    if (existsSync(join(dir, CONFIG_FILE))) return notALaneWorktree(dir);
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
   const r = git(["rev-parse", "--show-toplevel"], cwd);
   const top = r.stdout.trim();
-  return r.code === 0 && top !== "" ? top : null;
+  return r.code === 0 && top !== "" ? notALaneWorktree(top) : null;
 }
 
 export interface Project {

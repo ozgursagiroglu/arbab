@@ -2,21 +2,34 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { approves, APPROVAL, isRunnerCall, type ApproveOptions } from "./approve";
+import { approves, APPROVAL, isRunnerCall, TEMP_DIRS, type ApproveOptions } from "./approve";
 
 let dir: string;
 let runner: string;
+let repo: string;
+let spaced: string;
 let opts: ApproveOptions;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "arbab-"));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "arbab-")));
   runner = join(dir, "plugin root", "dist", "arbab.mjs");
   mkdirSync(join(dir, "plugin root", "dist"), { recursive: true });
   writeFileSync(runner, "// runner\n");
   writeFileSync(join(dir, "other.mjs"), "// other\n");
   symlinkSync(runner, join(dir, "runner-link.mjs"));
   symlinkSync(join(dir, "other.mjs"), join(dir, "other-link.mjs"));
-  opts = { scriptPath: runner, commands: ["status", "wait", "launch", "hook", "__shepherd"], realpath: realpathSync };
+  repo = join(dir, "repo");
+  spaced = join(dir, "my repo");
+  mkdirSync(repo);
+  mkdirSync(spaced);
+  opts = {
+    scriptPath: runner,
+    commands: ["status", "wait", "launch", "land", "hook", "__shepherd"],
+    realpath: realpathSync,
+    projectRoots: () => [repo, spaced],
+    // The test dirs live under the OS temp dir, which may itself be under /tmp; temp dirs get their own tests.
+    tempDirs: [],
+  };
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -34,8 +47,8 @@ describe("isRunnerCall", () => {
   it("approves bare calls, with and without -C, with quoted runner path and arguments", () => {
     expect(isRunnerCall(call("status"), opts)).toBe(true);
     expect(isRunnerCall(call("status --json"), opts)).toBe(true);
-    expect(isRunnerCall(call("-C /work/repo wait --any --timeout-min 30"), opts)).toBe(true);
-    expect(isRunnerCall(call("-C '/work/my repo' status"), opts)).toBe(true);
+    expect(isRunnerCall(call(`-C ${repo} wait --any --timeout-min 30`), opts)).toBe(true);
+    expect(isRunnerCall(call(`-C '${spaced}' status`), opts)).toBe(true);
     expect(isRunnerCall(`node '${runner}' launch "lanes/a b.json"`, opts)).toBe(true);
     expect(isRunnerCall(call("launch 'lanes/$x.json'"), opts)).toBe(true);
     expect(isRunnerCall(`\tnode  "${runner}"\twait  `, opts)).toBe(true);
@@ -91,13 +104,87 @@ describe("isRunnerCall", () => {
     expect(isRunnerCall(call("constructor"), opts)).toBe(false);
     expect(isRunnerCall(call("hook pre-tool-use"), opts)).toBe(false);
     expect(isRunnerCall(call("__shepherd /r demo {}"), opts)).toBe(false);
-    expect(isRunnerCall(call("-C /work/repo hook stop"), opts)).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} hook stop`), opts)).toBe(false);
     expect(isRunnerCall(call("--help"), opts)).toBe(false);
     expect(isRunnerCall(`node "${runner}"`, opts)).toBe(false);
-    expect(isRunnerCall(call("-C /work/repo"), opts)).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo}`), opts)).toBe(false);
     expect(isRunnerCall(call("-C status"), opts)).toBe(false);
     expect(isRunnerCall("node", opts)).toBe(false);
     expect(isRunnerCall("", opts)).toBe(false);
+  });
+
+  it("refuses land, with and without -C", () => {
+    expect(isRunnerCall(call("land rel"), opts)).toBe(false);
+    expect(isRunnerCall(call("land rel --squash"), opts)).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} land rel`), opts)).toBe(false);
+  });
+});
+
+describe("isRunnerCall -C", () => {
+  it("approves a registered root, named directly or through a symlink, and a root registered through a symlink", () => {
+    symlinkSync(repo, join(dir, "repo-link"));
+    expect(isRunnerCall(call(`-C ${repo} status`), opts)).toBe(true);
+    expect(isRunnerCall(call(`-C ${join(dir, "repo-link")} status`), opts)).toBe(true);
+    expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, projectRoots: () => [join(dir, "repo-link")] })).toBe(true);
+  });
+
+  it("reads the registry only for a -C call", () => {
+    let reads = 0;
+    const counted = {
+      ...opts,
+      projectRoots: () => {
+        reads++;
+        return [repo];
+      },
+    };
+    expect(isRunnerCall(call("status"), counted)).toBe(true);
+    expect(reads).toBe(0);
+    expect(isRunnerCall(call(`-C ${repo} status`), counted)).toBe(true);
+    expect(reads).toBe(1);
+  });
+
+  it("refuses an unregistered, missing or relative dir, and a subdirectory of a registered root", () => {
+    mkdirSync(join(dir, "elsewhere"));
+    mkdirSync(join(repo, "sub"));
+    expect(isRunnerCall(call(`-C ${join(dir, "elsewhere")} status`), opts)).toBe(false);
+    expect(isRunnerCall(call(`-C ${join(dir, "gone")} status`), { ...opts, projectRoots: () => [join(dir, "gone")] })).toBe(false);
+    expect(isRunnerCall(call("-C repo status"), { ...opts, projectRoots: () => ["repo"] })).toBe(false);
+    expect(isRunnerCall(call(`-C ${join(repo, "sub")} status`), opts)).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, projectRoots: () => [] })).toBe(false);
+  });
+
+  it("refuses a lane worktree even when registered, and a symlink into one", () => {
+    const lane = join(repo, ".arbab", "worktrees", "a");
+    mkdirSync(lane, { recursive: true });
+    symlinkSync(lane, join(dir, "lane-link"));
+    const withLane = { ...opts, projectRoots: () => [lane, join(dir, "lane-link")] };
+    expect(isRunnerCall(call(`-C ${lane} status`), withLane)).toBe(false);
+    expect(isRunnerCall(call(`-C ${join(dir, "lane-link")} status`), withLane)).toBe(false);
+  });
+
+  it("refuses a registered root in or under a temp dir, named directly or through its real path", () => {
+    expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [dir] })).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [repo] })).toBe(false);
+    symlinkSync(dir, join(repo, "tmp-link"));
+    expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [join(repo, "tmp-link")] })).toBe(false);
+    // A relative temp dir is no anchor; a sibling sharing a prefix is not under it.
+    expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: ["repo", `${repo}-x`] })).toBe(true);
+  });
+
+  it("refuses /tmp and /private/tmp by default", () => {
+    // A fake file system: /tmp is a symlink to /private/tmp, as on macOS.
+    const fake = (p: string): string => {
+      if (p === runner) return runner;
+      if (p === "/tmp" || p.startsWith("/tmp/")) return `/private${p}`;
+      if (p.startsWith("/private/tmp") || p === "/work/repo") return p;
+      throw new Error(`ENOENT ${p}`);
+    };
+    const roots = (): string[] => ["/tmp/claude-1/evil", "/private/tmp/evil", "/work/repo"];
+    const base = { ...opts, realpath: fake, projectRoots: roots, tempDirs: TEMP_DIRS };
+    expect(isRunnerCall(call("-C /tmp/claude-1/evil status"), base)).toBe(false);
+    expect(isRunnerCall(call("-C /private/tmp/evil status"), base)).toBe(false);
+    expect(isRunnerCall(call("-C /tmp status"), { ...base, projectRoots: () => ["/tmp"] })).toBe(false);
+    expect(isRunnerCall(call("-C /work/repo status"), base)).toBe(true);
   });
 });
 
@@ -136,5 +223,11 @@ describe("approves", () => {
 
   it("refuses a Bash call that is not a bare runner call", () => {
     expect(approves(input({ tool_input: { command: `${call("status")} | tail` } }), opts)).toBe(false);
+  });
+
+  it("refuses -C into an unregistered dir and land", () => {
+    expect(approves(input({ tool_input: { command: call(`-C ${repo} status`) } }), opts)).toBe(true);
+    expect(approves(input({ tool_input: { command: call(`-C ${repo} status`) } }), { ...opts, projectRoots: () => [] })).toBe(false);
+    expect(approves(input({ tool_input: { command: call("land rel") } }), opts)).toBe(false);
   });
 });

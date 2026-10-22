@@ -200,17 +200,30 @@ describe("sessionId and sessionText", () => {
   });
 
   it("names the lanes and waiters in this project", () => {
-    expect(sessionText(activity(OTHER, { lanes: ["a", "b"], waiters: 2 }))).toBe(
+    expect(sessionText(activity(OTHER, { lanes: ["a", "b"], waiters: 2 }), "readiness")).toBe(
       "Session bbbbbbbb runs lanes a, b and 2 waiters in this project, whose base this landing moves. " +
         "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.",
     );
-    expect(sessionText(activity(OTHER, { waiters: 1 }))).toMatch(/^Session bbbbbbbb runs a waiter in this project,/);
-    expect(sessionText(activity(null, { lanes: ["a"] }))).toMatch(/^Processes started outside Claude Code run lane a in this project,/);
+    expect(sessionText(activity(OTHER, { waiters: 1 }), "readiness")).toMatch(/^Session bbbbbbbb runs a waiter in this project,/);
+    expect(sessionText(activity(null, { lanes: ["a"] }), "readiness")).toMatch(
+      /^Processes started outside Claude Code run lane a in this project,/,
+    );
+  });
+
+  it("ends a land warning with what to do after the landing", () => {
+    expect(sessionText(activity(OTHER, { lanes: ["a"] }), "land")).toBe(
+      "Session bbbbbbbb runs lane a in this project, whose base this landing moves. " +
+        "This landing goes ahead: tell them what landed. " +
+        "Claude Code's ListAgents lists sessions by name and SendMessage reaches them.",
+    );
   });
 
   it("names the runner files and the projects that run them", () => {
     expect(
-      sessionText(activity(OTHER, { lanes: ["a"], runnerProjects: ["/work/x", "/work/y"], runnersChanged: ["dist/arbab.mjs"] })),
+      sessionText(
+        activity(OTHER, { lanes: ["a"], runnerProjects: ["/work/x", "/work/y"], runnersChanged: ["dist/arbab.mjs"] }),
+        "readiness",
+      ),
     ).toBe(
       "Session bbbbbbbb runs lane a in this project, whose base this landing moves, and runs this project's " +
         "dist/arbab.mjs in /work/x, /work/y, which this landing replaces. " +

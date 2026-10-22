@@ -246,7 +246,7 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
   let sessions: SessionActivity[] | undefined;
   try {
     sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
-    for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity)}\n`);
+    for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity, "land")}\n`);
   } catch (err) {
     ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${(err as Error).message}\n`);
   }

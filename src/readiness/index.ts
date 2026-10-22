@@ -344,7 +344,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
   const waived = new Set(waivers);
   const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
   // First: they ask for an action before landing, and no waiver answers them.
-  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity) }));
+  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity, "readiness") }));
   if (input.sessionsUnknown !== undefined) {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }

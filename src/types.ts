@@ -233,8 +233,6 @@ export interface ProfileInput {
   gitCommonDir?: string;
   /** config.fence.readableEnvFiles (DESIGN.md §21). */
   readableEnvFiles?: string[];
-  /** @deprecated Replaced by envFileAllowReads in the review fix round; removed once nothing uses it. */
-  envFileDenies?: string[];
   /**
    * Absolute paths, in the worktree, of the readableEnvFiles that git tracks there: compiled into
    * `sandbox.filesystem.allowRead`. The `**\/.env*` deny stays in place for every other path (DESIGN.md §21).

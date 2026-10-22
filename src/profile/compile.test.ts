@@ -239,7 +239,6 @@ describe("compileProfile, fence strict", () => {
       for (const over of [
         { readableEnvFiles: [".env.example"] },
         { readableEnvFiles: [".env.example", "apps/web/.env.sample"], envFileAllowReads: TEMPLATES },
-        { readableEnvFiles: [".env.example"], envFileDenies: ["/work/repo/.env"] },
       ]) {
         const deny = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git", ...over })).settings.permissions.deny;
         expect(deny).toEqual(plain);

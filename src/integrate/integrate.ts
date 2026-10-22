@@ -14,6 +14,7 @@ import {
 } from "../run";
 import type { ArgvRunner, GitRunner } from "../run";
 import { installRelevantPaths } from "../run/deps";
+import { confirmedHeads, isTrustedInstallPoint } from "../shepherd/trust";
 import { INTEGRATIONS_DIR, type IntegrationRecord, type ProjectConfig } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, ensureDir, readJson, writeJsonAtomic } from "../util/fs";
@@ -463,8 +464,9 @@ function assertRevision(rev: string, what: string): void {
  * commit `ref` names, with no lane merged, so work done outside lanes gets verify, review and land. The worktree is
  * created and its dependencies prepared at the fork point of `ref` and the base, a commit of the base and so trusted,
  * and then fast-forwarded to `ref` with hooks off: `ref` may hold anyone's code. Its manifests are recorded as for any
- * integration. Refused: a name that has an integration record, branch or worktree, a landed name, and a ref or base
- * that names no commit or that share no history.
+ * integration. Refused before anything is created: a name that has an integration record, branch or worktree, a landed
+ * name, a ref or base that names no commit or that share no history, a base config.baseBranch does not contain, and a
+ * fork point isTrustedInstallPoint does not trust.
  */
 export function adoptIntegration(input: AdoptInput): IntegrateResult {
   const paths = integrationPaths(input.projectRoot, input.config, input.name);
@@ -487,12 +489,31 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
   if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
   const baseSha = commitOf(git, base, projectRoot);
   if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
+  // The install runs on the host at the fork point, which only a base inside the trusted base branch keeps trusted
+  // (DESIGN.md §9, §17); a lane or integration branch as --base would install worker code.
+  const trusted = input.config.baseBranch;
+  assertRevision(trusted, "baseBranch");
+  if (!isAncestor(git, baseSha, trusted, projectRoot)) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === undefined ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ` +
+        `${base} may hold worker code. Adopt against ${trusted} or a commit it contains`,
+    );
+  }
   const fork = git(["merge-base", sha, baseSha], projectRoot);
   if (fork.code !== 0 || !SHA.test(fork.stdout.trim())) {
     if (fork.code === 1) throw new ArbabError("usage", `${input.ref} shares no history with ${base}: there is nothing to land it into`);
     throw new ArbabError("git", `git merge-base ${sha} ${baseSha} failed (${fork.code}): ${output(fork)}`);
   }
   const start = fork.stdout.trim();
+  const trust = { projectRoot, baseBranch: trusted, confirmed: confirmedHeads(projectRoot, input.config, git), git };
+  if (!isTrustedInstallPoint(start, trust)) {
+    throw new ArbabError(
+      "usage",
+      `the fork point ${start} of ${input.ref} and ${base} is not a trusted install point (a commit of ${trusted} or an ` +
+        "integration head a human confirmed), so arbab will not install dependencies there",
+    );
+  }
 
   must(git, ["worktree", "prune"], projectRoot);
   ensureDir(dirname(paths.worktree));
@@ -514,6 +535,34 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
     throw err;
   }
   return integrate({ ...input, config: { ...input.config, baseBranch: base }, lanes: [] });
+}
+
+/**
+ * Records an existing integration's head again (`integrate <name> --refresh`) after a hand commit or a base merge in
+ * its worktree, adopted or not: merged entries the head still holds stay, manifests, baseSha, headSha and updatedAt are
+ * recomputed as integrate does. Nothing is merged and no dependency runs. Refused: no record, a landed integration, a
+ * missing worktree (recreating it would install), and tracked changes in the worktree (they are not the head).
+ */
+export function refreshIntegration(input: Omit<IntegrateInput, "lanes">): IntegrateResult {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  refuseLanded(paths);
+  if (readIntegration(paths) === null) {
+    throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
+  }
+  if (!existsSync(paths.worktree)) {
+    throw new ArbabError("usage", `integration ${paths.name} has no worktree at ${paths.worktree}; restore it on ${paths.branch} to refresh`);
+  }
+  const tracked = worktreeStatus(paths.worktree, ownedGitDir(paths, input.git), input.git)
+    .filter((l) => !l.startsWith("?? "))
+    .map((l) => l.slice(3));
+  if (tracked.length > 0) {
+    const shown = tracked.slice(0, 5).join(", ") + (tracked.length > 5 ? ` and ${tracked.length - 5} more` : "");
+    throw new ArbabError(
+      "usage",
+      `integration ${paths.name} has uncommitted changes in ${paths.worktree} (${shown}); commit or discard them, then refresh`,
+    );
+  }
+  return integrate({ ...input, lanes: [] });
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -606,7 +655,7 @@ export function confirmDeps(paths: IntegrationPaths, sha: string, git: GitRunner
     throw new ArbabError(
       "usage",
       `${paths.branch} is at ${headSha}, not ${previous.headSha}, the head whose manifests arbab integrate listed; run ` +
-        `arbab integrate ${paths.name} with its lanes again, review the manifests it lists, then run the ` +
+        `arbab integrate ${paths.name} --refresh (or with its lanes) again, review the manifests it lists, then run the ` +
         `arbab integrate ${paths.name} --deps-installed <sha> it prints`,
     );
   }

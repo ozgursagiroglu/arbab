@@ -190,8 +190,11 @@ describe("lintProfile", () => {
       ]);
     });
     it("warns for every temp-path key the settings env sets", () => {
-      const env = { XDG_DATA_HOME: "/x", XDG_CACHE_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" };
+      const env = { XDG_CONFIG_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" };
       expect(lint({ env }).map((issue) => issue.where)).toEqual(Object.keys(env));
+    });
+    it("does not reserve XDG_DATA_HOME or XDG_CACHE_HOME, which arbab leaves alone", () => {
+      expect(lint({ env: { XDG_DATA_HOME: "/x", XDG_CACHE_HOME: "/x" } })).toEqual([]);
     });
     it("accepts the absolute env-file rules the compiler writes", () => {
       expect(lint({ readableEnvFiles: [".env.example"], envFileDenies: ["/work/repo/.env"] })).toEqual([]);

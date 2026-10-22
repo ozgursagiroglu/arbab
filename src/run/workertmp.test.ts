@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync,readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,8 +19,6 @@ describe("workerTmpPaths", () => {
     expect(workerTmpPaths("/w")).toEqual({
       root,
       xdgConfig: join(root, "xdg-config"),
-      xdgData: join(root, "xdg-data"),
-      xdgCache: join(root, "xdg-cache"),
       yarnCache: join(root, "yarn-cache"),
       npmrc: join(root, "npmrc"),
       inputs: join(root, "inputs"),
@@ -32,9 +30,10 @@ describe("ensureWorkerTmp", () => {
   it("creates the directories and an empty npmrc", () => {
     const paths = ensureWorkerTmp(wt);
     expect(paths).toEqual(workerTmpPaths(wt));
-    for (const dir of [paths.root, paths.xdgConfig, paths.xdgData, paths.xdgCache, paths.yarnCache, paths.inputs]) {
+    for (const dir of [paths.root, paths.xdgConfig, paths.yarnCache, paths.inputs]) {
       expect(statSync(dir).isDirectory(), dir).toBe(true);
     }
+    for (const gone of ["xdg-data", "xdg-cache"]) expect(existsSync(join(paths.root, gone)), gone).toBe(false);
     expect(statSync(paths.npmrc).isFile()).toBe(true);
     expect(readFileSync(paths.npmrc, "utf8")).toBe("");
   });

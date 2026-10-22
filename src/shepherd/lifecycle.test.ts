@@ -111,9 +111,11 @@ describe("runShepherd", () => {
 
     const settings = readJsonFile<{ env: Record<string, string> }>(files.settings);
     expect(settings.env["XDG_CONFIG_HOME"]).toBe(join(started.cwd, ".arbab-tmp", "xdg-config"));
-    for (const dir of ["xdg-config", "xdg-data", "xdg-cache", "yarn-cache", "inputs", "npmrc"]) {
+    for (const dir of ["xdg-config", "yarn-cache", "inputs", "npmrc"]) {
       expect(existsSync(join(started.cwd, ".arbab-tmp", dir)), dir).toBe(true);
     }
+    expect(settings.env["XDG_DATA_HOME"]).toBeUndefined();
+    expect(settings.env["XDG_CACHE_HOME"]).toBeUndefined();
 
     expect(exit.killedBy).toBeNull();
     expect(exit.exitCode).toBe(0);

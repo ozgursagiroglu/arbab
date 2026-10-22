@@ -97,7 +97,7 @@ and `runsRoot` when config moves them outside `.arbab/`, and verifies each with 
   refs/<slug>/                    `verify --ref <branch>`: verify.json (named ref:<branch>) and lanes/
   worktrees/<lane>/               one git worktree per lane, branch arbab/<lane>
   worktrees/integrate-<name>/     the integration worktree, branch integrate/<name> (no worker runs there)
-<worktree>/.arbab-tmp/            per-worker homes, ignored: xdg-config/, xdg-data/, xdg-cache/ (XDG_*_HOME),
+<worktree>/.arbab-tmp/            per-worker homes, ignored: xdg-config/ (XDG_CONFIG_HOME),
                                   yarn-cache/ (YARN_CACHE_FOLDER), npmrc (an empty NPM_CONFIG_USERCONFIG, never
                                   overwritten), inputs/ (the lane's inputs, §21)
 ```
@@ -181,8 +181,7 @@ config `passEnv`, and the leases.
     "filesystem": { "denyWrite": [<the repository's shared git dir>] }
   },
   "env": { <config.env>, <leases>, "BASH_DEFAULT_TIMEOUT_MS": "300000", "BASH_MAX_TIMEOUT_MS": "900000",
-           "XDG_CONFIG_HOME": "<worktree>/.arbab-tmp/xdg-config", "XDG_DATA_HOME": "<…>/xdg-data",
-           "XDG_CACHE_HOME": "<…>/xdg-cache", "YARN_CACHE_FOLDER": "<…>/yarn-cache",
+           "XDG_CONFIG_HOME": "<worktree>/.arbab-tmp/xdg-config", "YARN_CACHE_FOLDER": "<…>/yarn-cache",
            "NPM_CONFIG_USERCONFIG": "<…>/npmrc" },
   "permissions": { "allow": [<role base>, <config commands>, <lane allow>], "deny": [<credential denies>, <role denies>] },
   "bashOutputMaxChars": <config fence.bashOutputMaxChars>
@@ -1024,9 +1023,11 @@ The decisions below answer what that use showed.
   output under `~/.claude/projects/…/tool-results/`, which the credential deny on `~/.claude/**` keeps the worker from
   reading. The tool belt says so.
 - Worker environment: `CLAUDE_CODE_SHELL=/bin/bash`, because the host's zsh fails on unquoted `[slug]` globs.
-  `NPM_CONFIG_USERCONFIG` points at an empty file and `YARN_CACHE_FOLDER`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` at
-  `.arbab-tmp/`, so package managers stop reading the denied `~/.npmrc` and `~/.config`. The tool belt asks for quoted
-  paths with `[ ] ( )`.
+  `NPM_CONFIG_USERCONFIG` points at an empty file and `YARN_CACHE_FOLDER` at `.arbab-tmp/`, so package managers stop
+  reading the denied `~/.npmrc`. `XDG_DATA_HOME` and `XDG_CACHE_HOME` are not redirected: corepack keeps its pnpm
+  under `$XDG_CACHE_HOME/node/corepack` and pnpm keeps its store and itself under `$XDG_DATA_HOME/pnpm` on Linux, so
+  an empty stand-in sends them to the registry, which the fence cannot reach (a probe's `pnpm test` failed before
+  vitest started). Config `env` may still set them. The tool belt asks for quoted paths with `[ ] ( )`.
 - `fence.readableEnvFiles` lists tracked templates such as `.env.example` (checked with `git ls-files`). When it is
   set, the blanket `**/.env*` deny becomes explicit secret patterns (`**/.env`, `**/.env.local`, `**/.env.*.local`,
   `**/.env.development*`, `**/.env.production*`, `**/.env.staging*`, `**/.env.test*`, `**/.envrc`, and `**/.env/**`

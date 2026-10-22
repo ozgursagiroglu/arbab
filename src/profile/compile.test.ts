@@ -192,8 +192,6 @@ describe("compileProfile, fence strict", () => {
       BASH_DEFAULT_TIMEOUT_MS: "300000",
       BASH_MAX_TIMEOUT_MS: "900000",
       XDG_CONFIG_HOME: `${WORKTREE}/.arbab-tmp/xdg-config`,
-      XDG_DATA_HOME: `${WORKTREE}/.arbab-tmp/xdg-data`,
-      XDG_CACHE_HOME: `${WORKTREE}/.arbab-tmp/xdg-cache`,
       YARN_CACHE_FOLDER: `${WORKTREE}/.arbab-tmp/yarn-cache`,
       NPM_CONFIG_USERCONFIG: `${WORKTREE}/.arbab-tmp/npmrc`,
     });
@@ -202,13 +200,23 @@ describe("compileProfile, fence strict", () => {
   it("points the package managers' homes at the worker's temp paths, over config env", () => {
     const tmp = workerTmpPaths(WORKTREE);
     const env = compileProfile(
-      input("reviewer", { env: { XDG_DATA_HOME: "/x", XDG_CACHE_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" } }),
+      input("reviewer", { env: { XDG_CONFIG_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" } }),
     ).settings.env;
     expect(env["XDG_CONFIG_HOME"]).toBe(tmp.xdgConfig);
-    expect(env["XDG_DATA_HOME"]).toBe(tmp.xdgData);
-    expect(env["XDG_CACHE_HOME"]).toBe(tmp.xdgCache);
     expect(env["YARN_CACHE_FOLDER"]).toBe(tmp.yarnCache);
     expect(env["NPM_CONFIG_USERCONFIG"]).toBe(tmp.npmrc);
+  });
+
+  it("leaves XDG_DATA_HOME and XDG_CACHE_HOME alone, so corepack and pnpm find their caches", () => {
+    for (const role of ["implementer", "reviewer", "researcher"] as const) {
+      const env = compileProfile(input(role)).settings.env;
+      expect("XDG_DATA_HOME" in env, role).toBe(false);
+      expect("XDG_CACHE_HOME" in env, role).toBe(false);
+    }
+    // A value the config sets on purpose passes through untouched.
+    const env = compileProfile(input("reviewer", { env: { XDG_DATA_HOME: "/d", XDG_CACHE_HOME: "/c" } })).settings.env;
+    expect(env["XDG_DATA_HOME"]).toBe("/d");
+    expect(env["XDG_CACHE_HOME"]).toBe("/c");
   });
 
   it("carries bashOutputMaxChars only when the input names it", () => {

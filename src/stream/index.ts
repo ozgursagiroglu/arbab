@@ -5,8 +5,11 @@ export {
   contentBlocks,
   digestStream,
   failureCause,
+  maxGapMs,
   parseStream,
   rateLimitFromEvent,
+  sumTokenUsage,
+  tokenUsageOf,
   toolResultText,
   toolUses,
 } from "./digest";

@@ -50,6 +50,16 @@ const INSTALL_FIELDS: readonly string[] = [
   "pnpm",
   "workspaces",
   "packageManager",
+  "dependenciesMeta",
+  "peerDependenciesMeta",
+  // Linked into node_modules/.bin, where scripts run them.
+  "bin",
+  // engine-strict, os, cpu and libc decide what installs; trustedDependencies which packages' scripts run (bun).
+  "engines",
+  "os",
+  "cpu",
+  "libc",
+  "trustedDependencies",
 ];
 
 /** The scripts an install runs. */

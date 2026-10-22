@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { untrustedTree } from "../run";
@@ -42,12 +42,16 @@ async function ready(landing: Record<string, unknown> = { tier: "low" }): Promis
   return { t, head };
 }
 
-/** What the refusal asks for after the base moved: main merged into the integration, the new head verified and ready. */
+/**
+ * What the refusal asks for after the base moved: main merged into the integration, the new head recorded with
+ * --refresh, verified and ready.
+ */
 async function mergeMainAndVerify(t: TestProject): Promise<string> {
   const record = readRecord<IntegrationRecord>(join(dir(t), "integration.json"));
   t.ok(["merge", "-q", "--no-edit", "main"], record.worktree);
   const head = t.ok(["rev-parse", "HEAD"], record.worktree).trim();
-  writeJsonAtomic(join(dir(t), "integration.json"), { ...record, headSha: head });
+  expect(await runIntegrate(["rel", "--refresh"], t.ctx)).toBe(0);
+  expect(readRecord<IntegrationRecord>(join(dir(t), "integration.json")).headSha).toBe(head);
   writeJsonAtomic(join(dir(t), "verify.json"), passedVerify(head));
   expect(await runReadiness(["rel"], t.ctx)).toBe(0);
   t.out.length = 0;
@@ -114,14 +118,37 @@ describe("assertCleanBase", () => {
 describe("readMessage", () => {
   it("reads an absolute or project-relative file and refuses a missing or blank one", () => {
     p = makeProject();
-    writeFileSync(join(p.dir, "msg.txt"), "Ship it\n\nBody.\n");
+    p.write("msg.txt", "Ship it\n\nBody.\n");
     p.write("notes/msg.txt", "Relative\n");
-    expect(readMessage(p.root, join(p.dir, "msg.txt"))).toBe("Ship it\n\nBody.\n");
+    expect(readMessage(p.root, join(p.root, "msg.txt"))).toBe("Ship it\n\nBody.\n");
     expect(readMessage(p.root, "notes/msg.txt")).toBe("Relative\n");
     expect(() => readMessage(p.root, "missing.txt")).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/cannot read the --message file .*missing\.txt/) }));
     expect(() => readMessage(p.root, "notes")).toThrow(/cannot read the --message file/);
     p.write("blank.txt", " \n\n");
     expect(() => readMessage(p.root, "blank.txt")).toThrow(/--message file .*blank\.txt is empty/);
+  });
+
+  it("refuses a file outside the project, absolute, relative or through a symlink", () => {
+    p = makeProject();
+    writeFileSync(join(p.dir, "outside.txt"), "secret\n");
+    const outside = expect.objectContaining({ code: "usage", message: expect.stringMatching(/^not landed: the --message file .*outside\.txt is outside the project/) });
+    expect(() => readMessage(p.root, join(p.dir, "outside.txt"))).toThrow(outside);
+    expect(() => readMessage(p.root, "../outside.txt")).toThrow(outside);
+    symlinkSync(join(p.dir, "outside.txt"), join(p.root, "link.txt"));
+    expect(() => readMessage(p.root, "link.txt")).toThrow(/--message file .*link\.txt resolves outside the project/);
+  });
+
+  it("refuses a .env file, by name or through a symlink", () => {
+    p = makeProject();
+    for (const name of [".env", ".env.local", ".ENV.production"]) {
+      writeFileSync(join(p.root, name), "TOKEN=x\n");
+      expect(() => readMessage(p.root, name), name).toThrow(
+        expect.objectContaining({ code: "usage", message: expect.stringMatching(/is a \.env file, which may hold credentials$/) }),
+      );
+      expect(() => readMessage(p.root, join(p.root, name)), name).toThrow(/is a \.env file/);
+    }
+    symlinkSync(join(p.root, ".env"), join(p.root, "msg.txt"));
+    expect(() => readMessage(p.root, "msg.txt")).toThrow(/resolves to a \.env file/);
   });
 });
 
@@ -396,7 +423,8 @@ describe("runLand", () => {
         `not landed: main moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a ` +
         `tree nobody verified. Merge main into integrate/rel with hooks off: git -C ${join(p.worktreeRoot, "integrate-rel")} ` +
         "-c core.hooksPath=/dev/null -c core.fsmonitor=false -c diff.ignoreSubmodules=all -c submodule.recurse=false " +
-        "merge --no-verify --no-edit main; then run arbab integrate, verify, review and readiness for rel again",
+        "merge --no-verify --no-edit main; then arbab integrate rel --refresh to record the new head, and verify, " +
+        "review and readiness for rel again",
     });
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
@@ -593,8 +621,8 @@ describe("runLand --squash and --message", () => {
 
   it("--message sets the commit message of a merge and of a squash", async () => {
     ({ t: p } = await ready());
-    writeFileSync(join(p.dir, "msg.txt"), "Release 1.2\n\nWith a body.\n");
-    expect(await runLand(["rel", "--message", join(p.dir, "msg.txt")], p.ctx)).toBe(0);
+    p.write("notes/msg.txt", "Release 1.2\n\nWith a body.\n");
+    expect(await runLand(["rel", "--message", join(p.root, "notes", "msg.txt")], p.ctx)).toBe(0);
     expect(p.ok(["log", "-1", "--format=%B", "main"]).trim()).toBe("Release 1.2\n\nWith a body.");
     expect(p.ok(["rev-list", "--parents", "-1", "main"]).trim().split(" ")).toHaveLength(3);
     p.dispose();
@@ -611,8 +639,20 @@ describe("runLand --squash and --message", () => {
     ({ t: p } = await ready());
     const main = p.ok(["rev-parse", "main"]).trim();
     await expect(runLand(["rel", "--message", "nope.txt"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/cannot read the --message file/) });
-    writeFileSync(join(p.dir, "empty.txt"), "");
-    await expect(runLand(["rel", "--squash", "--message", join(p.dir, "empty.txt")], p.ctx)).rejects.toThrow(/is empty/);
+    p.write("empty.txt", "");
+    await expect(runLand(["rel", "--squash", "--message", join(p.root, "empty.txt")], p.ctx)).rejects.toThrow(/is empty/);
+    expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
+    expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+  });
+
+  it("refuses a --message file outside the project or named .env before anything lands", async () => {
+    ({ t: p } = await ready());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    writeFileSync(join(p.dir, "msg.txt"), "Outside\n");
+    await expect(runLand(["rel", "--message", join(p.dir, "msg.txt")], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is outside the project/) });
+    await expect(runLand(["rel", "--message", "../msg.txt"], p.ctx)).rejects.toThrow(/is outside the project/);
+    p.write(".env", "TOKEN=x\n");
+    await expect(runLand(["rel", "--message", ".env"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is a \.env file/) });
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
   });

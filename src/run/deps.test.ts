@@ -87,11 +87,22 @@ describe("installRelevantChange", () => {
     ["pnpm", { overrides: {} }, { overrides: { a: "1" } }],
     ["workspaces", ["pkgs/*"], ["pkgs/*", "apps/*"]],
     ["packageManager", "pnpm@9.0.0", "pnpm@9.1.0"],
+    ["dependenciesMeta", { a: { injected: false } }, { a: { injected: true } }],
+    ["peerDependenciesMeta", { a: { optional: false } }, { a: { optional: true } }],
+    ["bin", "./cli.js", "./other.js"],
+    ["bin", { x: "./x.js" }, { x: "./x.js", y: "./y.js" }],
+    ["engines", { node: ">=20" }, { node: ">=22" }],
+    ["os", ["darwin"], ["darwin", "linux"]],
+    ["cpu", ["arm64"], ["x64"]],
+    ["libc", ["glibc"], ["musl"]],
+    ["trustedDependencies", ["a"], ["a", "b"]],
   ];
 
   it("counts a change to every field an install reads", () => {
     for (const [field, before, after] of FIELDS) {
       expect(installRelevantChange("package.json", pkg({ [field]: before }), pkg({ [field]: after })), field).toBe(true);
+      // Added where there was none counts as well.
+      if (after !== undefined) expect(installRelevantChange("package.json", pkg({}), pkg({ [field]: after })), field).toBe(true);
     }
   });
 
@@ -110,7 +121,7 @@ describe("installRelevantChange", () => {
     const before = pkg({ dependencies: { a: "1" }, exports: { ".": "./a.js" } });
     expect(installRelevantChange("package.json", before, pkg({ dependencies: { a: "1" }, exports: { ".": "./b.js", "./x": "./x.js" } }))).toBe(false);
     expect(installRelevantChange("pkgs/web/package.json", pkg({ version: "1.0.0" }), pkg({ version: "1.1.0" }))).toBe(false);
-    for (const field of ["main", "types", "files", "description", "license", "type", "bin"]) {
+    for (const field of ["main", "types", "files", "description", "license", "type", "keywords"]) {
       expect(installRelevantChange("package.json", pkg({}), pkg({ [field]: "x" })), field).toBe(false);
     }
   });

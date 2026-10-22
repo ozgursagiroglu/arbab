@@ -3,8 +3,8 @@
 // Merges integrate/<name> into the integration's recorded base branch (`--no-ff`, message `Land <name>`, hooks
 // disabled) once readiness says it is ready for the integration's current head and verify passed there (DESIGN.md
 // §17). --squash (or config landing.squash) makes one commit holding the head's tree instead (`merge --squash`, then a
-// commit, hooks disabled; DESIGN.md §21). --message <file> (absolute or project-relative, not empty) is the commit
-// message of either. It never pushes: push and deploy are human actions. The skill asks the human before running it.
+// commit, hooks disabled; DESIGN.md §21). --message <file> (absolute or project-relative, inside the project, not a
+// .env* file, not empty) is the commit message of either. It never pushes: push and deploy are human actions. The skill asks the human before running it.
 // Refuses (exit 1) without a ready readiness.json for the integration head, when that report is older than the
 // verify.json or review.json of the same head or was checked below config.landing.tier, without a passed verify.json
 // for the head, when the head is already in the base or landing.json exists, when the branch moved since, unless the main checkout (the
@@ -21,13 +21,13 @@
 // --json: {"landing": LandingRecord, "remote": string | null, "push": string[] | null,
 //          "cleanup": WorktreeCleanup | null (null with --keep-worktrees), "leftAlone": string[]}
 // Exit 0; 1 on a refusal; 2 when the merge fails (it is aborted).
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import { untrustedTree, type GitRunner } from "../run";
 import { TIERS } from "../types";
 import type { LandingRecord, ReadinessReport, ReviewRecord, Tier, VerifyRecord } from "../types";
 import { ArbabError } from "../util/errors";
-import { writeJsonAtomic } from "../util/fs";
+import { confine, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
 import { isoAt } from "../util/proc";
 import { emptyWorktreeCleanup, formatWorktreeCleanup, removeIntegrationWorktree, removeLaneWorktrees, type WorktreeCleanup } from "./cleanup";
@@ -94,13 +94,34 @@ export function assertCleanBase(git: GitRunner, root: string, base: string, head
   return untracked;
 }
 
-/** The commit message `--message <file>` names (absolute or project-relative): it must exist and not be blank. */
+/** `.env`, `.env.local`, `.ENV`…: files that hold credentials by convention. */
+const isEnvFile = (path: string): boolean => basename(path).toLowerCase().startsWith(".env");
+
+/**
+ * The commit message `--message <file>` names (absolute or project-relative): it must exist, not be blank, lie inside
+ * the project (after resolving symlinks too) and not be a `.env*` file, so a landing cannot carry credentials into a
+ * commit.
+ */
 export function readMessage(root: string, file: string): string {
-  const path = resolve(root, file);
+  let path: string;
+  try {
+    path = confine(root, file);
+  } catch {
+    throw refuse(`the --message file ${file} is outside the project ${resolve(root)}`);
+  }
+  if (isEnvFile(path)) throw refuse(`the --message file ${path} is a .env file, which may hold credentials`);
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
+    const real = realpathSync(path);
+    try {
+      confine(realpathSync(root), real);
+    } catch {
+      throw refuse(`the --message file ${path} resolves outside the project`);
+    }
+    if (isEnvFile(real)) throw refuse(`the --message file ${path} resolves to a .env file, which may hold credentials`);
+    text = readFileSync(real, "utf8");
   } catch (err) {
+    if (err instanceof ArbabError) throw err;
     throw refuse(`cannot read the --message file ${path}: ${(err as Error).message}`);
   }
   if (text.trim() === "") throw refuse(`the --message file ${path} is empty`);
@@ -120,7 +141,8 @@ export function assertBaseInHead(git: GitRunner, root: string, base: string, hea
   throw refuse(
     `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree ` +
       `nobody verified. Merge ${base} into integrate/${name} with hooks off: git -C ${worktree} ${untrustedTree().join(" ")} ` +
-      `merge --no-verify --no-edit ${base}; then run arbab integrate, verify, review and readiness for ${name} again`,
+      `merge --no-verify --no-edit ${base}; then arbab integrate ${name} --refresh to record the new head, and verify, ` +
+      `review and readiness for ${name} again`,
   );
 }
 

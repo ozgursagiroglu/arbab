@@ -286,4 +286,50 @@ describe("runIntegrate --adopt", () => {
     expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
     await expect(runIntegrate(["rel", "--adopt", "feature"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^integration rel already exists/) });
   });
+
+  it("refuses a --base the base branch does not contain, before creating anything", async () => {
+    p = makeProject();
+    // A lane's branch as --base would install its worker-written tree on the host.
+    branchWith(p, "arbab/x", "x.txt", "x\n");
+    await expect(runIntegrate(["rel", "--adopt", "arbab/x", "--base", "arbab/x"], p.ctx)).rejects.toMatchObject({
+      code: "usage",
+      message: expect.stringMatching(/^--base arbab\/x is not contained in main/),
+    });
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel"))).toBe(false);
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+  });
+});
+
+describe("runIntegrate --refresh", () => {
+  it("records a hand commit on an adopted integration and prints it", async () => {
+    p = makeProject();
+    branchWith(p, "feature", "f.txt", "f\n");
+    expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
+    const worktree = join(p.worktreeRoot, "integrate-rel");
+    p.ok(["commit", "-q", "--allow-empty", "-m", "by hand"], worktree);
+    const head = p.ok(["rev-parse", "HEAD"], worktree).trim();
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--refresh"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(record).toMatchObject({ headSha: head, merged: [] });
+    expect(p.stdout()).toBe(`refreshed rel: recorded integrate/rel at ${head}\n` + formatIntegration(record));
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--refresh", "--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).toEqual(recordOf(p, "rel"));
+  });
+
+  it("refuses another mode with it, and an integration that does not exist", async () => {
+    p = makeProject();
+    for (const [args, flag] of [
+      [["--lanes", "a"], "--lanes"],
+      [["--plan", "plans/p.json"], "--plan"],
+      [["--deps-installed", "a".repeat(40)], "--deps-installed"],
+      [["--adopt", "main"], "--adopt"],
+    ] as const) {
+      await expect(runIntegrate(["rel", "--refresh", ...args], p.ctx)).rejects.toMatchObject({ code: "usage", message: `--refresh takes no ${flag}: it records the existing head again and merges nothing` });
+    }
+    await expect(runIntegrate(["rel", "--refresh"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^integration rel does not exist/) });
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+  });
 });

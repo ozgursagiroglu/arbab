@@ -1,11 +1,12 @@
 import { realpathSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { foldPath, sameOrInside } from "../util/pathcase";
 import { BUILTIN_CREDENTIAL_PATHS } from "./presets";
 
 // The fence's credential list as a check on paths, for files arbab itself copies into a worktree, inlines into a
-// prompt or puts in a commit: the fence only stops the worker. Case is ignored everywhere: macOS and Windows file
-// systems ignore it by default (`~/.AWS/credentials` is `~/.aws/credentials`), and where one does not, refusing a
-// little more is the safe side.
+// prompt or puts in a commit: the fence only stops the worker. Paths and patterns are compared through foldPath: macOS
+// and Windows file systems ignore case by default (`~/.AWS/credentials` is `~/.aws/credentials`), and where one does
+// not, refusing a little more is the safe side.
 
 export interface CredentialHit {
   kind: "dir" | "file" | "name" | "pattern";
@@ -19,18 +20,12 @@ const GLOB_CHARS = /[*?[\]{}]/;
 
 const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 
-/** `child` is `parent` or inside it, whatever the case of either. */
-function within(parent: string, child: string): boolean {
-  const rel = relative(parent.toLowerCase(), child.toLowerCase());
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
 /**
  * The components of `path` below `root` when it lies inside it, else all of them: a project kept under a directory
  * named like a credential (`~/.envs/app`) is not itself a credential file, but what is inside it still may be.
  */
 function componentsBelow(path: string, root: string | undefined): string[] {
-  if (root === undefined || !within(root, path)) return path.split(sep);
+  if (root === undefined || !sameOrInside(root, path)) return path.split(sep);
   const depth = resolve(root).split(sep).filter((c) => c !== "").length;
   return resolve(path).split(sep).filter((c) => c !== "").slice(depth);
 }
@@ -56,13 +51,14 @@ function globSource(glob: string): string {
   return whole ? `${out}(?:/.*)?` : out;
 }
 
+/** Regexes over folded paths (foldPath): the text they are built from is folded too. */
 function patternRegexes(pattern: string, homes: readonly string[]): RegExp[] {
-  const anchored = (prefix: string, glob: string): RegExp => new RegExp(`^${escapeRe(prefix)}${globSource(glob)}$`, "i");
+  const anchored = (prefix: string, glob: string): RegExp => new RegExp(`^${escapeRe(foldPath(prefix))}${globSource(foldPath(glob))}$`);
   if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
   // `//x` is absolute; a single `/` is relative to the settings file, which lint flags, so taken as absolute here.
   if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
   // Relative to wherever the worker runs: matched anywhere.
-  return [new RegExp(`(?:^|/)${globSource(pattern)}$`, "i")];
+  return [new RegExp(`(?:^|/)${globSource(foldPath(pattern))}$`)];
 }
 
 /** One check per pattern. */
@@ -74,15 +70,15 @@ function credentialRules(patterns: readonly string[], homes: readonly string[]):
       const plain = dir ?? rest;
       if (plain !== "" && !GLOB_CHARS.test(plain)) {
         const hit: CredentialHit = { kind: dir !== null ? "dir" : "file", label: `~/${plain}` };
-        return (path) => (homes.some((h) => within(join(h, plain), path)) ? hit : null);
+        return (path) => (homes.some((h) => sameOrInside(join(h, plain), path)) ? hit : null);
       }
     }
     if (pattern.startsWith("**/")) {
       const name = pattern.slice(3);
       if (name !== "" && !name.includes("/") && !name.includes("**")) {
-        const re = new RegExp(`^${globSource(name)}$`, "i");
+        const re = new RegExp(`^${globSource(foldPath(name))}$`);
         return (path, root) => {
-          const component = componentsBelow(path, root).find((c) => re.test(c));
+          const component = componentsBelow(path, root).find((c) => re.test(foldPath(c)));
           return component === undefined ? null : { kind: "name", label: component };
         };
       }
@@ -92,11 +88,14 @@ function credentialRules(patterns: readonly string[], homes: readonly string[]):
     // A relative pattern, like a name rule, looks only below `root`: the directories holding the project are not its.
     if (!pattern.startsWith("~/") && !pattern.startsWith("/")) {
       return (path, root) => {
-        const subject = root === undefined || !within(root, path) ? path : componentsBelow(path, root).join("/");
+        const subject = foldPath(root === undefined || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
         return res.some((re) => re.test(subject)) ? hit : null;
       };
     }
-    return (path) => (res.some((re) => re.test(path)) ? hit : null);
+    return (path) => {
+      const subject = foldPath(path);
+      return res.some((re) => re.test(subject)) ? hit : null;
+    };
   });
 }
 

@@ -6,6 +6,7 @@ import type { GitRunner } from "../run";
 import type { LaneState, ProjectConfig } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine } from "../util/fs";
+import { foldPath, sameOrInside } from "../util/pathcase";
 import type { CommandContext } from "./context";
 
 export interface LaneWorktreeIo {
@@ -15,17 +16,9 @@ export interface LaneWorktreeIo {
   readFile?: (path: string) => string;
 }
 
-// Case-insensitive file systems (macOS, Windows) take any spelling, so every comparison here ignores case.
-const fold = (path: string): string => path.toLowerCase();
-
-function atOrUnder(base: string, path: string): boolean {
-  const b = fold(base);
-  const p = fold(path);
-  return p === b || p.startsWith(b.endsWith(sep) ? b : b + sep);
-}
-
+// Case-insensitive file systems (macOS, Windows) take any spelling, so every comparison here goes through foldPath.
 function hasWorktreesPair(path: string): boolean {
-  const parts = path.split(sep).map(fold);
+  const parts = path.split(sep).map(foldPath);
   return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
 }
 
@@ -67,14 +60,14 @@ function configuredWorktreeRoots(dir: string, io: Required<LaneWorktreeIo>): str
     } catch {
       continue;
     }
-    if (realDir !== null && atOrUnder(realDir, real) && fold(real) !== fold(realDir)) roots.push(real);
+    if (realDir !== null && sameOrInside(realDir, real) && foldPath(real) !== foldPath(realDir)) roots.push(real);
   }
   return roots;
 }
 
 function underConfiguredRoot(path: string, io: Required<LaneWorktreeIo>): boolean {
   for (let dir = path; ; dir = dirname(dir)) {
-    if (configuredWorktreeRoots(dir, io).some((root) => atOrUnder(root, path))) return true;
+    if (configuredWorktreeRoots(dir, io).some((root) => sameOrInside(root, path))) return true;
     if (dirname(dir) === dir) return false;
   }
 }

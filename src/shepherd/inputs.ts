@@ -1,9 +1,10 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { credentialMatcher, credentialReason, homeSpellings } from "../profile";
 import { realDir, WORKER_TMP_DIR } from "../run/workertmp";
 import { ArbabError } from "../util/errors";
+import { sameOrInside } from "../util/pathcase";
 
 // A lane's inputs: files outside the repository its brief points at, which the fence keeps the worker from reading
 // where they are (DESIGN.md §21). The shepherd copies them into the worktree, refusing anything the fence denies as a
@@ -14,12 +15,6 @@ export const MAX_INPUTS_BYTES = 50 * 1024 * 1024;
 
 /** Beyond the fence's Keychains and Cookies: the rest of ~/Library holds app data no lane needs copied. */
 const LIBRARY = "~/Library/**";
-
-/** `child` is `parent` or inside it. */
-function within(parent: string, child: string): boolean {
-  const rel = relative(parent, child);
-  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
 
 /** The path as spelled on disk (`~/.AWS` is `~/.aws` on macOS), or the path itself when it cannot be resolved. */
 function realOr(path: string): string {
@@ -64,10 +59,11 @@ export function copyInputs(input: {
   const worktree = realOr(resolve(input.worktree));
   const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
   // An input inside the project is tested below its root, as the project's own files are: a project kept under
-  // `~/.envs/` may still take an input from itself. One outside it is tested on its whole path.
+  // `~/.envs/` may still take an input from itself, in any spelling the file system takes. One outside it is tested on
+  // its whole path.
   const projectRoot = resolve(input.projectRoot);
   const projectRoots = [...new Set([projectRoot, realOr(projectRoot)])];
-  const rootOf = (path: string): string | undefined => projectRoots.find((r) => within(r, path));
+  const rootOf = (path: string): string | undefined => projectRoots.find((r) => sameOrInside(r, path));
 
   const names = new Map<string, string>();
   const planned: Planned[] = [];
@@ -103,8 +99,8 @@ export function copyInputs(input: {
       const hit = credential(p, root);
       if (hit !== null) refuse(credentialReason(hit));
     }
-    if (stat.isDirectory() && homes.some((h) => within(real, h))) refuse("holds the home directory, credentials included");
-    if (stat.isDirectory() && within(real, worktree)) refuse("holds the worktree it would be copied into");
+    if (stat.isDirectory() && homes.some((h) => sameOrInside(real, h))) refuse("holds the home directory, credentials included");
+    if (stat.isDirectory() && sameOrInside(real, worktree)) refuse("holds the worktree it would be copied into");
 
     const entries: Entry[] = [];
     const add = (bytes: number): void => {

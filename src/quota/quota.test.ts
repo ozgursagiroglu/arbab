@@ -10,6 +10,7 @@ import {
   lastQuotaReset,
   quotaPath,
   readQuota,
+  replaceQuota,
   resetQuota,
   resumeAt,
   updateQuota,
@@ -78,6 +79,23 @@ describe("readQuota / updateQuota", () => {
     expect(() => updateQuota(home, { ...snap(), fiveHour: { utilization: Number.NaN, resetsAt: 1 } })).toThrow(
       ArbabError,
     );
+  });
+});
+
+describe("replaceQuota", () => {
+  const at = { now: () => Date.parse("2026-10-09T10:30:00.000Z") };
+
+  it("stores an older observation over a newer one and records the switch", () => {
+    updateQuota(home, snap({ observedAt: "2026-10-09T11:00:00.000Z", status: "rejected" }));
+    replaceQuota(home, snap(), at);
+    expect(readQuota(home)).toEqual(snap());
+    expect(lastQuotaReset(home)).toBe(at.now());
+  });
+
+  it("refuses an invalid snapshot and writes nothing", () => {
+    expect(() => replaceQuota(home, snap({ observedAt: "yesterday" }), at)).toThrow(ArbabError);
+    expect(existsSync(quotaPath(home))).toBe(false);
+    expect(lastQuotaReset(home)).toBeNull();
   });
 });
 

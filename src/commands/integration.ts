@@ -1,7 +1,8 @@
 // Shared by the landing commands (DESIGN.md §17): the integration a command works on, and the lanes those commands
 // generate (verify, reviewers, skeptics). Generated lanes get a new worktree each time, installed on a trusted commit
 // and fast-forwarded to the integration head (generatedBase), are launched through launchLane and are awaited by their
-// shepherd's pid.
+// shepherd's pid. A re-run waits for or adopts an earlier run of the same lane on the same head instead (§21).
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { confirmCommand, integrationPaths, readIntegration, type IntegrationPaths } from "../integrate";
@@ -123,7 +124,7 @@ export interface GeneratedLane {
 }
 
 /** Writes the brief, the schema and the lane file under paths.lanesDir; returns the lane file's path. */
-export function writeGeneratedLane(project: Project, paths: IntegrationPaths, lane: GeneratedLane): string {
+export function writeGeneratedLane(project: Project, paths: Pick<IntegrationPaths, "lanesDir">, lane: GeneratedLane): string {
   const name = assertValidName(lane.spec.name, "lane");
   writeTextAtomic(confine(project.root, lane.spec.brief), lane.brief);
   if (lane.schema !== undefined) {
@@ -256,20 +257,124 @@ function readReport(path: string): unknown {
   }
 }
 
-/** Collects a finished run and acks it, so a background `arbab wait` does not report it a second time. */
-export function collectRun(runsRoot: string, run: Started): LaneOutcome {
+function readOwnFinished(runsRoot: string, run: Started): ReturnType<typeof readState> {
   let state: ReturnType<typeof readState> = null;
   try {
     state = readState(runsRoot, run.lane);
   } catch {
     // A damaged state.json says nothing about this run.
   }
-  const own = state !== null && state.shepherdPid === run.pid && state.state === "finished" ? state : null;
+  return state !== null && state.shepherdPid === run.pid && state.state === "finished" ? state : null;
+}
+
+/** What a run left, without acking it. */
+function readOutcome(runsRoot: string, run: Started): LaneOutcome {
+  const own = readOwnFinished(runsRoot, run);
   const attempts = listAttempts(runsRoot, run.lane).filter((n) => n > run.before);
   const latest = attempts.at(-1) ?? null;
   const report = latest === null ? null : readReport(attemptFiles(runPaths(runsRoot, run.lane).attemptDir(latest)).report);
-  if (own !== null) ackRun(runsRoot, run.lane, { shepherdPid: own.shepherdPid, since: own.since }, latest);
   return { lane: run.lane, endState: own?.endState ?? null, reason: own?.reason ?? null, attempts, report };
+}
+
+/** Collects a finished run and acks it, so a background `arbab wait` does not report it a second time. */
+export function collectRun(runsRoot: string, run: Started): LaneOutcome {
+  const outcome = readOutcome(runsRoot, run);
+  const own = readOwnFinished(runsRoot, run);
+  if (own !== null) ackRun(runsRoot, run.lane, { shepherdPid: own.shepherdPid, since: own.since }, outcome.attempts.at(-1) ?? null);
+  return outcome;
+}
+
+/**
+ * <lanesDir>/<lane>.run.json: the run a verify or review launched for a generated lane. A later command finds it there
+ * when the earlier one stopped waiting (DESIGN.md §21), and knows which attempts are that run's.
+ */
+export interface GeneratedRun {
+  lane: string;
+  shepherdPid: number;
+  /** The lane's last attempt before this run. */
+  before: number;
+  /** The head the run works on. */
+  head: string;
+  /** laneFingerprint of what was launched. */
+  fingerprint: string;
+  /** A command took the run's results into its record; a later command launches afresh. */
+  settled: boolean;
+}
+
+const runRecordPath = (lanesDir: string, lane: string): string => join(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
+
+/** The lane's run record with its fields checked; null when there is none or it does not fit. */
+export function readGeneratedRun(lanesDir: string, lane: string): GeneratedRun | null {
+  let raw: unknown;
+  try {
+    raw = readJson<unknown>(runRecordPath(lanesDir, lane));
+  } catch {
+    // A damaged record cannot vouch for a run: the lane is launched afresh.
+    return null;
+  }
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const valid =
+    r["lane"] === lane &&
+    Number.isInteger(r["shepherdPid"]) &&
+    Number.isInteger(r["before"]) &&
+    typeof r["head"] === "string" &&
+    SHA.test(r["head"]) &&
+    typeof r["fingerprint"] === "string" &&
+    typeof r["settled"] === "boolean";
+  return valid ? (r as unknown as GeneratedRun) : null;
+}
+
+/** Marks the lanes' runs as taken into a record, so the next command launches them afresh. */
+export function settleGeneratedRuns(lanesDir: string, lanes: string[]): void {
+  for (const lane of lanes) {
+    const run = readGeneratedRun(lanesDir, lane);
+    if (run !== null && !run.settled) writeJsonAtomic(runRecordPath(lanesDir, lane), { ...run, settled: true });
+  }
+}
+
+/** What a generated lane is launched with: its spec, brief and schema. A run of another fingerprint did other work. */
+export function laneFingerprint(lane: GeneratedLane): string {
+  return createHash("sha256")
+    .update(JSON.stringify([lane.spec, lane.brief, lane.schema ?? null]))
+    .digest("hex");
+}
+
+/** Which runs a re-run may take as they are: a finished run with a usable report, by default one that has a report. */
+export type UsableRun = (outcome: LaneOutcome) => boolean;
+
+const hasReport: UsableRun = (o) => o.report !== null;
+
+/**
+ * The earlier run of a generated lane that a re-run takes instead of launching: an unsettled run this command recorded
+ * for the same head and the same lane, which is still active (wait for it) or finished with success and a usable report
+ * (adopt it). Null when the lane must be launched: the head or the lane changed, the run failed or left nothing usable,
+ * or a command already settled it.
+ */
+function reusableRun(
+  ctx: CommandContext,
+  project: Project,
+  lanesDir: string,
+  lane: string,
+  owner: GenerationOwner,
+  fingerprint: string,
+  usable: UsableRun = hasReport,
+): { kind: "wait" | "adopt"; run: Started } | null {
+  const prior = readGeneratedRun(lanesDir, lane);
+  if (prior === null || prior.settled || prior.head !== owner.head || prior.fingerprint !== fingerprint) return null;
+  const marker = readGenerated(project.runsRoot, lane);
+  if (marker === null || marker.by !== ownerTag(owner) || marker.baseSha !== owner.head) return null;
+  let state: ReturnType<typeof readState>;
+  try {
+    state = readState(project.runsRoot, lane);
+  } catch {
+    return null;
+  }
+  if (state === null || state.shepherdPid !== prior.shepherdPid) return null;
+  const run: Started = { lane, pid: prior.shepherdPid, before: prior.before };
+  if (isActive(effectiveState(state, ctx.alive))) return { kind: "wait", run };
+  const outcome = readOutcome(project.runsRoot, run);
+  return outcome.endState === "success" && usable(outcome) ? { kind: "adopt", run } : null;
 }
 
 /** Every event of the given attempts' streams, in attempt order (a resumed attempt continues the previous one). */
@@ -279,27 +384,51 @@ export function attemptEvents(runsRoot: string, lane: string, attempts: number[]
 }
 
 /**
- * Starts each lane from the integration head (resetGeneratedWorktree), launches it and waits until every one has
- * finished or `timeoutMs` has passed. On timeout the lanes keep running and nothing is collected.
+ * Runs each lane and waits until every one has finished or `timeoutMs` has passed; outcomes come in the lanes' order.
+ * A lane whose earlier run is reusable (reusableRun) is waited for or adopted as it is. Every other lane is written
+ * and linted (all before any launch), started from the integration head (resetGeneratedWorktree) and launched, and its
+ * run recorded in paths.lanesDir. On timeout the lanes keep running and nothing is collected.
  */
 export async function runGeneratedLanes(
   ctx: CommandContext,
   project: Project,
-  lanes: Array<{ lane: string; file: string }>,
+  paths: Pick<IntegrationPaths, "lanesDir">,
+  lanes: GeneratedLane[],
   timeoutMs: number,
   owner: GenerationOwner,
+  usable: UsableRun = hasReport,
 ): Promise<{ timedOut: boolean; outcomes: LaneOutcome[] }> {
-  for (const { lane } of lanes) {
-    resetGeneratedWorktree(ctx, project, lane, owner);
-    markGenerated(project.runsRoot, lane, owner, new Date(ctx.clock.now()).toISOString());
+  const plans = lanes.map((lane) => {
+    const name = assertValidName(lane.spec.name, "lane");
+    const fingerprint = laneFingerprint(lane);
+    return { lane, name, fingerprint, prior: reusableRun(ctx, project, paths.lanesDir, name, owner, fingerprint, usable) };
+  });
+  const fresh = plans.filter((p) => p.prior === null);
+  // Before anything is written: a running lane's brief is what its next attempt reads.
+  for (const p of fresh) assertInactive(ctx, project, p.name);
+  const written = fresh.map((p) => ({ ...p, file: writeGeneratedLane(project, paths, p.lane) }));
+  lintGeneratedLanes(ctx, project, written.map((p) => p.file));
+  for (const p of written) {
+    resetGeneratedWorktree(ctx, project, p.name, owner);
+    markGenerated(project.runsRoot, p.name, owner, new Date(ctx.clock.now()).toISOString());
   }
-  const started: Started[] = [];
-  for (const { lane, file } of lanes) {
-    const before = listAttempts(project.runsRoot, lane).at(-1) ?? 0;
-    const launched = await launchLane(ctx, project, file, { generated: true });
-    started.push({ lane, pid: launched.shepherdPid, before });
+  const runs = new Map<string, Started>();
+  for (const p of plans) if (p.prior !== null) runs.set(p.name, p.prior.run);
+  for (const p of written) {
+    const before = listAttempts(project.runsRoot, p.name).at(-1) ?? 0;
+    const launched = await launchLane(ctx, project, p.file, { generated: true });
+    const run: Started = { lane: p.name, pid: launched.shepherdPid, before };
+    const record: GeneratedRun = { lane: p.name, shepherdPid: run.pid, before, head: owner.head, fingerprint: p.fingerprint, settled: false };
+    writeJsonAtomic(runRecordPath(paths.lanesDir, p.name), record);
+    runs.set(p.name, run);
   }
-  ctx.stderr(`launched ${started.map((s) => s.lane).join(", ")}; waiting\n`);
+
+  const named = (kind: "wait" | "adopt"): string => plans.filter((p) => p.prior?.kind === kind).map((p) => p.name).join(", ");
+  if (named("adopt") !== "") ctx.stderr(`adopted ${named("adopt")}: finished for this head after an earlier run stopped waiting\n`);
+  if (named("wait") !== "") ctx.stderr(`${named("wait")} still running for this head from an earlier run; waiting\n`);
+  if (fresh.length > 0) ctx.stderr(`launched ${fresh.map((p) => p.name).join(", ")}; waiting\n`);
+
+  const started = plans.flatMap((p) => runs.get(p.name) ?? []);
   if (!(await waitForProbes(ctx, project.runsRoot, started, timeoutMs))) return { timedOut: true, outcomes: [] };
   return { timedOut: false, outcomes: started.map((run) => collectRun(project.runsRoot, run)) };
 }

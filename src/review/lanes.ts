@@ -79,7 +79,11 @@ function quote(text: string): string {
     .join("\n");
 }
 
-export function reviewLane(input: { paths: LanePaths; lens: string; text: string; diffBase: string } & LaneStart): {
+/**
+ * A reviewer lane. `since` marks a review of what changed since `diffBase`, a commit after the branch's base (`review
+ * --since`): the brief says so, and the depth floor covers the files changed in that range.
+ */
+export function reviewLane(input: { paths: LanePaths; lens: string; text: string; diffBase: string; since?: boolean } & LaneStart): {
   spec: LaneSpec;
   brief: string;
 } {
@@ -89,13 +93,17 @@ export function reviewLane(input: { paths: LanePaths; lens: string; text: string
   if (input.text.trim() === "") throw new ArbabError("usage", `lens ${input.lens} has no text`);
   const start = startFields(input);
   const range = `${base}..HEAD`;
+  const since =
+    input.since === true
+      ? `\n\nThe branch's earlier commits were reviewed in an earlier round: this round covers only what changed since\n\`${base}\`.`
+      : "";
 
   const brief = `# Review ${name}: ${input.lens}
 
 ## Task
 
 Review the change on this branch through the **${input.lens}** lens. Run \`git diff ${range}\` to see the change, and
-\`git diff --stat ${range}\` for the files it touches.
+\`git diff --stat ${range}\` for the files it touches.${since}
 
 The ${input.lens} lens looks for:
 

@@ -70,16 +70,23 @@ function porcelainEntries(out: string): string[] {
   return entries;
 }
 
-/** The project-relative paths `git diff <revs>` touches, both sides of a rename included. */
+/**
+ * The paths `git diff <revs>` touches, both sides of a rename included, relative to the repository's top level (as
+ * `git status` names them too), which lies above `root` when the project is a subdirectory of its repository.
+ */
 export function changedPaths(git: GitRunner, root: string, revs: readonly string[]): string[] {
   return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root)
     .split("\0")
     .filter((p) => p !== "");
 }
 
-/** The other sessions a landing that changes `changed` affects, seen from this CLI's session. */
+/**
+ * The other sessions a landing that changes `changed` (changedPaths: from git's top level) affects, seen from this
+ * CLI's session. Runner files are reported relative to `root`.
+ */
 export function sessionsAffected(ctx: CommandContext, root: string, changed: readonly string[]): SessionActivity[] {
-  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed });
+  const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
+  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed, changedBase });
 }
 
 const firstFive = (items: string[], sep: string): string =>

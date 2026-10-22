@@ -10,7 +10,17 @@ import { writeJsonAtomic } from "../util/fs";
 import type { WorktreeCleanup } from "./cleanup";
 import { markGenerated } from "./generated";
 import { runIntegrate } from "./integrate";
-import { assertBaseInHead, assertCleanBase, assertReadinessCurrent, assertTier, firstRemote, readMessage, runLand } from "./land";
+import {
+  assertBaseInHead,
+  assertCleanBase,
+  assertReadinessCurrent,
+  assertTier,
+  changedPaths,
+  firstRemote,
+  readMessage,
+  runLand,
+  sessionsAffected,
+} from "./land";
 import { runReadiness } from "./readiness";
 import { DEFAULT_CONFIG, branchWith, makeProject, passedVerify, writeLaneRun, type TestProject } from "./testkit";
 
@@ -70,6 +80,41 @@ describe("firstRemote", () => {
     p.ok(["remote", "add", "upstream", "/nonexistent/u.git"]);
     p.ok(["remote", "add", "origin", "/nonexistent/o.git"]);
     expect(firstRemote(p.git, p.root)).toBe("origin");
+  });
+});
+
+describe("changedPaths and sessionsAffected", () => {
+  it("matches runner files on git's top level when the project is a subdirectory of the repository", () => {
+    p = makeProject();
+    const app = join(p.root, "app");
+    mkdirSync(join(app, "dist"), { recursive: true });
+    writeFileSync(join(app, "dist", "arbab.mjs"), "");
+    p.ok(["add", "-A"]);
+    p.ok(["commit", "-q", "-m", "app"]);
+    writeFileSync(join(app, "dist", "arbab.mjs"), "new\n");
+    writeFileSync(join(p.root, "top.txt"), "top\n");
+    p.ok(["add", "-A"]);
+    p.ok(["commit", "-q", "-m", "change"]);
+    const changed = changedPaths(p.git, app, ["HEAD~1", "HEAD"]);
+    // From the top level, whatever the directory git runs in.
+    expect(changed).toEqual(["app/dist/arbab.mjs", "top.txt"]);
+    registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: T, runner: join(app, "dist", "arbab.mjs") });
+    p.alive.add(7004);
+    expect(sessionsAffected(p.ctx, app, changed)).toEqual([
+      { owner: null, lanes: [], waiters: 0, runnerProjects: ["/work/elsewhere"], runnersChanged: ["dist/arbab.mjs"] },
+    ]);
+    expect(sessionsAffected(p.ctx, app, ["top.txt"])).toEqual([]);
+    expect(sessionsAffected(p.ctx, app, [])).toEqual([]);
+  });
+
+  it("throws when git cannot name the top level", () => {
+    p = makeProject();
+    const outside = mkdtempSync(join(tmpdir(), "arbab-"));
+    try {
+      expect(() => sessionsAffected(p.ctx, outside, ["a.txt"])).toThrow(expect.objectContaining({ code: "git" }));
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 

@@ -120,11 +120,16 @@ and `sameOrInside(parent, child)` compares two folded paths and counts a match o
 `/a/b` holds `/A/B/c` but not `/a/bc`. Where a file system does not fold, this refuses a little more. It is used by
 the lane-worktree test above (src/commands/project.ts, so the hook's `-C` check too); by the config checks that
 `worktreeRoot` and `runsRoot` are not the project root and do not overlap the integration records
-(src/config/load.ts, so `.arbab/integrationſ` is refused); by the credential matcher (src/profile/credentials.ts,
-§21); by lane inputs, to find an input's project root and to refuse a folder holding the home directory or the
-worktree (src/shepherd/inputs.ts); and by `otherSessions`, to match a registry entry's project and runner
-(src/registry/sessions.ts, §21). Each of them resolves a path with `realpathSync.native`, which gives its spelling
-on disk, before it folds it.
+(src/config/load.ts, so `.arbab/integrationſ` is refused); by the credential matcher's containment checks
+(src/profile/credentials.ts, §21); by lane inputs, to find the project root of an input's path as given and to
+refuse a folder holding the home directory or the worktree (src/shepherd/inputs.ts); and by `otherSessions`, to
+match a registry entry's project and runner (src/registry/sessions.ts, §21). Each of them resolves a path with
+`realpathSync.native`, which gives its spelling on disk, before it folds it. Two comparisons do not fold. The
+credential matcher's glob regexes (name rules and patterns) match the NFD pattern against the NFD path with the `iu`
+flags, Unicode case folding that takes `ſ` as `s` and U+212A as `k` but keeps every character one character, so a
+`?` still matches `ß`, which foldPath would turn into `ss`. And an input's real path is inside the project only when
+it is inside the project's real path exactly: both are spellings on disk, so a sibling that differs only in case is
+another directory where the file system tells them apart.
 
 Repository build output (git-ignored): `dist/arbab.mjs` (the bundle) and `plugin/` (what a marketplace installs, §17).
 
@@ -739,7 +744,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
 
     At every tier: `deps` (manifests changed, install not confirmed) and, with config `hostGates`, `host` (§21).
     Each skipped item stays until it runs or is waived by name; `--waive` needs a terminal (§21).
-  - **risks**, by weight (§21): first one `session:<id>` per other session the landing affects (§21), then every
+  - **risks**, by weight (§21): first one `session:<id>` per other session the landing affects, or one
+    `session:unknown` when the machine registry cannot be listed (§21), then every
     confirmed finding, unverified MEDIUM+ findings and one line for the unverified
     LOW ones, manifest changes, host gates, stale or unmatched items, then the merged lanes' `open_questions` and
     `not_verified` (and those of lanes that worked in a merged lane's worktree), repeated notes grouped.
@@ -1100,11 +1106,16 @@ The decisions below answer what that use showed.
   outside Claude Code) and, per owner, names its lanes and waiters in this project, and the other projects whose
   processes run a runner file of this project that the landing changes, with those files. An entry without `runner`
   counts only by its project. Projects and runners match by real path through foldPath (§3), so an entry that
-  recorded the project in another spelling of case still counts.
+  recorded the project in another spelling of case still counts. git names the changed paths from the repository's
+  top level, which lies above the project root when the project is a subdirectory of its repository; they are taken
+  from `git rev-parse --show-toplevel` (once, in the project root) before runner files are matched, and the runner
+  files are reported relative to the project root.
   - `readiness` checks the paths the integration changes since its merge base with the base, and lists each such
     session as a risk `session:<id>` (`<id>` is the first 8 characters of the session id, or `outside` for
     processes started outside Claude Code), first among the risks; it is never a skipped item and no waiver answers
-    it. The report, `readiness.json` and `--json`, also carries them as `otherSessions`.
+    it. The report, `readiness.json` and `--json`, also carries them as `otherSessions`. It is advisory, as in
+    `land`: when the registries cannot be read, the report holds one risk `session:unknown` ("cannot tell which
+    other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same.
   - `land` checks the paths the merge changes in the main checkout and, before it merges, prints one `warning:` line
     on stderr per session (the risk's sentence) and adds `otherSessions` to `--json`. It never blocks: when the
     registries cannot be read it warns that it cannot tell and lands.
@@ -1143,7 +1154,8 @@ The decisions below answer what that use showed.
   listed templates, since it wins over a deny on the same path (measured). A file outside the home directory and the project that matches only a relative pattern stays readable by worker code.
 - The fence stops only the worker; files arbab itself copies into a worktree, inlines into a prompt or puts in a
   commit pass one credential matcher (`credentialMatcher`, src/profile/credentials.ts), which reads the fence's list
-  as checks on paths and ignores case on every platform (`~/.AWS/credentials` is `~/.aws/credentials` on macOS). It
+  as checks on paths and ignores case on every platform (`~/.AWS/credentials` is `~/.aws/credentials` on macOS; §3
+  says how a glob's `?` stays one character). It
   guards lane `inputs` (with config `credentialPaths` and `~/Library`), `review --lens-file` and `land --message`
   (with config `credentialPaths`), each by the path as given and by its real path; and the files whose text goes into
   prompts (a lane's `brief` and `schema`, a plan phase's `brief` and `schema`, a plan's `defaults.schema`, config

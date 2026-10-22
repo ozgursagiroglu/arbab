@@ -16,9 +16,12 @@ Every command below is the runner. `arbab <cmd>` is shorthand for:
 node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <cmd>
 ```
 
-Always type the full form, quotes included, so the skill's `allowed-tools` rule matches and a plugin path with
-spaces in it stays one argument. Exit codes: 0 ok, 1 usage or lint error,
-2 runtime error, 3 wait timeout.
+**Runner calls are bare.** Type that one form, quotes included, and nothing around it: no `cd`, `&&`, `;`, pipes,
+`2>&1`, `tail` or shell variables. From a parent folder of several repositories, put `-C <repo>` before the command:
+`node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" -C <repo> status`. The plugin's PreToolUse hook approves bare calls (the
+skill's `allowed-tools` grant lasts only for the turn that loaded it); a wrapped call waits for a person's click,
+which is what stalled real runs overnight. `arbab <command> --help` prints a command's options. Exit codes: 0 ok,
+1 usage or lint error, 2 runtime error, 3 wait timeout.
 
 ## When to fan out
 
@@ -29,13 +32,16 @@ Fan out when the work is long or multi-phase and splits into parts that can be b
 - approval waits took 62–70% of the Workflow's wall time; a headless denial costs one turn, not a wait.
 
 Stay in-session for small jobs (one change, one PR: for example `/ship`) and for short fan-outs that finish in
-minutes (Workflow). A lane pays for a worktree, a brief and a report; it earns that back only on real work.
+minutes (Workflow). A lane pays for a worktree, a brief and a report; it earns that back only on real work. An
+urgent small fix (a demo is running, a one-line change) stays in-session, even inside an arbab session.
 
 ## Before the first launch
 
-1. Run `arbab doctor`. It checks the claude binary and version, node, git, sandbox availability, the config and the
-   ignored roots. Fix what it reports before anything else.
-2. Write `arbab.config.json` at the project root. Missing means all defaults, which grant no project commands.
+1. Run `arbab doctor`. It checks the claude binary and version, node, git, sandbox availability, the config, the
+   ignored roots, the plugin hook, the gates against the repository's check scripts and CI, env templates, lint and
+   test configs that would scan `.arbab/`, disk and the machine cap. Fix every failure; read every warning.
+2. Write `arbab.config.json` at the project root, or `.arbab/config.json` in a client repository that should carry
+   no arbab file (the root file wins when both exist). Missing means all defaults, which grant no project commands.
    The fields that matter first:
    - `commands.<role>`: command prefixes each role may run, e.g. `"implementer": ["pnpm test", "pnpm typecheck"]`.
      Each prefix becomes `Bash(<cmd>)` and `Bash(<cmd> *)`. Never a bare runner (`pnpm`, `node`, `npx`, `python`,
@@ -46,9 +52,17 @@ minutes (Workflow). A lane pays for a worktree, a brief and a report; it earns t
    - `dependencies`: `{"strategy": "command", "command": [...]}` to install in each new worktree (outside the
      sandbox), or `none`. Never symlink the main checkout's `node_modules`.
    - `resources` (`{"port": {"range": [4100, 4199]}}`) and `semaphores` (`{"staging-db": 1}`) for shared things.
+   - `hostGates`: argv arrays for checks the fence cannot run (Docker, a browser, a database); see [Land](#land).
+   - `fence.readableEnvFiles`: tracked env templates workers may read (`[".env.example"]`); `fence.bashOutputMaxChars`
+     (4000–128000, default 100000): longer Bash output goes to a file workers cannot read.
+   - `landing.tier` (default `medium`), `landing.squash` (one commit per landing), `verify.smoke`, `review.lenses`.
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
-     `maxParallel` (default 4, machine-wide), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`.
-3. arbab keeps `.arbab/` git-ignored itself (it writes `info/exclude` and checks it).
+     `maxParallel` (default 4), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`.
+3. Machine-wide parallelism goes in `~/.arbab/machine.json` (`{"maxParallel": 6}`): it caps every project's
+   `maxParallel`.
+4. arbab excludes `.arbab/` as a whole, and `.arbab-tmp/`, in `info/exclude` and checks it. Lane files, briefs, plans
+   and helpers you keep under `.arbab/` (say `.arbab/lanes/`) do not dirty a client repository's checkout; arbab
+   itself writes `.arbab/plans/<plan>/`.
 
 ## Plan
 
@@ -111,6 +125,7 @@ A lane file (`lanes/<name>.json`) names the brief and overrides role defaults. P
 | `resources`, `semaphores` | Leases (`{"port": 2}` → `ARBAB_PORT_0`, `ARBAB_PORT_1`) and semaphore names |
 | `checkpoint`, `autoResume`, `maxAttempts` | Commit WIP on exit; resume after usage limits; attempt cap |
 | `coordination` | Sibling lanes and their scopes, inlined into the brief |
+| `inputs` | Files or folders outside the repository the worker must read (absolute, `~/` or project-relative; at most 20, 50 MB in all). Copied to `.arbab-tmp/inputs/<name>` before the first attempt and named in the brief; credential paths are refused |
 
 Role defaults:
 
@@ -118,12 +133,13 @@ Role defaults:
 | --- | --- | --- | --- | --- | --- |
 | implementer | Read Edit Write Glob Grep Bash | opus / high | $10 / 60 / 20 min | yes | worktree |
 | verifier | Read Edit Write Glob Grep Bash | opus / high | $10 / 60 / 20 min | yes | worktree (after the builder) |
-| reviewer | Read Glob Grep Bash | opus / high | $5 / 30 / 15 min | no | none |
+| reviewer | Read Glob Grep Bash | opus / high | $5 / 30 / 15 min | yes (tests listen) | none |
 | researcher | WebSearch WebFetch | opus / medium | $5 / 40 / 15 min | n/a | none (no local tools) |
 | probe | Read Write Bash | haiku / low | $0.5 / 10 / 5 min | yes | worktree |
 
 Set effort explicitly when it matters; do not raise it by habit. Example:
-[references/lane-example.json](references/lane-example.json).
+[references/lane-example.json](references/lane-example.json). Each role's report fields and default Bash allowlist,
+and every record arbab writes: [references/records.md](references/records.md).
 
 The fence also denies writes to the repository's shared git directory (the main checkout's `.git`). Measured in
 M1: without that deny, code a worktree's worker runs can write loose refs there. Do not add an allow rule or a
@@ -164,6 +180,9 @@ Commands:
 - `arbab plan next plans/<name>.json`: launches every phase whose dependencies all finished `success` and that has
   not run yet; lists blocked and failed dependencies. It is idempotent. Run it once to start, then **after each
   `wait` notification**, once you have handled the finished lane. There is no plan daemon.
+- `arbab plan next plans/<name>.json --retry <phase>`: first relaunches a phase that ended in anything but
+  `success`, or was orphaned, as a fresh session in its own worktree on its checkpoint commits; its dependents then
+  wait for it. Fix its brief first when the brief was the cause.
 - `arbab plan status plans/<name>.json`: one row per phase with its wave, dependencies and lane state.
 
 A merge conflict while a phase's worktree is set up fails that launch with the conflicting paths: you resolve it
@@ -181,7 +200,7 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
      in the human's browser, and then its output carries no token.
    - When no browser could be opened, it prints the URL with this session's token instead: give that URL to the
      human.
-   - The scene is for the human. You still react to `wait` and read `summary.json` and `report.json`.
+   - The scene is for the human. You still react to `wait` and read `arbab report <lane>`.
 4. `arbab launch lanes/<name>.json` for each lane. It returns as soon as the lane's shepherd has started and prints
    the lane, its run dir and the shepherd pid. A lane without a free slot, or launched above the quota threshold,
    waits in state `held`. A lane that is already running (or being launched) is refused.
@@ -193,11 +212,18 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 - `wait` is level-triggered: it prints every finished lane not yet acknowledged, acknowledges it and exits. After
   each notification, handle that lane, run `arbab plan next` if the lane belongs to a plan, then start a new
   background `wait --any` for the rest.
+- Without lane names, `wait --any` (and `--all`, which waits until every run finished) covers this session's runs
+  and older runs without an owner; `--all-sessions` covers every session's runs. Named lanes are waited for whoever
+  launched them. `wait --notify` also sends a desktop notification per finished lane.
+- The plugin's Stop hook blocks ending your turn while lanes this session launched run and no `wait` of this session
+  watches them; it names the `wait` command to start.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
-- `arbab status` shows one row per lane (state, attempt, elapsed, turns, calls, last tool, effort, failures by
-  cause, cost Δ, quota). Use it when you need a picture, not in a loop.
-- **Never poll or tail streams into your context.** Read the attempt's `summary.json` (classification and metrics)
-  and `report.json` (the worker's validated report) under `.arbab/runs/<lane>/attempt-<n>/`.
+- When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
+  what needs attention, quota and slots; `--all` across every repository that launched a lane on this machine) and
+  `arbab report <lane>` (an attempt's metrics and report; `--attempt <n>` for an earlier one), not from JSON read by
+  hand. `arbab status [--active] [--mine]` gives one row per lane; use it when you need a picture, not in a loop.
+- **Never poll or tail streams into your context.** `arbab report <lane>` reads the attempt's `summary.json` and
+  `report.json` under `.arbab/runs/<lane>/attempt-<n>/` for you.
 - Use `arbab stop <lane>` to kill a worker that is going the wrong way; it will not auto-resume.
 
 ## End states
@@ -205,7 +231,8 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 Each attempt's `summary.json` carries one end state, classified from the whole stream, never from the exit code.
 The full table, with what to do for each: [references/end-states.md](references/end-states.md).
 
-- `success`: read `report.json`. A `done` with failing checks or a `partial`/`blocked` is still your decision.
+- `success`: read the report (`arbab report <lane>`). A `done` with failing checks or a `partial`/`blocked` is still
+  your decision.
 - `usage-limit`: the shepherd sleeps until the reset and resumes by itself (state `waiting-reset`), up to
   `maxAttempts`. Do nothing.
 - `failed`: read the report (if any), `stderr.log` and the last events of the stream (only those). Then choose:
@@ -235,12 +262,14 @@ The full table, with what to do for each: [references/end-states.md](references/
   (default 0.85) or seven-day use at or above `quota.holdAbove.sevenDay` (default 0.95). Held lanes re-check every
   minute and after each reset.
 - Parallel workers spend quota in proportion: four workers burn the window four times as fast. `maxParallel`
-  bounds them machine-wide.
+  bounds them (slots are shared by every project on the machine), and `~/.arbab/machine.json` caps it.
 - The margin below 1.0 is **your** headroom: you must still be able to read reports and land. Do not set the
   thresholds to 1.0. Snapshots are lower bounds; other sessions keep spending.
-- After switching to another account because one is full, run `arbab quota --reset`. The old account's snapshot
-  would otherwise hold every lane until its reset. Held lanes re-read the quota every minute; lanes in
-  `waiting-reset` go on only after such a reset (or at the old reset time).
+- After the human switches to another account because one is full, run `arbab quota --refresh`: one tool-less
+  haiku call reads the new account's windows, replaces the snapshot and counts as a reset. `arbab quota --reset`
+  only deletes the old snapshot; use it when the refresh call cannot run. Without either, the old account's snapshot
+  holds every lane until its reset. Held lanes re-read the quota every minute; lanes in `waiting-reset` go on only
+  after such a reset (or at the old reset time).
 
 ## Review
 
@@ -266,6 +295,18 @@ not succeed, 3 on timeout. Then:
 - **Independent agreement counts.** Two lenses that find the same defect independently confirm it.
 - Fix each confirmed finding (a new lane, then `integrate` again) or leave it as a risk for the human.
 
+Review rounds:
+
+- A round that finds only LOW findings ends the review: they go to risks, not to another round.
+- A fix round runs `arbab review <name> --since <sha>`, with the head the last round reviewed: the reviewers diff
+  from that commit (an ancestor of the head) instead of the base.
+- A lens text for one round goes in a file: `--lens-file <lens>=<file>` adds that lens, or replaces its text, for
+  this run only. Do not edit `review.lenses` for it.
+- `--lenses a,b` re-runs some lenses and keeps the others' findings when the head is the same. Every round is kept
+  in `reviews/<round>.json`; readiness shows each round's counts.
+- A re-run of `review` or `verify` on the same head, after a timeout, takes the results of its lanes that finished
+  meanwhile and waits for those still running.
+
 A verifier lane that may fix runs after its builder, in the builder's worktree, from the builder's commit.
 
 ## Land
@@ -275,7 +316,9 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
 
 1. `arbab integrate <name> --lanes a,b` (or `--plan plans/<p>.json`, in wave order) merges each finished lane's
    branch into `integrate/<name>`, in its own worktree, never the main checkout. A conflict aborts and names the
-   paths. A lane that changed a dependency manifest is merged but flagged and **not installed** (that would run
+   paths. `arbab integrate <name> --adopt <ref>` instead makes an integration of a branch built outside lanes, so
+   it gets verify and review. A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or
+   a `package.json`'s dependency fields or install scripts) is merged but flagged and **not installed** (that would run
    worker code on the host). **This is the human's step, never yours**: show the human the manifest changes and what
    an install at that head runs (package.json scripts and the files they run, `.npmrc`, `.pnpmfile.*`); the human
    reviews them, installs in the integration worktree and runs `arbab integrate <name> --deps-installed <sha>` with
@@ -296,29 +339,37 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    - **risks**: confirmed and unverified findings, the merged lanes' `open_questions` and `not_verified`, and
      manifest changes. Add what arbab cannot see: facts from live data, an eval not re-run, a page never opened.
 
-   Each skipped item has an id (`verify`, `review`, `review:<lens>`, `skeptic`, `smoke`, `deps`) and stays until it
-   runs or the **human** waives it by that id. Never waive on your own. `verify` cannot be waived: readiness and
-   `land` require it to have passed on the head. Exit 0 when ready.
-5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>`.
+   Each skipped item has an id (`verify`, `review`, `review:<lens>`, `skeptic`, `smoke`, `deps`, `host`) and stays
+   until it runs or the **human** waives it by that id. Waivers are the human's: `--waive` needs a terminal, so your
+   shell cannot run it; show the human the command. `verify` cannot be waived: readiness and `land` require it to have
+   passed on the head. A review stays current when the head adds only a clean merge of the base; verify never
+   carries over. Exit 0 when ready.
+
+   Checks the fence cannot run (Docker, a browser, a database) go in config `hostGates`. Readiness lists them
+   (`host`) until they passed on the head; the human starts `arbab host-check <name>` in a terminal, because it runs
+   worker code on the host. Never run them on the host yourself.
+5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>`. When the project wants one commit per
+   landing, use `arbab land <name> --squash --message <file>`, or set config `landing.squash`.
    - It refuses unless:
      - readiness is ready for the integration head, newer than its verify and review, and at least
        `config.landing.tier`;
      - verify passed there;
-     - the main checkout is on the integration's recorded base and clean;
+     - the main checkout is on the integration's recorded base, with no tracked change and no untracked file where
+       the merge writes (other untracked files are left alone and listed);
      - the base has not moved past the integration: its HEAD is contained in the verified head. If it moved, merge
        the base into the integration worktree with hooks off (the command `land` prints:
        `git -C <integration worktree> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c diff.ignoreSubmodules=all -c submodule.recurse=false merge --no-verify --no-edit <base>`; a plain `git merge` there would run worker-written hooks on the host), then integrate,
        verify, review and readiness again.
-   - Then it merges `--no-ff` (`Land <name>`) with hooks disabled (the branch holds worker code), writes
-     `landing.json` and prints the push command.
+   - Then it merges `--no-ff` (`Land <name>`), or makes one squash commit, with hooks disabled (the branch holds
+     worker code), writes `landing.json` and prints the push command.
    - **It never pushes.** Push and deploy are human actions; say that nothing was pushed.
    - Then it removes the worktrees of the lanes it landed, of the lanes generated for the integration and of the
      integration itself (`--keep-worktrees` skips this), and deletes the generated lanes' and the integration's
      branches. Lane branches stay: later plan phases merge them by name. It keeps anything active, orphaned, dirty
      or unmerged and says why; pass what it kept on to the human.
    - A landed integration's name is closed: the next round gets a new name.
-6. After landing, verify the base branch once more, inside the fence (a probe lane with `base` set to it that runs
-   the gates). M1's own landing found a test that failed only on `main`.
+6. After landing, verify the base once more, inside the fence: `arbab verify --ref <base>` runs the gates on the
+   branch head with no integration. M1's own landing found a test that failed only on `main`.
 
 ## Do not
 

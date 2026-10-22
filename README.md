@@ -115,8 +115,9 @@ claude plugin marketplace add ozgursagiroglu/arbab
 claude plugin install arbab@arbab
 ```
 
-The install copies only `plugin/`: the skill and a single-file runner (the `arbab ui` page included), about 550 KB,
-with zero runtime dependencies. To update, refresh the marketplace with `claude plugin marketplace update arbab`, then
+The install copies only `plugin/`: the skill, its hooks and a single-file runner (the `arbab ui` page included),
+with zero runtime dependencies. The plugin's hooks approve the skill's bare runner calls, so they do not wait for
+your click, and keep the session from ending its turn while its lanes run unwatched. To update, refresh the marketplace with `claude plugin marketplace update arbab`, then
 run `claude plugin update arbab@arbab`.
 
 Then:
@@ -139,9 +140,18 @@ Then:
 
    - `instructions` are inlined into every brief. Workers do not load `CLAUDE.md` on their own.
    - `commands` are the only project commands each role may run.
-   - `gates` are what `verify` runs.
+   - `gates` are what `verify` runs; `verify.smoke` runs after them.
+   - `hostGates` are checks the fence cannot run (Docker, a browser, a database). You run them with
+     `arbab host-check <name>` in your terminal.
+   - `fence.readableEnvFiles` lists tracked env templates (`.env.example`) workers may read;
+     `fence.bashOutputMaxChars` (default 100000): longer Bash output is saved where workers cannot read it.
+   - `landing.tier` (`low`, `medium` or `high`, default `medium`) and `landing.squash` (one commit per landing).
+   - Also: `preflight.steps`, `dependencies`, `env`, `passEnv`, `credentialPaths`, `resources`, `semaphores`,
+     `quota.holdAbove`, `review.lenses`, `roles`, `minClaudeVersion`, `worktreeRoot`, `runsRoot`.
 
-   The skill's "Before the first launch" section explains the fields that matter first.
+   A repository that should carry no arbab file can keep the config at `.arbab/config.json` instead; arbab excludes
+   `.arbab/` from git as a whole. `~/.arbab/machine.json` (`{"maxParallel": 6}`) caps parallel workers for every
+   project on the machine. The skill's "Before the first launch" section explains the fields that matter first.
    [arbab.config.json](arbab.config.json) is this repository's own.
 2. **Run the skill.** Open Claude Code in the project and type `/arbab`. Ask it to check the setup first; it runs
    `arbab doctor` (node, git, the claude binary, the sandbox, the config, the ignored roots).
@@ -152,11 +162,14 @@ Then:
 5. **Land.** The orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
    lands.
 
-Two steps are always yours:
+Some steps are always yours:
 
-- **Dependency changes.** If a worker changed `package.json` or a lockfile, nothing is installed. You review the
-  change, install it yourself, and confirm with `arbab integrate <name> --deps-installed <sha>` in your own
-  terminal. The CLI refuses that confirmation without a terminal, so an agent cannot give it for you.
+- **Dependency changes.** If a worker changed what an install reads (a lockfile, or the dependencies or install
+  scripts of a `package.json`), nothing is installed. You review the change, install it yourself, and confirm with
+  `arbab integrate <name> --deps-installed <sha>` in your own terminal. The CLI refuses that confirmation without a
+  terminal, so an agent cannot give it for you.
+- **Waivers and host checks.** `arbab readiness <name> --waive <id>` and `arbab host-check <name>` need a terminal
+  too.
 - **Landing.** `land` is the orchestrator's command, but the skill asks you first. It never pushes.
 
 ## A real run
@@ -342,7 +355,7 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
 - **Verdicts:** each finding ends `confirmed`, `refuted` or `unverified`.
 - **A readiness report** lists what was verified, what was skipped, and every risk.
 - **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
-  cannot be waived. The skill waives one only when you name it.
+  cannot be waived. Only you can waive one: `--waive` needs a terminal.
 
 On arbab's own `arbab ui`, the first review round confirmed six findings. The two MEDIUM ones were the same problem,
 found by two lenses independently. All six were fixed before landing. Milestone M3 went through 14 review rounds,
@@ -402,32 +415,39 @@ clink as a finished worker takes its pay.
 
 | Command | What it does |
 | --- | --- |
-| `doctor` | Checks node, git, the claude binary, the sandbox, the config, the ignored roots and `~/.arbab`. |
+| `doctor` | Checks node, git, the claude binary, the sandbox, the config, the ignored roots, `~/.arbab`, the plugin hook, the gates against the repository's scripts and CI, env templates, lint and test configs that would scan `.arbab/`, disk and the machine cap. |
 | `lint <lane.json>` | Lints the profile, brief and schema. Exit 1 on errors. |
 | `launch <lane.json>` | Lints the lane, then starts its shepherd. |
 | `plan check <plan.json>` | Validates a plan, lints every phase and prints the waves. Exit 1 on errors. |
-| `plan next <plan.json>` | Launches every phase whose dependencies all succeeded and that never ran. |
+| `plan next <plan.json> [--retry <phase>]` | Launches every phase whose dependencies all succeeded and that never ran. `--retry` first relaunches a phase that failed or was orphaned. |
 | `plan status <plan.json>` | One row per phase: wave, state, end state, dependencies. |
-| `status [lane…]` | One row per lane, then the quota. |
-| `wait [--any\|--all] [--timeout-min N] [lane…]` | Reports finished lanes not yet acknowledged. Exit 3 on timeout. |
+| `status [lane…] [--active] [--mine]` | One row per lane, then the quota. `--active`: lanes not finished; `--mine`: this session's runs and ownerless ones. |
+| `summary [--all]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota and slots. `--all`: every project that launched a lane on this machine. |
+| `report <lane> [--attempt <n>]` | An attempt's metrics and the worker's report, the latest unless `--attempt`. |
+| `wait [lane… \| --any \| --all] [--all-sessions] [--timeout-min N] [--notify]` | Reports finished lanes not yet acknowledged. Without lanes it covers this session's runs and ownerless ones, every session's with `--all-sessions`. `--notify` sends a desktop notification. Exit 3 on timeout. |
 | `resume <lane> [--prompt <file> \| --digest]` | Starts a new attempt in the latest session. `--digest` starts a fresh session seeded with the latest attempt's digest. |
 | `stop <lane>` | Stops the lane's shepherd and worker. |
 | `preflight <lane.json> [--timeout-min N]` | Probes the lane's fence and model. Exit 1 on any failed check. |
-| `quota [--reset]` | Shows the account snapshot and the hold decision. `--reset` deletes the snapshot after you switch accounts. |
-| `cleanup [--worktrees]` | Reaps orphans and releases stale pool entries. `--worktrees` also removes finished lanes' merged, clean worktrees (lane branches stay) and landed integrations' worktrees and branches. |
+| `quota [--reset \| --refresh]` | Shows the account snapshot and the hold decision. After you switch accounts, `--refresh` reads the new account's windows with one haiku call; `--reset` only deletes the snapshot. |
+| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than` adds clean worktrees unchanged for longer. `--mine`: only this session's runs. |
 | `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
-| `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. |
+| `integrate <name> --adopt <ref> [--base <ref>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. |
+| `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. Terminal only. |
 | `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
-| `review <name> [--lenses a,b] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. |
-| `readiness <name> [--tier low\|medium\|high] [--waive id,…]` | Writes the readiness report: verified, skipped, risks. Exit 1 unless ready. |
-| `land <name> [--keep-worktrees]` | Merges a ready integration into the base. Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
+| `verify --ref <branch>` | The same on a branch head with no integration: the check after landing. |
+| `review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. `--lens-file` adds or replaces a lens for one run; `--since` diffs from an ancestor of the head instead of the base, for a fix round. |
+| `readiness <name> [--tier low\|medium\|high] [--waive id,…]` | Writes the readiness report: verified, skipped, risks. Exit 1 unless ready. `--waive` needs a terminal. |
+| `host-check <name>` | Runs config `hostGates` on the integration head, on the host. Terminal only. |
+| `land <name> [--squash] [--message <file>] [--keep-worktrees]` | Merges a ready integration into the base, or as one commit with `--squash` (config `landing.squash`). Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
 | `ui [--port N] [--hours N] [--no-open]` | Serves the live pyramid scene on 127.0.0.1, read-only, until stopped. |
-| `help`, `--help` | Prints the command list. |
+| `help [<command>]`, `--help` | Prints the command list, or one command's options (as does `arbab <command> --help`). |
 | `version`, `--version` | Prints the arbab version. |
 
-Every command except `help` and `version` also takes `--json`, which prints JSON instead of text.
+Every command except `help`, `version` and `host-check` also takes `--json`, which prints JSON instead of text. A
+leading `-C <dir>` finds the project from `<dir>` instead of the working directory.
 
-The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`. From a clone, run
+The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`, bare: the plugin's PreToolUse hook
+approves exactly that form, and a call wrapped in `cd`, `&&` or a pipe waits for your approval. From a clone, run
 `node dist/arbab.mjs <command>` after `pnpm build`.
 
 ## What arbab is not
@@ -512,7 +532,8 @@ Never. `land` merges locally and prints the push command.
 
 **What happens when I hit a usage limit?**
 New launches are held while the quota is above your threshold. A running worker that hits the limit waits for the
-reset, plus a little jitter, and resumes the same session. After switching accounts, run `arbab quota --reset`.
+reset, plus a little jitter, and resumes the same session. After switching accounts, run `arbab quota --refresh`: one
+small call reads the new account's windows.
 
 Parallel workers use quota in proportion: N workers use it about N times as fast as one. Each attempt's budget is
 passed as `--max-budget-usd`, which is Claude Code's client-side cost estimate; it does not cap subscription quota.

@@ -1,4 +1,4 @@
-import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { APPROVAL } from "../hook/approve";
@@ -93,6 +93,30 @@ describe("hook pre-tool-use", () => {
   it("refuses -C into a lane worktree, even a registered one", async () => {
     p = project();
     const lane = join(p.worktreeRoot, "demo");
+    mkdirSync(lane, { recursive: true });
+    registerProject(p.home, lane, AT);
+    expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C ${lane} status`))).toBe("");
+  });
+
+  it("refuses -C into a lane worktree under the worktreeRoot the project's config sets, either file", async () => {
+    for (const file of ["arbab.config.json", ".arbab/config.json"]) {
+      p = project();
+      if (file !== "arbab.config.json") rmSync(join(p.root, "arbab.config.json"));
+      p.write(file, JSON.stringify({ baseBranch: "main", worktreeRoot: "wt" }));
+      const lane = join(p.root, "wt", "demo");
+      mkdirSync(join(lane, "src"), { recursive: true });
+      for (const root of [p.root, lane, join(lane, "src")]) registerProject(p.home, root, AT);
+      const call = (dir: string): string => bash(`node "${p.ctx.scriptPath}" -C ${dir} status`);
+      expect(await preToolUse(p, call(lane)), file).toBe("");
+      expect(await preToolUse(p, call(join(lane, "src"))), file).toBe("");
+      expect(await preToolUse(p, call(p.root)), file).toBe(APPROVAL);
+      p.dispose();
+    }
+  });
+
+  it("refuses -C into a .ARBAB/WORKTREES spelling", async () => {
+    p = project();
+    const lane = join(p.root, ".ARBAB", "WORKTREES", "demo");
     mkdirSync(lane, { recursive: true });
     registerProject(p.home, lane, AT);
     expect(await preToolUse(p, bash(`node "${p.ctx.scriptPath}" -C ${lane} status`))).toBe("");

@@ -3,8 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { dispatch } from "./index";
-import { findProjectRoot, inLaneWorktree, isActive, onePositional, openProject, parse, printJson } from "./project";
-import { isolatedGit, makeProject, type TestProject } from "./testkit";
+import {
+  findProjectRoot,
+  inLaneWorktree,
+  isActive,
+  onePositional,
+  openProject,
+  parse,
+  printJson,
+  type LaneWorktreeIo,
+} from "./project";
+import { DEFAULT_CONFIG, isolatedGit, makeProject, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -33,15 +42,124 @@ describe("findProjectRoot", () => {
 });
 
 describe("inLaneWorktree", () => {
+  // A fake file system: `files` by exact path, and a realpath that knows only `links`.
+  function fakeIo(files: Record<string, string> = {}, links: Record<string, string> = {}): LaneWorktreeIo {
+    return {
+      readFile: (p) => {
+        const text = files[p];
+        if (text === undefined) throw new Error(`ENOENT ${p}`);
+        return text;
+      },
+      realpath: (p) => {
+        const target = links[p];
+        if (target === undefined) throw new Error(`ENOENT ${p}`);
+        return target;
+      },
+    };
+  }
+
   it("is true for a path with a .arbab/worktrees pair of components", () => {
-    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a")).toBe(true);
-    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a/src")).toBe(true);
-    expect(inLaneWorktree("/work/repo/.arbab/worktrees")).toBe(true);
-    expect(inLaneWorktree("/work/repo")).toBe(false);
-    expect(inLaneWorktree("/work/repo/.arbab/runs/a")).toBe(false);
-    expect(inLaneWorktree("/work/repo/x.arbab/worktrees/a")).toBe(false);
-    expect(inLaneWorktree("/work/repo/.arbab/worktrees-old/a")).toBe(false);
-    expect(inLaneWorktree("/work/.arbab/repo/worktrees")).toBe(false);
+    const io = fakeIo();
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a/src", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo", io)).toBe(false);
+    expect(inLaneWorktree("/work/repo/.arbab/runs/a", io)).toBe(false);
+    expect(inLaneWorktree("/work/repo/x.arbab/worktrees/a", io)).toBe(false);
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees-old/a", io)).toBe(false);
+    expect(inLaneWorktree("/work/.arbab/repo/worktrees", io)).toBe(false);
+  });
+
+  it("ignores case in the pair, as a case-insensitive file system does", () => {
+    const io = fakeIo();
+    expect(inLaneWorktree("/work/repo/.ARBAB/WORKTREES/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.Arbab/Worktrees", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.ARBAB/RUNS/a", io)).toBe(false);
+  });
+
+  it("checks the spelling on disk as well as the one given", () => {
+    // A link into a worktree, and another spelling the file system folds to it.
+    const io = fakeIo({}, { "/work/link": "/work/repo/.arbab/worktrees/a", "/WORK/REPO/LANE": "/work/repo/.arbab/worktrees/a" });
+    expect(inLaneWorktree("/work/link", io)).toBe(true);
+    expect(inLaneWorktree("/WORK/REPO/LANE", io)).toBe(true);
+    expect(inLaneWorktree("/work/other", io)).toBe(false);
+    // The lexical spelling counts when the canonical one does not.
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a", fakeIo({}, { "/work/repo/.arbab/worktrees/a": "/elsewhere/a" }))).toBe(true);
+  });
+
+  it("is true at or under a worktreeRoot an ancestor's arbab.config.json sets, ignoring case", () => {
+    const io = fakeIo({ "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "wt", baseBranch: "main" }) });
+    expect(inLaneWorktree("/work/repo/wt", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/wt/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/wt/a/src", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/WT/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo", io)).toBe(false);
+    expect(inLaneWorktree("/work/repo/src", io)).toBe(false);
+    expect(inLaneWorktree("/work/repo/wt-old/a", io)).toBe(false);
+    // Through the spelling on disk.
+    const linked = fakeIo({ "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "lanes/wt" }) }, { "/work/l": "/work/repo/lanes/wt/a" });
+    expect(inLaneWorktree("/work/l", linked)).toBe(true);
+  });
+
+  it("reads .arbab/config.json too, and both when both exist", () => {
+    const io = fakeIo({
+      "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "one" }),
+      "/work/repo/.arbab/config.json": JSON.stringify({ worktreeRoot: "two/lanes" }),
+    });
+    expect(inLaneWorktree("/work/repo/one/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/two/lanes/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/two", io)).toBe(false);
+    const local = fakeIo({ "/work/repo/.arbab/config.json": JSON.stringify({ worktreeRoot: "wt" }) });
+    expect(inLaneWorktree("/work/repo/wt/a", local)).toBe(true);
+    expect(inLaneWorktree("/work/repo", local)).toBe(false);
+  });
+
+  it("adds nothing for a worktreeRoot outside or at its ancestor, or a config that is not one", () => {
+    for (const text of [
+      JSON.stringify({ worktreeRoot: "../elsewhere" }),
+      JSON.stringify({ worktreeRoot: "/work/elsewhere" }),
+      JSON.stringify({ worktreeRoot: "." }),
+      JSON.stringify({ worktreeRoot: "" }),
+      JSON.stringify({ worktreeRoot: 7 }),
+      JSON.stringify({ worktreeRoot: ["elsewhere"] }),
+      JSON.stringify({ nested: { worktreeRoot: "elsewhere" } }),
+      JSON.stringify(["worktreeRoot", "elsewhere"]),
+      JSON.stringify("elsewhere"),
+      "null",
+      "{not json",
+    ]) {
+      const io = fakeIo({ "/work/repo/arbab.config.json": text, "/work/repo/.arbab/config.json": text });
+      expect(inLaneWorktree("/work/elsewhere/a", io), text).toBe(false);
+      expect(inLaneWorktree("/work/repo/a", io), text).toBe(false);
+      expect(inLaneWorktree("/work/repo", io), text).toBe(false);
+    }
+  });
+
+  it("adds nothing for a config it cannot read", () => {
+    const io: LaneWorktreeIo = {
+      realpath: (p) => p,
+      readFile: () => {
+        throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      },
+    };
+    expect(inLaneWorktree("/work/repo/wt/a", io)).toBe(false);
+  });
+
+  it("reads real files by default", () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "arbab-root-")));
+    try {
+      mkdirSync(join(dir, "repo", "wt", "a"), { recursive: true });
+      writeFileSync(join(dir, "repo", "arbab.config.json"), JSON.stringify({ worktreeRoot: "wt" }));
+      expect(inLaneWorktree(join(dir, "repo", "wt", "a"))).toBe(true);
+      expect(inLaneWorktree(join(dir, "repo", "wt", "missing"))).toBe(true);
+      expect(inLaneWorktree(join(dir, "repo"))).toBe(false);
+      // Unreadable: a directory where the config would be.
+      rmSync(join(dir, "repo", "arbab.config.json"));
+      mkdirSync(join(dir, "repo", "arbab.config.json"));
+      expect(inLaneWorktree(join(dir, "repo", "wt", "a"))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -73,6 +191,58 @@ describe("findProjectRoot in a lane worktree", () => {
     symlinkSync(lane, join(p.dir, "lane-link"));
     expect(() => findProjectRoot(join(p.dir, "lane-link"), p.git)).toThrow(/lane worktree/);
     expect(() => openProject({ cwd: lane, git: p.git })).toThrow(expect.objectContaining({ code: "usage" }));
+  });
+
+  it("refuses a worktree under the worktreeRoot arbab.config.json sets, and still opens the project", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, worktreeRoot: "wt" } });
+    const lane = join(p.root, "wt", "demo");
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo", lane, "main"]);
+    mkdirSync(join(lane, "src"));
+    // The worker's own config would point elsewhere; the project's still decides.
+    writeFileSync(join(lane, "arbab.config.json"), JSON.stringify({ commands: { implementer: ["sh evil.sh"] } }));
+    expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);
+    expect(() => findProjectRoot(join(lane, "src"), p.git)).toThrow(expect.objectContaining({ code: "usage" }));
+    expect(await dispatch(["-C", lane, "status"], p.ctx)).toBe(1);
+    expect(p.stderr()).toMatch(/lane worktree/);
+    expect(findProjectRoot(p.root, p.git)).toBe(p.root);
+    expect(openProject(p.ctx).worktreeRoot).toBe(join(p.root, "wt"));
+  });
+
+  it("refuses a worktree under the worktreeRoot .arbab/config.json sets, and still opens the project", () => {
+    p = makeProject();
+    const lane = join(p.root, "wt", "demo");
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo", lane, "main"]);
+    mkdirSync(join(lane, "src"));
+    rmSync(join(p.root, "arbab.config.json"));
+    p.write(".arbab/config.json", JSON.stringify({ ...DEFAULT_CONFIG, worktreeRoot: "wt" }));
+    // The lane still holds the committed arbab.config.json, with the default worktreeRoot.
+    expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);
+    expect(() => findProjectRoot(join(lane, "src"), p.git)).toThrow(/lane worktree/);
+    rmSync(join(lane, "arbab.config.json"));
+    expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);
+    expect(findProjectRoot(p.root, p.git)).toBe(p.root);
+    expect(openProject(p.ctx).worktreeRoot).toBe(join(p.root, "wt"));
+  });
+
+  it("refuses a .ARBAB/WORKTREES spelling", () => {
+    p = makeProject();
+    const lane = join(p.root, ".ARBAB", "WORKTREES", "demo");
+    mkdirSync(lane, { recursive: true });
+    writeFileSync(join(lane, "arbab.config.json"), "{}");
+    expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);
+  });
+
+  it("adds nothing for a worktreeRoot outside the project, or a config it cannot parse", () => {
+    p = makeProject();
+    const other = join(p.dir, "elsewhere", "demo");
+    mkdirSync(other, { recursive: true });
+    writeFileSync(join(other, "arbab.config.json"), "{}");
+    writeFileSync(join(p.root, "arbab.config.json"), JSON.stringify({ worktreeRoot: "../elsewhere" }));
+    expect(findProjectRoot(other, p.git)).toBe(other);
+    writeFileSync(join(p.dir, "arbab.config.json"), "{not json");
+    expect(findProjectRoot(other, p.git)).toBe(other);
+    writeFileSync(join(p.dir, "arbab.config.json"), JSON.stringify({ worktreeRoot: 1 }));
+    expect(findProjectRoot(other, p.git)).toBe(other);
   });
 
   it("refuses it from the cwd and through -C, before loading its config", async () => {

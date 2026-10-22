@@ -162,6 +162,27 @@ describe("isRunnerCall -C", () => {
     expect(isRunnerCall(call(`-C ${join(dir, "lane-link")} status`), withLane)).toBe(false);
   });
 
+  it("refuses a lane worktree by its spelling on disk, a .ARBAB/WORKTREES spelling and a configured worktreeRoot", () => {
+    // A fake case-insensitive file system: every spelling of the lane resolves to the one on disk.
+    const fake = (p: string): string => {
+      if (p === runner) return runner;
+      if (p.toLowerCase() === "/work/repo/.arbab/worktrees/a") return "/work/repo/.arbab/worktrees/a";
+      if (p === "/work/repo") return p;
+      throw new Error(`ENOENT ${p}`);
+    };
+    const base = { ...opts, realpath: fake, projectRoots: () => ["/WORK/REPO/.ARBAB/WORKTREES/A", "/work/repo"] };
+    expect(isRunnerCall(call("-C /WORK/REPO/.ARBAB/WORKTREES/A status"), base)).toBe(false);
+    expect(isRunnerCall(call("-C /work/repo status"), base)).toBe(true);
+
+    writeFileSync(join(repo, "arbab.config.json"), JSON.stringify({ worktreeRoot: "wt" }));
+    const lane = join(repo, "wt", "a");
+    mkdirSync(join(lane, "src"), { recursive: true });
+    const withLane = { ...opts, projectRoots: () => [repo, lane, join(lane, "src")] };
+    expect(isRunnerCall(call(`-C ${lane} status`), withLane)).toBe(false);
+    expect(isRunnerCall(call(`-C ${join(lane, "src")} status`), withLane)).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} status`), withLane)).toBe(true);
+  });
+
   it("refuses a registered root in or under a temp dir, named directly or through its real path", () => {
     expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [dir] })).toBe(false);
     expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [repo] })).toBe(false);

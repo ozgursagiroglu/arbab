@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EndState, LaneState, PlanPhase, PlanSpec } from "../types";
 import type { PhaseState, PhaseStates } from "./index";
-import { nextPhases, planStatus } from "./index";
+import { nextPhases, planStatus, retryRefusal } from "./index";
 
 function phase(name: string, dependsOn?: string[]): PlanPhase {
   const p: PlanPhase = { name, role: "implementer", brief: `lanes/${name}.md`, scope: [`src/${name}/**`] };
@@ -123,6 +123,23 @@ describe("nextPhases", () => {
   it("lists a duplicated phase once", () => {
     const p: PlanSpec = { name: "p", phases: [phase("a"), phase("a")] };
     expect(nextPhases(p, {}).launch).toEqual(["a"]);
+  });
+});
+
+describe("retryRefusal", () => {
+  it("allows a phase that ended in anything but success, or whose shepherd died", () => {
+    const ends: Array<EndState | null> = ["failed", "budget", "max-turns", "invalid-report", "no-result", "unsupported-cli", "killed:wall", null];
+    for (const endState of ends) expect(retryRefusal(diamond, { b: st("finished", endState) }, "b"), String(endState)).toBeNull();
+    expect(retryRefusal(diamond, { b: st("orphaned", "running") }, "b")).toBeNull();
+  });
+
+  it("refuses a phase that succeeded, is active, never ran or is not in the plan, naming the reason", () => {
+    expect(retryRefusal(diamond, { a: st("finished", "success") }, "a")).toBe("phase a succeeded; there is nothing to retry");
+    for (const state of ["queued", "held", "preparing", "running", "waiting-reset"] as LaneState[]) {
+      expect(retryRefusal(diamond, { a: st(state, "running") }, "a")).toBe(`phase a is ${state}; stop it or wait for it first`);
+    }
+    expect(retryRefusal(diamond, {}, "a")).toMatch(/^phase a never ran; /);
+    expect(retryRefusal(diamond, {}, "ghost")).toBe("phase ghost is not in plan p");
   });
 });
 

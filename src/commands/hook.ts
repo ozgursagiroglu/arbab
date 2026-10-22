@@ -20,7 +20,8 @@ async function answer(event: (typeof HOOK_EVENTS)[number], ctx: CommandContext, 
       scriptPath: ctx.scriptPath,
       // COMMANDS is read here, not at load: index.ts imports this module.
       commands: Object.keys(COMMANDS),
-      realpath: realpathSync,
+      // The native one returns the spelling on disk, so a case-insensitive file system's other spellings compare equal.
+      realpath: (path) => realpathSync.native(path),
       projectRoots: () => listProjects(ctx.home).map((entry) => entry.root),
       tempDirs: tmp === undefined || tmp === "" ? tempDirs : [...tempDirs, tmp],
     });

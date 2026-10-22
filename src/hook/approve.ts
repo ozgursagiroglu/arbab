@@ -21,7 +21,7 @@ export interface ApproveOptions {
   scriptPath: string;
   /** The runner's command names (the keys of COMMANDS). */
   commands: readonly string[];
-  /** The real path of a file; throws when there is none. */
+  /** The real path of a file, in the spelling on disk; throws when there is none. */
   realpath: (path: string) => string;
   /** The roots of the projects registered on this machine; read only for a `-C` call. */
   projectRoots: () => readonly string[];
@@ -55,7 +55,7 @@ function knownProject(dir: string, opts: ApproveOptions): boolean {
   // Absolute only, as for the runner: a relative one resolves against a working directory the hook cannot be sure of.
   if (!isAbsolute(dir)) return false;
   const path = real(dir, opts.realpath);
-  if (path === null || inLaneWorktree(path)) return false;
+  if (path === null || inLaneWorktree(dir, { realpath: opts.realpath })) return false;
   for (const temp of opts.tempDirs) {
     if (!isAbsolute(temp)) continue;
     const realTemp = real(temp, opts.realpath);

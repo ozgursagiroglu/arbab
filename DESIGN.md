@@ -94,13 +94,19 @@ and `runsRoot` when config moves them outside `.arbab/`, and verifies each with 
                                   lanes/ (generated lane files); superseded records keep their own file (§17)
     reviews/<round>.json          every review, numbered from 1 (review.json is the latest)
     host-checks.json              the last `arbab host-check` (HostCheckRecord)
-  refs/<slug>/                    `verify --ref <branch>`: verify.json (named ref:<branch>) and lanes/
+  refs/ref-<slug>-<hash>/         `verify --ref <branch>`: verify.json (named ref:<branch>) and lanes/ (§17)
   worktrees/<lane>/               one git worktree per lane, branch arbab/<lane>
   worktrees/integrate-<name>/     the integration worktree, branch integrate/<name> (no worker runs there)
 <worktree>/.arbab-tmp/            per-worker homes, ignored: xdg-config/ (XDG_CONFIG_HOME),
                                   yarn-cache/ (YARN_CACHE_FOLDER), npmrc (an empty NPM_CONFIG_USERCONFIG, never
-                                  overwritten), inputs/ (the lane's inputs, §21)
+                                  overwritten), inputs/ (the lane's inputs, rebuilt every run, §21)
 ```
+
+A worker writes its worktree, `.arbab-tmp/` included, so the shepherd never writes through a link it finds there:
+it builds `.arbab-tmp/` and each directory under it one component at a time, replacing a link or a non-directory (the
+link itself, never its target) with a fresh directory, and creates `npmrc` and every input copy with exclusive,
+no-follow opens. A lane worktree is never a project: arbab refuses a project root whose real path lies in a
+`.arbab/worktrees` directory, before it loads any config there (§21).
 
 Repository build output (git-ignored): `dist/arbab.mjs` (the bundle) and `plugin/` (what a marketplace installs, §17).
 
@@ -115,18 +121,21 @@ semaphores/<name>/<i>.json        shared external resources (config semaphores)
 leases/<type>/<value>.json        port, redis-db, database, custom
 locks/<sha1(worktree)>/0.json     one writer per worktree; the directory goes with its entry
 shepherds/<pid>.json              {pid, lane, project, owner, startedAt} while that shepherd lives
-waiters/<pid>.json                {pid, project, owner, startedAt} while that `arbab wait` runs
-projects/<sha1(root)>.json        {root, lastLaunchAt}: a project that launched a lane (`summary --all`)
+waiters/<pid>.json                {pid, project, owner, startedAt} while that `arbab wait` runs, or a `verify`,
+                                  `review` or `preflight` waits for its lanes
+projects/<sha1(root)>.json        {root, lastLaunchAt}: a project that launched a lane (`summary --all`, the hook's
+                                  `-C` check, §21)
 tmp/                              `quota --refresh`'s working directory, removed after the call
 ```
 
-The registries (`shepherds/`, `waiters/`, `projects/`) are read by trusting nothing: an entry that does not parse,
-or whose body names another pid than its file, is skipped, and a `shepherds/` or `waiters/` entry of a dead pid is
-removed.
+Every pool entry (`slots/`, `semaphores/`, `leases/`, `locks/`) is an O_EXCL file holding `{pid, lane, project,
+createdAt}`, one generic pool for all four kinds. An entry whose holder pid is dead is reclaimed by renaming it to a
+tomb file first, so two reclaimers cannot both win; an entry that does not parse is treated as held (its creator may
+be between open and write) and left to `cleanup`.
 
-Every entry is an O_EXCL file holding `{pid, lane, project, createdAt}`, one generic pool for all four kinds. An entry
-whose holder pid is dead is reclaimed by renaming it to a tomb file first, so two reclaimers cannot both win; an
-entry that does not parse is treated as held (its creator may be between open and write) and left to `cleanup`.
+The registries (`shepherds/`, `waiters/`, `projects/`) are not pools and are read by trusting nothing: an entry that
+does not parse, or whose body names another pid than its file, is skipped, and a `shepherds/` or `waiters/` entry of
+a dead pid is removed.
 
 Writes are atomic (temp file + rename) or exclusive (O_EXCL). Names that become paths (lane names, resource types)
 must match `^[a-z0-9][a-z0-9-]{0,47}$`; every path is resolved and checked to stay under its root.
@@ -178,7 +187,7 @@ config `passEnv`, and the leases.
     "enabled": true, "failIfUnavailable": true,
     "autoAllowBashIfSandboxed": false, "allowUnsandboxedCommands": false,
     "network": { "allowLocalBinding": <role.loopback> },
-    "filesystem": { "denyWrite": [<the repository's shared git dir>] }
+    "filesystem": { "denyWrite": [<the repository's shared git dir>], "allowRead": [<tracked env templates>] }
   },
   "env": { <config.env>, <leases>, "BASH_DEFAULT_TIMEOUT_MS": "300000", "BASH_MAX_TIMEOUT_MS": "900000",
            "XDG_CONFIG_HOME": "<worktree>/.arbab-tmp/xdg-config", "YARN_CACHE_FOLDER": "<…>/yarn-cache",
@@ -195,9 +204,10 @@ the tool belt tells the worker to print less.
 
 `autoAllowBashIfSandboxed` defaults to **true** and must be set; `allowUnsandboxedCommands: false` stops an allow rule
 from silently approving an unsandboxed retry; `failIfUnavailable` makes a missing sandbox fatal instead of silent.
-`filesystem.denyWrite` closes the shared git directory, which Claude Code's sandbox otherwise opens to a worktree's
-worker: without it, code the worker runs could rewrite another branch's ref or point its worktree's `commondir` at
-hooks the runner would later execute. Workers never need to write there; the runner commits.
+`filesystem.allowRead` appears only with readable env templates (below). `filesystem.denyWrite` closes the shared
+git directory, which Claude Code's sandbox otherwise opens to a worktree's worker: without it, code the worker runs
+could rewrite another branch's ref or point its worktree's `commondir` at hooks the runner would later execute.
+Workers never need to write there; the runner commits.
 
 The runner's own git calls on a worker's worktree (the checkpoint) pass `--git-dir` and `--work-tree` explicitly and
 first check that the worktree's `HEAD` and `commondir` are the ones arbab created; the dependency command runs only
@@ -227,13 +237,12 @@ cherry-pick stash clean branch worktree tag config update-ref remote`) and `git 
 **/*.tfstate`, plus config `credentialPaths`. (`XDG_CONFIG_HOME` keeps git and other tools off the denied `~/.config`,
 which otherwise prints an EPERM warning on every git command.)
 
-Readable env templates (§21): when config `fence.readableEnvFiles` is non-empty, `**/.env*` is replaced by the
-secret patterns `**/.env **/.env.local **/.env.*.local **/.env.development* **/.env.production* **/.env.staging*
-**/.env.test* **/.envrc **/.env/** **/.env.*/**`, plus, by absolute path, every `.env*` file found in the worktree
-and the main checkout (up to six directories deep, `node_modules`, `.git`, `.arbab` and `.arbab-tmp` skipped) that is
-not a listed template tracked by git (`git ls-files --error-unmatch`), every `.env*` directory as `<path>/**`, and
-every `.env*` symbolic link with its `/**`. A listed entry must be project-relative, without `..`, naming a file that
-starts with `.env`.
+Readable env templates (§21): the `**/.env*` Read and Edit deny stays whatever config `fence.readableEnvFiles` says.
+When the list is non-empty, each listed template that git tracks in the worktree (`git ls-files --error-unmatch`)
+and that is a regular file reached without a link goes, by absolute path, into `sandbox.filesystem.allowRead`, which
+re-opens it for shell commands only; the Read tool still refuses it. A listed file left out (untracked, missing, a
+link or a directory) stays unreadable, and the profile lint warns `env-template-untracked` naming it. A listed entry
+must be project-relative, without `..`, naming a file that starts with `.env`.
 
 Fence levels: `strict` (above, the default) and `sandbox-auto` (opt-in per lane: `autoAllowBashIfSandboxed: true`,
 no Bash allowlist — the sandbox is the only wall; lower denial tax, broader command surface).
@@ -350,7 +359,8 @@ quota holds no slot.
 ## 10. CLI
 
 ```
-arbab [-C <dir>] <command> …         -C: find the project from <dir> instead of the working directory (§21)
+arbab [-C <dir>] <command> …         -C: find the project from <dir> instead of the working directory (§21); a
+                                     lane worktree is never a project (§3)
 arbab doctor                         binary, version, node, git, sandbox availability, config, ignored roots, ~/.arbab,
                                      and (§21) the plugin hook, lint and test configs scanning .arbab/, gates against
                                      package.json scripts and CI, env templates, disk, machine cap, both config files
@@ -359,7 +369,8 @@ arbab launch <lane.json>             lint, take the lane's launch lock, start th
                                      and the shepherd pid (the shepherd creates the attempt and the session later)
 arbab status [--active] [--mine] [lane…]
                                      one row per lane: state, attempt, elapsed, turns, calls, last tool, effort,
-                                     failed, cost Δ, quota (failures by cause are in summary.json)
+                                     failed, cost Δ (the tokens when there is no cost), quota, why (the state's
+                                     reason, at most 40 characters); failures by cause are in summary.json
 arbab summary [--all]                lanes by state, plans, integrations by stage, what needs attention, quota and
                                      slots; --all: every project in ~/.arbab/projects/ (§21)
 arbab report <lane> [--attempt <n>]  one attempt's summary and report, the latest by default (§21)
@@ -380,7 +391,7 @@ arbab cleanup [--worktrees [--older-than <days>]] [--mine]
                                      remove finished lanes' clean worktrees merged or landed, and landed integrations'
                                      worktrees and branches (§17, §21)
 arbab plan check|next|status <plan>  M2 (§16); next takes --retry <phase> (§21)
-arbab integrate <name> (--lanes a,b | --plan p | --deps-installed <sha> | --adopt <ref> [--base <ref>])
+arbab integrate <name> (--lanes a,b | --plan p | --deps-installed <sha> | --adopt <ref> [--base <ref>] | --refresh)
 arbab verify (<name> | --ref <branch>)
 arbab review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>]
 arbab readiness <name> [--tier t] [--waive ids]
@@ -483,8 +494,9 @@ Push and deploy stay human actions. In M1 the skill teaches this as a manual che
 - `checkPlan` refuses: duplicate or invalid names, unknown dependencies, cycles, a phase without scope, and
   **overlapping write scopes between phases that are not ordered by a dependency**. Two globs overlap when some path
   could match both, compared segment by segment (`**` spans segments; `*`, `?` and classes stay within one; literals
-  compare without case); a glob that comparison cannot read falls back to comparing the fixed paths before the
-  first wildcard. Both err toward overlap (§21; before it, only fixed prefixes were compared).
+  compare without case); a bare path, an entry with no glob characters, covers itself and everything under it
+  (`src/plan` overlaps `src/plan/graph.ts`); a glob that comparison cannot read falls back to comparing the fixed
+  paths before the first wildcard. Both err toward overlap (§21; before it, only fixed prefixes were compared).
 - Waves are the topological levels. `compilePhase` turns a phase into a `LaneSpec` with:
   - `upstream` = its dependencies (their reports are inlined, DESIGN.md §5);
   - `mergeBranches` = their branches (`arbab/<dep>`);
@@ -607,8 +619,8 @@ an install on worker code safe, and tightened the records:
   worktree blocks that lane's integration while it is active.
 - **`land` lands only the verified tree.** The base's HEAD must be an ancestor of the verified head, so the landing
   merge holds exactly the tree that was verified. When the base moved, merge it into the integration (with hooks
-  off: `land` prints the exact command, since a plain merge there would run worker-written hooks on the host) and run
-  integrate, verify, review and readiness again.
+  off: `land` prints the exact command, since a plain merge there would run worker-written hooks on the host), record
+  the new head with `integrate <name> --refresh`, and run verify, review and readiness again.
 - **Readiness** lists every confirmed finding as a risk, whatever severity the skeptic gave it, and counts a lens only
   when it reported coverage.
 
@@ -638,9 +650,18 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   --deps-installed <sha>` (the head `integrate` printed).
 - **`arbab integrate <name> --adopt <ref> [--base <ref>]`** (§21) makes a new integration whose branch
   `integrate/<name>` starts at `<ref>`'s commit, with nothing merged, based on `--base` or `baseBranch`, so work done
-  outside lanes gets verify, review, readiness and land. It refuses an existing or landed name, a ref that names no
-  commit, and `--lanes` or `--plan`; lanes can be integrated into it afterwards. Integration names starting with
+  outside lanes gets verify, review, readiness and land. Its worktree is created and installed at the fork point of
+  `<ref>` and the base, then fast-forwarded to `<ref>` with hooks off. So, before creating anything, it refuses a
+  base that `baseBranch` does not contain (a lane or integration branch as `--base` would install worker code) and a
+  fork point that is not a trusted install point (§9); it also refuses an existing or landed name, a ref that names
+  no commit, and `--lanes` or `--plan`. Lanes can be integrated into it afterwards. Integration names starting with
   `ref-` are refused: `verify --ref` uses that prefix.
+- **`arbab integrate <name> --refresh`** records an existing, unlanded integration's head again after a hand commit
+  or a merge of the base in its worktree: the merged entries the head still holds stay, and the manifests, `baseSha`,
+  `headSha` and `updatedAt` are recomputed as `integrate` does. It merges nothing and runs no dependency command. It
+  refuses without a record or a worktree (recreating one would install), for a landed integration, with tracked
+  changes in the worktree, and with any other mode. `land`'s refusal for a moved base names it as the step after the
+  merge.
 - **`arbab verify <name>`**:
   - launches a probe lane `<name>-verify` (haiku, tools Read and Bash, exact allow rules for the gates) in its **own
     worktree**, installed on a trusted commit and then fast-forwarded to the integration head (see above);
@@ -650,9 +671,13 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     cannot be found counts as `missing` (a failure).
   - a re-run on the same head waits for a `<name>-verify` still running, or takes the result of one that finished
     after an earlier verify stopped waiting (§21).
-  - **`arbab verify --ref <branch>`** (§21) runs the same lane, `ref-<slug>-verify` (the branch lowercased, every
-    other character `-`, at most 30), on the branch head with nothing merged on top: the check after landing. Its
-    record goes to `.arbab/refs/<slug>/verify.json`, named `ref:<branch>`.
+  - while it waits for its lane, the command is registered in `~/.arbab/waiters/`, as `arbab wait` is, so the Stop
+    hook does not block the turn it waits in; `review` and `preflight` do the same.
+  - **`arbab verify --ref <branch>`** (§21) runs the same lane, `<id>-verify`, on the branch head with nothing merged
+    on top: the check after landing. `<id>` is `ref-<slug>-<hash>`: the slug is the branch lowercased, every other
+    character `-`, at most 22; the hash is the first 6 hex digits of the branch name's sha1, so branches whose slugs
+    collide (`Release/Next` and `release-next`) never share a lane. Its record goes to `.arbab/refs/<id>/verify.json`,
+    named `ref:<branch>`.
 - **`arbab review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>]`** (the tier lives in
   `readiness`):
   - one reviewer lane per lens, `<name>-review-<lens>`, each in its own worktree at the integration head (prepared
@@ -667,7 +692,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   - `--lenses` re-runs some lenses and keeps the other lenses' entries, skeptics and findings from the previous
     `review.json` of the same head;
   - `--lens-file <lens>=<file>` adds a lens, or replaces a built-in or config lens's text, for this run only; nothing
-    is written to the config;
+    is written to the config. The file must lie inside the project by its path and by its real path, and must not be
+    a `.env*` file, so a lens cannot carry a credential file into a reviewer's brief;
   - `--since <sha>` diffs from that commit, an ancestor of the head other than the head, instead of the base (a fix
     round), and records it as `since`;
   - a re-run on the same head waits for, or adopts, reviewer and skeptic lanes still running or finished after an
@@ -685,7 +711,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     LOW ones, manifest changes, host gates, stale or unmatched items, then the merged lanes' `open_questions` and
     `not_verified` (and those of lanes that worked in a merged lane's worktree), repeated notes grouped.
   - verify counts only on the head itself. The review counts on the head, or on an earlier head when the head is
-    a clean merge of the base into it (§21): `reviewCarriedOverFrom` names it.
+    a clean merge of the integration's own recorded base (the branch `land` merges into, not the current
+    `baseBranch`) into it (§21): `reviewCarriedOverFrom` names it.
 - **`arbab host-check <name>`** (§21) runs config `hostGates` in the integration worktree, on the host, in order and
   all of them, and writes `host-checks.json`. It refuses without a terminal, without `hostGates`, and unless the
   worktree is at the recorded head with no tracked change.
@@ -696,7 +723,9 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     listed as `left alone:`);
   - merges `integrate/<name>` into it (`--no-ff`) and records `landing.json`; with `--squash` (or config
     `landing.squash`) it makes one commit instead (`merge --squash`, then a commit, hooks off). `--message <file>`
-    replaces the `Land <name>` message of either. `landing.json` records `squash` and the `lanes` it carried;
+    replaces the `Land <name>` message of either; the file must lie inside the project, also after resolving links,
+    and must not be a `.env*` file, so a landing cannot commit credentials. `landing.json` records `squash` and the
+    `lanes` it carried;
   - prints the push command and "not pushed". It never pushes;
   - then cleans up what it landed, unless `--keep-worktrees`: the worktrees of the merged lanes, of the lanes
     generated for the integration and of the integration itself. A worktree is removed only when its lane is
@@ -708,7 +737,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     reported with the reason; a cleanup problem never fails the landing. Run directories and the integration's
     records stay: they are the measurements, and a landed integration's name is not reused.
 
-  The skill asks the human before running it. Lane worktrees are not removed when a lane finishes: `resume`
+  The skill asks the human before running it, and the plugin's hook never approves it (§21): it goes through
+  Claude Code's normal permission flow. Lane worktrees are not removed when a lane finishes: `resume`
   continues in the same worktree, verifiers borrow a builder's worktree, and work that is not integrated stays
   inspectable. Lanes that are never landed are removed with `arbab cleanup --worktrees` once merged, or landed by a
   `landing.json` that lists them (§21).
@@ -990,13 +1020,20 @@ The decisions below answer what that use showed.
 - The plugin ships `hooks/hooks.json`: a PreToolUse hook on Bash (`"if": "Bash(node *)"`, exec form) runs
   `arbab hook pre-tool-use`. It approves a call only when the command is a bare invocation of this runner,
   `node "<plugin>/dist/arbab.mjs" [-C <dir>] <command> [args]`, where the runner path is absolute and the same file
-  by real path, `<command>` is a runner command other than `hook` and `__shepherd`, and every word is plain (letters,
-  digits and `_@%+=:,./~-`), wholly single-quoted, or wholly double-quoted without `$`, backticks, backslashes or
-  `!`; a newline or other control character anywhere refuses the command. So `;`, `&`, `|`, `<`, `>`, parentheses,
-  braces and `$` outside single quotes never pass. Anything else gets no answer and goes through the normal
-  permission flow. Deny and ask rules still apply: Claude Code evaluates them whatever a hook answers.
+  by real path, `<command>` is a runner command other than `hook`, `__shepherd` and `land`, and every word is plain
+  (letters, digits and `_@%+=:,./~-`), wholly single-quoted, or wholly double-quoted without `$`, backticks,
+  backslashes or `!`; a newline or other control character anywhere refuses the command. So `;`, `&`, `|`, `<`, `>`,
+  parentheses, braces and `$` outside single quotes never pass. `help` and `version` are not runner commands, so
+  they are not approved either. `land` merges into the base branch and removes worktrees, which the human confirms
+  first. Anything else, these included, gets no answer and goes through the normal permission flow. Deny and ask
+  rules still apply: Claude Code evaluates them whatever a hook answers.
 - Global option `-C <dir>`: the project is found from `<dir>` instead of the working directory, so an orchestrator
-  started in a parent folder of several repositories calls the runner bare.
+  started in a parent folder of several repositories calls the runner bare. The runner loads `<dir>`'s config, which
+  names commands it runs, so the hook approves `-C <dir>` only when `<dir>` is absolute and its real path is the root
+  of a project registered in `~/.arbab/projects/` (one that launched a lane), not in a `.arbab/worktrees` directory,
+  and not in or under `/tmp`, `/private/tmp` or the hook's `TMPDIR`, whether named directly or through a link. The
+  runner itself refuses a project root inside a lane worktree, from `-C` or the working directory, before loading
+  any config there (§3).
 - `status --active` (lanes not finished) and per-command help (`arbab <command> --help`) remove the other reasons to
   wrap a call.
 
@@ -1011,8 +1048,9 @@ The decisions below answer what that use showed.
   session owns (ownerless runs are nobody's to remove) and no integration. Outside Claude Code (no session id) every
   run counts as the caller's.
 - Machine registries under `~/.arbab/`: `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while
-  `arbab wait` runs, `projects/<sha1(root)>.json` for each project that launched a lane. Shepherd and waiter entries
-  of dead pids are ignored and removed.
+  `arbab wait` runs or `verify`, `review` or `preflight` waits for the lanes it launched (unregistered in a `finally`),
+  `projects/<sha1(root)>.json` for each project that launched a lane. Shepherd and waiter entries of dead pids are
+  ignored and removed.
 - A Stop hook (`arbab hook stop`) keeps the orchestrator from ending its turn when it owns live shepherds and no live
   waiter, once: `stop_hook_active` lets the next stop through.
 
@@ -1028,12 +1066,13 @@ The decisions below answer what that use showed.
   under `$XDG_CACHE_HOME/node/corepack` and pnpm keeps its store and itself under `$XDG_DATA_HOME/pnpm` on Linux, so
   an empty stand-in sends them to the registry, which the fence cannot reach (a probe's `pnpm test` failed before
   vitest started). Config `env` may still set them. The tool belt asks for quoted paths with `[ ] ( )`.
-- `fence.readableEnvFiles` lists tracked templates such as `.env.example` (checked with `git ls-files`). When it is
-  set, the blanket `**/.env*` deny becomes explicit secret patterns (`**/.env`, `**/.env.local`, `**/.env.*.local`,
-  `**/.env.development*`, `**/.env.production*`, `**/.env.staging*`, `**/.env.test*`, `**/.envrc`, and `**/.env/**`
-  and `**/.env.*/**`, which deny `.env` directories whole) plus every other `.env*` file found in the worktree and
-  the main checkout, by absolute path, and every `.env*` directory and symbolic link as `<path>/**` (§4). A tracked
-  template's content is in git already.
+- `fence.readableEnvFiles` lists tracked templates such as `.env.example`. The `**/.env*` Read and Edit deny stays
+  in place whether or not it is set; each listed template that git tracks in the worktree and that is a regular file
+  reached without a link is re-opened by absolute path in `sandbox.filesystem.allowRead`, for shell commands only
+  (`cat .env.example` works, the Read tool still refuses it). The tool belt says so, and the profile lint warns
+  `env-template-untracked` for each listed file left out (§4). A tracked template's content is in git already. (The
+  first version replaced the blanket deny with secret patterns plus every other `.env*` file found on disk; the
+  review's fix round put the blanket deny back and opens only the templates.)
 
 ### Shepherd
 
@@ -1041,14 +1080,23 @@ The decisions below answer what that use showed.
   means what it says.
 - `~/.arbab/machine.json` (`{ "maxParallel": n }`) caps every project's `maxParallel`; held shepherds re-read it on
   every poll.
-- `runs/<lane>/events.jsonl` logs every state change; a run's first `started.json` carries `heldMs` and `prepareMs`.
+- `runs/<lane>/events.jsonl` logs every state change; a run's first `started.json` carries `heldMs` (queued and
+  held: the quota and a slot) and `prepareMs` (from `preparing` to the first attempt: leases, semaphores, the writer
+  lock, the worktree, dependencies, merges and inputs).
 - A lane's `inputs` (absolute, `~/` or project-relative; at most 20, 50 MB together) are copied into
-  `.arbab-tmp/inputs/<basename>` before its first attempt and listed in its brief, in an `Inputs` section. Nothing is
-  copied unless every input passes: symbolic links, paths under the fence's credential directories (and `~/Library`),
-  credential-like file names, a folder holding the home directory or the worktree, and two inputs with one name are
-  refused; links inside a folder are skipped.
+  `.arbab-tmp/inputs/<basename>` and listed in its brief, in an `Inputs` section. Nothing is copied unless every input
+  passes: symbolic links, paths the fence denies as credentials (its built-in list and config `credentialPaths`, and
+  `~/Library`), credential-like file names, a folder holding the home directory or the worktree, and two inputs with
+  one name are refused; links inside a folder are skipped.
+- Inputs are rebuilt on every run, under the writer lock, whether the lane has inputs or not: `.arbab-tmp/inputs` is
+  removed whole (unlinked when it is a link) and created again, so an input the lane dropped disappears and the files
+  outside the repository are copied as they are now. The copies are never written through a link a worker left (§3);
+  on the source side, each file's directory must still have the real path the walk saw, and the opened file must
+  have the device and inode the walk saw.
 - The writer lock's directory goes with its entry, and `cleanup` removes empty lock directories.
-- Summaries carry `tokens` and `maxGapMs`, killed attempts included.
+- Summaries carry `tokens` and `maxGapMs`, killed attempts included. `status` shows the tokens (input, cache
+  creation and output) in its cost column when there is no cost, and a last column, `why`, with the state's reason
+  (§10).
 
 ### Integration and landing
 
@@ -1056,30 +1104,41 @@ The decisions below answer what that use showed.
   other than `package.json` (lockfiles, `pnpm-workspace.yaml`, `.npmrc`, `.yarnrc*`, `.pnpmfile.*`), and in
   `package.json` the dependency fields (`dependencies`, `devDependencies`, `optionalDependencies`,
   `peerDependencies`, `bundledDependencies`, `bundleDependencies`), `overrides`, `resolutions`, `pnpm`, `workspaces`,
-  `packageManager` and the install-time scripts (`preinstall`, `install`, `postinstall`, `preprepare`, `prepare`,
-  `postprepare`, `prepublish`). Key order and formatting do not count; a `package.json` added, removed or that does
-  not parse does. An `exports` or `version` edit no longer needs `--deps-installed`.
+  `packageManager`, `dependenciesMeta`, `peerDependenciesMeta`, `bin` (linked into `node_modules/.bin`, where scripts
+  run it), `engines`, `os`, `cpu`, `libc`, `trustedDependencies` and the install-time scripts (`preinstall`,
+  `install`, `postinstall`, `preprepare`, `prepare`, `postprepare`, `prepublish`). Key order and formatting do not
+  count; a `package.json` added, removed or that does not parse does. An `exports` or `version` edit no longer needs
+  `--deps-installed`.
 - `integrate <name> --adopt <ref> [--base <ref>]` makes an integration of an existing branch, so work done outside
-  lanes gets verify and review (§17). Integration names starting with `ref-` are refused (`verify --ref`'s prefix).
-- `land --squash` (config `landing.squash`) makes one commit; `--message <file>` sets the commit message.
-  `landing.json` lists the lanes it carried, so `cleanup` recognises them after a squash or a reshaped base.
+  lanes gets verify and review (§17). It installs at the fork point of `<ref>` and the base, so it requires a base
+  that `baseBranch` contains and a fork point that is a trusted install point. Integration names starting with `ref-`
+  are refused (`verify --ref`'s prefix).
+- `integrate <name> --refresh` records an integration's head again after a hand commit or a merge of the base in its
+  worktree, merging nothing and installing nothing (§17).
+- `land --squash` (config `landing.squash`) makes one commit; `--message <file>` sets the commit message, from a file
+  inside the project that is not a `.env*` file. `landing.json` lists the lanes it carried, so `cleanup` recognises
+  them after a squash or a reshaped base.
 - `land` refuses tracked changes and untracked files the merge would write; other untracked files no longer block it.
 - arbab excludes `.arbab/` as a whole (and `.arbab-tmp/`), and writes `.arbab/.eslintrc.json` with `"root": true`,
   which stops ESLint 8's config cascade at `.arbab/`: a worktree's own config otherwise loads the main checkout's too.
 - `verify --ref <branch>` runs the gates on a branch head with no integration: the check after landing. Lane
-  `ref-<slug>-verify`, record `.arbab/refs/<slug>/verify.json` (§17).
+  `ref-<slug>-<hash>-verify`, record `.arbab/refs/ref-<slug>-<hash>/verify.json` (§17); the hash keeps branches whose
+  slugs collide apart.
 
 ### Review and readiness
 
 - Every review writes `reviews/<round>.json` beside `review.json`, and a `--lenses` subset keeps the other lenses'
   entries, skeptics and findings from the same head.
 - `review --lens-file <name>=<file>` adds a lens, or replaces a lens's text, from a file for one run, with no config
-  edit; `--since <sha>` diffs from an ancestor of the head instead of the base, for a fix round.
+  edit; `--since <sha>` diffs from an ancestor of the head instead of the base, for a fix round. The lens file must
+  lie inside the project, by its path and its real path, and must not be a `.env*` file.
 - A re-run of `verify` or `review` on the same head adopts its generated lanes' results when they finished after a
-  timeout, and waits for them when they still run.
+  timeout, and waits for them when they still run. `verify`, `review` and `preflight` register as waiters while they
+  wait, so the Stop hook does not hold the turn they wait in.
 - A review stays current when the head is a merge commit whose first parent is the reviewed head, whose second
-  parent is in the base branch, and whose tree is what git merges them into (no hand resolution); readiness says it
-  carried the review over. Verify never carries over.
+  parent is in the integration's own recorded base (the branch `land` merges into, which `baseBranch` may no longer
+  name), and whose tree is what git merges them into (no hand resolution); readiness says it carried the review
+  over. Verify never carries over.
 - `--waive` requires a terminal, as `--deps-installed` does: waivers are the human's.
 - `hostGates` and `arbab host-check <name>` (terminal only) record the checks the fence cannot run; readiness lists
   them, as skipped item `host` at every tier and as a risk, until they pass on the head (§17).
@@ -1093,7 +1152,8 @@ The decisions below answer what that use showed.
 - `plan next --retry <phase>` first relaunches a phase that ended in anything but `success`, or was orphaned, as a
   fresh session in its own worktree on its checkpoint commits, then launches what `plan next` would; its dependents
   wait for it instead of being reported as failed upstream. It refuses a phase not in the plan, never run, active or
-  that succeeded. Scope overlap compares glob segments, not only fixed prefixes (§16).
+  that succeeded. Scope overlap compares glob segments, not only fixed prefixes, and a bare path covers what is
+  under it (§16).
 - Preflight probes run the project's `preflight.steps` as exact allow rules whatever the lane's role, and remove the
   probe worktrees and branches they created: stale ones before launching, the run's own after printing the results.
 - `doctor` also checks: the plugin hook is present; `.arbab/` is excluded; lint and test configs that would scan

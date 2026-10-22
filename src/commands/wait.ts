@@ -23,6 +23,7 @@ import {
   ownedBy,
   readShepherdRecord,
   registerWaiter,
+  runnerPath,
   runPaths,
   sessionOf,
   unregisterWaiter,
@@ -117,7 +118,13 @@ export async function runWait(argv: string[], ctx: CommandContext): Promise<numb
   const session = sessionOf(ctx.hostEnv);
   const owned = !named && values["all-sessions"] !== true;
 
-  registerWaiter(ctx.home, { pid: ctx.pid, project: project.root, owner: session, startedAt: isoAt(ctx.clock) });
+  registerWaiter(ctx.home, {
+    pid: ctx.pid,
+    project: project.root,
+    owner: session,
+    startedAt: isoAt(ctx.clock),
+    runner: runnerPath(ctx.scriptPath),
+  });
   let result: WaitResult;
   try {
     result = await waitForFinished({

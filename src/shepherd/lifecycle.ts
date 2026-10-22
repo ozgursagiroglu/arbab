@@ -218,7 +218,7 @@ export async function runShepherd(
   let endState: EndState;
   let reason: string | undefined;
   try {
-    registerShepherd(deps.home, { pid, lane: laneName, project: root, owner, startedAt });
+    registerShepherd(deps.home, { pid, lane: laneName, project: root, owner, startedAt, ...(deps.runner !== undefined && { runner: deps.runner }) });
     registerProject(deps.home, root, startedAt);
     setState("queued");
     const lane = loadLane(root, paths.laneFile, config.credentialPaths);

@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadLane } from "../config";
 import { compileProfile } from "../profile";
@@ -352,9 +352,15 @@ describe("whileWaiting", () => {
     p = makeProject();
     p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
     p.alive.add(CLI_PID);
+    // The runner is recorded by its real path, not by the symlink the CLI was started through.
+    const runner = join(p.dir, "plugin", "dist", "arbab.mjs");
+    mkdirSync(dirname(runner), { recursive: true });
+    writeFileSync(runner, "");
+    symlinkSync(runner, join(p.dir, "arbab-link.mjs"));
+    p.ctx.scriptPath = join(p.dir, "arbab-link.mjs");
     const during: WaiterEntry[][] = [];
     expect(await whileWaiting(p.ctx, p.root, async () => during.push(listWaiters(p.home, p.ctx.alive)))).toBe(1);
-    expect(during).toEqual([[{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: "2026-10-09T12:00:00.000Z" }]]);
+    expect(during).toEqual([[{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: "2026-10-09T12:00:00.000Z", runner }]]);
     expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
 
     const failing = whileWaiting(p.ctx, p.root, async () => {
@@ -464,7 +470,7 @@ describe("runPreflight", () => {
     expect(await runPreflight(["--timeout-min", "0.1", "lanes/demo.json"], p.ctx)).toBe(3);
     expect(seen.length).toBeGreaterThan(0);
     for (const tick of seen) {
-      expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+      expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String), runner: p.ctx.scriptPath }]);
       expect(tick.stop).toBeNull();
     }
     expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);

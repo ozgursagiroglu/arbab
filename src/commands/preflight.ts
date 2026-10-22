@@ -22,6 +22,7 @@ import {
   readAttempt,
   readState,
   registerWaiter,
+  runnerPath,
   runPaths,
   sessionOf,
   unregisterWaiter,
@@ -396,7 +397,13 @@ export async function waitForProbes(
  * launched are this session's, and without a waiter the Stop hook would block the turn the command is waiting in.
  */
 export async function whileWaiting<T>(ctx: CommandContext, root: string, wait: () => Promise<T>): Promise<T> {
-  registerWaiter(ctx.home, { pid: ctx.pid, project: root, owner: sessionOf(ctx.hostEnv), startedAt: isoAt(ctx.clock) });
+  registerWaiter(ctx.home, {
+    pid: ctx.pid,
+    project: root,
+    owner: sessionOf(ctx.hostEnv),
+    startedAt: isoAt(ctx.clock),
+    runner: runnerPath(ctx.scriptPath),
+  });
   try {
     return await wait();
   } finally {

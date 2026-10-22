@@ -13,6 +13,8 @@ export {
   unregisterWaiter,
 } from "./machine";
 export { ownedBy, readShepherdRecord, sessionOf } from "./owner";
+export { otherSessions, runnerPath, sessionId, sessionText } from "./sessions";
+export type { SessionActivity } from "./sessions";
 export { LANE_STATES, effectiveState, readState, writeState } from "./state";
 export { formatElapsed, formatStatusTable, statusRow } from "./status";
 export { ack, ackedFile, ackRun, isAcked, pendingFinished, waitForFinished } from "./wait";

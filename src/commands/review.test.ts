@@ -309,7 +309,9 @@ describe("runReview", () => {
     expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
     // The skeptic's wait: the reviewer finished at once, so every tick is while the skeptic runs.
     expect(seen.map((s) => s.launched)).toContain(2);
-    for (const tick of seen) expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+    for (const tick of seen) {
+      expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String), runner: p.ctx.scriptPath }]);
+    }
     expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
   });
 

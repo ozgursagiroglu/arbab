@@ -33,7 +33,7 @@ function exitCodeFor(err) {
 
 // src/commands/cleanup.ts
 import { existsSync as existsSync15, readdirSync as readdirSync10, rmdirSync as rmdirSync2, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
-import { join as join32 } from "node:path";
+import { join as join33 } from "node:path";
 
 // src/config/lane.ts
 import { resolve as resolve3 } from "node:path";
@@ -183,6 +183,8 @@ var BACKGROUND_DENY = "Bash(run_in_background:true)";
 // src/profile/credentials.ts
 var GLOB_CHARS = /[*?[\]{}]/;
 var escapeRe = (text2) => text2.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+var nfd = (text2) => text2.normalize("NFD");
+var credentialRe = (source) => new RegExp(source, "iu");
 function componentsBelow(path, root) {
   if (root === void 0 || !sameOrInside(root, path)) return path.split(sep2);
   const depth = resolve(root).split(sep2).filter((c) => c !== "").length;
@@ -207,10 +209,10 @@ function globSource(glob) {
   return whole ? `${out}(?:/.*)?` : out;
 }
 function patternRegexes(pattern, homes) {
-  const anchored = (prefix, glob) => new RegExp(`^${escapeRe(foldPath(prefix))}${globSource(foldPath(glob))}$`);
+  const anchored = (prefix, glob) => credentialRe(`^${escapeRe(nfd(prefix))}${globSource(nfd(glob))}$`);
   if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
   if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
-  return [new RegExp(`(?:^|/)${globSource(foldPath(pattern))}$`)];
+  return [credentialRe(`(?:^|/)${globSource(nfd(pattern))}$`)];
 }
 function credentialRules(patterns, homes) {
   return patterns.map((pattern) => {
@@ -226,9 +228,9 @@ function credentialRules(patterns, homes) {
     if (pattern.startsWith("**/")) {
       const name2 = pattern.slice(3);
       if (name2 !== "" && !name2.includes("/") && !name2.includes("**")) {
-        const re = new RegExp(`^${globSource(foldPath(name2))}$`);
+        const re = credentialRe(`^${globSource(nfd(name2))}$`);
         return (path, root) => {
-          const component = componentsBelow(path, root).find((c) => re.test(foldPath(c)));
+          const component = componentsBelow(path, root).find((c) => re.test(nfd(c)));
           return component === void 0 ? null : { kind: "name", label: component };
         };
       }
@@ -237,12 +239,12 @@ function credentialRules(patterns, homes) {
     const hit = { kind: "pattern", label: pattern };
     if (!pattern.startsWith("~/") && !pattern.startsWith("/")) {
       return (path, root) => {
-        const subject = foldPath(root === void 0 || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
+        const subject = nfd(root === void 0 || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
         return res.some((re) => re.test(subject)) ? hit : null;
       };
     }
     return (path) => {
-      const subject = foldPath(path);
+      const subject = nfd(path);
       return res.some((re) => re.test(subject)) ? hit : null;
     };
   });
@@ -2367,7 +2369,7 @@ function ownedBy(record2, session, opts = {}) {
 
 // src/registry/sessions.ts
 import { realpathSync as realpathSync5 } from "node:fs";
-import { relative as relative6, sep as sep6 } from "node:path";
+import { isAbsolute as isAbsolute5, join as join13, relative as relative6, sep as sep6 } from "node:path";
 function runnerPath(path, realpath2 = (p) => realpathSync5.native(p)) {
   try {
     return realpath2(path);
@@ -2385,7 +2387,15 @@ function otherSessions(input) {
   const real2 = (path) => runnerPath(path, input.realpath);
   const root = real2(input.projectRoot);
   const folded = foldPath(root);
-  const changed = new Map(input.changed.map((path) => [foldPath(path), path]));
+  const base = input.changedBase === void 0 ? root : real2(input.changedBase);
+  const changed = /* @__PURE__ */ new Map();
+  for (const path of input.changed) {
+    const full = join13(base, path);
+    const key = inside(root, full);
+    if (key === null) continue;
+    const rel = relative6(root, full);
+    changed.set(key, rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute5(rel) ? key : rel.split(sep6).join("/"));
+  }
   const byOwner = /* @__PURE__ */ new Map();
   const tally = (owner) => {
     let t = byOwner.get(owner);
@@ -2563,7 +2573,7 @@ function formatStatusTable(rows, nowSec) {
 // src/registry/wait.ts
 import { createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync4 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 var isDone = (state) => state === "finished" || state === "orphaned";
 function doneRecord(runsRoot, lane, alive) {
   const record2 = readState(runsRoot, lane);
@@ -2578,11 +2588,11 @@ function isRunning(runsRoot, lane, alive) {
   return shepherd !== null && alive(shepherd.pid);
 }
 function ackedFile(runsRoot, lane) {
-  return join13(runPaths(runsRoot, lane).laneDir, "acked.json");
+  return join14(runPaths(runsRoot, lane).laneDir, "acked.json");
 }
 function runMarker(runsRoot, lane, run) {
   const since = createHash3("sha256").update(run.since).digest("hex").slice(0, 16);
-  return join13(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
+  return join14(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
 }
 var sameRun = (a, b) => typeof a === "object" && a !== null && a["shepherdPid"] === b.shepherdPid && a["since"] === b.since;
 function isAcked(runsRoot, lane, run) {
@@ -2672,12 +2682,12 @@ async function waitForFinished(options) {
 
 // src/commands/generated.ts
 import { existsSync as existsSync5 } from "node:fs";
-import { join as join14 } from "node:path";
+import { join as join15 } from "node:path";
 var GENERATED = "generated.json";
 var BY = "integration:";
 var SHA3 = /^[0-9a-f]{40,64}$/;
 var ownerTag = (owner) => `${BY}${owner.integration}`;
-var markerPath = (runsRoot, lane) => join14(runsRoot, assertValidName(lane, "lane"), GENERATED);
+var markerPath = (runsRoot, lane) => join15(runsRoot, assertValidName(lane, "lane"), GENERATED);
 function markGenerated(runsRoot, lane, owner, now) {
   const marker = { by: ownerTag(owner), createdAt: now, baseSha: owner.head };
   writeJsonAtomic(markerPath(runsRoot, lane), marker);
@@ -2719,7 +2729,7 @@ function assertNotGenerated(runsRoot, lane) {
 // src/commands/integration.ts
 import { createHash as createHash4 } from "node:crypto";
 import { existsSync as existsSync14 } from "node:fs";
-import { join as join31 } from "node:path";
+import { join as join32 } from "node:path";
 
 // src/stream/classify.ts
 var UNSUPPORTED_CLI = /does not support this model|or newer is required/i;
@@ -3030,7 +3040,7 @@ function buildAttemptSummary(input) {
 
 // src/stream/transcript.ts
 import { readdirSync as readdirSync6, statSync as statSync3 } from "node:fs";
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function findTranscript(projectsDir, sessionId2) {
   if (!UUID.test(sessionId2)) return null;
@@ -3042,7 +3052,7 @@ function findTranscript(projectsDir, sessionId2) {
   }
   const file = `${sessionId2}.jsonl`;
   for (const dir of dirs) {
-    const candidate = join15(projectsDir, dir, file);
+    const candidate = join16(projectsDir, dir, file);
     if (statSync3(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
   }
   return null;
@@ -3059,11 +3069,11 @@ function measuredEffort(transcriptText) {
 
 // src/commands/launch.ts
 import { rmSync as rmSync5, statSync as statSync4 } from "node:fs";
-import { join as join21 } from "node:path";
+import { join as join22 } from "node:path";
 
 // src/commands/lint.ts
 import { realpathSync as realpathSync9 } from "node:fs";
-import { join as join20, resolve as resolve12 } from "node:path";
+import { join as join21, resolve as resolve12 } from "node:path";
 
 // src/brief/markdown.ts
 var OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -3554,7 +3564,7 @@ function lintBrief(markdown, source, profile) {
 
 // src/config/load.ts
 import { existsSync as existsSync6, lstatSync as lstatSync3, realpathSync as realpathSync6 } from "node:fs";
-import { dirname as dirname4, isAbsolute as isAbsolute5, join as join16, relative as relative7, sep as sep7 } from "node:path";
+import { dirname as dirname4, isAbsolute as isAbsolute6, join as join17, relative as relative7, sep as sep7 } from "node:path";
 
 // src/util/env-policy.ts
 var FORBIDDEN_PREFIX = /^(CLAUDE|VSCODE|CURSOR|TERM_PROGRAM)/;
@@ -3627,7 +3637,7 @@ function loadConfig(projectRoot) {
   let raw = null;
   let label = CONFIG_FILE;
   for (const rel of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
-    raw = readJsonFile(join16(projectRoot, rel));
+    raw = readJsonFile(join17(projectRoot, rel));
     label = rel;
     if (raw !== null) break;
   }
@@ -3698,7 +3708,7 @@ function readableEnvFiles(v) {
   const seen = /* @__PURE__ */ new Set();
   return stringArray(v, "fence.readableEnvFiles").map((p, i) => {
     const field = `fence.readableEnvFiles[${i}]`;
-    if (isAbsolute5(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (isAbsolute6(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
     if (/[\0\n\r]/.test(p)) fail(field, "must not contain NUL or a newline");
     const segments = p.split(/[\\/]/);
     if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
@@ -3732,7 +3742,7 @@ function arbabRoot(projectRoot, v, field) {
   const real2 = realExisting(path);
   const realRoot = realpathSync6.native(projectRoot);
   const rel = real2 === null ? ".." : relative7(realRoot, real2);
-  if (rel === ".." || rel.startsWith(`..${sep7}`) || isAbsolute5(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  if (rel === ".." || rel.startsWith(`..${sep7}`) || isAbsolute6(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   if (real2 !== null) checkArbabRoot(real2, realRoot, realExisting(records), field);
   return s;
 }
@@ -3753,7 +3763,7 @@ function realExisting(path) {
     if (present) {
       try {
         const tail = relative7(p, path);
-        return tail === "" ? realpathSync6.native(p) : join16(realpathSync6.native(p), tail);
+        return tail === "" ? realpathSync6.native(p) : join17(realpathSync6.native(p), tail);
       } catch {
         return null;
       }
@@ -3860,9 +3870,9 @@ function roles(v) {
 }
 
 // src/config/machine.ts
-import { join as join17 } from "node:path";
+import { join as join18 } from "node:path";
 function loadMachineConfig(home) {
-  const raw = readJsonFile(join17(home, MACHINE_CONFIG_FILE));
+  const raw = readJsonFile(join18(home, MACHINE_CONFIG_FILE));
   const config = { maxParallel: null };
   if (raw === null) return config;
   const obj = record(raw, MACHINE_CONFIG_FILE);
@@ -4009,12 +4019,12 @@ function dedupe(items) {
 }
 
 // src/profile/compile.ts
-import { isAbsolute as isAbsolute6, relative as relative8, resolve as resolve9 } from "node:path";
+import { isAbsolute as isAbsolute7, relative as relative8, resolve as resolve9 } from "node:path";
 var FILE_TOOLS2 = /* @__PURE__ */ new Set(["Read", "Glob", "Grep", "Edit", "Write"]);
 var WRITE_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "Write"]);
 var WRITERS = ["implementer", "verifier", "probe"];
 function compileProfile(input) {
-  if (!isAbsolute6(input.worktree)) {
+  if (!isAbsolute7(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
   const gitDir = input.gitCommonDir === void 0 ? void 0 : absoluteDir("gitCommonDir", input.gitCommonDir);
@@ -4068,7 +4078,7 @@ function compileProfile(input) {
   return { tools: input.tools, settings };
 }
 function absoluteDir(field, dir) {
-  if (!isAbsolute6(dir)) {
+  if (!isAbsolute7(dir)) {
     throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
   const normal = resolve9(dir);
@@ -4077,10 +4087,10 @@ function absoluteDir(field, dir) {
 }
 function envAllowReads(worktree, paths) {
   return dedupe(paths.map((path) => {
-    if (!isAbsolute6(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    if (!isAbsolute7(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
     const normal = resolve9(path);
     const rel = relative8(resolve9(worktree), normal);
-    if (rel === "" || rel.startsWith("..") || isAbsolute6(rel)) {
+    if (rel === "" || rel.startsWith("..") || isAbsolute7(rel)) {
       throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
     }
     return normal;
@@ -4105,7 +4115,7 @@ function roleAllow(role2) {
 
 // src/profile/envfiles.ts
 import { readdirSync as readdirSync7, realpathSync as realpathSync7 } from "node:fs";
-import { basename, dirname as dirname5, join as join18, posix as posix2, relative as relative9, sep as sep8 } from "node:path";
+import { basename, dirname as dirname5, join as join19, posix as posix2, relative as relative9, sep as sep8 } from "node:path";
 function envFileAllowReads(input) {
   let real2;
   try {
@@ -4143,7 +4153,7 @@ function trackedOf(git, worktree, gitDir, rels) {
 function isRegularFile(worktree, realWorktree, path) {
   const dir = dirname5(path);
   try {
-    if (realpathSync7(dir) !== join18(realWorktree, relative9(worktree, dir))) return false;
+    if (realpathSync7(dir) !== join19(realWorktree, relative9(worktree, dir))) return false;
     const entry = readdirSync7(dir, { withFileTypes: true }).find((e) => e.name === basename(path));
     return entry !== void 0 && entry.isFile();
   } catch {
@@ -4208,7 +4218,7 @@ function buildClaudeArgs(input) {
 }
 
 // src/profile/env.ts
-import { isAbsolute as isAbsolute7 } from "node:path";
+import { isAbsolute as isAbsolute8 } from "node:path";
 var HOST_KEYS = ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"];
 var SYSTEM_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 var ENV_NAME2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -4217,7 +4227,7 @@ function workerEnv(host, opts) {
   for (const name2 of Object.keys(opts.extra)) assertWorkerEnvName(name2, isReservedEnv);
   const dirs = opts.pnpmDir === void 0 ? [opts.nodeDir] : [opts.nodeDir, opts.pnpmDir];
   for (const dir of dirs) {
-    if (!isAbsolute7(dir) || dir.includes(":")) {
+    if (!isAbsolute8(dir) || dir.includes(":")) {
       throw new ArbabError("config", `PATH entry ${JSON.stringify(dir)} must be an absolute path without ":"`);
     }
   }
@@ -4334,7 +4344,7 @@ function wildcardPrefix(content) {
 
 // src/commands/project.ts
 import { existsSync as existsSync7, readFileSync as readFileSync5, realpathSync as realpathSync8 } from "node:fs";
-import { dirname as dirname6, join as join19, resolve as resolve11, sep as sep9 } from "node:path";
+import { dirname as dirname6, join as join20, resolve as resolve11, sep as sep9 } from "node:path";
 import { parseArgs } from "node:util";
 function hasWorktreesPair(path) {
   const parts = path.split(sep9).map(foldPath);
@@ -4350,7 +4360,7 @@ function configuredWorktreeRoots(dir, io) {
   for (const file of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
     let parsed2;
     try {
-      parsed2 = JSON.parse(io.readFile(join19(dir, file)));
+      parsed2 = JSON.parse(io.readFile(join20(dir, file)));
     } catch {
       continue;
     }
@@ -4404,7 +4414,7 @@ function notALaneWorktree(root) {
 function findProjectRoot(cwd, git) {
   let dir = resolve11(cwd);
   for (; ; ) {
-    if (existsSync7(join19(dir, CONFIG_FILE))) return notALaneWorktree(dir);
+    if (existsSync7(join20(dir, CONFIG_FILE))) return notALaneWorktree(dir);
     const parent = dirname6(dir);
     if (parent === dir) break;
     dir = parent;
@@ -4464,7 +4474,7 @@ function profileInputFor(project, lane, gitCommonDir2) {
     laneAllow: lane.allow ?? [],
     credentialPaths: project.config.credentialPaths,
     env: { ...project.config.env, ...leaseEnv(leases) },
-    worktree: join20(project.worktreeRoot, lane.worktree ?? lane.name),
+    worktree: join21(project.worktreeRoot, lane.worktree ?? lane.name),
     ...gitCommonDir2 !== void 0 && { gitCommonDir: gitCommonDir2 }
   };
 }
@@ -4527,7 +4537,7 @@ async function runLint(argv2, ctx) {
 // src/commands/launch.ts
 var LAUNCH_LOCK_MS = 1e4;
 var LAUNCH_POLL_MS = 50;
-var launchLockPath = (project, lane) => join21(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
+var launchLockPath = (project, lane) => join22(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
 function takeLaunchLock(ctx, project, lane, pid) {
   const path = launchLockPath(project, lane);
   const holder2 = { pid, lane, project: project.root, createdAt: isoAt(ctx.clock) };
@@ -4633,12 +4643,12 @@ async function runLaunch(argv2, ctx) {
 
 // src/commands/preflight.ts
 import { existsSync as existsSync13 } from "node:fs";
-import { join as join30, relative as relative10 } from "node:path";
+import { join as join31, relative as relative10 } from "node:path";
 
 // src/commands/doctor.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { rmSync as rmSync6 } from "node:fs";
-import { join as join29 } from "node:path";
+import { join as join30 } from "node:path";
 
 // src/binary/node.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -4654,7 +4664,7 @@ function realpath(p) {
 }
 
 // src/binary/resolve.ts
-import { isAbsolute as isAbsolute8, join as join22 } from "node:path";
+import { isAbsolute as isAbsolute9, join as join23 } from "node:path";
 function parseVersion(text2) {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(text2);
   if (m === null) return null;
@@ -4676,8 +4686,8 @@ function compareVersions(a, b) {
 function findOnPath(cmd, pathEnv, exists) {
   if (cmd === "" || cmd.includes("/")) return null;
   for (const dir of pathEnv.split(":")) {
-    if (dir === "" || !isAbsolute8(dir)) continue;
-    const candidate = join22(dir, cmd);
+    if (dir === "" || !isAbsolute9(dir)) continue;
+    const candidate = join23(dir, cmd);
     if (exists(candidate)) return candidate;
   }
   return null;
@@ -4765,11 +4775,11 @@ function checkEnvTemplates(git, root, readableEnvFiles2) {
 }
 
 // src/doctor/gates.ts
-import { basename as basename2, join as join24 } from "node:path";
+import { basename as basename2, join as join25 } from "node:path";
 
 // src/doctor/read.ts
 import { readdirSync as readdirSync8, readFileSync as readFileSync6 } from "node:fs";
-import { join as join23 } from "node:path";
+import { join as join24 } from "node:path";
 function readOptional(path) {
   try {
     return readFileSync6(path, "utf8");
@@ -4785,7 +4795,7 @@ function listNames(dir) {
   }
 }
 function readPackageJson(root) {
-  const text2 = readOptional(join23(root, "package.json"));
+  const text2 = readOptional(join24(root, "package.json"));
   if (text2 === null) return null;
   try {
     const value = JSON.parse(text2);
@@ -4886,10 +4896,10 @@ function checkGates(root, gates) {
   const out = [
     missing.length === 0 ? { status: "ok", check: "gates", detail: `gates run ${checks.join(", ")}` } : { status: "warn", check: "gates", detail: `no gate runs these package.json scripts: ${missing.join(", ")}` }
   ];
-  const workflows = join24(root, ".github", "workflows");
+  const workflows = join25(root, ".github", "workflows");
   const inCi = /* @__PURE__ */ new Set();
   for (const file of listNames(workflows).filter((n) => /\.ya?ml$/.test(n))) {
-    for (const line2 of workflowRunLines(readOptional(join24(workflows, file)) ?? "")) {
+    for (const line2 of workflowRunLines(readOptional(join25(workflows, file)) ?? "")) {
       for (const call of scriptCalls(line2)) for (const name2 of matching(call, missing)) inCi.add(name2);
     }
   }
@@ -4898,11 +4908,11 @@ function checkGates(root, gates) {
 }
 
 // src/doctor/hook.ts
-import { basename as basename3, dirname as dirname7, join as join25 } from "node:path";
+import { basename as basename3, dirname as dirname7, join as join26 } from "node:path";
 var HOOK_MISSING = "runner calls will wait for approval: the plugin hook is missing (update the plugin)";
 function hookFile(scriptPath2) {
   const dist = dirname7(scriptPath2);
-  return basename3(dist) === "dist" ? join25(dirname7(dist), "hooks", "hooks.json") : null;
+  return basename3(dist) === "dist" ? join26(dirname7(dist), "hooks", "hooks.json") : null;
 }
 function checkHook(scriptPath2) {
   const file = hookFile(scriptPath2);
@@ -4912,7 +4922,7 @@ function checkHook(scriptPath2) {
 
 // src/doctor/machine.ts
 import { existsSync as existsSync9, readdirSync as readdirSync9 } from "node:fs";
-import { join as join26 } from "node:path";
+import { join as join27 } from "node:path";
 var MAX_WORKTREE_DIRS = 30;
 var MAX_EMPTY_LOCK_DIRS = 100;
 var message = (err) => err instanceof Error ? err.message : String(err);
@@ -4927,11 +4937,11 @@ function countDirs(dir) {
   return entries2(dir).filter((e) => e.isDirectory()).length;
 }
 function countEmptyDirs(dir) {
-  return entries2(dir).filter((e) => e.isDirectory() && entries2(join26(dir, e.name)).length === 0).length;
+  return entries2(dir).filter((e) => e.isDirectory() && entries2(join27(dir, e.name)).length === 0).length;
 }
 function checkDisk(worktreeDir, worktreeLabel, home) {
   const worktrees = countDirs(worktreeDir);
-  const locks = countEmptyDirs(join26(home, "locks"));
+  const locks = countEmptyDirs(join27(home, "locks"));
   const out = [];
   if (worktrees > MAX_WORKTREE_DIRS) {
     out.push({
@@ -4981,7 +4991,7 @@ function checkMachineCap(home, root, maxParallel) {
 
 // src/doctor/project.ts
 import { existsSync as existsSync10 } from "node:fs";
-import { join as join27 } from "node:path";
+import { join as join28 } from "node:path";
 function checkIgnored(git, root, config) {
   const entries3 = arbabIgnoreEntries(root, config).filter((e) => e !== `${WORKER_TMP_DIR}/`);
   const notIgnored = entries3.filter((e) => git(["check-ignore", "-q", "--", `${e}x`], root).code !== 0);
@@ -4994,13 +5004,13 @@ function checkIgnored(git, root, config) {
   };
 }
 function checkConfigFiles(root) {
-  if (!existsSync10(join27(root, CONFIG_FILE)) || !existsSync10(join27(root, LOCAL_CONFIG_FILE))) return null;
+  if (!existsSync10(join28(root, CONFIG_FILE)) || !existsSync10(join28(root, LOCAL_CONFIG_FILE))) return null;
   return { status: "warn", check: "configs", detail: `both ${CONFIG_FILE} and ${LOCAL_CONFIG_FILE} exist: ${CONFIG_FILE} wins` };
 }
 
 // src/doctor/scanners.ts
 import { existsSync as existsSync11 } from "node:fs";
-import { join as join28 } from "node:path";
+import { join as join29 } from "node:path";
 var FLAT_CONFIG = /^eslint\.config\.(js|mjs|cjs|ts|mts|cts)$/;
 var TEST_CONFIG = /^(vitest|vite|jest)\.config\.(js|mjs|cjs|ts|mts|cts|json)$/;
 var ESLINT_FLAT_UNGUARDED = "eslint in this checkout also lints .arbab/worktrees: add '.arbab/**' to its ignores";
@@ -5011,10 +5021,10 @@ function checkEslint(root) {
   if (readPackageJson(root)?.["eslintConfig"] !== void 0) legacy.push("package.json eslintConfig");
   if (flat2.length === 0 && legacy.length === 0) return [];
   const out = [];
-  const unguarded = flat2.filter((n) => !(readOptional(join28(root, n)) ?? "").includes(ARBAB_DIR));
+  const unguarded = flat2.filter((n) => !(readOptional(join29(root, n)) ?? "").includes(ARBAB_DIR));
   if (unguarded.length > 0) out.push({ status: "warn", check: "eslint", detail: `${ESLINT_FLAT_UNGUARDED} (${unguarded.join(", ")})` });
   const marker = `${ARBAB_DIR}/${ESLINT_MARKER}`;
-  if (legacy.length > 0 && !existsSync11(join28(root, marker))) {
+  if (legacy.length > 0 && !existsSync11(join29(root, marker))) {
     out.push({
       status: "warn",
       check: "eslint",
@@ -5031,7 +5041,7 @@ function checkTestConfigs(root) {
   const configs = [];
   const open2 = [];
   for (const name2 of listNames(root).filter((n) => TEST_CONFIG.test(n))) {
-    const text2 = readOptional(join28(root, name2)) ?? "";
+    const text2 = readOptional(join29(root, name2)) ?? "";
     if (name2.startsWith("vite.") && !/\btest\s*:/.test(text2)) continue;
     configs.push(name2);
     if (!confinesTests(text2)) open2.push(name2);
@@ -5087,7 +5097,7 @@ function checkSandbox(platform, deps) {
   return { status: "fail", check: "sandbox", detail: `Claude Code has no sandbox on ${platform}` };
 }
 function checkHome(home) {
-  const probe = join29(home, `.doctor-${randomBytes3(6).toString("hex")}`);
+  const probe = join30(home, `.doctor-${randomBytes3(6).toString("hex")}`);
   try {
     ensureDir(home);
     createExclusive(probe, "");
@@ -5339,7 +5349,7 @@ var MAX_PREFLIGHT_NAME = (() => {
   return n;
 })();
 var PREFLIGHT_DIR = ".arbab/preflight";
-var preflightDir = (project, lane) => join30(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
+var preflightDir = (project, lane) => join31(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
 function writeProbeLanes(project, lane) {
   if (lane.name.length > MAX_PREFLIGHT_NAME) {
     throw new ArbabError(
@@ -5350,7 +5360,7 @@ function writeProbeLanes(project, lane) {
   const dir = preflightDir(project, lane.name);
   const rel = (path) => relative10(project.root, path);
   const owner = lane.worktree ?? lane.name;
-  const worktree = lane.worktree !== void 0 || existsSync13(join30(project.worktreeRoot, owner)) ? owner : void 0;
+  const worktree = lane.worktree !== void 0 || existsSync13(join31(project.worktreeRoot, owner)) ? owner : void 0;
   const shared = {
     role: lane.role,
     ...lane.fence !== void 0 && { fence: lane.fence },
@@ -5367,9 +5377,9 @@ function writeProbeLanes(project, lane) {
   };
   const write = (suffix, brief, schema, fields) => {
     const name2 = assertValidName(`${lane.name}-${suffix}`, "probe lane");
-    const briefFile = join30(dir, `${name2}.md`);
-    const schemaFile = join30(dir, `${name2}.schema.json`);
-    const laneFile = join30(dir, `${name2}.json`);
+    const briefFile = join31(dir, `${name2}.md`);
+    const schemaFile = join31(dir, `${name2}.schema.json`);
+    const laneFile = join31(dir, `${name2}.json`);
     writeTextAtomic(briefFile, brief);
     writeJsonAtomic(schemaFile, schema);
     writeJsonAtomic(laneFile, { name: name2, ...shared, brief: rel(briefFile), schema: rel(schemaFile), ...fields });
@@ -5397,7 +5407,7 @@ function writeProbeLanes(project, lane) {
 }
 var gitMessage = (r) => (r.stderr || r.stdout).trim();
 function removeProbeWorktree(git, project, probe, gitCommonDir2) {
-  const path = join30(project.worktreeRoot, assertValidName(probe, "probe lane"));
+  const path = join31(project.worktreeRoot, assertValidName(probe, "probe lane"));
   const branch = `arbab/${probe}`;
   if (existsSync13(path)) {
     if (gitCommonDir2 === void 0) return `kept ${path}: the repository's git directory is unknown`;
@@ -5675,7 +5685,7 @@ function writeGeneratedLane(project, paths, lane) {
     if (lane.spec.schema === void 0) throw new ArbabError("usage", `lane ${name2} has a schema but no schema path`);
     writeJsonAtomic(confine(project.root, lane.spec.schema), lane.schema);
   }
-  const file = join31(paths.lanesDir, `${name2}.json`);
+  const file = join32(paths.lanesDir, `${name2}.json`);
   writeJsonAtomic(file, lane.spec);
   return file;
 }
@@ -5728,8 +5738,8 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
   assertInactive(ctx, project, name2);
   assertNoLiveWorker(ctx, project, name2);
   assertNotBorrowed(ctx, project, name2);
-  const runDir = join31(project.runsRoot, name2);
-  const path = join31(project.worktreeRoot, name2);
+  const runDir = join32(project.runsRoot, name2);
+  const path = join32(project.worktreeRoot, name2);
   const branch = `arbab/${name2}`;
   const head = branchHead(ctx.git, project.root, branch);
   if (!existsSync14(runDir) && !existsSync14(path) && head === null) return;
@@ -5778,7 +5788,7 @@ function collectRun(runsRoot, run) {
   if (own2 !== null) ackRun(runsRoot, run.lane, { shepherdPid: own2.shepherdPid, since: own2.since }, outcome2.attempts.at(-1) ?? null);
   return outcome2;
 }
-var runRecordPath = (lanesDir, lane) => join31(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
+var runRecordPath = (lanesDir, lane) => join32(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
 function readGeneratedRun(lanesDir, lane) {
   let raw;
   try {
@@ -5890,7 +5900,7 @@ function releaseStalePoolFiles(home, alive, nowMs) {
   return released;
 }
 function removeEmptyLockDirs(home) {
-  const root = join32(home, "locks");
+  const root = join33(home, "locks");
   let entries3;
   try {
     entries3 = readdirSync10(root, { withFileTypes: true });
@@ -5901,7 +5911,7 @@ function removeEmptyLockDirs(home) {
   for (const entry of entries3) {
     if (!entry.isDirectory()) continue;
     try {
-      rmdirSync2(join32(root, entry.name));
+      rmdirSync2(join33(root, entry.name));
       removed++;
     } catch {
     }
@@ -6089,7 +6099,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
     }
     try {
       const target = {
-        path: join32(project.worktreeRoot, lane),
+        path: join33(project.worktreeRoot, lane),
         branch: `arbab/${lane}`,
         deleteBranch: readGenerated(project.runsRoot, lane) !== null
       };
@@ -6223,7 +6233,7 @@ async function runCleanup(argv2, ctx) {
 import { realpathSync as realpathSync11 } from "node:fs";
 
 // src/hook/approve.ts
-import { isAbsolute as isAbsolute9, resolve as resolve13, sep as sep10 } from "node:path";
+import { isAbsolute as isAbsolute10, resolve as resolve13, sep as sep10 } from "node:path";
 
 // src/hook/command.ts
 var UNQUOTED = /^[A-Za-z0-9_@%+=:,./~-]+$/;
@@ -6290,22 +6300,22 @@ function under(base, path) {
   return path === b || path.startsWith(b.endsWith(sep10) ? b : b + sep10);
 }
 function knownProject(dir, opts) {
-  if (!isAbsolute9(dir)) return false;
+  if (!isAbsolute10(dir)) return false;
   const path = real(dir, opts.realpath);
   if (path === null || inLaneWorktree(dir, { realpath: opts.realpath })) return false;
   for (const temp of opts.tempDirs) {
-    if (!isAbsolute9(temp)) continue;
+    if (!isAbsolute10(temp)) continue;
     const realTemp = real(temp, opts.realpath);
     if (under(temp, path) || realTemp !== null && under(realTemp, path)) return false;
   }
-  return opts.projectRoots().some((root) => isAbsolute9(root) && (root === path || real(root, opts.realpath) === path));
+  return opts.projectRoots().some((root) => isAbsolute10(root) && (root === path || real(root, opts.realpath) === path));
 }
 function isRunnerCall(command, opts) {
   const words = tokenize(command);
   if (words === null || words.length < 3) return false;
   const [node, runner] = words;
   if (node?.value !== "node" || runner === void 0) return false;
-  if (!isAbsolute9(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
+  if (!isAbsolute10(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
   let at = 2;
   if (words[at]?.value === "-C") at += 2;
   const name2 = words[at]?.value;
@@ -6411,7 +6421,7 @@ async function runHook(argv2, ctx, tempDirs = TEMP_DIRS) {
 
 // src/commands/host-check.ts
 import { existsSync as existsSync16 } from "node:fs";
-import { join as join33 } from "node:path";
+import { join as join34 } from "node:path";
 
 // src/verify/index.ts
 var VERIFY_TIMEOUT_MS = 9e5;
@@ -6565,7 +6575,7 @@ ${r.output.endsWith("\n") ? r.output : `${r.output}
     interactive: true,
     finishedAt: isoAt(ctx.clock)
   };
-  writeJsonAtomic(join33(integration.paths.dir, HOST_CHECKS_FILE), record2);
+  writeJsonAtomic(join34(integration.paths.dir, HOST_CHECKS_FILE), record2);
   return record2.passed ? 0 : 1;
 }
 
@@ -6921,7 +6931,7 @@ function coordination(plan, siblings) {
 }
 
 // src/plan/load.ts
-import { isAbsolute as isAbsolute10, resolve as resolve14 } from "node:path";
+import { isAbsolute as isAbsolute11, resolve as resolve14 } from "node:path";
 var PLAN_KEYS = ["name", "base", "defaults", "phases"];
 var PHASE_KEYS = ["name", "brief", "scope", "dependsOn", ...PHASE_LANE_KEYS];
 function loadPlan(projectRoot, planPath, credentialPaths = []) {
@@ -6960,7 +6970,7 @@ function scope(v, field) {
   if (!Array.isArray(v) || v.length === 0) fail(field, "must be a non-empty array of globs");
   return v.map((item, i) => {
     const glob = nonEmptyString(item, `${field}[${i}]`);
-    if (isAbsolute10(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
+    if (isAbsolute11(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
     if (glob.split(/[\\/]/).includes("..")) fail(`${field}[${i}]`, `${glob} must not contain ".."`);
     return glob;
   });
@@ -7273,19 +7283,19 @@ function reviewRecord(input) {
 
 // src/review/history.ts
 import { readdirSync as readdirSync11 } from "node:fs";
-import { join as join34 } from "node:path";
+import { join as join35 } from "node:path";
 var ROUND_FILE = /^([1-9][0-9]{0,8})\.json$/;
 function reviewRoundPath(integrationDir, round) {
   if (!Number.isInteger(round) || round < 1) throw new ArbabError("usage", `review round ${round} is not a positive integer`);
-  return join34(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
+  return join35(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
 }
 function reviewRounds(integrationDir) {
   let names2;
   try {
-    names2 = readdirSync11(join34(integrationDir, REVIEW_HISTORY_DIR));
+    names2 = readdirSync11(join35(integrationDir, REVIEW_HISTORY_DIR));
   } catch (err) {
     if (err.code === "ENOENT") return [];
-    throw new ArbabError("io", `cannot list ${join34(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
+    throw new ArbabError("io", `cannot list ${join35(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
   }
   return names2.flatMap((n) => {
     const round = ROUND_FILE.exec(n)?.[1];
@@ -7323,14 +7333,14 @@ function keepOtherLenses(previous, current, ran) {
 }
 
 // src/review/lanes.ts
-import { isAbsolute as isAbsolute11, relative as relative11, sep as sep11 } from "node:path";
+import { isAbsolute as isAbsolute12, relative as relative11, sep as sep11 } from "node:path";
 var MAX_LANE_NAME = 48;
 var MAX_FINDINGS = 10;
 var REF = /^[A-Za-z0-9._/@^~{}-]+$/;
 function reviewLaneFiles(paths, lane) {
   const name2 = assertValidName(lane, "lane name");
   const rel = relative11(paths.projectRoot, paths.lanesDir);
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep11}`) || isAbsolute11(rel)) {
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep11}`) || isAbsolute12(rel)) {
     throw new ArbabError("usage", `the lanes directory ${paths.lanesDir} is not inside the project ${paths.projectRoot}`);
   }
   const dir = rel.split(sep11).join("/");
@@ -7606,9 +7616,10 @@ function changedPaths(git, root, revs) {
   return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root).split("\0").filter((p) => p !== "");
 }
 function sessionsAffected(ctx, root, changed) {
-  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed });
+  const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
+  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed, changedBase });
 }
-var firstFive = (items, sep13) => items.slice(0, 5).join(sep13) + (items.length > 5 ? `${sep13}and ${items.length - 5} more` : "");
+var firstFive = (items, sep14) => items.slice(0, 5).join(sep14) + (items.length > 5 ? `${sep14}and ${items.length - 5} more` : "");
 function assertCleanBase(git, root, base, head) {
   const r = git(["symbolic-ref", "--quiet", "--short", "HEAD"], root);
   const branch = r.code === 0 ? r.stdout.trim() : null;
@@ -7803,9 +7814,9 @@ function deleteSquashedBranches(ctx, root, branches, landedHead, out) {
 }
 
 // src/commands/plan.ts
-import { join as join35 } from "node:path";
+import { join as join36 } from "node:path";
 var phaseNames = (plan) => [...new Set(plan.phases.map((p) => p.name))];
-var plansDir = (project, plan) => join35(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
+var plansDir = (project, plan) => join36(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
 function checkPlanFile(ctx, project, planPath) {
   const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
   const issues = checkPlan(plan);
@@ -7875,7 +7886,7 @@ async function planNext(ctx, project, planPath, opts = {}) {
       prepared = true;
     }
     const lane = check2.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
-    const laneFile = join35(plansDir(project, plan.name), `${phase}.json`);
+    const laneFile = join36(plansDir(project, plan.name), `${phase}.json`);
     try {
       writeJsonAtomic(laneFile, lane);
       const launched = await launchLane(ctx, project, laneFile, { onlyNew });
@@ -7991,9 +8002,9 @@ async function runPlan(argv2, ctx) {
 
 // src/quota/quota.ts
 import { existsSync as existsSync18, rmSync as rmSync8 } from "node:fs";
-import { join as join36 } from "node:path";
-var quotaPath = (home) => join36(home, "quota.json");
-var resetFile = (home) => join36(home, "quota-reset.json");
+import { join as join37 } from "node:path";
+var quotaPath = (home) => join37(home, "quota.json");
+var resetFile = (home) => join37(home, "quota-reset.json");
 function isWindow(value) {
   if (typeof value !== "object" || value === null) return false;
   const v = value;
@@ -8115,7 +8126,7 @@ function formatQuota(snapshot, nowSec) {
 
 // src/quota/refresh.ts
 import { mkdtempSync, rmSync as rmSync9 } from "node:fs";
-import { join as join37 } from "node:path";
+import { join as join38 } from "node:path";
 var REFRESH_PROMPT = "Reply with the single word: ok";
 var REFRESH_TIMEOUT_MS = 6e4;
 var STDERR_TAIL_LINES = 5;
@@ -8203,11 +8214,11 @@ function stderrTail(stderr) {
 }
 async function refreshQuota(input) {
   const timeoutMs = input.timeoutMs ?? REFRESH_TIMEOUT_MS;
-  const tmpRoot = join37(input.home, "tmp");
+  const tmpRoot = join38(input.home, "tmp");
   let cwd;
   try {
     ensureDir(tmpRoot);
-    cwd = mkdtempSync(join37(tmpRoot, "quota-refresh-"));
+    cwd = mkdtempSync(join38(tmpRoot, "quota-refresh-"));
   } catch (err) {
     throw new ArbabError("io", `cannot create a working directory under ${tmpRoot}: ${err.message}`, { cause: err });
   }
@@ -8290,7 +8301,7 @@ ${formatHold(hold)}
 }
 
 // src/commands/readiness.ts
-import { join as join38 } from "node:path";
+import { join as join39 } from "node:path";
 
 // src/readiness/notes.ts
 var FENCE_KINDS = [
@@ -8616,6 +8627,9 @@ function computeReadiness(input) {
   const waived = new Set(waivers);
   const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
   const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity) }));
+  if (input.sessionsUnknown !== void 0) {
+    sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
+  }
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,
@@ -8746,6 +8760,13 @@ async function runReadiness(argv2, ctx) {
   const review = readReviewRecord(paths.review, name2);
   const base = record2.base;
   const carried = review !== null && review.headSha !== record2.headSha && reviewCarriesOver(ctx.git, project.root, review.headSha, record2.headSha, base);
+  let otherSessions2;
+  let sessionsUnknown;
+  try {
+    otherSessions2 = sessionsAffected(ctx, project.root, integrationChanges(ctx, project.root, base, record2.headSha));
+  } catch (err) {
+    sessionsUnknown = err.message;
+  }
   const report = computeReadiness({
     name: name2,
     tier: tier2,
@@ -8759,9 +8780,10 @@ async function runReadiness(argv2, ctx) {
     now: isoAt(ctx.clock),
     reviewCarryOver: carried && review !== null ? { from: review.headSha, base } : null,
     hostGates: project.config.hostGates,
-    hostChecks: readHostCheckRecord(join38(paths.dir, HOST_CHECKS_FILE), name2),
+    hostChecks: readHostCheckRecord(join39(paths.dir, HOST_CHECKS_FILE), name2),
     reviewRounds: reviewRounds2(paths.dir, name2),
-    otherSessions: sessionsAffected(ctx, project.root, integrationChanges(ctx, project.root, base, record2.headSha))
+    ...otherSessions2 !== void 0 && { otherSessions: otherSessions2 },
+    ...sessionsUnknown !== void 0 && { sessionsUnknown }
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);
@@ -8994,8 +9016,8 @@ function laneOverview(runsRoot, alive, nowMs) {
 
 // src/summary/plans.ts
 import { readdirSync as readdirSync12 } from "node:fs";
-import { join as join39 } from "node:path";
-var PLANS_DIR = join39(".arbab", "plans");
+import { join as join40 } from "node:path";
+var PLANS_DIR = join40(".arbab", "plans");
 function names(dir, keep) {
   try {
     return readdirSync12(dir, { withFileTypes: true }).filter(keep).map((e) => e.name).sort();
@@ -9014,12 +9036,12 @@ function phaseLine(runsRoot, phase, alive) {
   return { phase, status: end === "success" ? "done" : "failed", endState: end };
 }
 function planOverview(projectRoot, runsRoot, alive) {
-  const root = join39(projectRoot, PLANS_DIR);
+  const root = join40(projectRoot, PLANS_DIR);
   const plans = [];
   const errors = [];
   for (const plan of names(root, (e) => e.isDirectory() && isValidName(e.name))) {
     const phases = [];
-    for (const file of names(join39(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
+    for (const file of names(join40(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
       const phase = file.slice(0, -".json".length);
       if (!isValidName(phase)) continue;
       try {
@@ -9035,7 +9057,7 @@ function planOverview(projectRoot, runsRoot, alive) {
 
 // src/summary/slots.ts
 import { readdirSync as readdirSync13, readFileSync as readFileSync8 } from "node:fs";
-import { join as join40 } from "node:path";
+import { join as join41 } from "node:path";
 var SLOT_FILE = /^(0|[1-9][0-9]*)\.json$/;
 function holder(path) {
   let v;
@@ -9052,7 +9074,7 @@ function holder(path) {
 function slotsInUse(home, alive) {
   let files;
   try {
-    files = readdirSync13(join40(home, "slots"));
+    files = readdirSync13(join41(home, "slots"));
   } catch {
     return [];
   }
@@ -9060,7 +9082,7 @@ function slotsInUse(home, alive) {
   for (const file of files) {
     const match = SLOT_FILE.exec(file);
     if (match === null) continue;
-    const h = holder(join40(home, "slots", file));
+    const h = holder(join41(home, "slots", file));
     if (h !== null && alive(h.pid)) out.push({ slot: Number(match[1]), ...h });
   }
   return out.sort((a, b) => a.slot - b.slot);
@@ -9402,20 +9424,20 @@ async function runReport(argv2, ctx) {
 
 // src/commands/resume.ts
 import { existsSync as existsSync24, realpathSync as realpathSync16 } from "node:fs";
-import { join as join45 } from "node:path";
+import { join as join46 } from "node:path";
 
 // src/shepherd/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname as dirname11, join as join44 } from "node:path";
+import { dirname as dirname11, join as join45 } from "node:path";
 
 // src/shepherd/lifecycle.ts
 import { existsSync as existsSync23, mkdirSync as mkdirSync6, realpathSync as realpathSync15 } from "node:fs";
-import { dirname as dirname10, join as join43, resolve as resolve17 } from "node:path";
+import { dirname as dirname10, join as join44, resolve as resolve17 } from "node:path";
 
 // src/shepherd/attempt.ts
 import { randomUUID } from "node:crypto";
-import { join as join41 } from "node:path";
+import { join as join42 } from "node:path";
 
 // src/report/schemas.ts
 var str2 = { type: "string" };
@@ -9585,7 +9607,7 @@ function child(path, key) {
 
 // src/shepherd/prompt.ts
 import { realpathSync as realpathSync13 } from "node:fs";
-import { isAbsolute as isAbsolute12, relative as relative12 } from "node:path";
+import { isAbsolute as isAbsolute13, relative as relative12 } from "node:path";
 
 // src/digest/index.ts
 var REPORT_TOOL2 = "StructuredOutput";
@@ -9725,7 +9747,7 @@ function readRequired2(path, what) {
 function resumePrompt(laneDir, mode) {
   if (mode.promptFile === void 0) return mode.prompt ?? CONTINUATION_PROMPT;
   const file = mode.promptFile;
-  if (!isAbsolute12(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
+  if (!isAbsolute13(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
   let real2;
   let base;
   try {
@@ -9735,7 +9757,7 @@ function resumePrompt(laneDir, mode) {
     throw new ArbabError("io", `cannot resolve prompt file ${file}: ${err.message}`, { cause: err });
   }
   const rel = relative12(base, real2);
-  if (rel === "" || rel.startsWith("..") || isAbsolute12(rel)) {
+  if (rel === "" || rel.startsWith("..") || isAbsolute13(rel)) {
     throw new ArbabError("usage", `prompt file ${file} is not inside the lane's run dir ${laneDir}`);
   }
   const text2 = readRequired2(real2, "prompt file");
@@ -9855,7 +9877,7 @@ function readRegistration(path) {
   return { kind: str3(v["kind"]), entrypoint: str3(v["entrypoint"]), name: str3(v["name"]) };
 }
 function worktreeUsedFile(runsRoot, owner) {
-  return join41(runPaths(runsRoot, owner).laneDir, "worktree-used");
+  return join42(runPaths(runsRoot, owner).laneDir, "worktree-used");
 }
 function writeOnce(path, text2) {
   if (!createExclusive(path, text2)) throw new ArbabError("io", `${path} already exists (attempt files are never overwritten)`);
@@ -10043,7 +10065,7 @@ async function runAttempt(ctx, request) {
   });
   try {
     writeOnce(files.started, json2(started));
-    const registrationFile = join41(deps.claudeHome, "sessions", `${pid}.json`);
+    const registrationFile = join42(deps.claudeHome, "sessions", `${pid}.json`);
     const ended = worker.exited.then(() => true);
     const nextTick = () => ctx.stop.aborted ? deps.sleep(deps.tickMs) : ctx.pause(deps.tickMs);
     while (!await Promise.race([ended, nextTick().then(() => false)])) {
@@ -10120,7 +10142,7 @@ async function runAttempt(ctx, request) {
     }
   }
   let effort2 = null;
-  const transcript = findTranscript(join41(deps.claudeHome, "projects"), digest.sessionId ?? sessionId2);
+  const transcript = findTranscript(join42(deps.claudeHome, "projects"), digest.sessionId ?? sessionId2);
   const transcriptText = transcript === null ? null : readOptional2(transcript);
   if (transcriptText !== null) {
     try {
@@ -10130,7 +10152,7 @@ async function runAttempt(ctx, request) {
     }
   }
   if (registration === null) {
-    registration = readRegistration(join41(deps.claudeHome, "sessions", `${pid}.json`));
+    registration = readRegistration(join42(deps.claudeHome, "sessions", `${pid}.json`));
     if (registration !== null) writeOnce(files.registration, json2(registration));
   }
   const summary = buildAttemptSummary({
@@ -10157,7 +10179,7 @@ async function runAttempt(ctx, request) {
 
 // src/shepherd/inputs.ts
 import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync14, readFileSync as readFileSync9, realpathSync as realpathSync14, rmSync as rmSync10, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename as basename4, dirname as dirname9, join as join42, resolve as resolve16 } from "node:path";
+import { basename as basename4, dirname as dirname9, isAbsolute as isAbsolute14, join as join43, relative as relative13, resolve as resolve16, sep as sep12 } from "node:path";
 var MAX_INPUTS_BYTES = 50 * 1024 * 1024;
 var LIBRARY = "~/Library/**";
 function realOr(path) {
@@ -10167,14 +10189,21 @@ function realOr(path) {
     return path;
   }
 }
+function inputRoots(roots, path, real2) {
+  const rel = relative13(roots.real, real2);
+  const exactlyInside = rel === "" || rel !== ".." && !rel.startsWith(`..${sep12}`) && !isAbsolute14(rel);
+  return {
+    pathRoot: [.../* @__PURE__ */ new Set([roots.lexical, roots.real])].find((r) => sameOrInside(r, path)),
+    realRoot: exactlyInside ? roots.real : void 0
+  };
+}
 function copyInputs(input) {
   const home = resolve16(input.userHome);
   const homes = homeSpellings(home);
   const worktree = realOr(resolve16(input.worktree));
   const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
   const projectRoot = resolve16(input.projectRoot);
-  const projectRoots = [.../* @__PURE__ */ new Set([projectRoot, realOr(projectRoot)])];
-  const rootOf = (path) => projectRoots.find((r) => sameOrInside(r, path));
+  const roots = { lexical: projectRoot, real: realOr(projectRoot) };
   const names2 = /* @__PURE__ */ new Map();
   const planned = [];
   let total = 0;
@@ -10183,7 +10212,7 @@ function copyInputs(input) {
       throw new ArbabError("usage", `input ${raw} ${why}`);
     };
     let path;
-    if (raw === "~" || raw.startsWith("~/")) path = join42(home, raw.slice(2));
+    if (raw === "~" || raw.startsWith("~/")) path = join43(home, raw.slice(2));
     else if (raw.startsWith("~")) path = refuse2("names another user's home; write the full path");
     else path = resolve16(projectRoot, raw);
     const name2 = basename4(path);
@@ -10200,8 +10229,7 @@ function copyInputs(input) {
     if (stat.isSymbolicLink()) refuse2("is a symbolic link; name the file it points to");
     if (!stat.isFile() && !stat.isDirectory()) refuse2("is neither a file nor a directory");
     const real2 = realOr(path);
-    const pathRoot = rootOf(path);
-    const realRoot = rootOf(real2);
+    const { pathRoot, realRoot } = inputRoots(roots, path, real2);
     for (const [p, root] of [[path, pathRoot], [real2, realRoot]]) {
       const hit = credential(p, root);
       if (hit !== null) refuse2(credentialReason(hit));
@@ -10219,13 +10247,13 @@ function copyInputs(input) {
     } else {
       entries3.push({ rel: "", dir: true });
       const walk = (rel) => {
-        for (const child2 of readdirSync14(join42(real2, rel)).sort()) {
-          const childRel = join42(rel, child2);
-          const full = join42(real2, childRel);
+        for (const child2 of readdirSync14(join43(real2, rel)).sort()) {
+          const childRel = join43(rel, child2);
+          const full = join43(real2, childRel);
           const s = lstatSync4(full);
           if (s.isSymbolicLink()) continue;
           if (!s.isDirectory() && !s.isFile()) continue;
-          const hit = credential(full, realRoot) ?? credential(join42(path, childRel), pathRoot);
+          const hit = credential(full, realRoot) ?? credential(join43(path, childRel), pathRoot);
           if (hit !== null) {
             if (hit.kind === "dir") refuse2(`holds ${hit.label}, where credentials live`);
             if (hit.kind === "file") refuse2(`holds ${hit.label}, a credential file`);
@@ -10256,15 +10284,15 @@ function copyInputs(input) {
     const refuse2 = (why) => {
       throw new ArbabError("usage", `input ${p.raw} ${why}`);
     };
-    const target = join42(dest, p.name);
+    const target = join43(dest, p.name);
     try {
       for (const e of p.entries) {
-        const to = join42(target, e.rel);
+        const to = join43(target, e.rel);
         if (e.dir) {
           mkdirSync5(to);
           continue;
         }
-        const from = join42(p.source, e.rel);
+        const from = join43(p.source, e.rel);
         if (realOr(dirname9(from)) !== dirname9(from)) refuse2(`changed while it was copied (${e.rel || p.name} moved)`);
         let fd;
         try {
@@ -10296,8 +10324,8 @@ function copyInputs(input) {
   return planned.map((p) => p.name);
 }
 function clearInputs(worktree) {
-  const rel = join42(WORKER_TMP_DIR, "inputs");
-  const dest = join42(realDir(worktree, WORKER_TMP_DIR), "inputs");
+  const rel = join43(WORKER_TMP_DIR, "inputs");
+  const dest = join43(realDir(worktree, WORKER_TMP_DIR), "inputs");
   let stat = null;
   try {
     stat = lstatSync4(dest);
@@ -10562,7 +10590,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
   ensureArbabMarkers(root);
   const owner = lane.worktree ?? lane.name;
-  if (owner !== lane.name && !existsSync23(join43(confine(root, config.worktreeRoot), owner))) {
+  if (owner !== lane.name && !existsSync23(join44(confine(root, config.worktreeRoot), owner))) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist`);
   }
   const base = lane.base ?? config.baseBranch;
@@ -10580,7 +10608,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   };
   const worktreeRoot = confine(root, config.worktreeRoot);
   mkdirSync6(worktreeRoot, { recursive: true });
-  const worktree = join43(realpathSync15(worktreeRoot), owner);
+  const worktree = join44(realpathSync15(worktreeRoot), owner);
   held.leases = await acquireLeases({
     home: deps.home,
     requests: lane.resources ?? {},
@@ -10657,8 +10685,8 @@ function defaultDeps() {
   const pnpm = findOnPath("pnpm", pathEnv, pathExists);
   const explicit = process.env["ARBAB_CLAUDE"];
   return {
-    home: join44(home, ".arbab"),
-    claudeHome: join44(home, ".claude"),
+    home: join45(home, ".arbab"),
+    claudeHome: join45(home, ".claude"),
     clock: systemClock,
     sleep,
     random: Math.random,
@@ -10707,7 +10735,7 @@ function readPrompt(project, file) {
 function writeResumePrompt(project, lane, text2) {
   const laneDir = runPaths(project.runsRoot, lane).laneDir;
   for (let n = (listAttempts(project.runsRoot, lane).at(-1) ?? 0) + 1; ; n++) {
-    const path = join45(laneDir, `resume-prompt-${n}.md`);
+    const path = join46(laneDir, `resume-prompt-${n}.md`);
     if (createExclusive(path, text2)) return path;
   }
 }
@@ -10969,7 +10997,7 @@ async function runReview(argv2, ctx) {
 }
 
 // src/commands/shepherd.ts
-import { isAbsolute as isAbsolute13 } from "node:path";
+import { isAbsolute as isAbsolute15 } from "node:path";
 function parseMode(text2) {
   let value;
   try {
@@ -10988,7 +11016,7 @@ function parseMode(text2) {
   if (kind === "resume") {
     if (prompt !== void 0 && promptFile !== void 0) throw new ArbabError("usage", "shepherd mode takes prompt or promptFile, not both");
     if (promptFile !== void 0) {
-      if (typeof promptFile === "string" && isAbsolute13(promptFile)) return { kind, promptFile };
+      if (typeof promptFile === "string" && isAbsolute15(promptFile)) return { kind, promptFile };
       throw new ArbabError("usage", "shepherd mode promptFile must be an absolute path");
     }
     if (prompt === void 0) return { kind };
@@ -11002,7 +11030,7 @@ async function runShepherdProcess(argv2, ctx) {
   if (root === void 0 || lane === void 0 || modeText === void 0 || rest.length > 0) {
     throw new ArbabError("usage", "usage: arbab __shepherd <root> <lane> <mode-json>");
   }
-  if (!isAbsolute13(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
+  if (!isAbsolute15(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
   assertValidName(lane, "lane");
   const mode = parseMode(modeText);
   const controller = new AbortController();
@@ -11949,7 +11977,7 @@ Content-Length: 0\r
 
 // src/ui/server/snapshot.ts
 import { statSync as statSync7 } from "node:fs";
-import { basename as basename5, isAbsolute as isAbsolute14, join as join46, relative as relative13, sep as sep12 } from "node:path";
+import { basename as basename5, isAbsolute as isAbsolute16, join as join47, relative as relative14, sep as sep13 } from "node:path";
 var MAX_LANES = 300;
 var LANDED_KEPT = 5;
 var REASON_MAX = 200;
@@ -11967,8 +11995,8 @@ var parsedMs = (v) => {
 var stateKey = (r) => JSON.stringify([r.state, r.attempt, r.since, r.shepherdPid, r.endState ?? null, r.reason ?? null]);
 function briefUnderPreflight(root, brief) {
   if (typeof brief !== "string" || brief === "") return false;
-  const rel = relative13(join46(root, PREFLIGHT_DIR), isAbsolute14(brief) ? brief : join46(root, brief));
-  return rel !== "" && !isAbsolute14(rel) && rel.split(sep12)[0] !== "..";
+  const rel = relative14(join47(root, PREFLIGHT_DIR), isAbsolute16(brief) ? brief : join47(root, brief));
+  return rel !== "" && !isAbsolute16(rel) && rel.split(sep13)[0] !== "..";
 }
 function laneKind(name2, generatedBy, preflightBrief) {
   if (generatedBy !== null) {
@@ -12506,7 +12534,7 @@ var USAGE = {
 
 // src/commands/verify.ts
 import { createHash as createHash5 } from "node:crypto";
-import { join as join47 } from "node:path";
+import { join as join48 } from "node:path";
 var DEFAULT_TIMEOUT_MIN3 = 90;
 var REFS_DIR = ".arbab/refs";
 var REF_SLUG_MAX = 22;
@@ -12563,12 +12591,12 @@ async function runVerify(argv2, ctx) {
     const branch = ref2 ?? "";
     const head = refHead(ctx, project, branch);
     const prefix = refId(branch);
-    const dir = confine(project.root, join47(REFS_DIR, prefix));
+    const dir = confine(project.root, join48(REFS_DIR, prefix));
     target = {
       label: `ref:${branch}`,
       prefix,
-      lanesDir: join47(dir, "lanes"),
-      recordPath: join47(dir, "verify.json"),
+      lanesDir: join48(dir, "lanes"),
+      recordPath: join48(dir, "verify.json"),
       // The branch head is landed code, so the install runs on it: nothing is merged on top.
       start: { base: head },
       owner: { integration: prefix, branch: `refs/heads/${branch}`, head },
@@ -12627,7 +12655,7 @@ async function verifyTarget(ctx, project, target, timeoutMs, json3) {
 }
 var MAX_LISTED = 5;
 function worktreeChanges(ctx, project, lane) {
-  const worktree = join47(project.worktreeRoot, lane);
+  const worktree = join48(project.worktreeRoot, lane);
   const gitCommonDir2 = resolveGitCommonDir(ctx.git, project.root);
   if (gitCommonDir2 === void 0) return `the git directory of ${project.root} could not be resolved, so ${worktree} was not checked`;
   const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: gitCommonDir2 });
@@ -12647,7 +12675,7 @@ function worktreeChanges(ctx, project, lane) {
 import { execFile, execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
 import { closeSync as closeSync7, openSync as openSync7 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join48 } from "node:path";
+import { join as join49 } from "node:path";
 var NOTIFY_TIMEOUT_MS = 5e3;
 var nodeNotifyExec = (file, args, opts, done) => {
   execFile(file, args, { timeout: opts.timeout, windowsHide: true }, (err) => done(err));
@@ -12717,7 +12745,7 @@ function makeSpawnShepherd(execPath, scriptPath2, env2) {
   return (root, lane, mode) => {
     const laneDir = runPaths(confine(root, loadConfig(root).runsRoot), lane).laneDir;
     ensureDir(laneDir);
-    const log = openSync7(join48(laneDir, "shepherd.log"), "a");
+    const log = openSync7(join49(laneDir, "shepherd.log"), "a");
     try {
       const child2 = spawn3(execPath, shepherdArgv(scriptPath2, root, lane, mode), {
         cwd: root,
@@ -12759,8 +12787,8 @@ function defaultContext(opts) {
     stdout: (text2) => process.stdout.write(text2),
     stderr: (text2) => process.stderr.write(text2),
     hostEnv: { ...process.env },
-    home: join48(home, ".arbab"),
-    claudeHome: join48(home, ".claude"),
+    home: join49(home, ".arbab"),
+    claudeHome: join49(home, ".claude"),
     clock: systemClock,
     sleep,
     alive: isAlive,

@@ -6,7 +6,7 @@
 // A review made before a clean merge of the base still counts (DESIGN.md §21); config hostGates count once
 // host-checks.json passed on the head. --waive needs a terminal: waivers are the human's.
 // Other sessions the landing would affect (otherSessions, against the paths the integration changes) are risks
-// `session:<owner>`, never skipped items.
+// `session:<owner>`, never skipped items; when the machine registry cannot be listed, one risk `session:unknown` says so.
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { computeReadiness, renderReadiness, reviewCarriesOver, type ReadinessInput, type ReviewRound } from "../readiness";
 import { listLanes, runPaths } from "../registry";
 import { lensNames, reviewRoundPath, reviewRounds as roundsOnDisk } from "../review";
-import { HOST_CHECKS_FILE, TIERS, type Tier } from "../types";
+import { HOST_CHECKS_FILE, TIERS, type SessionActivity, type Tier } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson, writeJsonAtomic, writeTextAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -112,6 +112,14 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
   const base = record.base;
   const carried =
     review !== null && review.headSha !== record.headSha && reviewCarriesOver(ctx.git, project.root, review.headSha, record.headSha, base);
+  // Advisory, as in land: a registry that cannot be listed is a risk, not a failed report.
+  let otherSessions: SessionActivity[] | undefined;
+  let sessionsUnknown: string | undefined;
+  try {
+    otherSessions = sessionsAffected(ctx, project.root, integrationChanges(ctx, project.root, base, record.headSha));
+  } catch (err) {
+    sessionsUnknown = (err as Error).message;
+  }
 
   const report = computeReadiness({
     name,
@@ -128,7 +136,8 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     hostGates: project.config.hostGates,
     hostChecks: readHostCheckRecord(join(paths.dir, HOST_CHECKS_FILE), name),
     reviewRounds: reviewRounds(paths.dir, name),
-    otherSessions: sessionsAffected(ctx, project.root, integrationChanges(ctx, project.root, base, record.headSha)),
+    ...(otherSessions !== undefined && { otherSessions }),
+    ...(sessionsUnknown !== undefined && { sessionsUnknown }),
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);

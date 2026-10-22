@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { relative, sep } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import type { SessionActivity } from "../types";
 import { foldPath, sameOrInside } from "../util/pathcase";
 import { listShepherds, listWaiters } from "./machine";
@@ -41,15 +41,29 @@ export function otherSessions(input: {
   /** This session (sessionOf); null outside Claude Code, when every live entry counts. */
   session: string | null;
   alive: (pid: number) => boolean;
-  /** Project-relative paths the landing changes. */
+  /** Paths the landing changes, relative to `changedBase`. */
   changed: readonly string[];
+  /**
+   * The directory `changed` is relative to: git's top level, above the project root when the project is a
+   * subdirectory of its repository. The project root when not given.
+   */
+  changedBase?: string;
   realpath?: (path: string) => string;
 }): SessionActivity[] {
   const real = (path: string): string => runnerPath(path, input.realpath);
   const root = real(input.projectRoot);
   const folded = foldPath(root);
-  // Folded path to the spelling the landing gives, which is the one reported.
-  const changed = new Map(input.changed.map((path) => [foldPath(path), path]));
+  const base = input.changedBase === undefined ? root : real(input.changedBase);
+  // Folded project-relative path to its spelling from the root, which is the one reported. A changed path outside the
+  // project is none of its runners.
+  const changed = new Map<string, string>();
+  for (const path of input.changed) {
+    const full = join(base, path);
+    const key = inside(root, full);
+    if (key === null) continue;
+    const rel = relative(root, full);
+    changed.set(key, rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? key : rel.split(sep).join("/"));
+  }
   const byOwner = new Map<string | null, Tally>();
   const tally = (owner: string | null): Tally => {
     let t = byOwner.get(owner);

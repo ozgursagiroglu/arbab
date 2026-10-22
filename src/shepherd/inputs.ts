@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { credentialMatcher, credentialReason, homeSpellings } from "../profile";
 import { realDir, WORKER_TMP_DIR } from "../run/workertmp";
 import { ArbabError } from "../util/errors";
@@ -23,6 +23,25 @@ function realOr(path: string): string {
   } catch {
     return path;
   }
+}
+
+/**
+ * The project root each spelling of an input lies in, if any. The lexical `path` compares folded with both roots: it
+ * may spell the project in any case the file system takes. The `real` path (realpathSync.native) is the spelling on
+ * disk, so it compares exactly with the project's real root: a sibling that differs only in case is another
+ * directory wherever the file system tells them apart, and the same one, spelled as the root is, where it does not.
+ */
+export function inputRoots(
+  roots: { lexical: string; real: string },
+  path: string,
+  real: string,
+): { pathRoot: string | undefined; realRoot: string | undefined } {
+  const rel = relative(roots.real, real);
+  const exactlyInside = rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+  return {
+    pathRoot: [...new Set([roots.lexical, roots.real])].find((r) => sameOrInside(r, path)),
+    realRoot: exactlyInside ? roots.real : undefined,
+  };
 }
 
 interface Entry {
@@ -62,8 +81,7 @@ export function copyInputs(input: {
   // `~/.envs/` may still take an input from itself, in any spelling the file system takes. One outside it is tested on
   // its whole path.
   const projectRoot = resolve(input.projectRoot);
-  const projectRoots = [...new Set([projectRoot, realOr(projectRoot)])];
-  const rootOf = (path: string): string | undefined => projectRoots.find((r) => sameOrInside(r, path));
+  const roots = { lexical: projectRoot, real: realOr(projectRoot) };
 
   const names = new Map<string, string>();
   const planned: Planned[] = [];
@@ -93,8 +111,7 @@ export function copyInputs(input: {
     if (!stat.isFile() && !stat.isDirectory()) refuse("is neither a file nor a directory");
     const real = realOr(path);
     // Each spelling keeps its root for the walk too: what an input holds follows the input's rule.
-    const pathRoot = rootOf(path);
-    const realRoot = rootOf(real);
+    const { pathRoot, realRoot } = inputRoots(roots, path, real);
     for (const [p, root] of [[path, pathRoot], [real, realRoot]] as const) {
       const hit = credential(p, root);
       if (hit !== null) refuse(credentialReason(hit));

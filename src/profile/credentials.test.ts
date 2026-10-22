@@ -54,6 +54,19 @@ describe("credentialMatcher", () => {
     expect(match("/work/x.key/app/notes.txt", "/WORK/X.KEY/APP")).toBeNull();
   });
 
+  it("keeps `?` one character: ß is not folded to ss in a pattern or a path", () => {
+    const m = credentialMatcher(["**/stra?e.txt", "//srv/?/**", "~/gr?/*.txt", "notes/ma?.md"], [HOME]);
+    expect(m("/srv/app/straße.txt")).toEqual({ kind: "name", label: "straße.txt" });
+    expect(m("/srv/app/STRAßE.TXT")).toEqual({ kind: "name", label: "STRAßE.TXT" });
+    expect(m("/srv/ß/x")).toEqual({ kind: "pattern", label: "//srv/?/**" });
+    expect(m("/home/u/grß/a.txt")).toEqual({ kind: "pattern", label: "~/gr?/*.txt" });
+    expect(m("/a/notes/maß.md")).toEqual({ kind: "pattern", label: "notes/ma?.md" });
+    // Two characters are not one.
+    expect(m("/srv/app/strasse.txt")).toBeNull();
+    // A pattern's own ß is itself, case ignored.
+    expect(credentialMatcher(["**/maß.token"], [HOME])("/srv/MAß.TOKEN")).toEqual({ kind: "name", label: "MAß.TOKEN" });
+  });
+
   it("adds `extra` rules of every shape, case ignored", () => {
     const m = credentialMatcher(["~/.vault/**", "**/*.secret", "//srv/secrets/**", "vault/*.md", "~/notes/*.txt"], [HOME]);
     expect(m("/home/u/.Vault/token")).toEqual({ kind: "dir", label: "~/.vault" });

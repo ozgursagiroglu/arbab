@@ -53,6 +53,8 @@ export interface ReadinessInput {
   reviewRounds?: ReviewRound[];
   /** Other sessions the landing affects (otherSessions); risks, never skipped items. */
   otherSessions?: SessionActivity[];
+  /** Why the other sessions could not be told (the machine registry could not be listed): a risk `session:unknown`. */
+  sessionsUnknown?: string;
 }
 
 type Skipped = ReadinessItem & { waived: boolean };
@@ -343,6 +345,9 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
   const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
   // First: they ask for an action before landing, and no waiver answers them.
   const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity) }));
+  if (input.sessionsUnknown !== undefined) {
+    sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
+  }
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,

@@ -97,6 +97,20 @@ describe("otherSessions", () => {
     ]);
   });
 
+  it("reads changed paths from their base when the project is a subdirectory of it, reporting them from the project", () => {
+    const top = join(dir, "mono");
+    const app = join(top, "app");
+    mkdirSync(join(app, "dist"), { recursive: true });
+    writeFileSync(join(app, "dist", "arbab.mjs"), "");
+    registerShepherd(home, { pid: 30, lane: "theirs", project: elsewhere, owner: OTHER, startedAt: AT, runner: join(app, "dist", "arbab.mjs") });
+    const from = (changed: string[], changedBase?: string): SessionActivity[] =>
+      otherSessions({ home, projectRoot: app, session: ME, alive: everyoneAlive, changed, ...(changedBase !== undefined && { changedBase }) });
+    expect(from(["app/dist/arbab.mjs", "lib/x.ts"], top)).toEqual([activity(OTHER, { runnerProjects: [elsewhere], runnersChanged: ["dist/arbab.mjs"] })]);
+    // A path of the repository outside the project is none of its runners, even one spelled like it.
+    expect(from(["dist/arbab.mjs"], top)).toEqual([]);
+    expect(from(["dist/arbab.mjs"])).toEqual([activity(OTHER, { runnerProjects: [elsewhere], runnersChanged: ["dist/arbab.mjs"] })]);
+  });
+
   it("resolves the runner through symlinks and ignores one outside this project", () => {
     symlinkSync(join(root, "dist", "arbab.mjs"), join(elsewhere, "arbab.mjs"));
     shepherd(30, OTHER, { project: elsewhere, runner: join(elsewhere, "arbab.mjs") });

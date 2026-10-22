@@ -379,6 +379,18 @@ describe("computeReadiness: risks", () => {
     expect(md).toContain("- Processes started outside Claude Code run this project's dist/arbab.mjs in /work/x");
   });
 
+  it("says first when it cannot tell the other sessions, as one risk that leaves the rest of the report as it is", () => {
+    const reason = "cannot list /x/shepherds: ENOTDIR";
+    const known = computeReadiness(input({ review: review({ findings: [finding({ id: "correctness-1" })] }) }));
+    const unknown = computeReadiness(input({ sessionsUnknown: reason, review: review({ findings: [finding({ id: "correctness-1" })] }) }));
+    expect(unknown.risks).toEqual([
+      { id: "session:unknown", text: `cannot tell which other sessions are working here: ${reason}` },
+      ...known.risks,
+    ]);
+    expect({ ...unknown, risks: known.risks }).toEqual(known);
+    expect(unknown.ready).toBe(true);
+  });
+
   it("records an empty otherSessions when given none, and leaves it out of a report computed without", () => {
     expect(computeReadiness(input({ otherSessions: [] })).otherSessions).toEqual([]);
     expect("otherSessions" in computeReadiness(input())).toBe(false);

@@ -1,12 +1,12 @@
 import { realpathSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { foldPath, sameOrInside } from "../util/pathcase";
+import { sameOrInside } from "../util/pathcase";
 import { BUILTIN_CREDENTIAL_PATHS } from "./presets";
 
 // The fence's credential list as a check on paths, for files arbab itself copies into a worktree, inlines into a
-// prompt or puts in a commit: the fence only stops the worker. Paths and patterns are compared through foldPath: macOS
-// and Windows file systems ignore case by default (`~/.AWS/credentials` is `~/.aws/credentials`), and where one does
-// not, refusing a little more is the safe side.
+// prompt or puts in a commit: the fence only stops the worker. macOS and Windows file systems ignore case by default
+// (`~/.AWS/credentials` is `~/.aws/credentials`), and where one does not, refusing a little more is the safe side, so
+// containment compares through foldPath and the glob regexes match NFD text with Unicode case folding.
 
 export interface CredentialHit {
   kind: "dir" | "file" | "name" | "pattern";
@@ -19,6 +19,15 @@ type CredentialRule = (path: string, root?: string) => CredentialHit | null;
 const GLOB_CHARS = /[*?[\]{}]/;
 
 const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+
+/** Text as the credential regexes see it: NFD, as APFS compares names; case is the regexes' flags' business. */
+const nfd = (text: string): string => text.normalize("NFD");
+
+/**
+ * A credential regex over NFD text. `iu` folds case the Unicode way (`ſ` is `s`, U+212A is `k`) without changing a
+ * character's length: foldPath turns `ß` into `ss`, which a `?` would no longer match.
+ */
+const credentialRe = (source: string): RegExp => new RegExp(source, "iu");
 
 /**
  * The components of `path` below `root` when it lies inside it, else all of them: a project kept under a directory
@@ -51,14 +60,14 @@ function globSource(glob: string): string {
   return whole ? `${out}(?:/.*)?` : out;
 }
 
-/** Regexes over folded paths (foldPath): the text they are built from is folded too. */
+/** Regexes over NFD paths (nfd): the text they are built from is NFD too. */
 function patternRegexes(pattern: string, homes: readonly string[]): RegExp[] {
-  const anchored = (prefix: string, glob: string): RegExp => new RegExp(`^${escapeRe(foldPath(prefix))}${globSource(foldPath(glob))}$`);
+  const anchored = (prefix: string, glob: string): RegExp => credentialRe(`^${escapeRe(nfd(prefix))}${globSource(nfd(glob))}$`);
   if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
   // `//x` is absolute; a single `/` is relative to the settings file, which lint flags, so taken as absolute here.
   if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
   // Relative to wherever the worker runs: matched anywhere.
-  return [new RegExp(`(?:^|/)${globSource(foldPath(pattern))}$`)];
+  return [credentialRe(`(?:^|/)${globSource(nfd(pattern))}$`)];
 }
 
 /** One check per pattern. */
@@ -76,9 +85,9 @@ function credentialRules(patterns: readonly string[], homes: readonly string[]):
     if (pattern.startsWith("**/")) {
       const name = pattern.slice(3);
       if (name !== "" && !name.includes("/") && !name.includes("**")) {
-        const re = new RegExp(`^${globSource(foldPath(name))}$`);
+        const re = credentialRe(`^${globSource(nfd(name))}$`);
         return (path, root) => {
-          const component = componentsBelow(path, root).find((c) => re.test(foldPath(c)));
+          const component = componentsBelow(path, root).find((c) => re.test(nfd(c)));
           return component === undefined ? null : { kind: "name", label: component };
         };
       }
@@ -88,12 +97,12 @@ function credentialRules(patterns: readonly string[], homes: readonly string[]):
     // A relative pattern, like a name rule, looks only below `root`: the directories holding the project are not its.
     if (!pattern.startsWith("~/") && !pattern.startsWith("/")) {
       return (path, root) => {
-        const subject = foldPath(root === undefined || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
+        const subject = nfd(root === undefined || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
         return res.some((re) => re.test(subject)) ? hit : null;
       };
     }
     return (path) => {
-      const subject = foldPath(path);
+      const subject = nfd(path);
       return res.some((re) => re.test(subject)) ? hit : null;
     };
   });

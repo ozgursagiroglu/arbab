@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerShepherd, registerWaiter } from "../registry";
@@ -134,6 +134,53 @@ describe("runReadiness", () => {
         "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.",
     );
     expect(risks).toContain("- Processes started outside Claude Code run this project's a.txt in /work/elsewhere, which this landing replaces.");
+  });
+
+  it("writes one risk, and stays ready, when the machine registry cannot be listed", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    writeLaneRun(p.runsRoot, "a", { state: "finished", endState: "success", report: { status: "done", open_questions: [], not_verified: [] } });
+    // A file where the shepherds' directory belongs.
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "shepherds"), "");
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+
+    const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+    expect(report).toMatchObject({ ready: true, skipped: [] });
+    expect(report.risks).toEqual([
+      { id: "session:unknown", text: expect.stringMatching(/^cannot tell which other sessions are working here: cannot list .*shepherds: /) },
+    ]);
+    expect(report).not.toHaveProperty("otherSessions");
+    expect(readFileSync(join(dir(p), "readiness.md"), "utf8")).toContain("- cannot tell which other sessions are working here: ");
+  });
+
+  it("finds a changed runner when the project is a subdirectory of its repository", async () => {
+    p = makeProject();
+    // The project moves into app/ of a new repository, which the integration then changes.
+    const top = join(p.dir, "mono");
+    const app = join(top, "app");
+    mkdirSync(top);
+    p.ok(["init", "-q", "-b", "main", top], p.dir);
+    renameSync(p.root, app);
+    rmSync(join(app, ".git"), { recursive: true, force: true });
+    p.ok(["add", "-A"], top);
+    p.ok(["commit", "-q", "-m", "init"], top);
+    p.ok(["checkout", "-q", "-b", "arbab/a"], top);
+    writeFileSync(join(app, "a.txt"), "a\n");
+    p.ok(["add", "-A"], top);
+    p.ok(["commit", "-q", "-m", "a"], top);
+    p.ok(["checkout", "-q", "main"], top);
+    p.ctx.cwd = app;
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    const integration = join(app, ".arbab", "integrations", "rel");
+    writeJsonAtomic(join(integration, "verify.json"), passedVerify(readRecord<IntegrationRecord>(join(integration, "integration.json")).headSha));
+    registerWaiter(p.home, { pid: 7003, project: "/work/elsewhere", owner: null, startedAt: AT, runner: join(app, "a.txt") });
+    p.alive.add(7003);
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(integration, "readiness.json")).otherSessions).toEqual([
+      { owner: null, lanes: [], waiters: 0, runnerProjects: ["/work/elsewhere"], runnersChanged: ["a.txt"] },
+    ]);
   });
 
   it("records no other sessions when none is live", async () => {

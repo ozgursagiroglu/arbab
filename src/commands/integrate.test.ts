@@ -5,7 +5,7 @@ import * as plans from "../plan";
 import type { IntegrationRecord, PlanSpec } from "../types";
 import { formatIntegration, integrationLanes, runIntegrate, splitList } from "./integrate";
 import { openProject } from "./project";
-import { branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { DEFAULT_CONFIG, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -56,6 +56,11 @@ describe("integrationLanes", () => {
     } else {
       expect(() => integrationLanes(openProject(p.ctx), { plan: "plans/p.json" })).toThrow(/use --lanes/);
     }
+  });
+
+  it("refuses a plan whose phase brief a config credentialPaths entry hits", () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, credentialPaths: ["lanes/demo.md"] }, files: { "plans/p.json": JSON.stringify(PLAN) } });
+    expect(() => integrationLanes(openProject(p.ctx), { plan: "plans/p.json" }, () => ["a"])).toThrow(/^phases\[0\]\.brief: lanes\/demo\.md matches the credential path/);
   });
 
   it("refuses both or neither source, an empty list, a duplicate and an invalid name", () => {
@@ -234,5 +239,115 @@ describe("runIntegrate", () => {
     p = makeProject();
     await expect(runIntegrate(["--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage" });
     await expect(runIntegrate(["Bad Name", "--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage" });
+  });
+
+  it("refuses a name with the ref- prefix, which verify --ref reserves, and allows one that only contains it", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    const reserved = { code: "usage", message: expect.stringMatching(/prefix ref- is reserved for verify --ref/) };
+    await expect(runIntegrate(["ref-main", "--lanes", "a"], p.ctx)).rejects.toMatchObject(reserved);
+    await expect(runIntegrate(["ref-main", "--adopt", "arbab/a"], p.ctx)).rejects.toMatchObject(reserved);
+    expect(existsSync(join(p.root, ".arbab", "integrations", "ref-main"))).toBe(false);
+    expect(await runIntegrate(["pref-main", "--lanes", "a"], p.ctx)).toBe(0);
+  });
+});
+
+describe("runIntegrate --adopt", () => {
+  it("makes an integration of an existing branch and prints it", async () => {
+    p = makeProject();
+    const main = p.ok(["rev-parse", "main"]).trim();
+    const sha = branchWith(p, "feature", "f.txt", "f\n");
+    expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(record).toMatchObject({ branch: "integrate/rel", base: "main", baseSha: main, headSha: sha, merged: [], manifests: [], depsConfirmed: true });
+    expect(p.stdout()).toBe(`adopted feature as integrate/rel (base main at ${main})\n` + formatIntegration(record));
+    expect(p.ok(["rev-parse", "integrate/rel"]).trim()).toBe(sha);
+
+    // An adopted integration takes lanes like any other.
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    expect(recordOf(p, "rel").merged.map((m) => m.lane)).toEqual(["a"]);
+  });
+
+  it("takes --base and prints the record with --json", async () => {
+    p = makeProject();
+    p.ok(["branch", "release", "main"]);
+    const sha = branchWith(p, "feature", "f.txt", "f\n");
+    expect(await runIntegrate(["rel", "--adopt", sha, "--base", "release", "--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).toEqual(recordOf(p, "rel"));
+    expect(recordOf(p, "rel")).toMatchObject({ base: "release", headSha: sha });
+  });
+
+  it("refuses --lanes, --plan or --deps-installed with --adopt, --base without it, an existing name and an unknown ref", async () => {
+    p = makeProject();
+    branchWith(p, "feature", "f.txt", "f\n");
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--adopt takes no --lanes or --plan/) });
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--plan", "plans/p.json"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--adopt takes no --lanes or --plan/) });
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--deps-installed", "a".repeat(40)], p.ctx)).rejects.toThrow(/--deps-installed and --adopt exclude each other/);
+    await expect(runIntegrate(["rel", "--lanes", "a", "--base", "main"], p.ctx)).rejects.toThrow(/^--base goes with --adopt/);
+    await expect(runIntegrate(["rel", "--adopt", "nowhere"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--adopt nowhere does not name a commit/) });
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel"))).toBe(false);
+
+    expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
+    await expect(runIntegrate(["rel", "--adopt", "feature"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^integration rel already exists/) });
+  });
+
+  it("refuses a --base the base branch does not contain, before creating anything", async () => {
+    p = makeProject();
+    // A lane's branch as --base would install its worker-written tree on the host.
+    branchWith(p, "arbab/x", "x.txt", "x\n");
+    await expect(runIntegrate(["rel", "--adopt", "arbab/x", "--base", "arbab/x"], p.ctx)).rejects.toMatchObject({
+      code: "usage",
+      message: expect.stringMatching(/^--base arbab\/x is not contained in main/),
+    });
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel"))).toBe(false);
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+  });
+
+  it("refuses a --base that is not a branch: land merges into it", async () => {
+    p = makeProject();
+    const main = p.ok(["rev-parse", "main"]).trim();
+    branchWith(p, "feature", "f.txt", "f\n");
+    await expect(runIntegrate(["rel", "--adopt", "feature", "--base", main], p.ctx)).rejects.toMatchObject({
+      code: "usage",
+      message: expect.stringMatching(new RegExp(`^--base ${main} is not a branch: land merges the integration into its base`)),
+    });
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel"))).toBe(false);
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+  });
+});
+
+describe("runIntegrate --refresh", () => {
+  it("records a hand commit on an adopted integration and prints it", async () => {
+    p = makeProject();
+    branchWith(p, "feature", "f.txt", "f\n");
+    expect(await runIntegrate(["rel", "--adopt", "feature"], p.ctx)).toBe(0);
+    const worktree = join(p.worktreeRoot, "integrate-rel");
+    p.ok(["commit", "-q", "--allow-empty", "-m", "by hand"], worktree);
+    const head = p.ok(["rev-parse", "HEAD"], worktree).trim();
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--refresh"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(record).toMatchObject({ headSha: head, merged: [] });
+    expect(p.stdout()).toBe(`refreshed rel: recorded integrate/rel at ${head}\n` + formatIntegration(record));
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--refresh", "--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).toEqual(recordOf(p, "rel"));
+  });
+
+  it("refuses another mode with it, and an integration that does not exist", async () => {
+    p = makeProject();
+    for (const [args, flag] of [
+      [["--lanes", "a"], "--lanes"],
+      [["--plan", "plans/p.json"], "--plan"],
+      [["--deps-installed", "a".repeat(40)], "--deps-installed"],
+      [["--adopt", "main"], "--adopt"],
+    ] as const) {
+      await expect(runIntegrate(["rel", "--refresh", ...args], p.ctx)).rejects.toMatchObject({ code: "usage", message: `--refresh takes no ${flag}: it records the existing head again and merges nothing` });
+    }
+    await expect(runIntegrate(["rel", "--refresh"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^integration rel does not exist/) });
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
   });
 });

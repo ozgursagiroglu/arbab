@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadLane } from "../config";
 import { compileProfile } from "../profile";
-import { runPaths } from "../registry";
-import type { AttemptSummary, InitFacts } from "../types";
+import { stopDecision } from "../hook/stop";
+import { listWaiters, registerShepherd, runPaths } from "../registry";
+import type { AttemptSummary, InitFacts, WaiterEntry } from "../types";
 import { LAUNCH_POLL_MS } from "./launch";
 import { openProject } from "./project";
 import {
@@ -15,14 +16,18 @@ import {
   evaluatePreflight,
   modelBrief,
   preflightDir,
+  removeProbeWorktree,
   runPreflight,
   stepCommands,
   toolsBrief,
+  whileWaiting,
   writeProbeLanes,
   type PreflightInput,
   type ProbeResult,
 } from "./preflight";
-import { makeProject, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+import { CLI_PID, DEFAULT_CONFIG, makeProject, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 
 // The real compiler, spied on so tests can see the ProfileInput each lint compiled.
 vi.mock("../profile", async (importOriginal) => {
@@ -174,9 +179,17 @@ describe("probe lanes", () => {
     expect(files).toEqual({
       tools: { name: "demo-pf-tools", laneFile: ".arbab/preflight/demo/demo-pf-tools.json" },
       model: { name: "demo-pf-model", laneFile: ".arbab/preflight/demo/demo-pf-model.json" },
+      borrowed: null,
     });
     const tools = loadLane(p.root, files.tools.laneFile);
-    expect(tools).toMatchObject({ role: "implementer", model: PROBE_MODEL, effort: "low", allow: ["Bash(make check)"], autoResume: false, maxAttempts: 1 });
+    expect(tools).toMatchObject({
+      role: "implementer",
+      model: PROBE_MODEL,
+      effort: "low",
+      allow: ["Bash(make check)", "Bash(pnpm typecheck)"],
+      autoResume: false,
+      maxAttempts: 1,
+    });
     expect(tools.brief).toBe(".arbab/preflight/demo/demo-pf-tools.md");
     expect(tools.worktree).toBeUndefined();
     const model = loadLane(p.root, files.model.laneFile);
@@ -205,8 +218,20 @@ describe("probe lanes", () => {
     const files = writeProbeLanes(project, lane);
     expect(loadLane(p.root, files.tools.laneFile).worktree).toBe("demo");
     expect(loadLane(p.root, files.model.laneFile).worktree).toBe("demo");
+    expect(files.borrowed).toBe("demo");
     const borrower = writeProbeLanes(project, { ...lane, name: "check", worktree: "other" });
     expect(loadLane(p.root, borrower.tools.laneFile).worktree).toBe("other");
+    expect(borrower.borrowed).toBe("other");
+  });
+
+  it("allows each preflight step exactly, once, on top of the lane's own allow", () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, preflight: { steps: [["pnpm", "typecheck"], ["make", "check"]] } } });
+    const project = openProject(p.ctx);
+    const lane = { ...loadLane(p.root, "lanes/demo.json"), allow: ["Bash(make check)"] };
+    expect(loadLane(p.root, writeProbeLanes(project, lane).tools.laneFile).allow).toEqual(["Bash(make check)", "Bash(pnpm typecheck)"]);
+    p.write("arbab.config.json", JSON.stringify({ ...DEFAULT_CONFIG, preflight: { steps: [] } }));
+    const bare = writeProbeLanes(openProject(p.ctx), loadLane(p.root, "lanes/demo.json"));
+    expect(loadLane(p.root, bare.tools.laneFile).allow).toEqual(["Bash(git status)"]);
   });
 
   it("refuses a lane name too long for the probe suffix, naming the limit", () => {
@@ -219,6 +244,38 @@ describe("probe lanes", () => {
     );
     expect(existsSync(join(p.root, ".arbab", "preflight"))).toBe(false);
     expect(writeProbeLanes(project, { ...lane, name: "a".repeat(MAX_PREFLIGHT_NAME) }).tools.name).toHaveLength(48);
+  });
+});
+
+describe("removeProbeWorktree", () => {
+  it("is null when the probe left nothing, and keeps what it cannot verify", () => {
+    p = makeProject();
+    const project = openProject(p.ctx);
+    const common = join(p.root, ".git");
+    expect(removeProbeWorktree(p.git, project, "demo-pf-tools", common)).toBeNull();
+    const path = join(p.worktreeRoot, "demo-pf-tools");
+    mkdirSync(path, { recursive: true });
+    expect(removeProbeWorktree(p.git, project, "demo-pf-tools", common)).toMatch(new RegExp(`^kept ${path}: .*not a worktree's gitdir pointer`));
+    expect(removeProbeWorktree(p.git, project, "demo-pf-tools", undefined)).toBe(`kept ${path}: the repository's git directory is unknown`);
+    expect(existsSync(path)).toBe(true);
+    expect(() => removeProbeWorktree(p.git, project, "../x", common)).toThrow();
+  });
+
+  it("removes the worktree and deletes the branch, and keeps a branch with unmerged commits", () => {
+    p = makeProject();
+    const project = openProject(p.ctx);
+    const common = join(p.root, ".git");
+    const path = join(p.worktreeRoot, "demo-pf-model");
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo-pf-model", path]);
+    expect(removeProbeWorktree(p.git, project, "demo-pf-model", common)).toBeNull();
+    expect(existsSync(path)).toBe(false);
+    expect(branchExists(p, "arbab/demo-pf-model")).toBe(false);
+
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo-pf-model", path]);
+    p.ok(["commit", "-q", "--allow-empty", "-m", "probe commit"], path);
+    expect(removeProbeWorktree(p.git, project, "demo-pf-model", common)).toMatch(/^kept arbab\/demo-pf-model: git branch -d failed: /);
+    expect(existsSync(path)).toBe(false);
+    expect(branchExists(p, "arbab/demo-pf-model")).toBe(true);
   });
 });
 
@@ -237,6 +294,33 @@ function simulateShepherds(t: TestProject, runs: Record<string, (pid: number) =>
     return pid;
   };
 }
+
+/**
+ * simulateShepherds, plus the worktree and branch a shepherd creates for a probe that borrows none. Records whether
+ * each probe's worktree was absent when its shepherd started; `after` runs in each created worktree.
+ */
+function simulateWorktrees(
+  t: TestProject,
+  runs: Record<string, (pid: number) => LaneRun | null>,
+  after: (path: string) => void = () => undefined,
+): Array<{ lane: string; fresh: boolean }> {
+  const created: Array<{ lane: string; fresh: boolean }> = [];
+  const withTrees: Record<string, (pid: number) => LaneRun | null> = {};
+  for (const [lane, run] of Object.entries(runs)) {
+    withTrees[lane] = (pid) => {
+      const path = join(t.worktreeRoot, lane);
+      const fresh = !existsSync(path);
+      created.push({ lane, fresh });
+      if (fresh) t.ok(["worktree", "add", "-q", "-b", `arbab/${lane}`, path]);
+      after(path);
+      return run(pid);
+    };
+  }
+  simulateShepherds(t, withTrees);
+  return created;
+}
+
+const branchExists = (t: TestProject, branch: string): boolean => t.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], t.root).code === 0;
 
 function head(t: TestProject): string {
   return t.ok(["rev-parse", "--short", "HEAD"]).trim();
@@ -263,6 +347,31 @@ function goodRuns(t: TestProject, sha = head(t)): Record<string, (pid: number) =
   };
 }
 
+describe("whileWaiting", () => {
+  it("registers this process as its session's waiter on the project until the wait ends, even when it throws", async () => {
+    p = makeProject();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    const during: WaiterEntry[][] = [];
+    expect(await whileWaiting(p.ctx, p.root, async () => during.push(listWaiters(p.home, p.ctx.alive)))).toBe(1);
+    expect(during).toEqual([[{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: "2026-10-09T12:00:00.000Z" }]]);
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+
+    const failing = whileWaiting(p.ctx, p.root, async () => {
+      throw new Error("boom");
+    });
+    await expect(failing).rejects.toThrow("boom");
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+  });
+
+  it("registers an ownerless waiter outside a Claude Code session", async () => {
+    p = makeProject();
+    p.alive.add(CLI_PID);
+    const owners = await whileWaiting(p.ctx, p.root, async () => listWaiters(p.home, p.ctx.alive).map((w) => w.owner));
+    expect(owners).toEqual([null]);
+  });
+});
+
 describe("runPreflight", () => {
   it("launches both probes, waits, prints every check and exits 0 when all pass", async () => {
     p = makeProject();
@@ -278,6 +387,8 @@ describe("runPreflight", () => {
     expect(existsSync(join(p.runsRoot, "demo-pf-tools", "attempt-1", "acked"))).toBe(true);
     // The generated probe lanes stay out of the project's git status.
     expect(p.git(["check-ignore", "-q", ".arbab/preflight/demo/x"], p.root).code).toBe(0);
+    expect(readFileSync(join(p.root, ".git", "info", "exclude"), "utf8")).toMatch(/^\.arbab\/$/m);
+    expect(JSON.parse(readFileSync(join(p.root, ".arbab", ".eslintrc.json"), "utf8"))).toEqual({ root: true });
   });
 
   it("lints the lane and both probes with the repository's shared git directory", async () => {
@@ -336,6 +447,30 @@ describe("runPreflight", () => {
     expect(p.stderr()).toContain("did not finish in time");
   });
 
+  it("is a waiter of its session while it waits, so the Stop hook lets the turn wait", async () => {
+    p = makeProject();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    simulateShepherds(p, {});
+    registerShepherd(p.home, { pid: 9000, lane: "demo-pf-tools", project: p.root, owner: SESSION, startedAt: "2026-10-09T12:00:00.000Z" });
+    const stop = (): string | null =>
+      stopDecision(JSON.stringify({ session_id: SESSION, cwd: p.root }), { home: p.home, alive: p.ctx.alive, scriptPath: "/x/arbab.mjs", cwd: p.root });
+    const seen: Array<{ waiters: WaiterEntry[]; stop: string | null }> = [];
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      if (ms !== LAUNCH_POLL_MS) seen.push({ waiters: listWaiters(p.home, p.ctx.alive), stop: stop() });
+      await sleep(ms);
+    };
+    expect(await runPreflight(["--timeout-min", "0.1", "lanes/demo.json"], p.ctx)).toBe(3);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const tick of seen) {
+      expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+      expect(tick.stop).toBeNull();
+    }
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+    expect(stop()).not.toBeNull();
+  });
+
   it("fails when a shepherd died before writing any state", async () => {
     p = makeProject();
     p.ctx.spawnShepherd = (root, lane, mode) => {
@@ -347,10 +482,98 @@ describe("runPreflight", () => {
   });
 
   it("refuses before launching when a probe would fail lint", async () => {
-    p = makeProject({ config: { commands: { implementer: ["pnpm test"] }, preflight: { steps: [["make", "check"]] } } });
+    p = makeProject({ config: { commands: { implementer: ["pnpm test"] }, preflight: { steps: [["make", "check", "&&", "make", "lint"]] } } });
     await expect(runPreflight(["lanes/demo.json"], p.ctx)).rejects.toMatchObject({ code: "lint" });
     expect(p.spawned).toEqual([]);
-    expect(p.stderr()).toContain("denied-command");
+    expect(p.stderr()).toContain("forbidden-shape");
+  });
+
+  it("lints the probes of any role with the steps allowed exactly, even outside the role's commands", async () => {
+    for (const role of ["implementer", "reviewer"]) {
+      p = makeProject({
+        config: { ...DEFAULT_CONFIG, commands: { implementer: ["pnpm test"], reviewer: ["git diff"] }, preflight: { steps: [["make", "check"]] } },
+        lanes: { "lanes/r.json": { name: "r", role, brief: "lanes/r.md" } },
+        files: { "lanes/r.md": "# R\n\n## Task\n\nReview it.\n\n## Scope\n\nNone.\n\n## Acceptance\n\n- Reviewed.\n" },
+      });
+      const tools = role === "reviewer" ? ["Bash", "Glob", "Grep", "Read", "StructuredOutput"] : init().tools;
+      const run = (report: unknown) => (): LaneRun => ({
+        state: "finished",
+        endState: "success",
+        started: { cwd: p.root },
+        summary: summary({ init: init({ tools }) }),
+        report,
+        stderr: "",
+      });
+      simulateShepherds(p, { "r-pf-tools": run({ steps: [{ n: 1, command: "make check", exit_code: 0 }] }), "r-pf-model": run({ answer: `OK ${head(p)}` }) });
+      expect(await runPreflight(["lanes/r.json"], p.ctx), role).toBe(0);
+      expect(p.spawned.map((s) => s.lane)).toEqual(["r-pf-tools", "r-pf-model"]);
+      expect(p.stderr()).not.toContain("denied-command");
+      p.dispose();
+    }
+  });
+
+  it("removes the worktrees and branches its probes created once the results are printed, and a re-run starts fresh", async () => {
+    p = makeProject();
+    const created = simulateWorktrees(p, goodRuns(p));
+    expect(await runPreflight(["lanes/demo.json"], p.ctx)).toBe(0);
+    expect(created).toEqual([
+      { lane: "demo-pf-tools", fresh: true },
+      { lane: "demo-pf-model", fresh: true },
+    ]);
+    expect(p.stdout()).toMatch(/^ok {2}/);
+    for (const lane of ["demo-pf-tools", "demo-pf-model"]) {
+      expect(existsSync(join(p.worktreeRoot, lane)), lane).toBe(false);
+      expect(branchExists(p, `arbab/${lane}`), lane).toBe(false);
+    }
+    expect(p.stderr()).not.toContain("kept");
+
+    // A stale probe worktree (an interrupted run's) is removed before the probes launch again.
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo-pf-tools", join(p.worktreeRoot, "demo-pf-tools")]);
+    created.length = 0;
+    expect(await runPreflight(["lanes/demo.json"], p.ctx)).toBe(0);
+    expect(created).toEqual([
+      { lane: "demo-pf-tools", fresh: true },
+      { lane: "demo-pf-model", fresh: true },
+    ]);
+    expect(p.spawned.slice(2).map((s) => s.mode.kind)).toEqual(["fresh", "fresh"]);
+    expect(existsSync(join(p.worktreeRoot, "demo-pf-tools"))).toBe(false);
+  });
+
+  it("names what git keeps after the run, and refuses a re-run while a stale probe worktree cannot be removed unforced", async () => {
+    p = makeProject();
+    simulateWorktrees(p, goodRuns(p), (path) => writeFileSync(join(path, "left-behind.txt"), "x"));
+    expect(await runPreflight(["lanes/demo.json"], p.ctx)).toBe(0);
+    const path = join(p.worktreeRoot, "demo-pf-tools");
+    expect(p.stderr()).toContain(`preflight: kept ${path}: git worktree remove failed: `);
+    expect(existsSync(join(path, "left-behind.txt"))).toBe(true);
+    expect(branchExists(p, "arbab/demo-pf-tools")).toBe(true);
+
+    p.spawned.length = 0;
+    await expect(runPreflight(["lanes/demo.json"], p.ctx)).rejects.toMatchObject({
+      code: "git",
+      message: expect.stringMatching(new RegExp(`^a previous preflight's probe is in the way: kept ${path}: git worktree remove failed`)),
+    });
+    expect(p.spawned).toEqual([]);
+  });
+
+  it("refuses to remove a stale probe worktree while the probe is active", async () => {
+    p = makeProject();
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo-pf-model", join(p.worktreeRoot, "demo-pf-model")]);
+    p.alive.add(777);
+    writeLaneRun(p.runsRoot, "demo-pf-model", { state: "running", shepherdPid: 777 });
+    await expect(runPreflight(["lanes/demo.json"], p.ctx)).rejects.toThrow(/lane demo-pf-model is running/);
+    expect(existsSync(join(p.worktreeRoot, "demo-pf-model"))).toBe(true);
+    expect(p.spawned).toEqual([]);
+  });
+
+  it("leaves a borrowed worktree and its branch in place", async () => {
+    p = makeProject();
+    const path = join(p.worktreeRoot, "demo");
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo", path]);
+    simulateShepherds(p, goodRuns(p));
+    expect(await runPreflight(["lanes/demo.json"], p.ctx)).toBe(0);
+    expect(existsSync(path)).toBe(true);
+    expect(branchExists(p, "arbab/demo")).toBe(true);
   });
 
   it("refuses a role without Bash and usage errors", async () => {

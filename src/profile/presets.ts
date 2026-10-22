@@ -118,5 +118,19 @@ export const FIXED_ENV: Readonly<Record<string, string>> = {
   BASH_MAX_TIMEOUT_MS: "900000",
 };
 
+/** Settings env names arbab points into the worktree's .arbab-tmp/ (src/run/workertmp.ts); config values lose. */
+export const WORKER_TMP_ENV: readonly string[] = [
+  "XDG_CONFIG_HOME",
+  "YARN_CACHE_FOLDER",
+  "NPM_CONFIG_USERCONFIG",
+];
+
+// zsh refuses unquoted `app/[slug]` globs ("no matches found"); Claude Code falls back to its own detection when this
+// path is not a valid shell.
+export const WORKER_SHELL = "/bin/bash";
+
+/** The tool belt's figure when a profile carries no `bashOutputMaxChars` (config.fence's default). */
+export const DEFAULT_BASH_OUTPUT_MAX_CHARS = 100000;
+
 /** The one parameter rule arbab writes itself. */
 export const BACKGROUND_DENY = "Bash(run_in_background:true)";

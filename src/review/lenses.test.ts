@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILTIN_LENSES, lensNames, lensText } from "./lenses";
+import { BUILTIN_LENSES, MAX_LENS_FILE_TEXT, lensFileText, lensNames, lensText, parseLensFileOption } from "./lenses";
 
 describe("BUILTIN_LENSES", () => {
   it("has the three built-in lenses with what each looks for", () => {
@@ -41,5 +41,27 @@ describe("lensText", () => {
   it("returns null for an unknown lens, inherited keys included", () => {
     expect(lensText("perf", {})).toBeNull();
     expect(lensText("toString", {})).toBeNull();
+  });
+});
+
+describe("parseLensFileOption", () => {
+  it("splits <name>=<file> at the first =", () => {
+    expect(parseLensFileOption("perf=lenses/perf.md")).toEqual({ name: "perf", file: "lenses/perf.md" });
+    expect(parseLensFileOption("a-1=/abs/x=y.md")).toEqual({ name: "a-1", file: "/abs/x=y.md" });
+  });
+
+  it("refuses a missing name or file, and a name that cannot be part of a lane name", () => {
+    for (const bad of ["perf", "=x.md", "perf=", ""]) expect(() => parseLensFileOption(bad)).toThrow(/must be <name>=<file>/);
+    expect(() => parseLensFileOption("Perf=x.md")).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/^lens "Perf" must match/) }));
+    expect(() => parseLensFileOption("a_b=x.md")).toThrow(/must match/);
+  });
+});
+
+describe("lensFileText", () => {
+  it("takes 1 to 8,000 characters, trimmed", () => {
+    expect(lensFileText("perf", "\n  Hot paths.\n")).toBe("Hot paths.");
+    expect(lensFileText("perf", "x".repeat(MAX_LENS_FILE_TEXT))).toHaveLength(8_000);
+    expect(() => lensFileText("perf", " \n\t")).toThrow("the file of lens perf has 0 characters; a lens text has 1 to 8000");
+    expect(() => lensFileText("perf", "x".repeat(8_001))).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/has 8001 characters/) }));
   });
 });

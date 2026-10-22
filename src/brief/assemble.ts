@@ -53,6 +53,10 @@ export function assembleBrief(source: BriefSource, ctx: BriefContext): string {
     const text = source.sections[name]?.trim();
     if (text) parts.push(section(name, text));
   }
+  if (ctx.inputs !== undefined && ctx.inputs.length > 0) {
+    const names = ctx.inputs.map((name) => `\`${name}\``).join(", ");
+    parts.push(section("Inputs", `Read-only copies made for this lane, in .arbab-tmp/inputs/: ${names}.`));
+  }
   parts.push(section("Tool belt", toolBelt(ctx.profile, ctx.leases, ctx.bashMaxTimeoutMin)));
 
   const coordination = ctx.coordination?.trim();

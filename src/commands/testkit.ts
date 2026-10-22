@@ -64,6 +64,11 @@ export interface TestProject {
   signals: Array<{ target: number; sig: NodeJS.Signals }>;
   /** The URLs ctx.openUrl was asked to open. */
   opened: string[];
+  /** The notifications ctx.notify was asked to show; each resolves `notifyResult.shown`. */
+  notified: Array<{ title: string; body: string }>;
+  notifyResult: { shown: boolean };
+  /** What ctx.readStdin returns; each read is counted in `reads`. */
+  stdin: { text: string; reads: number };
   alive: Set<number>;
   commands: Map<number, string>;
   now: { ms: number };
@@ -118,6 +123,9 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
   const spawned: TestProject["spawned"] = [];
   const signals: TestProject["signals"] = [];
   const opened: string[] = [];
+  const notified: TestProject["notified"] = [];
+  const notifyResult = { shown: true };
+  const stdin = { text: "", reads: 0 };
   const alive = new Set<number>();
   const commands = new Map<number, string>();
   const now = { ms: NOW_MS };
@@ -160,6 +168,16 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
       opened.push(url);
       return true;
     },
+    // Not created: a test that needs the runner file on disk writes it.
+    scriptPath: join(dir, "plugin", "dist", "arbab.mjs"),
+    readStdin: async () => {
+      stdin.reads++;
+      return stdin.text;
+    },
+    notify: async (title, body) => {
+      notified.push({ title, body });
+      return notifyResult.shown;
+    },
   };
 
   return {
@@ -176,6 +194,9 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
     spawned,
     signals,
     opened,
+    notified,
+    notifyResult,
+    stdin,
     alive,
     commands,
     now,

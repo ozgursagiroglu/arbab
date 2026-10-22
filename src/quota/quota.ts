@@ -76,6 +76,16 @@ export function resetQuota(home: string, clock: Clock): boolean {
   return existed;
 }
 
+/**
+ * `arbab quota --refresh`: stores a snapshot read on the current account even when it is older than the stored one,
+ * which may describe the previous account, and records the switch as `resetQuota` does.
+ */
+export function replaceQuota(home: string, snapshot: RateLimitSnapshot, clock: Clock): void {
+  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
+  writeJsonAtomic(quotaPath(home), snapshot);
+  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
+}
+
 /** When `arbab quota --reset` last ran (epoch ms); null when it never did or the record is unreadable. */
 export function lastQuotaReset(home: string): number | null {
   let value: unknown;

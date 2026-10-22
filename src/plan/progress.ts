@@ -75,6 +75,20 @@ export function nextPhases(plan: PlanSpec, states: PhaseStates): NextPhases {
   return out;
 }
 
+/**
+ * Why `plan next --retry <phase>` must refuse the phase, or null when it may be relaunched: its lane's latest run
+ * ended in anything but success, or its shepherd died.
+ */
+export function retryRefusal(plan: PlanSpec, states: PhaseStates, phase: string): string | null {
+  if (!plan.phases.some((p) => p.name === phase)) return `phase ${phase} is not in plan ${plan.name}`;
+  const s = states[phase];
+  if (s === undefined) return `phase ${phase} never ran; plan next launches it when its dependencies succeed`;
+  if (s.state === "orphaned") return null;
+  if (s.state !== "finished") return `phase ${phase} is ${s.state}; stop it or wait for it first`;
+  if (s.endState === "success") return `phase ${phase} succeeded; there is nothing to retry`;
+  return null;
+}
+
 /** One row per phase, in plan order. Throws like planWaves on a graph that does not resolve. */
 export function planStatus(plan: PlanSpec, states: PhaseStates): PlanStatusRow[] {
   const waveOf = new Map<string, number>();

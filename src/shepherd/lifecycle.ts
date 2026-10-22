@@ -1,16 +1,28 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
-import { effectiveRole, loadConfig, loadLane } from "../config";
+import { dirname, join, resolve } from "node:path";
+import { effectiveRole, loadConfig, loadLane, loadMachineConfig } from "../config";
 import { holdDecision, lastQuotaReset, readQuota, resumeAt } from "../quota";
-import { listAttempts, runPaths, writeState } from "../registry";
+import {
+  appendLaneEvent,
+  listAttempts,
+  registerProject,
+  registerShepherd,
+  runPaths,
+  sessionOf,
+  unregisterShepherd,
+  writeState,
+} from "../registry";
 import {
   acquireLeases,
   acquireSemaphore,
   acquireSlot,
   acquireWriterLock,
+  arbabIgnoreEntries,
   createWorktree,
   discardWorktree,
+  ensureArbabMarkers,
   ensureIgnored,
+  ensureWorkerTmp,
   prepareDependencies,
   releaseLeases,
   releaseSemaphore,
@@ -35,6 +47,7 @@ import { assertValidName } from "../util/names";
 import { isoAt } from "../util/proc";
 import { runAttempt, worktreeUsedFile, type AttemptRequest } from "./attempt";
 import type { ShepherdDeps, ShepherdMode } from "./index";
+import { copyInputs } from "./inputs";
 import { mergeBranches, type MergedBranch } from "./merge";
 import { digestHeadStart, resumePrompt } from "./prompt";
 import { confirmedHeads, installPlan, isTrustedInstallPoint, resolveCommit, type InstallPlan, type TrustInput } from "./trust";
@@ -69,13 +82,24 @@ export function resetSince(lastReset: number | null, attemptBeganMs: number): bo
   return lastReset !== null && lastReset > attemptBeganMs;
 }
 
-/** The info/exclude entries arbab needs: the worktree root, the runs root and the per-worker temp dirs. */
-export function ignoreEntries(projectRoot: string, config: Pick<ProjectConfig, "worktreeRoot" | "runsRoot">): string[] {
-  const rel = (p: string): string => `${relative(resolve(projectRoot), confine(projectRoot, p)).split(sep).join("/")}/`;
-  return [...new Set([rel(config.worktreeRoot), rel(config.runsRoot), ".arbab-tmp/"])];
-}
+/** The info/exclude entries the shepherd adds: arbab's own (src/run/project-files.ts). */
+export const ignoreEntries = arbabIgnoreEntries;
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
+/**
+ * The slot cap for one poll: the project's maxParallel, lowered by ~/.arbab/machine.json, which every project's
+ * shepherds share. Read on each poll so a held shepherd sees an edit; an unreadable file keeps the project's value.
+ */
+export function slotCap(home: string, projectMax: number): number {
+  let machine: number | null = null;
+  try {
+    machine = loadMachineConfig(home).maxParallel;
+  } catch {
+    // Half-written or invalid: this poll goes by the project, the next one reads it again.
+  }
+  return Math.min(projectMax, machine ?? projectMax);
+}
 
 /** What a lane holds machine-wide, released together when the lane finishes. */
 interface Held {
@@ -118,17 +142,25 @@ export async function runShepherd(
   const runsRoot = confine(root, config.runsRoot);
   const paths = runPaths(runsRoot, laneName);
   const pid = process.pid;
-  writeJsonAtomic(paths.shepherdFile, { pid, startedAt: isoAt(deps.clock) });
+  const startedMs = deps.clock.now();
+  const startedAt = new Date(startedMs).toISOString();
+  const owner = sessionOf(deps.hostEnv);
+  writeJsonAtomic(paths.shepherdFile, { pid, startedAt, owner });
 
   // The attempt this run made last; 0 until it makes one, so a run that fails in setup is not pinned on an attempt
   // of an earlier run (arbab wait reports the run, with its attempt only when it has one).
   let attempt = 0;
-  let current: { state: LaneState; since: string } | null = null;
+  let current: { state: LaneState; since: string; reason: string | undefined } | null = null;
+  // When this run began preparing: the end of its hold and the start of its setup (started.json's timing).
+  let preparingMs: number | null = null;
   const setState = (state: LaneState, extra: Pick<LaneStateRecord, "reason" | "until" | "endState"> = {}): void => {
     // `since` marks when the state began, so a poll that rewrites the same state keeps it.
-    const next = current !== null && current.state === state ? current : { state, since: isoAt(deps.clock) };
-    current = next;
-    writeState(runsRoot, { lane: laneName, state, attempt, since: next.since, shepherdPid: pid, ...extra });
+    const changed = current === null || current.state !== state || current.reason !== extra.reason;
+    const since = current !== null && current.state === state ? current.since : isoAt(deps.clock);
+    current = { state, since, reason: extra.reason };
+    if (state === "preparing") preparingMs ??= deps.clock.now();
+    writeState(runsRoot, { lane: laneName, state, attempt, since, shepherdPid: pid, ...extra });
+    if (changed) appendLaneEvent(runsRoot, laneName, { at: isoAt(deps.clock), shepherdPid: pid, state, attempt, ...extra });
   };
 
   const pause = (ms: number): Promise<void> =>
@@ -149,39 +181,58 @@ export async function runShepherd(
   const holder: Holder = { pid, lane: laneName, project: root, createdAt: isoAt(deps.clock) };
   const held: Held = { slot: null, leases: [], semaphores: [], lockKey: null };
 
+  const quotaDecision = (): ReturnType<typeof holdDecision> => holdDecision(readQuota(deps.home), config.quota.holdAbove, nowSec());
   const awaitQuota = async (): Promise<void> => {
     for (;;) {
       checkStop();
-      const decision = holdDecision(readQuota(deps.home), config.quota.holdAbove, nowSec());
+      const decision = quotaDecision();
       if (!decision.hold) return;
       setState("held", { reason: decision.reason ?? "quota", ...(decision.until === null ? {} : { until: decision.until }) });
       const untilMs = decision.until === null ? Infinity : decision.until * 1000 - deps.clock.now();
       await pause(Math.min(untilMs, deps.holdPollMs));
     }
   };
+  const releaseHeldSlot = (): void => {
+    if (held.slot === null) return;
+    const slot = held.slot;
+    held.slot = null;
+    releaseSlot(deps.home, slot, holder);
+  };
+  // The quota first, then a slot, then the quota again (it may have filled while the lane waited for the slot): a
+  // lane held for quota never holds a slot, so "no free slot" means what it says (DESIGN.md §21).
+  const awaitSlot = async (): Promise<void> => {
+    for (;;) {
+      await awaitQuota();
+      for (;;) {
+        checkStop();
+        held.slot = acquireSlot(deps.home, slotCap(deps.home, config.maxParallel), holder, deps.alive);
+        if (held.slot !== null) break;
+        setState("held", { reason: NO_FREE_SLOT_REASON });
+        await pause(deps.slotPollMs);
+      }
+      if (!quotaDecision().hold) return;
+      releaseHeldSlot();
+    }
+  };
 
   let endState: EndState;
   let reason: string | undefined;
   try {
+    registerShepherd(deps.home, { pid, lane: laneName, project: root, owner, startedAt });
+    registerProject(deps.home, root, startedAt);
     setState("queued");
-    const lane = loadLane(root, paths.laneFile);
+    const lane = loadLane(root, paths.laneFile, config.credentialPaths);
     if (lane.name !== laneName) throw new ArbabError("usage", `${paths.laneFile} names lane ${lane.name}, not ${laneName}`);
     const role = effectiveRole(config, lane);
     // Read before anything is held, so a bad prompt file or digest source fails the run at once.
     const resumeText = mode.kind === "resume" ? resumePrompt(paths.laneDir, mode) : null;
     const seed = mode.kind === "fresh" && mode.digestFrom !== undefined ? digestHeadStart(runsRoot, laneName, mode.digestFrom) : null;
 
-    for (;;) {
-      checkStop();
-      held.slot = acquireSlot(deps.home, config.maxParallel, holder, deps.alive);
-      if (held.slot !== null) break;
-      setState("held", { reason: NO_FREE_SLOT_REASON });
-      await pause(deps.slotPollMs);
-    }
-    await awaitQuota();
+    await awaitSlot();
 
     setState("preparing");
-    const prepared = await prepare(root, config, lane, deps, holder, held, async (why) => {
+    const userHome = deps.hostEnv["HOME"] ?? dirname(deps.home);
+    const prepared = await prepare(root, config, lane, deps, holder, held, userHome, async (why) => {
       checkStop();
       setState("preparing", { reason: why });
       await pause(deps.slotPollMs);
@@ -191,6 +242,10 @@ export async function runShepherd(
     if (seed !== null) request.headStart = seed;
     // The merges happened once, before this run's first attempt; that attempt records them.
     if (prepared.merged.length > 0) request.merged = prepared.merged;
+    if (prepared.inputs !== null) request.inputs = prepared.inputs;
+    // Held covers queued and held together; prepare runs from `preparing` to the first attempt's start.
+    const preparedFrom = preparingMs ?? startedMs;
+    request.timing = { heldMs: preparedFrom - startedMs, prepareMs: deps.clock.now() - preparedFrom };
     // maxAttempts bounds this run's auto-resumes, not the lane's history: a manual resume starts the count again.
     let made = 0;
     for (;;) {
@@ -229,6 +284,9 @@ export async function runShepherd(
       const jitter = Math.min(60, Math.max(0, deps.random() * 60));
       const until = Math.ceil(resumeAt(resetsAt, jitter));
       setState("waiting-reset", { reason: "usage limit", until });
+      // No worker runs while the lane waits for the reset, so its slot goes to a lane that can run; it queues again
+      // (the quota, then a slot) to resume. The worktree's lock and the leases stay with the lane.
+      releaseHeldSlot();
       // Re-read every poll: an account switch can lift the limit long before the old account's reset.
       while (deps.clock.now() < until * 1000) {
         checkStop();
@@ -236,7 +294,7 @@ export async function runShepherd(
         checkStop();
         if (resetSince(lastQuotaReset(deps.home), attemptBegan)) break;
       }
-      await awaitQuota();
+      await awaitSlot();
       request = { kind: "resume" };
     }
   } catch (err) {
@@ -248,6 +306,11 @@ export async function runShepherd(
     }
   } finally {
     releaseAll(deps.home, held, holder);
+    try {
+      unregisterShepherd(deps.home, pid);
+    } catch {
+      // A left entry names a dead pid once this process exits, and the next list removes it.
+    }
   }
   if (stop.aborted) endState = "killed:stopped";
   setState("finished", { endState, ...(reason === undefined ? {} : { reason }) });
@@ -273,9 +336,11 @@ async function prepare(
   deps: ShepherdDeps,
   holder: Holder,
   held: Held,
+  userHome: string,
   wait: (why: string) => Promise<void>,
-): Promise<{ worktree: string; branch: string; gitCommonDir: string; merged: MergedBranch[] }> {
-  ensureIgnored(root, ignoreEntries(root, config), deps.git);
+): Promise<{ worktree: string; branch: string; gitCommonDir: string; merged: MergedBranch[]; inputs: string[] | null }> {
+  ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
+  ensureArbabMarkers(root);
 
   const owner = lane.worktree ?? lane.name;
   if (owner !== lane.name && !existsSync(join(confine(root, config.worktreeRoot), owner))) {
@@ -384,6 +449,10 @@ async function prepare(
       merged = mergeBranches({ worktree, branch: wt.branch, gitCommonDir: wt.gitCommonDir, lane: lane.name, branches, git: deps.git });
     }
   }
-  mkdirSync(join(worktree, ".arbab-tmp", "xdg-config"), { recursive: true });
-  return { worktree, branch: wt.branch, gitCommonDir: wt.gitCommonDir, merged };
+  ensureWorkerTmp(worktree);
+  // Copied on every run, used worktree or not: the files outside the repository may have changed since, and an input
+  // the lane dropped must not stay readable. Under the writer lock, so no worker runs here during the copy.
+  const copied = copyInputs({ projectRoot: root, worktree, inputs: lane.inputs ?? [], userHome, credentialPaths: config.credentialPaths });
+  const inputs = copied.length > 0 ? copied : null;
+  return { worktree, branch: wt.branch, gitCommonDir: wt.gitCommonDir, merged, inputs };
 }

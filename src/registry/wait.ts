@@ -6,6 +6,7 @@ import { ArbabError } from "../util/errors";
 import { createExclusive, readJson, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
 import type { Clock } from "../util/proc";
+import { readShepherdRecord } from "./owner";
 import { attemptFiles, listLanes, readAttempt, runPaths } from "./paths";
 import { effectiveState, readState } from "./state";
 
@@ -32,8 +33,10 @@ export interface FinishedItem {
 
 export interface WaitOptions {
   runsRoot: string;
-  /** Lanes to wait for; null means every lane under runsRoot. */
+  /** Lanes to wait for; null means every lane under runsRoot that `include` accepts. */
   lanes: string[] | null;
+  /** Filters the lanes listed when `lanes` is null, on every poll (a relaunch can change a lane's owner). */
+  include?: (lane: string) => boolean;
   mode: "any" | "all";
   /** Infinity waits for ever. */
   timeoutMs: number;
@@ -41,11 +44,15 @@ export interface WaitOptions {
   clock: Clock;
   sleep: (ms: number) => Promise<void>;
   alive: (pid: number) => boolean;
+  /** Return `idle` instead of blocking when nothing is pending and no lane runs. */
+  stopWhenIdle?: boolean;
 }
 
 export interface WaitResult {
   finished: FinishedItem[];
   timedOut: boolean;
+  /** True when it returned because nothing was pending and no lane ran (stopWhenIdle). */
+  idle?: boolean;
 }
 
 type Alive = (pid: number) => boolean;
@@ -57,6 +64,17 @@ function doneRecord(runsRoot: string, lane: string, alive: Alive): { record: Lan
   if (!record) return null;
   const state = effectiveState(record, alive);
   return isDone(state) ? { record, state } : null;
+}
+
+/**
+ * Whether a lane can still finish: its effective state is not done, or it has no state.json yet and the shepherd
+ * that will write it lives. A lane whose shepherd died before writing a state never finishes.
+ */
+export function isRunning(runsRoot: string, lane: string, alive: Alive): boolean {
+  const record = readState(runsRoot, lane);
+  if (record !== null) return !isDone(effectiveState(record, alive));
+  const shepherd = readShepherdRecord(runsRoot, lane);
+  return shepherd !== null && alive(shepherd.pid);
 }
 
 /** <laneDir>/acked.json: the run `arbab wait` last told the orchestrator about. */
@@ -155,10 +173,11 @@ function claim(runsRoot: string, items: FinishedItem[]): FinishedItem[] {
 
 /**
  * Polls until lanes finish. `any` returns as soon as something unacked is finished; `all` returns once every lane
- * is finished or orphaned. Returned items are acked. On timeout nothing is acked and `finished` is empty.
+ * is finished or orphaned. Returned items are acked. On timeout nothing is acked and `finished` is empty. With
+ * `stopWhenIdle`, it returns `idle` once nothing is pending and no lane is running, instead of blocking for ever.
  */
 export async function waitForFinished(options: WaitOptions): Promise<WaitResult> {
-  const { runsRoot, lanes, mode, timeoutMs, pollMs, clock, sleep, alive } = options;
+  const { runsRoot, lanes, include, mode, timeoutMs, pollMs, clock, sleep, alive, stopWhenIdle } = options;
   if (lanes) {
     for (const lane of lanes) {
       assertValidName(lane, "lane");
@@ -167,14 +186,20 @@ export async function waitForFinished(options: WaitOptions): Promise<WaitResult>
   }
   const start = clock.now();
   for (;;) {
+    const names = lanes ?? (include ? listLanes(runsRoot).filter(include) : listLanes(runsRoot));
+    // Read before the pending check: a lane that finishes in between is then pending, never lost to an idle return.
+    const running = stopWhenIdle === true && names.some((lane) => isRunning(runsRoot, lane, alive));
     if (mode === "any") {
-      const claimed = claim(runsRoot, pendingFinished(runsRoot, lanes, alive));
+      const claimed = claim(runsRoot, pendingFinished(runsRoot, names, alive));
       if (claimed.length > 0) return { finished: claimed, timedOut: false };
-    } else {
-      const names = lanes ?? listLanes(runsRoot);
-      if (names.every((lane) => doneRecord(runsRoot, lane, alive) !== null)) {
-        return { finished: claim(runsRoot, pendingFinished(runsRoot, names, alive)), timedOut: false };
-      }
+    } else if (names.every((lane) => doneRecord(runsRoot, lane, alive) !== null)) {
+      const claimed = claim(runsRoot, pendingFinished(runsRoot, names, alive));
+      if (claimed.length > 0 || stopWhenIdle !== true) return { finished: claimed, timedOut: false };
+    }
+    if (stopWhenIdle === true && !running) {
+      // `all` with a lane that will never get a state: report the others rather than wait for it.
+      const claimed = mode === "all" ? claim(runsRoot, pendingFinished(runsRoot, names, alive)) : [];
+      return claimed.length > 0 ? { finished: claimed, timedOut: false } : { finished: [], timedOut: false, idle: true };
     }
     const remaining = timeoutMs - (clock.now() - start);
     if (remaining <= 0) return { finished: [], timedOut: true };

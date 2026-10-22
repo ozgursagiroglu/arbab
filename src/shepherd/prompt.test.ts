@@ -117,6 +117,28 @@ describe("buildBrief", () => {
     expect(text.match(/## Head start/g)).toHaveLength(1);
   });
 
+  it("names the lane inputs after the source sections, and leaves an empty list out", () => {
+    writeFileSync(join(dir, "brief.md"), "# Lane x\n\n## Task\n\nDo it.\n\n## Notes\n\nLast note.\n");
+    const worktree = join(dir, "wt");
+    const input = {
+      projectRoot: dir,
+      runsRoot: runs,
+      config: defaultConfig(),
+      lane: { name: "x", role: "implementer" as const, brief: "brief.md" },
+      branch: "arbab/x",
+      worktree,
+      profile: profile(worktree),
+      leases: [],
+      schema: DEFAULT_SCHEMAS.implementer,
+    };
+    const text = buildBrief({ ...input, inputs: ["plan.md", "spec.json"] });
+    expect(text).toContain(
+      "Last note.\n\n## Inputs\n\nRead-only copies made for this lane, in .arbab-tmp/inputs/: `plan.md`, `spec.json`.\n\n## Tool belt\n\n",
+    );
+    expect(buildBrief({ ...input, inputs: [] })).not.toContain("## Inputs");
+    expect(buildBrief(input)).not.toContain("## Inputs");
+  });
+
   it("fails when the brief or an instruction file is missing", () => {
     const worktree = join(dir, "wt");
     const input = {

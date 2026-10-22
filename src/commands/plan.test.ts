@@ -6,7 +6,7 @@ import type { AttemptExit, LaneSpec, PlanSpec } from "../types";
 import { launchLockPath, takeLaunchLock } from "./launch";
 import { checkPlanFile, formatPlanStatus, latestExit, phaseStates, planNext, plansDir, runPlan } from "./plan";
 import { openProject } from "./project";
-import { SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { DEFAULT_CONFIG, SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -60,6 +60,15 @@ describe("checkPlanFile", () => {
     expect(check.phases.map((x) => x.phase)).toEqual(["a", "b", "c"]);
     expect(check.phases.find((x) => x.phase === "b")?.lane).toMatchObject({ upstream: ["a"], mergeBranches: ["arbab/a"] });
     expect(check.phases.every((x) => x.issues.length === 0)).toBe(true);
+  });
+
+  it("refuses a phase brief a config credentialPaths entry hits, in check and status", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, credentialPaths: ["lanes/demo.md"] }, files: { "plans/p1.json": JSON.stringify(PLAN) } });
+    expect(() => checkPlanFile(p.ctx, openProject(p.ctx), "plans/p1.json")).toThrow(/^phases\[0\]\.brief: lanes\/demo\.md matches the credential path/);
+    await expect(runPlan(["status", "plans/p1.json"], p.ctx)).rejects.toMatchObject({
+      code: "config",
+      message: expect.stringMatching(/^phases\[0\]\.brief: lanes\/demo\.md matches the credential path/),
+    });
   });
 
   it("lints a phase with the git common dir, as lint does", () => {
@@ -149,6 +158,8 @@ describe("arbab plan next", () => {
     );
     // The generated lane files stay out of git status.
     expect(p.git(["check-ignore", "-q", ".arbab/plans/p1/a.json"], p.root).code).toBe(0);
+    expect(readFileSync(join(p.root, ".git", "info", "exclude"), "utf8")).toMatch(/^\.arbab\/$/m);
+    expect(JSON.parse(readFileSync(join(p.root, ".arbab", ".eslintrc.json"), "utf8"))).toEqual({ root: true });
 
     // Twice in a row: nothing more.
     reset();
@@ -258,6 +269,74 @@ describe("arbab plan next", () => {
     takeLaunchLock(p.ctx, proj, "a", 5150);
     expect(await runPlan(["next", "plans/p1.json"], p.ctx)).toBe(1);
     expect(p.stderr()).toMatch(/^error a {2}lane a is being launched/m);
+  });
+});
+
+describe("arbab plan next --retry", () => {
+  it("relaunches a failed phase as a fresh run, blocks its dependents on it and launches the rest", async () => {
+    project();
+    writeLaneRun(p.runsRoot, "a", { state: "finished", endState: "killed:wall", exit: CHECKPOINTED });
+    expect(await runPlan(["next", "--retry", "a", "plans/p1.json"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => [s.lane, s.mode])).toEqual([
+      ["a", { kind: "fresh" }],
+      ["c", { kind: "start" }],
+    ]);
+    expect(p.stdout()).toBe(
+      `launched a  run ${join(p.runsRoot, "a")}  shepherd ${SHEPHERD_PID}\n` +
+        `launched c  run ${join(p.runsRoot, "c")}  shepherd ${SHEPHERD_PID + 1}\n` +
+        "blocked b  waiting for a\n",
+    );
+    const laneFile = join(plansDir(openProject(p.ctx), "p1"), "a.json");
+    expect(JSON.parse(readFileSync(join(p.runsRoot, "a", "lane.json"), "utf8"))).toEqual(JSON.parse(readFileSync(laneFile, "utf8")));
+  });
+
+  it("relaunches an orphaned phase and every end state but success", async () => {
+    for (const endState of ["failed", "budget", "max-turns", "invalid-report", "no-result", "unsupported-cli", "usage-limit", "killed:idle"] as const) {
+      project();
+      writeLaneRun(p.runsRoot, "c", { state: "finished", endState, exit: CHECKPOINTED });
+      writeLaneRun(p.runsRoot, "a", { state: "running", shepherdPid: 501 });
+      const next = await planNext(p.ctx, openProject(p.ctx), "plans/p1.json", { retry: "c" });
+      expect(next.launched.map((l) => l.phase), endState).toEqual(["c"]);
+      // a's shepherd is dead: orphaned, so b fails upstream; a may be retried too.
+      expect(next.failed).toEqual([{ phase: "b", dependency: "a", endState: "orphaned", reason: null }]);
+      const again = await planNext(p.ctx, openProject(p.ctx), "plans/p1.json", { retry: "a" });
+      expect(again.launched.map((l) => l.phase)).toEqual(["a"]);
+      expect(again.blocked).toEqual([{ phase: "b", waitingFor: ["a"] }]);
+      expect(again.failed).toEqual([]);
+      p.dispose();
+    }
+  });
+
+  it("refuses a phase that succeeded, is active, never ran or is not in the plan, launching nothing", async () => {
+    project();
+    p.alive.add(501);
+    writeLaneRun(p.runsRoot, "a", { state: "finished", endState: "success", exit: CHECKPOINTED });
+    writeLaneRun(p.runsRoot, "c", { state: "running", shepherdPid: 501 });
+    const refused = (phase: string): Promise<unknown> => runPlan(["next", "--retry", phase, "plans/p1.json"], p.ctx);
+    await expect(refused("a")).rejects.toMatchObject({ code: "usage", message: "cannot retry: phase a succeeded; there is nothing to retry; nothing launched" });
+    await expect(refused("c")).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^cannot retry: phase c is running; /) });
+    await expect(refused("b")).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^cannot retry: phase b never ran; /) });
+    await expect(refused("ghost")).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^cannot retry: phase ghost is not in plan p1; /) });
+    await expect(runPlan(["next", "--retry", "plans/p1.json"], p.ctx)).rejects.toMatchObject({ code: "usage" });
+    expect(p.spawned).toEqual([]);
+  });
+
+  it("lists a retry whose launch fails under errors and leaves its dependents failed upstream", async () => {
+    project();
+    writeLaneRun(p.runsRoot, "a", { state: "finished", endState: "failed", exit: CHECKPOINTED });
+    writeLaneRun(p.runsRoot, "c", { state: "finished", endState: "success", exit: CHECKPOINTED });
+    const proj = openProject(p.ctx);
+    p.alive.add(5150);
+    const release = takeLaunchLock(p.ctx, proj, "a", 5150);
+    try {
+      const next = await planNext(p.ctx, proj, "plans/p1.json", { retry: "a" });
+      expect(next.launched).toEqual([]);
+      expect(next.errors).toEqual([{ phase: "a", message: expect.stringMatching(/being launched by another arbab process/) }]);
+      expect(next.failed).toEqual([{ phase: "b", dependency: "a", endState: "failed", reason: null }]);
+      expect(next.code).toBe(1);
+    } finally {
+      release();
+    }
   });
 });
 

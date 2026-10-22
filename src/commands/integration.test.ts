@@ -13,18 +13,23 @@ import {
   collectRun,
   generatedBase,
   generationOwner,
+  laneFingerprint,
   latestReport,
   lintGeneratedLanes,
   manifestAdvice,
   openIntegration,
   markGenerated,
+  readGeneratedRun,
   resetGeneratedWorktree,
   runGeneratedLanes,
+  settleGeneratedRuns,
   unconfirmedManifests,
   writeGeneratedLane,
+  type GeneratedLane,
+  type LaneOutcome,
 } from "./integration";
 import { openProject } from "./project";
-import { branchWith, makeProject, simulateShepherds, writeLaneRun, type TestProject } from "./testkit";
+import { branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -343,26 +348,152 @@ describe("collectRun, attemptEvents and latestReport", () => {
 });
 
 describe("runGeneratedLanes", () => {
-  it("launches every lane, waits for all and collects them; times out without collecting", async () => {
-    p = makeProject();
-    const project = openProject(p.ctx);
+  const generated = (names: string[], brief = DEFAULT_BRIEF): GeneratedLane[] => names.map((name) => ({ spec: spec(name), brief }));
+  const setup = (t: TestProject) => {
+    const project = openProject(t.ctx);
     const paths = integrationPaths(project.root, project.config, "rel");
-    const files = ["rel-a", "rel-b"].map((name) => ({ lane: name, file: writeGeneratedLane(project, paths, { spec: spec(name), brief: DEFAULT_BRIEF }) }));
+    const owner = { integration: "rel", branch: "main", head: t.ok(["rev-parse", "main"]).trim() };
+    return { project, paths, owner };
+  };
+  const pidOf = (t: TestProject, lane: string): number => (JSON.parse(readFileSync(join(t.runsRoot, lane, "state.json"), "utf8")) as { shepherdPid: number }).shepherdPid;
+
+  it("writes, lints and launches every lane, waits for all and collects them; times out without collecting", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
     simulateShepherds(p, {
       "rel-a": () => ({ state: "finished", endState: "success", report: { a: 1 } }),
       "rel-b": () => ({ state: "finished", endState: "failed" }),
     });
-    const owner = { integration: "rel", branch: "main", head: p.ok(["rev-parse", "main"]).trim() };
-    const run = await runGeneratedLanes(p.ctx, project, files, 60_000, owner);
+    const run = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner);
     expect(run.timedOut).toBe(false);
     expect(run.outcomes.map((o) => [o.lane, o.endState, o.report])).toEqual([
       ["rel-a", "success", { a: 1 }],
       ["rel-b", "failed", null],
     ]);
+    expect(readFileSync(join(paths.lanesDir, "rel-a.md"), "utf8")).toBe(DEFAULT_BRIEF);
+    expect(readGeneratedRun(paths.lanesDir, "rel-a")).toEqual({
+      lane: "rel-a",
+      shepherdPid: pidOf(p, "rel-a"),
+      before: 0,
+      head: owner.head,
+      fingerprint: laneFingerprint(generated(["rel-a"])[0] as GeneratedLane),
+      settled: false,
+    });
+    expect(p.stderr()).toBe("launched rel-a, rel-b; waiting\n");
 
+    settleGeneratedRuns(paths.lanesDir, ["rel-a", "rel-b", "rel-none"]);
+    expect(readGeneratedRun(paths.lanesDir, "rel-a")?.settled).toBe(true);
     simulateShepherds(p, { "rel-a": () => ({ state: "running" }) });
-    // A second run resets and relaunches the lanes it marked, which `arbab launch` would refuse.
-    expect(await runGeneratedLanes(p.ctx, project, files.slice(0, 1), 60_000, owner)).toEqual({ timedOut: true, outcomes: [] });
+    // A settled run is not taken again: the lane is reset and relaunched, which `arbab launch` would refuse.
+    expect(await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner)).toEqual({ timedOut: true, outcomes: [] });
     expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a", "rel-b", "rel-a"]);
+  });
+
+  it("lints every lane before launching any", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateShepherds(p, {});
+    const lanes = [...generated(["rel-a"]), { spec: spec("rel-bad", { allow: ["Bash"] }), brief: DEFAULT_BRIEF }];
+    await expect(runGeneratedLanes(p.ctx, project, paths, lanes, 60_000, owner)).rejects.toMatchObject({ code: "lint" });
+    expect(p.spawned).toEqual([]);
+  });
+
+  it("after a timeout, waits for a run still active on the same head instead of relaunching it", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateShepherds(p, { "rel-a": () => ({ state: "running" }) });
+    expect(await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner)).toEqual({ timedOut: true, outcomes: [] });
+    const pid = pidOf(p, "rel-a");
+    // The run finishes while the second command waits.
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      writeLaneRun(p.runsRoot, "rel-a", { state: "finished", endState: "success", shepherdPid: pid, report: { late: true } });
+      p.alive.delete(pid);
+      await sleep(ms);
+    };
+    p.err.length = 0;
+    const run = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner);
+    expect(run).toEqual({ timedOut: false, outcomes: [{ lane: "rel-a", endState: "success", reason: null, attempts: [1], report: { late: true } }] });
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a"]);
+    expect(p.stderr()).toBe("rel-a still running for this head from an earlier run; waiting\n");
+  });
+
+  it("after a timeout, adopts a run that finished on the same head, launching only the others", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateShepherds(p, { "rel-a": () => ({ state: "running" }), "rel-b": () => ({ state: "running" }) });
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner)).timedOut).toBe(true);
+    writeLaneRun(p.runsRoot, "rel-a", { state: "finished", endState: "success", shepherdPid: pidOf(p, "rel-a"), report: { a: 1 } });
+    // rel-b's shepherd died: its run never finished, so it is launched again.
+    p.alive.delete(pidOf(p, "rel-b"));
+    simulateShepherds(p, { "rel-b": () => ({ state: "finished", endState: "success", report: { b: 2 } }) });
+    p.err.length = 0;
+    const run = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner);
+    expect(run.outcomes.map((o) => [o.lane, o.endState, o.report])).toEqual([
+      ["rel-a", "success", { a: 1 }],
+      ["rel-b", "success", { b: 2 }],
+    ]);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a", "rel-b", "rel-b"]);
+    expect(p.stderr()).toBe("adopted rel-a: finished for this head after an earlier run stopped waiting\nlaunched rel-b; waiting\n");
+  });
+
+  it("relaunches a finished run that failed, left no usable report, or ran another lane or head", async () => {
+    const cases: Array<{ why: string; run: LaneRun; again?: (t: TestProject) => { brief?: string; head?: string }; usable?: (o: LaneOutcome) => boolean }> = [
+      { why: "failed", run: { state: "finished", endState: "failed", report: { a: 1 } } },
+      { why: "no report", run: { state: "finished", endState: "success" } },
+      { why: "not usable", run: { state: "finished", endState: "success", report: { a: 1 } }, usable: () => false },
+      { why: "other brief", run: { state: "finished", endState: "success", report: { a: 1 } }, again: () => ({ brief: DEFAULT_BRIEF.replace("Read", "Scan") }) },
+      { why: "other head", run: { state: "finished", endState: "success", report: { a: 1 } }, again: (t) => ({ head: branchWith(t, "integrate/next", "n.txt", "n\n") }) },
+    ];
+    for (const c of cases) {
+      p = makeProject();
+      const { project, paths, owner } = setup(p);
+      simulateShepherds(p, { "rel-a": () => ({ state: "running" }) });
+      expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner)).timedOut, c.why).toBe(true);
+      writeLaneRun(p.runsRoot, "rel-a", { ...c.run, shepherdPid: pidOf(p, "rel-a") });
+      const again = c.again?.(p) ?? {};
+      simulateShepherds(p, { "rel-a": () => ({ state: "finished", endState: "success", report: { fresh: true } }) });
+      const run = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"], again.brief), 60_000, { ...owner, head: again.head ?? owner.head }, c.usable);
+      expect(run.outcomes.map((o) => o.report), c.why).toEqual([{ fresh: true }]);
+      expect(p.spawned.map((s) => s.lane), c.why).toEqual(["rel-a", "rel-a"]);
+      p.dispose();
+    }
+  });
+
+  it("refuses, writing nothing, a lane still running for another brief", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateShepherds(p, { "rel-a": () => ({ state: "running" }) });
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner)).timedOut).toBe(true);
+    await expect(runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"], "# Other\n"), 60_000, owner)).rejects.toThrow(/lane rel-a is running/);
+    expect(readFileSync(join(paths.lanesDir, "rel-a.md"), "utf8")).toBe(DEFAULT_BRIEF);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a"]);
+  });
+});
+
+describe("readGeneratedRun", () => {
+  it("reads a run record whose fields fit, and null for anything else", () => {
+    p = makeProject();
+    const dir = join(p.root, ".arbab", "integrations", "rel", "lanes");
+    mkdirSync(dir, { recursive: true });
+    const valid = { lane: "rel-a", shepherdPid: 9000, before: 2, head: "c".repeat(40), fingerprint: "f", settled: false };
+    const write = (value: unknown): void => writeFileSync(join(dir, "rel-a.run.json"), typeof value === "string" ? value : JSON.stringify(value));
+    expect(readGeneratedRun(dir, "rel-a")).toBeNull();
+    write(valid);
+    expect(readGeneratedRun(dir, "rel-a")).toEqual(valid);
+    for (const bad of [{ ...valid, lane: "rel-b" }, { ...valid, head: "main" }, { ...valid, before: "2" }, { ...valid, settled: 1 }, [valid], "{"]) {
+      write(bad);
+      expect(readGeneratedRun(dir, "rel-a")).toBeNull();
+    }
+  });
+});
+
+describe("laneFingerprint", () => {
+  it("changes with the spec, the brief and the schema", () => {
+    const lane: GeneratedLane = { spec: spec("rel-a"), brief: DEFAULT_BRIEF };
+    const variants: GeneratedLane[] = [lane, { ...lane, brief: "x" }, { ...lane, spec: spec("rel-a", { base: "main" }) }, { ...lane, schema: { type: "object" } }];
+    const prints = variants.map(laneFingerprint);
+    expect(new Set(prints).size).toBe(4);
+    expect(laneFingerprint({ ...lane })).toBe(prints[0]);
   });
 });

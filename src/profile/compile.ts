@@ -1,4 +1,5 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
+import { workerTmpPaths } from "../run/workertmp";
 import type { ClaudeSettings, CompiledProfile, ProfileInput, Role } from "../types";
 import { ArbabError } from "../util/errors";
 import { BACKGROUND_DENY, FILE_UTILITIES, FIXED_ENV, GIT_READ_VERBS, GIT_WRITE_VERBS, READ_UTILITIES } from "./presets";
@@ -14,7 +15,9 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
   if (!isAbsolute(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
-  const gitDir = input.gitCommonDir === undefined ? undefined : sharedGitDir(input.gitCommonDir);
+  const gitDir = input.gitCommonDir === undefined ? undefined : absoluteDir("gitCommonDir", input.gitCommonDir);
+  const projectRoot = input.projectRoot === undefined ? undefined : absoluteDir("projectRoot", input.projectRoot);
+  const tmp = workerTmpPaths(input.worktree);
   let allow = dedupe([
     ...input.tools.filter((t) => FILE_TOOLS.has(t) && (!WRITE_TOOLS.has(t) || WRITERS.includes(input.role))),
     ...roleAllow(input.role),
@@ -24,8 +27,13 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
   // Sandboxed Bash is auto-allowed in sandbox-auto; a Bash allow rule there could only approve an unsandboxed retry.
   if (input.fence === "sandbox-auto") allow = allow.filter((rule) => !rule.startsWith("Bash("));
 
+  const allowRead = envAllowReads(input.worktree, input.envFileAllowReads ?? []);
+  const filesystem = gitDir === undefined && allowRead.length === 0
+    ? undefined
+    : { denyWrite: gitDir === undefined ? [] : [gitDir], ...(allowRead.length === 0 ? {} : { allowRead }) };
   const deny = dedupe([
-    ...credentialDenies(input.credentialPaths),
+    // The `**/.env*` deny stays whatever readableEnvFiles says; allowRead re-opens the tracked templates only.
+    ...credentialDenies(input.credentialPaths, projectRoot),
     // `//` makes the path absolute; a single `/` would be relative to the settings file.
     ...(gitDir === undefined ? [] : [`Edit(/${gitDir}/**)`, `Write(/${gitDir}/**)`]),
     BACKGROUND_DENY,
@@ -44,28 +52,46 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
       autoAllowBashIfSandboxed: input.fence === "sandbox-auto",
       allowUnsandboxedCommands: false,
       network: { allowLocalBinding: input.loopback },
-      // Otherwise a sandboxed command can write refs and objects of the shared repository (measured, M1 review).
-      ...(gitDir === undefined ? {} : { filesystem: { denyWrite: [gitDir] } }),
+      // denyWrite: otherwise a sandboxed command can write refs and objects of the shared repository (measured, M1
+      // review). allowRead: the tracked env templates, readable by shell commands only (DESIGN.md §21).
+      ...(filesystem === undefined ? {} : { filesystem }),
     },
     env: {
       ...input.env,
       ...FIXED_ENV,
-      // Keeps git and friends off the denied ~/.config, which otherwise warns with EPERM on every call.
-      XDG_CONFIG_HOME: join(input.worktree, ".arbab-tmp", "xdg-config"),
+      // Keeps git and package managers off the denied ~/.config and ~/.npmrc, which otherwise fail with EPERM.
+      // XDG_DATA_HOME and XDG_CACHE_HOME stay unset: corepack's cache and pnpm's Linux store live under them.
+      XDG_CONFIG_HOME: tmp.xdgConfig,
+      YARN_CACHE_FOLDER: tmp.yarnCache,
+      NPM_CONFIG_USERCONFIG: tmp.npmrc,
     },
     permissions: { allow, deny },
+    ...(input.bashOutputMaxChars === undefined ? {} : { bashOutputMaxChars: input.bashOutputMaxChars }),
   };
   return { tools: input.tools, settings };
 }
 
-/** The shared git directory, normalised (no trailing slash, no `..`); it must be absolute. */
-function sharedGitDir(dir: string): string {
+/** The shared git directory or the project root, normalised (no trailing slash, no `..`); it must be absolute. */
+function absoluteDir(field: "gitCommonDir" | "projectRoot", dir: string): string {
   if (!isAbsolute(dir)) {
-    throw new ArbabError("usage", `gitCommonDir ${JSON.stringify(dir)} must be an absolute path`);
+    throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
   const normal = resolve(dir);
-  if (normal === "/") throw new ArbabError("usage", "gitCommonDir must not be the filesystem root");
+  if (normal === "/") throw new ArbabError("usage", `${field} must not be the filesystem root`);
   return normal;
+}
+
+/** The env templates to re-open, normalised; each must be an absolute path inside the worktree. */
+function envAllowReads(worktree: string, paths: string[]): string[] {
+  return dedupe(paths.map((path) => {
+    if (!isAbsolute(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    const normal = resolve(path);
+    const rel = relative(resolve(worktree), normal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
+    }
+    return normal;
+  }));
 }
 
 function readAllow(): string[] {

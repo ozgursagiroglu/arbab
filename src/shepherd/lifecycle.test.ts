@@ -15,12 +15,12 @@ import {
 } from "../../test/fake-claude/harness";
 import { defaultConfig } from "../config";
 import { resetQuota } from "../quota";
-import { ack, attemptFiles, pendingFinished } from "../registry";
+import { ack, attemptFiles, listProjects, listShepherds, pendingFinished, readLaneEvents } from "../registry";
 import { writerLockKey } from "../run";
 import type { AttemptExit, AttemptStarted, AttemptSummary, LaneSpec, LaneStateRecord, RateLimitSnapshot } from "../types";
 import { isAlive, sendSignal } from "../util/proc";
 import { CONTINUATION_PROMPT, runShepherd, type ShepherdDeps } from "./index";
-import { ignoreEntries, resetSince, usageLimitResetsAt } from "./lifecycle";
+import { ignoreEntries, resetSince, slotCap, usageLimitResetsAt } from "./lifecycle";
 
 let project: TestProject;
 
@@ -111,7 +111,11 @@ describe("runShepherd", () => {
 
     const settings = readJsonFile<{ env: Record<string, string> }>(files.settings);
     expect(settings.env["XDG_CONFIG_HOME"]).toBe(join(started.cwd, ".arbab-tmp", "xdg-config"));
-    expect(existsSync(join(started.cwd, ".arbab-tmp", "xdg-config"))).toBe(true);
+    for (const dir of ["xdg-config", "yarn-cache", "inputs", "npmrc"]) {
+      expect(existsSync(join(started.cwd, ".arbab-tmp", dir)), dir).toBe(true);
+    }
+    expect(settings.env["XDG_DATA_HOME"]).toBeUndefined();
+    expect(settings.env["XDG_CACHE_HOME"]).toBeUndefined();
 
     expect(exit.killedBy).toBeNull();
     expect(exit.exitCode).toBe(0);
@@ -134,10 +138,11 @@ describe("runShepherd", () => {
     expect(readJsonFile<RateLimitSnapshot>(join(project.home, "quota.json")).fiveHour?.utilization).toBe(0.2);
     expect(poolEntries("slots")).toEqual([]);
     expect(lockEntries()).toEqual([]);
-    // The roots are ignored through info/exclude.
+    // .arbab/ as a whole is ignored through info/exclude, and ESLint's cascade stops there.
     const exclude = readFileSync(join(project.root, ".git", "info", "exclude"), "utf8");
-    expect(exclude).toContain(".arbab/worktrees/");
-    expect(exclude).toContain(".arbab-tmp/");
+    expect(exclude.split("\n")).toContain(".arbab/");
+    expect(exclude.split("\n")).toContain(".arbab-tmp/");
+    expect(readJsonFile<{ root: boolean }>(join(project.root, ".arbab", ".eslintrc.json"))).toEqual({ root: true });
   });
 
   it("waits out a usage limit and resumes the same session to success", async () => {
@@ -1175,6 +1180,315 @@ describe("runShepherd", () => {
   });
 });
 
+describe("runShepherd: slots, owners, events, timing and inputs (DESIGN.md §21)", () => {
+  const nowSec = FIXTURE_RESET_SEC - 3600;
+  const quota = (utilization: number): void => {
+    mkdirSync(project.home, { recursive: true });
+    const snapshot: RateLimitSnapshot = {
+      observedAt: new Date(nowSec * 1000).toISOString(),
+      status: "allowed_warning",
+      type: "five_hour",
+      fiveHour: { utilization, resetsAt: nowSec + 7200 },
+      sevenDay: null,
+    };
+    writeFileSync(join(project.home, "quota.json"), JSON.stringify(snapshot));
+  };
+  /** Another live lane's slot entry. */
+  const occupySlot = (n: number): string => {
+    const file = join(project.home, "slots", `${n}.json`);
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, JSON.stringify({ pid: process.pid, lane: "other", project: "/elsewhere", createdAt: new Date().toISOString() }));
+    return file;
+  };
+  const machine = (text: string): void => {
+    mkdirSync(project.home, { recursive: true });
+    writeFileSync(join(project.home, "machine.json"), text);
+  };
+  const heldFor = (reason: RegExp): Promise<LaneStateRecord> =>
+    until(() => {
+      const s = stateOf("m1-a");
+      return s?.state === "held" && reason.test(s.reason ?? "") ? s : undefined;
+    });
+  const settle = (): Promise<void> => new Promise((d) => setTimeout(d, 150));
+  const runsRoot = (): string => join(project.root, ".arbab", "runs");
+
+  it("waits for the quota before it takes a slot", async () => {
+    quota(0.9);
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    const done = runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project, { holdPollMs: 30 }), never());
+    await heldFor(/five-hour window at 90%/);
+    await settle();
+    expect(poolEntries("slots")).toEqual([]);
+    quota(0.5);
+    expect(await done).toBe("success");
+    expect(poolEntries("slots")).toEqual([]);
+  });
+
+  it("checks the quota again once it has a slot, and gives the slot back while the quota holds", async () => {
+    project.cleanup();
+    project = makeProject({ maxParallel: 1 });
+    const other = occupySlot(0);
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    const done = runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project, { holdPollMs: 30, slotPollMs: 30 }), never());
+    await heldFor(/no free slot/);
+    // The quota fills while the lane waits for the slot; then the slot frees.
+    quota(0.9);
+    rmSync(other);
+    await heldFor(/five-hour window at 90%/);
+    await settle();
+    expect(poolEntries("slots")).toEqual([]);
+    expect(project.calls()).toEqual([]);
+    quota(0.5);
+    expect(await done).toBe("success");
+    const held = readLaneEvents(runsRoot(), "m1-a").filter((e) => e.state === "held").map((e) => e.reason);
+    expect(held).toEqual(["no free slot", expect.stringMatching(/five-hour window/)]);
+  });
+
+  it("reads ~/.arbab/machine.json on every slot poll", async () => {
+    machine(JSON.stringify({ maxParallel: 1 }));
+    occupySlot(0);
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    const done = runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project, { slotPollMs: 30 }), never());
+    // The project allows two; the machine one, which the other lane holds.
+    await heldFor(/no free slot/);
+    await settle();
+    expect(project.calls()).toEqual([]);
+    machine(JSON.stringify({ maxParallel: 2 }));
+    expect(await done).toBe("success");
+    expect(poolEntries("slots")).toEqual(["0.json"]);
+  });
+
+  it("keeps the project's maxParallel for a poll when machine.json is unreadable", async () => {
+    machine("{");
+    occupySlot(0);
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project, { slotPollMs: 30 }), never())).toBe("success");
+    expect(readLaneEvents(runsRoot(), "m1-a").map((e) => e.state)).not.toContain("held");
+  });
+
+  it("records the owner in shepherd.json, and registers the shepherd and the project while it runs", async () => {
+    quota(0.9);
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    const deps = testDeps(project, { holdPollMs: 30 });
+    deps.hostEnv = { ...deps.hostEnv, CLAUDE_CODE_SESSION_ID: "session-a" };
+    const done = runShepherd(project.root, "m1-a", { kind: "start" }, deps, never());
+    await heldFor(/five-hour/);
+
+    const record = readJsonFile<{ pid: number; startedAt: string; owner: string | null }>(join(runDir("m1-a"), "shepherd.json"));
+    expect(record).toEqual({ pid: process.pid, startedAt: expect.any(String), owner: "session-a" });
+    expect(listShepherds(project.home, isAlive)).toEqual([
+      { pid: process.pid, lane: "m1-a", project: project.root, owner: "session-a", startedAt: record.startedAt },
+    ]);
+    expect(listProjects(project.home)).toEqual([{ root: project.root, lastLaunchAt: record.startedAt }]);
+
+    quota(0.5);
+    expect(await done).toBe("success");
+    expect(listShepherds(project.home, isAlive)).toEqual([]);
+    expect(poolEntries("shepherds")).toEqual([]);
+    expect(listProjects(project.home)).toEqual([{ root: project.root, lastLaunchAt: record.startedAt }]);
+  });
+
+  it("records a null owner outside Claude Code, and unregisters a run that fails in setup", async () => {
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a", base: "no-such-branch" });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
+    expect(readJsonFile<{ owner: unknown }>(join(runDir("m1-a"), "shepherd.json")).owner).toBeNull();
+    expect(poolEntries("shepherds")).toEqual([]);
+    expect(listProjects(project.home).map((p) => p.root)).toEqual([project.root]);
+  });
+
+  it("logs a state change once, however many polls rewrite it", async () => {
+    project.cleanup();
+    project = makeProject({ maxParallel: 1 });
+    const other = occupySlot(0);
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    const deps = testDeps(project, { slotPollMs: 30 });
+    let polls = 0;
+    const sleep = deps.sleep;
+    deps.sleep = (ms) => {
+      if (stateOf("m1-a")?.state === "held") polls += 1;
+      if (polls === 4) rmSync(other, { force: true });
+      return sleep(ms);
+    };
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, deps, never())).toBe("success");
+    expect(polls).toBeGreaterThanOrEqual(4);
+
+    const events = readLaneEvents(runsRoot(), "m1-a");
+    expect(events.map((e) => [e.state, e.reason])).toEqual([
+      ["queued", undefined],
+      ["held", "no free slot"],
+      ["preparing", undefined],
+      ["running", undefined],
+      ["finished", undefined],
+    ]);
+    expect(events.every((e) => e.shepherdPid === process.pid)).toBe(true);
+    expect(events.map((e) => e.attempt)).toEqual([0, 0, 0, 1, 1]);
+    expect(events[4]?.endState).toBe("success");
+    expect(events.map((e) => Date.parse(e.at))).toEqual([...events.map((e) => Date.parse(e.at))].sort((a, b) => a - b));
+  });
+
+  it("logs a new reason in the same state as a change", async () => {
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    const worktreeRoot = join(project.root, ".arbab", "worktrees");
+    mkdirSync(worktreeRoot, { recursive: true });
+    const lock = join(project.home, "locks", writerLockKey(join(realpathSync(worktreeRoot), "m1-a")), "0.json");
+    mkdirSync(join(lock, ".."), { recursive: true });
+    writeFileSync(lock, JSON.stringify({ pid: process.pid, lane: "other", project: "/elsewhere", createdAt: new Date().toISOString() }));
+    const done = runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project, { slotPollMs: 30 }), never());
+    await until(() => (stateOf("m1-a")?.reason === "waiting for the writer lock" ? true : undefined));
+    await settle();
+    rmSync(lock);
+    expect(await done).toBe("success");
+    expect(readLaneEvents(runsRoot(), "m1-a").map((e) => [e.state, e.reason])).toEqual([
+      ["queued", undefined],
+      ["preparing", undefined],
+      ["preparing", "waiting for the writer lock"],
+      ["running", undefined],
+      ["finished", undefined],
+    ]);
+  });
+
+  it("gives the first attempt how long the run was held and prepared, and later attempts nothing", async () => {
+    project.cleanup();
+    project = makeProject({ maxParallel: 1 });
+    const other = occupySlot(0);
+    project.scenario({ fixture: "usage-limit", resumeFixture: fixture("resume-success") });
+    project.lane({ name: "m1-a" });
+    const deps = testDeps(project, { slotPollMs: 15_000 });
+    let polls = 0;
+    let atReset: { slots: string[]; locks: string[] } | null = null;
+    const sleep = deps.sleep;
+    deps.sleep = (ms) => {
+      const s = stateOf("m1-a");
+      if (s?.state === "held" && ms === 15_000 && ++polls === 2) rmSync(other, { force: true });
+      if (s?.state === "waiting-reset" && atReset === null) atReset = { slots: poolEntries("slots"), locks: lockEntries() };
+      return sleep(ms);
+    };
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, deps, never())).toBe("success");
+
+    const [first, second] = [1, 2].map((n) => readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", n)).started));
+    // Two virtual slot polls of 15 s each.
+    expect(first?.heldMs).toBeGreaterThanOrEqual(30_000);
+    expect(first?.heldMs).toBeLessThan(60_000);
+    expect(first?.prepareMs).toBeGreaterThanOrEqual(0);
+    expect(first?.prepareMs).toBeLessThan(30_000);
+    expect(second).not.toHaveProperty("heldMs");
+    expect(second).not.toHaveProperty("prepareMs");
+    // While it waits for the reset, the lane keeps its worktree's lock but not its slot.
+    expect(atReset).toEqual({ slots: [], locks: ["0.json"] });
+  });
+
+  it("copies the lane's inputs before the first attempt and names them in its started.json only", async () => {
+    const outside = join(project.dir, "outside");
+    mkdirSync(join(outside, "notes"), { recursive: true });
+    writeFileSync(join(outside, "spec.md"), "spec\n");
+    writeFileSync(join(outside, "notes", "a.txt"), "a\n");
+    project.scenario({ fixture: "usage-limit", resumeFixture: fixture("resume-success") });
+    // HOME is project.dir in testDeps.
+    project.lane({ name: "m1-a", inputs: [join(outside, "spec.md"), "~/outside/notes"] });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
+
+    const [first, second] = [1, 2].map((n) => readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", n)).started));
+    expect(first?.inputs).toEqual(["spec.md", "notes"]);
+    expect(second).not.toHaveProperty("inputs");
+    const copied = join(first?.cwd ?? "", ".arbab-tmp", "inputs");
+    expect(readFileSync(join(copied, "spec.md"), "utf8")).toBe("spec\n");
+    expect(readFileSync(join(copied, "notes", "a.txt"), "utf8")).toBe("a\n");
+    // Ignored, so the checkpoint commits none of it.
+    expect(mustGit(project.git, ["status", "--porcelain"], first?.cwd ?? "")).toBe("");
+  });
+
+  it("copies the inputs again on a later run, and fails setup on a refused input without starting a worker", async () => {
+    const spec = join(project.dir, "outside", "spec.md");
+    mkdirSync(join(spec, ".."), { recursive: true });
+    writeFileSync(spec, "v1\n");
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a", inputs: [spec] });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
+    writeFileSync(spec, "v2\n");
+    expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("success");
+    const cwd = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 2)).started).cwd;
+    expect(readFileSync(join(cwd, ".arbab-tmp", "inputs", "spec.md"), "utf8")).toBe("v2\n");
+
+    // An input the lane dropped does not stay readable.
+    project.lane({ name: "m1-a" });
+    expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("success");
+    expect(readdirSync(join(cwd, ".arbab-tmp", "inputs"))).toEqual([]);
+
+    project.lane({ name: "m1-a", inputs: ["~/.ssh/id_ed25519"] });
+    mkdirSync(join(project.dir, ".ssh"));
+    writeFileSync(join(project.dir, ".ssh", "id_ed25519"), "not a key\n");
+    expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("failed");
+    expect(stateOf("m1-a")).toMatchObject({ endState: "failed", attempt: 0, reason: expect.stringMatching(/^input ~\/\.ssh\/id_ed25519 is under ~\/\.ssh/) });
+    expect(attempts("m1-a")).toHaveLength(3);
+    expect(poolEntries("slots")).toEqual([]);
+    expect(lockEntries()).toEqual([]);
+    expect(poolEntries("shepherds")).toEqual([]);
+  });
+
+  it("refuses an input under one of config.credentialPaths", async () => {
+    project.cleanup();
+    project = makeProject({ credentialPaths: ["~/vault/**"] });
+    mkdirSync(join(project.dir, "vault"), { recursive: true });
+    writeFileSync(join(project.dir, "vault", "token"), "not a token\n");
+    project.scenario({ fixture: fixture("success-report") });
+    // HOME is project.dir in testDeps.
+    project.lane({ name: "m1-a", inputs: ["~/vault/token"] });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
+    expect(stateOf("m1-a")).toMatchObject({ endState: "failed", attempt: 0, reason: expect.stringMatching(/^input ~\/vault\/token is under ~\/vault/) });
+    expect(attempts("m1-a")).toHaveLength(0);
+  });
+
+  it("refuses a brief one of config.credentialPaths hits", async () => {
+    project.cleanup();
+    project = makeProject({ credentialPaths: ["lanes/brief.md"] });
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
+    expect(stateOf("m1-a")).toMatchObject({ endState: "failed", reason: expect.stringMatching(/brief: lanes\/brief\.md matches the credential path lanes\/brief\.md/) });
+    expect(attempts("m1-a")).toHaveLength(0);
+  });
+});
+
+describe("slotCap", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "arbab-cap-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+  const machine = (text: string): void => writeFileSync(join(home, "machine.json"), text);
+
+  it("is the project's maxParallel without machine.json", () => {
+    expect(slotCap(home, 4)).toBe(4);
+    expect(slotCap(join(home, "none"), 4)).toBe(4);
+  });
+
+  it("is the lower of the project's and the machine's", () => {
+    machine(JSON.stringify({ maxParallel: 2 }));
+    expect(slotCap(home, 4)).toBe(2);
+    machine(JSON.stringify({ maxParallel: 8 }));
+    expect(slotCap(home, 4)).toBe(4);
+    machine(JSON.stringify({ maxParallel: null }));
+    expect(slotCap(home, 4)).toBe(4);
+  });
+
+  it("keeps the project's value when machine.json does not parse or is invalid", () => {
+    for (const text of ["{", "[]", JSON.stringify({ maxParallel: 0 }), JSON.stringify({ maxParallel: 2, other: 1 })]) {
+      machine(text);
+      expect(slotCap(home, 4), text).toBe(4);
+    }
+  });
+});
+
 describe("usageLimitResetsAt", () => {
   const snap = (five: [number, number] | null, seven: [number, number] | null): RateLimitSnapshot => ({
     observedAt: "2026-10-09T10:00:00.000Z",
@@ -1213,9 +1527,9 @@ describe("resetSince", () => {
 });
 
 describe("ignoreEntries", () => {
-  it("lists the roots relative to the project with a trailing slash, without duplicates", () => {
-    expect(ignoreEntries("/p", defaultConfig())).toEqual([".arbab/worktrees/", ".arbab/runs/", ".arbab-tmp/"]);
-    expect(ignoreEntries("/p", { worktreeRoot: "./w/", runsRoot: "w" })).toEqual(["w/", ".arbab-tmp/"]);
+  it("is arbab's own list: .arbab/ as a whole, .arbab-tmp/, and roots outside .arbab/", () => {
+    expect(ignoreEntries("/p", defaultConfig())).toEqual([".arbab/", ".arbab-tmp/"]);
+    expect(ignoreEntries("/p", { worktreeRoot: "./w/", runsRoot: "w" })).toEqual([".arbab/", ".arbab-tmp/", "w/"]);
   });
 
   it("refuses a root outside the project", () => {

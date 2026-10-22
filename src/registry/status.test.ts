@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AttemptSummary, LaneStateRecord, StatusRow } from "../types";
 import { formatElapsed, formatStatusTable, statusRow } from "./index";
-import { formatWindows, isLive } from "./status";
+import { formatTokens, formatWhy, formatWindows, isLive } from "./status";
 
 const FIVE_RESET = 1791549000; // 12:30Z
 const SEVEN_RESET = 1792051200;
@@ -72,7 +72,23 @@ describe("statusRow", () => {
       costDeltaUsd: 1.23,
       fiveHour: { utilization: 0.62, resetsAt: FIVE_RESET },
       sevenDay: { utilization: 0.6, resetsAt: SEVEN_RESET },
+      owner: null,
+      reason: null,
+      tokens: null,
     });
+  });
+
+  it("carries the owner, the state's reason and the summary's tokens", () => {
+    const tokens = { input: 1000, cacheCreation: 200, cacheRead: 90_000, output: 40_000 };
+    const row = statusRow(record({ state: "held", reason: "no free slot" }), summary({ tokens }), 0, "session-a");
+    expect(row).toMatchObject({ owner: "session-a", reason: "no free slot", tokens });
+  });
+
+  it("ignores tokens that are not counts", () => {
+    const bad = { input: 1, cacheCreation: "2", cacheRead: 0, output: 3 } as unknown as AttemptSummary["tokens"];
+    expect(statusRow(record(), summary({ tokens: bad }), 0).tokens).toBeNull();
+    expect(statusRow(record(), summary({ tokens: { input: -1, cacheCreation: 0, cacheRead: 0, output: 0 } }), 0).tokens).toBeNull();
+    expect(statusRow(record(), summary({ tokens: null }), 0).tokens).toBeNull();
   });
 
   it("shows the summary's last tool", () => {
@@ -160,7 +176,7 @@ describe("formatStatusTable", () => {
   it("aligns columns and marks unknowns", () => {
     expect(formatStatusTable(rows, NOW_SEC)).toBe(
       [
-        "lane       state               attempt  elapsed  turns  calls  last tool  effort  failed  cost            quota",
+        "lane       state               attempt  elapsed  turns  calls  last tool  effort  failed  cost            quota            why",
         "m1-stream  finished (success)  1        12m03s   41     120    —          high    3       $1.23           5h 62% · 7d 60%",
         "m1-run     running             2        1h04m    7      15     Bash       —       0       $2.50 (Δ$0.40)  —",
         "m1-config  orphaned            1        —        0      0      —          —       0       —               —",
@@ -175,7 +191,51 @@ describe("formatStatusTable", () => {
 
   it("prints only the header without rows", () => {
     expect(formatStatusTable([], NOW_SEC)).toBe(
-      "lane  state  attempt  elapsed  turns  calls  last tool  effort  failed  cost  quota",
+      "lane  state  attempt  elapsed  turns  calls  last tool  effort  failed  cost  quota  why",
     );
+  });
+
+  it("shows tokens in the cost column when there is no cost, and the cost when there is one", () => {
+    const tokens = { input: 1200, cacheCreation: 5000, cacheRead: 900_000, output: 35_000 };
+    const killed = statusRow(record({ endState: "killed:wall" }), summary({ costUsd: null, costDeltaUsd: null, tokens, rateLimit: null }), 0);
+    expect(formatStatusTable([killed], NOW_SEC).split("\n")[1]).toMatch(/ 41\.2k tok {2}—$/);
+    const paid = statusRow(record(), summary({ tokens, rateLimit: null }), 0);
+    expect(formatStatusTable([paid], NOW_SEC).split("\n")[1]).toMatch(/ \$1\.23 {2}—$/);
+  });
+
+  it("shows the state's reason in the why column, on one line and cut to 40 characters", () => {
+    const held = statusRow(record({ state: "held", reason: "no free slot", endState: undefined }), null, 0);
+    const long = "dependencies failed (1):\n  ERR_PNPM_NO_LOCKFILE  Cannot install with frozen-lockfile";
+    const failed = statusRow(record({ lane: "x", endState: "failed", reason: long }), null, 0);
+    const lines = formatStatusTable([held, failed], NOW_SEC).split("\n");
+    expect(lines[1]).toMatch(/ no free slot$/);
+    const why = lines[2]?.split("  ").at(-1);
+    expect(why).toBe("dependencies failed (1): ERR_PNPM_NO_LO…");
+    expect(why).toHaveLength(40);
+  });
+});
+
+describe("formatTokens", () => {
+  const t = (input: number, cacheCreation = 0, output = 0) => ({ input, cacheCreation, cacheRead: 7_000_000, output });
+
+  it("adds input, cache creation and output, and leaves cache reads out", () => {
+    expect(formatTokens(t(0))).toBe("0 tok");
+    expect(formatTokens(t(500, 400, 99))).toBe("999 tok");
+    expect(formatTokens(t(1000))).toBe("1.0k tok");
+    expect(formatTokens(t(1200, 5000, 35_000))).toBe("41.2k tok");
+    expect(formatTokens(t(999_949))).toBe("999.9k tok");
+    expect(formatTokens(t(999_950))).toBe("1.0M tok");
+    expect(formatTokens(t(3_140_000))).toBe("3.1M tok");
+  });
+});
+
+describe("formatWhy", () => {
+  it("is empty without a reason and keeps a short one whole", () => {
+    expect(formatWhy(null)).toBe("");
+    expect(formatWhy(undefined)).toBe("");
+    expect(formatWhy("  ")).toBe("");
+    expect(formatWhy("quota 5h 91%")).toBe("quota 5h 91%");
+    expect(formatWhy("x".repeat(40))).toBe("x".repeat(40));
+    expect(formatWhy("x".repeat(41))).toBe(`${"x".repeat(39)}…`);
   });
 });

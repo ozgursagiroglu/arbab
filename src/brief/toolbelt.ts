@@ -1,4 +1,4 @@
-import { GIT_WRITE_VERBS } from "../profile/presets";
+import { DEFAULT_BASH_OUTPUT_MAX_CHARS, GIT_WRITE_VERBS } from "../profile/presets";
 import type { CompiledProfile, Lease } from "../types";
 import { envSuffix } from "../util/names";
 
@@ -67,6 +67,21 @@ export function toolBelt(profile: CompiledProfile, leases: Lease[], bashMaxTimeo
   } else {
     const commands = allowedCommands(profile.settings.permissions.allow);
     lines.push(commands.length > 0 ? `- Shell commands you may run: ${commands.join(", ")}.` : "- No shell command is allowed.");
+  }
+  if (hasBash) {
+    // Claude Code saves longer output under ~/.claude, which the fence denies (DESIGN.md §21).
+    const maxChars = profile.settings.bashOutputMaxChars ?? DEFAULT_BASH_OUTPUT_MAX_CHARS;
+    lines.push(
+      `- Bash output longer than ${maxChars} characters is saved to a file you cannot read: run one test file, use a ` +
+        "quiet reporter, or print only what you need.",
+      "- Quote paths that contain [ ] ( ), such as app/[slug]/page.tsx: unquoted, the shell or the permission check " +
+        "refuses them.",
+    );
+    // The Read tool's `**/.env*` deny still covers them; only the sandbox's allowRead re-opens them (DESIGN.md §21).
+    const templates = profile.settings.sandbox.filesystem?.allowRead ?? [];
+    if (templates.length > 0) {
+      lines.push(`- Tracked env templates ${templates.map(code).join(", ")} are readable by shell commands only.`);
+    }
   }
 
   const fileTools = profile.tools.filter((t) => FILE_TOOLS.includes(t));

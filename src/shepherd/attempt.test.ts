@@ -1,10 +1,23 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { defaultConfig, resolveRole } from "../config";
+import { compileProfile } from "../profile";
 import { DEFAULT_SCHEMAS } from "../report";
+import type { GitRunner } from "../run";
 import { ArbabError } from "../util/errors";
-import { elideSchema, laneSchema, previousSession, readRegistration, worktreeUsedFile } from "./attempt";
+import { elideSchema, laneSchema, previousSession, profileInput, readRegistration, startedFields, worktreeUsedFile } from "./attempt";
+
+// envFileAllowReads has its own tests; here only whether and how the attempt calls it matters.
+type EnvFileCall = { worktree: string; branch: string; gitCommonDir: string; readable: string[] };
+const envFileCalls = vi.hoisted(() => [] as EnvFileCall[]);
+vi.mock("../profile/envfiles", () => ({
+  envFileAllowReads: (input: EnvFileCall) => {
+    envFileCalls.push({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir, readable: input.readable });
+    return [`${input.worktree}/.env.example`];
+  },
+}));
 
 let dir: string;
 beforeEach(() => {
@@ -18,6 +31,73 @@ describe("elideSchema", () => {
   it("replaces only the value after --json-schema", () => {
     expect(elideSchema(["-p", "--json-schema", '{"type":"object"}', "-n", "x"])).toEqual(["-p", "--json-schema", "<schema>", "-n", "x"]);
     expect(elideSchema(["-p", "-n", "x"])).toEqual(["-p", "-n", "x"]);
+  });
+});
+
+describe("startedFields", () => {
+  it("adds nothing for a bare request, so started.json keeps its old shape", () => {
+    expect(startedFields({ kind: "start" })).toEqual({});
+    expect(startedFields({ kind: "resume", prompt: "go on" })).toEqual({});
+  });
+
+  it("records timing as heldMs and prepareMs, the inputs and the merged branches", () => {
+    expect(
+      startedFields({
+        kind: "start",
+        timing: { heldMs: 1500, prepareMs: 0 },
+        inputs: ["design", "handoff.md"],
+        merged: [{ branch: "arbab/a", sha: "a".repeat(40) }],
+      }),
+    ).toEqual({ heldMs: 1500, prepareMs: 0, inputs: ["design", "handoff.md"], merged: [{ branch: "arbab/a", sha: "a".repeat(40) }] });
+    expect(startedFields({ kind: "start", inputs: [] })).toEqual({ inputs: [] });
+  });
+});
+
+describe("profileInput", () => {
+  const git: GitRunner = () => ({ code: 0, stdout: "", stderr: "" });
+  const ctx = (fence: { readableEnvFiles: string[]; bashOutputMaxChars: number }) => {
+    const config = { ...defaultConfig(), fence };
+    return {
+      projectRoot: "/repo",
+      config,
+      lane: { name: "m1-a", role: "implementer" as const, brief: "b.md" },
+      role: resolveRole(config, "implementer"),
+      fence: "strict" as const,
+      leases: [],
+      worktree: "/repo/.arbab/worktrees/m1-a",
+      branch: "arbab/m1-a",
+      gitCommonDir: "/repo/.git",
+      deps: { git },
+    };
+  };
+
+  it("passes the fence options and does not look for env files when none are readable", () => {
+    envFileCalls.length = 0;
+    const input = profileInput(ctx({ readableEnvFiles: [], bashOutputMaxChars: 100000 }));
+    expect(input).toMatchObject({ readableEnvFiles: [], bashOutputMaxChars: 100000, envFileAllowReads: [] });
+    expect(input).not.toHaveProperty("envFileDenies");
+    expect(envFileCalls).toEqual([]);
+  });
+
+  it("asks envFileAllowReads, with the branch and git dir to verify the worktree by, for the templates to re-open", () => {
+    envFileCalls.length = 0;
+    const input = profileInput(ctx({ readableEnvFiles: [".env.example"], bashOutputMaxChars: 4000 }));
+    expect(input).toMatchObject({
+      readableEnvFiles: [".env.example"],
+      bashOutputMaxChars: 4000,
+      envFileAllowReads: ["/repo/.arbab/worktrees/m1-a/.env.example"],
+      worktree: "/repo/.arbab/worktrees/m1-a",
+    });
+    expect(input).not.toHaveProperty("envFileDenies");
+    expect(envFileCalls).toEqual([
+      { worktree: "/repo/.arbab/worktrees/m1-a", branch: "arbab/m1-a", gitCommonDir: "/repo/.git", readable: [".env.example"] },
+    ]);
+  });
+
+  it("passes the main checkout as projectRoot, so the relative credential denies are anchored there", () => {
+    const input = profileInput(ctx({ readableEnvFiles: [], bashOutputMaxChars: 100000 }));
+    expect(input.projectRoot).toBe("/repo");
+    expect(compileProfile(input).settings.permissions.deny).toContain("Read(//repo/**/.env*)");
   });
 });
 

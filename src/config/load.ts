@@ -1,9 +1,11 @@
-import { join, sep } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { INTEGRATIONS_DIR, TIERS } from "../types";
 import type { DependencyStrategy, ProjectConfig, Role, RoleDefaults, Tier } from "../types";
 import { isForbiddenWorkerEnv, isReservedEnv } from "../util/env-policy";
 import {
   argv,
+  boolean,
   confined,
   existingFile,
   fail,
@@ -20,6 +22,8 @@ import {
 } from "./check";
 
 export const CONFIG_FILE = "arbab.config.json";
+/** The config's place when the repository carries no arbab file, relative to the project root. */
+export const LOCAL_CONFIG_FILE = ".arbab/config.json";
 
 const TOP_LEVEL_KEYS: readonly (keyof ProjectConfig)[] = [
   "baseBranch",
@@ -42,6 +46,8 @@ const TOP_LEVEL_KEYS: readonly (keyof ProjectConfig)[] = [
   "verify",
   "review",
   "landing",
+  "fence",
+  "hostGates",
 ];
 
 /** Every default; a fresh object per call so callers may mutate the result. */
@@ -66,7 +72,9 @@ export function defaultConfig(): ProjectConfig {
     minClaudeVersion: "2.1.290",
     verify: { smoke: null },
     review: { lenses: {} },
-    landing: { tier: "medium" },
+    landing: { tier: "medium", squash: false },
+    fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
+    hostGates: [],
   };
 }
 
@@ -74,28 +82,47 @@ const SHELL_META = /[;&|`$<>()\\\n\r]/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const VERSION = /^\d+\.\d+\.\d+$/;
 
-/** Reads `<projectRoot>/arbab.config.json` (missing = all defaults) and returns a fully filled, validated config. */
+/**
+ * The config file loadConfig reads: `<root>/arbab.config.json`, else `<root>/.arbab/config.json` (a repository that
+ * carries no arbab file; DESIGN.md §21), else null. The root file wins when both exist.
+ */
+export function configPath(projectRoot: string): string | null {
+  for (const rel of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
+    const path = join(projectRoot, rel);
+    if (existsSync(path)) return path;
+  }
+  return null;
+}
+
+/** Reads the project's config file (configPath; missing = all defaults) and returns a fully filled, validated config. */
 export function loadConfig(projectRoot: string): ProjectConfig {
-  const raw = readJsonFile(join(projectRoot, CONFIG_FILE));
+  let raw: unknown = null;
+  let label = CONFIG_FILE;
+  for (const rel of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
+    raw = readJsonFile(join(projectRoot, rel));
+    label = rel;
+    if (raw !== null) break;
+  }
   const config = defaultConfig();
   if (raw === null) return config;
-  const obj = record(raw, CONFIG_FILE);
+  const obj = record(raw, label);
   knownKeys(obj, TOP_LEVEL_KEYS, "");
 
   if (obj.baseBranch !== undefined) config.baseBranch = ref(obj.baseBranch, "baseBranch");
   if (obj.worktreeRoot !== undefined) config.worktreeRoot = arbabRoot(projectRoot, obj.worktreeRoot, "worktreeRoot");
   if (obj.runsRoot !== undefined) config.runsRoot = arbabRoot(projectRoot, obj.runsRoot, "runsRoot");
+  // Before instructions, which are checked against them.
+  if (obj.credentialPaths !== undefined) config.credentialPaths = stringArray(obj.credentialPaths, "credentialPaths");
   if (obj.instructions !== undefined) {
     // Inlined into every prompt, so a symlink to a credential file must not get through.
     config.instructions = stringArray(obj.instructions, "instructions").map((p, i) =>
-      existingFile(projectRoot, p, `instructions[${i}]`),
+      existingFile(projectRoot, p, `instructions[${i}]`, config.credentialPaths),
     );
   }
   if (obj.dependencies !== undefined) config.dependencies = dependencies(obj.dependencies);
   if (obj.commands !== undefined) config.commands = commands(obj.commands);
   if (obj.env !== undefined) config.env = env(obj.env);
   if (obj.passEnv !== undefined) config.passEnv = passEnv(obj.passEnv);
-  if (obj.credentialPaths !== undefined) config.credentialPaths = stringArray(obj.credentialPaths, "credentialPaths");
   if (obj.resources !== undefined) config.resources = resources(obj.resources);
   if (obj.semaphores !== undefined) config.semaphores = semaphores(obj.semaphores);
   if (obj.gates !== undefined) config.gates = argvList(obj.gates, "gates");
@@ -124,10 +151,40 @@ export function loadConfig(projectRoot: string): ProjectConfig {
   }
   if (obj.landing !== undefined) {
     const l = record(obj.landing, "landing");
-    knownKeys(l, ["tier"], "landing");
-    if (l.tier !== undefined) config.landing = { tier: tier(l.tier) };
+    knownKeys(l, ["tier", "squash"], "landing");
+    if (l.tier !== undefined) config.landing = { ...config.landing, tier: tier(l.tier) };
+    if (l.squash !== undefined) config.landing = { ...config.landing, squash: boolean(l.squash, "landing.squash") };
   }
+  if (obj.fence !== undefined) config.fence = fence(obj.fence, config.fence);
+  if (obj.hostGates !== undefined) config.hostGates = argvList(obj.hostGates, "hostGates");
   return config;
+}
+
+function fence(v: unknown, defaults: ProjectConfig["fence"]): ProjectConfig["fence"] {
+  const obj = record(v, "fence");
+  knownKeys(obj, ["readableEnvFiles", "bashOutputMaxChars"], "fence");
+  const out = { ...defaults, readableEnvFiles: [...defaults.readableEnvFiles] };
+  if (obj.readableEnvFiles !== undefined) out.readableEnvFiles = readableEnvFiles(obj.readableEnvFiles);
+  if (obj.bashOutputMaxChars !== undefined) {
+    out.bashOutputMaxChars = integerIn(obj.bashOutputMaxChars, 4000, 128000, "fence.bashOutputMaxChars");
+  }
+  return out;
+}
+
+// Each entry lifts the env-file deny for one path, so it must name an env file inside the project and nothing wider.
+function readableEnvFiles(v: unknown): string[] {
+  const seen = new Set<string>();
+  return stringArray(v, "fence.readableEnvFiles").map((p, i) => {
+    const field = `fence.readableEnvFiles[${i}]`;
+    if (isAbsolute(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (/[\0\n\r]/.test(p)) fail(field, "must not contain NUL or a newline");
+    const segments = p.split(/[\\/]/);
+    if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
+    if (!(segments[segments.length - 1] ?? "").startsWith(".env")) fail(field, `${JSON.stringify(p)} must name a file starting with .env`);
+    if (seen.has(p)) fail(field, `${p} is listed twice`);
+    seen.add(p);
+    return p;
+  });
 }
 
 // A lens name becomes a lane-name suffix (<integration>-review-<lens>); its text goes into a reviewer's brief.
@@ -153,12 +210,58 @@ function tier(v: unknown): Tier {
 function arbabRoot(projectRoot: string, v: unknown, field: string): string {
   const s = nonEmptyString(v, field);
   const path = confined(projectRoot, s, field);
-  if (path === confined(projectRoot, ".", field)) fail(field, "must not be the project root");
-  // Integration records vouch for install points (depsConfirmedAt): no worker's worktree or run dir may overlap them.
+  const root = confined(projectRoot, ".", field);
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
-  const inside = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`);
-  if (inside(path, records) || inside(records, path)) fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  // Checked as written and again on the real paths, so a link to the root or into the records changes nothing.
+  checkArbabRoot(path, root, records, field);
+  // A lane worktree outside the project has no ancestor holding the project's config (inLaneWorktree), so a link
+  // inside the project must not lead out. A missing tail is fine: arbab creates it later as plain directories.
+  const real = realExisting(path);
+  const realRoot = realpathSync.native(projectRoot);
+  const rel = real === null ? ".." : relative(realRoot, real);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  if (real !== null) checkArbabRoot(real, realRoot, realExisting(records), field);
   return s;
+}
+
+// Case-insensitive file systems (macOS, Windows) take any spelling (`.ARBAB/Integrations`), so these checks ignore
+// case; where one does not, refusing a little more is the safe side.
+const fold = (path: string): string => path.toLowerCase();
+
+/** `path` is not the project root and does not overlap the integration records (when `records` is given). */
+function checkArbabRoot(path: string, root: string, records: string | null, field: string): void {
+  if (fold(path) === fold(root)) fail(field, "must not be the project root");
+  // Integration records vouch for install points (depsConfirmedAt): no worker's worktree or run dir may overlap them.
+  const inside = (a: string, b: string): boolean => {
+    const fa = fold(a);
+    const fb = fold(b);
+    return fa === fb || fa.startsWith(fb.endsWith(sep) ? fb : `${fb}${sep}`);
+  };
+  if (records !== null && (inside(path, records) || inside(records, path))) {
+    fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  }
+}
+
+// The real path of the deepest existing entry on the way to `path`, in the spelling on disk, with the missing tail
+// appended as written; null when that entry is a dangling link.
+function realExisting(path: string): string | null {
+  for (let p = path; ; p = dirname(p)) {
+    let present = true;
+    try {
+      lstatSync(p);
+    } catch {
+      present = false;
+    }
+    if (present) {
+      try {
+        const tail = relative(p, path);
+        return tail === "" ? realpathSync.native(p) : join(realpathSync.native(p), tail);
+      } catch {
+        return null;
+      }
+    }
+    if (dirname(p) === p) return null;
+  }
 }
 
 function dependencies(v: unknown): DependencyStrategy {

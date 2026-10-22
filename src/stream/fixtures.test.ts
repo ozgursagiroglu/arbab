@@ -112,6 +112,24 @@ describe("fixture digests", () => {
     expect(d.final?.resultText).toMatch(/^OK/);
   });
 
+  it("smoke-opus: tokens over both messages and the longest gap", () => {
+    const d = load("smoke-opus");
+    expect(d.tokens).toEqual({ input: 4, cacheCreation: 7742, cacheRead: 7603, output: 24 });
+    // 09:32:52.511 → 09:32:53.844 → 09:32:54.781; the system and rate-limit events carry no timestamp.
+    expect(d.maxGapMs).toBe(1_333);
+  });
+
+  it("research: a real stream with usage on every assistant message", () => {
+    const d = load("research");
+    expect(d.tokens).not.toBeNull();
+    expect(d.tokens?.output).toBeGreaterThan(0);
+    expect(d.maxGapMs).toBeGreaterThan(0);
+  });
+
+  it("unsupported-cli: no assistant message, no tokens", () => {
+    expect(load("unsupported-cli").tokens).toBeNull();
+  });
+
   it("research: WebFetch-heavy, StructuredOutput not counted", () => {
     const d = load("research");
     expect(d.toolCalls).toEqual({ WebFetch: 34, WebSearch: 4 });
@@ -159,6 +177,9 @@ describe("fixture digests", () => {
     expect(d.unparsedLines).toBe(1);
     expect(d.toolCalls).toEqual({ Bash: 1 });
     expect(d.lastTool).toBe("Bash");
+    // No usage anywhere, and the second timed event is the cut line: one timed event, no gap.
+    expect(d.tokens).toBeNull();
+    expect(d.maxGapMs).toBeNull();
   });
 
   it("refusals: one failure of each cause", () => {

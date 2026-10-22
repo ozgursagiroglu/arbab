@@ -74,5 +74,8 @@ export function buildAttemptSummary(input: AttemptSummaryInput): AttemptSummary 
     registration: input.registration,
     reportValid: input.reportValid,
     reportErrors: input.reportErrors,
+    // From the stream itself, so a killed attempt without a result still has them.
+    tokens: digest.tokens ? { ...digest.tokens } : null,
+    maxGapMs: digest.maxGapMs ?? null,
   };
 }

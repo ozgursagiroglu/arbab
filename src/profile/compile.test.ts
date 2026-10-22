@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { ROLE_DEFAULTS } from "../config/roles";
+import { workerTmpPaths } from "../run/workertmp";
 import type { ProfileInput, Role } from "../types";
 import { ArbabError } from "../util/errors";
 import { compileProfile } from "./compile";
@@ -178,6 +180,35 @@ describe("compileProfile, fence strict", () => {
     expect(deny.indexOf("Edit(~/.vault/**)")).toBeLessThan(deny.indexOf("Bash(run_in_background:true)"));
   });
 
+  it("anchors the relative credential patterns at home and at the normalised project root", () => {
+    const deny = compileProfile(input("implementer", { projectRoot: "/work/repo/./", credentialPaths: ["**/*.secret"] }))
+      .settings.permissions.deny;
+    expect(deny.slice(0, credentialDenies(["**/*.secret"], "/work/repo").length)).toEqual(
+      credentialDenies(["**/*.secret"], "/work/repo"),
+    );
+    for (const rule of ["Read(~/**/.env*)", "Edit(~/**/.env*)", "Read(//work/repo/**/.env*)", "Edit(//work/repo/**/.env*)"]) {
+      expect(deny).toContain(rule);
+    }
+    expect(deny).toContain("Read(//work/repo/**/*.secret)");
+    expect(deny).toContain("Edit(~/**/*.secret)");
+  });
+
+  it("adds only the home-anchored copies without a project root", () => {
+    const deny = compileProfile(input("implementer")).settings.permissions.deny;
+    expect(deny).toContain("Read(~/**/.env*)");
+    expect(deny.filter((r) => r.startsWith("Read(//") || r.startsWith("Edit(//"))).toEqual([]);
+  });
+
+  it.each(["relative/repo", "", "/"])("refuses the project root %j", (projectRoot) => {
+    let code: unknown;
+    try {
+      compileProfile(input("implementer", { projectRoot }));
+    } catch (err) {
+      code = err instanceof ArbabError ? err.code : err;
+    }
+    expect(code).toBe("usage");
+  });
+
   it("lets the fixed env keys win over config env", () => {
     const env = compileProfile(
       input("implementer", {
@@ -190,6 +221,93 @@ describe("compileProfile, fence strict", () => {
       BASH_DEFAULT_TIMEOUT_MS: "300000",
       BASH_MAX_TIMEOUT_MS: "900000",
       XDG_CONFIG_HOME: `${WORKTREE}/.arbab-tmp/xdg-config`,
+      YARN_CACHE_FOLDER: `${WORKTREE}/.arbab-tmp/yarn-cache`,
+      NPM_CONFIG_USERCONFIG: `${WORKTREE}/.arbab-tmp/npmrc`,
+    });
+  });
+
+  it("points the package managers' homes at the worker's temp paths, over config env", () => {
+    const tmp = workerTmpPaths(WORKTREE);
+    const env = compileProfile(
+      input("reviewer", { env: { XDG_CONFIG_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" } }),
+    ).settings.env;
+    expect(env["XDG_CONFIG_HOME"]).toBe(tmp.xdgConfig);
+    expect(env["YARN_CACHE_FOLDER"]).toBe(tmp.yarnCache);
+    expect(env["NPM_CONFIG_USERCONFIG"]).toBe(tmp.npmrc);
+  });
+
+  it("leaves XDG_DATA_HOME and XDG_CACHE_HOME alone, so corepack and pnpm find their caches", () => {
+    for (const role of ["implementer", "reviewer", "researcher"] as const) {
+      const env = compileProfile(input(role)).settings.env;
+      expect("XDG_DATA_HOME" in env, role).toBe(false);
+      expect("XDG_CACHE_HOME" in env, role).toBe(false);
+    }
+    // A value the config sets on purpose passes through untouched.
+    const env = compileProfile(input("reviewer", { env: { XDG_DATA_HOME: "/d", XDG_CACHE_HOME: "/c" } })).settings.env;
+    expect(env["XDG_DATA_HOME"]).toBe("/d");
+    expect(env["XDG_CACHE_HOME"]).toBe("/c");
+  });
+
+  it("carries bashOutputMaxChars only when the input names it", () => {
+    expect(compileProfile(input("implementer", { bashOutputMaxChars: 100000 })).settings.bashOutputMaxChars).toBe(100000);
+    expect(compileProfile(input("reviewer", { bashOutputMaxChars: 4000 })).settings.bashOutputMaxChars).toBe(4000);
+    expect("bashOutputMaxChars" in compileProfile(input("implementer")).settings).toBe(false);
+  });
+
+  it("lets the reviewer preset bind loopback, so its tests can listen on 127.0.0.1", () => {
+    const reviewer = ROLE_DEFAULTS.reviewer;
+    const profile = compileProfile(input("reviewer", { tools: [...reviewer.tools], loopback: reviewer.loopback }));
+    expect(profile.settings.sandbox.network.allowLocalBinding).toBe(true);
+  });
+
+  describe("readable env templates", () => {
+    const TEMPLATES = [`${WORKTREE}/.env.example`, `${WORKTREE}/apps/web/.env.sample`];
+
+    it("leaves the deny list identical with and without readable templates", () => {
+      const plain = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git" })).settings.permissions.deny;
+      for (const over of [
+        { readableEnvFiles: [".env.example"] },
+        { readableEnvFiles: [".env.example", "apps/web/.env.sample"], envFileAllowReads: TEMPLATES },
+      ]) {
+        const deny = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git", ...over })).settings.permissions.deny;
+        expect(deny).toEqual(plain);
+        expect(deny).toContain("Read(**/.env*)");
+        expect(deny).toContain("Edit(**/.env*)");
+      }
+    });
+
+    it("re-opens the tracked templates in the sandbox's allowRead, beside denyWrite", () => {
+      const profile = compileProfile(
+        input("implementer", {
+          gitCommonDir: "/work/repo/.git",
+          readableEnvFiles: [".env.example", "apps/web/.env.sample"],
+          envFileAllowReads: [...TEMPLATES, `${WORKTREE}/apps/./web/.env.sample`],
+        }),
+      );
+      expect(profile.settings.sandbox.filesystem).toEqual({ denyWrite: ["/work/repo/.git"], allowRead: TEMPLATES });
+    });
+
+    it("keeps allowRead as it is when the project root anchors the env deny", () => {
+      const over = { gitCommonDir: "/work/repo/.git", readableEnvFiles: [".env.example"], envFileAllowReads: TEMPLATES };
+      const plain = compileProfile(input("implementer", over));
+      const anchored = compileProfile(input("implementer", { ...over, projectRoot: "/work/repo" }));
+      expect(anchored.settings.sandbox).toEqual(plain.settings.sandbox);
+      expect(anchored.settings.permissions.deny).toContain("Read(//work/repo/**/.env*)");
+    });
+
+    it("writes allowRead without a shared git directory, and no allowRead without templates", () => {
+      expect(compileProfile(input("implementer", { envFileAllowReads: TEMPLATES })).settings.sandbox.filesystem).toEqual({
+        denyWrite: [],
+        allowRead: TEMPLATES,
+      });
+      const none = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git", envFileAllowReads: [] }));
+      expect(none.settings.sandbox.filesystem).toEqual({ denyWrite: ["/work/repo/.git"] });
+    });
+
+    it("refuses a template path that is relative or outside the worktree", () => {
+      for (const path of [".env.example", "/work/repo/.env.example", `${WORKTREE}/../lane-b/.env.example`, WORKTREE]) {
+        expect(() => compileProfile(input("implementer", { envFileAllowReads: [path] }))).toThrow(ArbabError);
+      }
     });
   });
 

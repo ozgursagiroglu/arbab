@@ -1,2 +1,2 @@
-export { confirmCommand, confirmDeps, integrate, integrationPaths, listIntegrations, readIntegration } from "./integrate";
-export type { IntegrateInput, IntegrateResult, IntegrationPaths } from "./integrate";
+export { adoptIntegration, confirmCommand, confirmDeps, integrate, integrationPaths, listIntegrations, readIntegration, refreshIntegration } from "./integrate";
+export type { AdoptInput, IntegrateInput, IntegrateResult, IntegrationPaths } from "./integrate";

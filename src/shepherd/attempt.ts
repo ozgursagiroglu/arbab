@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { resolveBinary } from "../binary";
-import { buildClaudeArgs, compileProfile, lintProfile, workerEnv } from "../profile";
+import { buildClaudeArgs, compileProfile, envFileAllowReads, lintProfile, workerEnv } from "../profile";
 import { updateQuota } from "../quota";
 import { attemptFiles, createAttempt, listAttempts, readAttempt, runPaths } from "../registry";
 import { DEFAULT_SCHEMAS, validate } from "../report";
@@ -48,7 +48,7 @@ import { confine, createExclusive, readJson, readText } from "../util/fs";
 import { isoAt } from "../util/proc";
 import type { ShepherdDeps } from "./index";
 import type { MergedBranch } from "./merge";
-import { buildBrief, CONTINUATION_PROMPT } from "./prompt";
+import { buildBrief, CONTINUATION_PROMPT, type BriefInput } from "./prompt";
 
 /** Everything one attempt needs from the lane's supervision. */
 export interface AttemptContext {
@@ -81,10 +81,23 @@ export interface AttemptRequest {
   headStart?: string;
   /** The branches merged into the worktree before this attempt, recorded in its started.json. */
   merged?: MergedBranch[];
+  /** On a run's first attempt: how long the run was held and how long it prepared, in ms (started.json). */
+  timing?: { heldMs: number; prepareMs: number };
+  /** The lane inputs copied into `.arbab-tmp/inputs/`, by name: recorded in started.json and listed in the brief. */
+  inputs?: string[];
 }
 
 /** started.json: the contract's fields, plus the merged branches of an attempt whose worktree was set up by merges. */
 export type StartedRecord = AttemptStarted & { merged?: MergedBranch[] };
+
+/** What a request adds to started.json; each field only when the request carries it, so older readers see nothing new. */
+export function startedFields(request: AttemptRequest): Pick<StartedRecord, "merged" | "heldMs" | "prepareMs" | "inputs"> {
+  return {
+    ...(request.merged === undefined ? {} : { merged: request.merged }),
+    ...(request.timing === undefined ? {} : { heldMs: request.timing.heldMs, prepareMs: request.timing.prepareMs }),
+    ...(request.inputs === undefined ? {} : { inputs: request.inputs }),
+  };
+}
 
 export interface AttemptOutcome {
   n: number;
@@ -169,8 +182,14 @@ export function previousSession(runsRoot: string, lane: string): PreviousSession
   return { sessionId: latest.sessionId, binary: latest.binary, costUsd: withCost?.summary?.costUsd ?? null };
 }
 
-function profileInput(ctx: AttemptContext): ProfileInput {
+/** The fence's input for an attempt: the lane's role and config, the worktree, and the env-file options. */
+export function profileInput(
+  ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "branch" | "gitCommonDir" | "projectRoot"> & {
+    deps: Pick<AttemptContext["deps"], "git">;
+  },
+): ProfileInput {
   const { config, lane, role } = ctx;
+  const readable = config.fence.readableEnvFiles;
   return {
     role: lane.role,
     fence: ctx.fence,
@@ -182,6 +201,15 @@ function profileInput(ctx: AttemptContext): ProfileInput {
     env: { ...config.env, ...leaseEnv(ctx.leases) },
     worktree: ctx.worktree,
     gitCommonDir: ctx.gitCommonDir,
+    // Anchors the relative credential denies at the main checkout, whose .env files the sandbox would not cover.
+    projectRoot: ctx.projectRoot,
+    readableEnvFiles: readable,
+    bashOutputMaxChars: config.fence.bashOutputMaxChars,
+    // Listed templates cost a git call; with none listed there is nothing to re-open.
+    envFileAllowReads:
+      readable.length === 0
+        ? []
+        : envFileAllowReads({ worktree: ctx.worktree, branch: ctx.branch, gitCommonDir: ctx.gitCommonDir, readable, git: ctx.deps.git }),
   };
 }
 
@@ -246,20 +274,20 @@ export async function runAttempt(ctx: AttemptContext, request: AttemptRequest): 
   const profile = profileFor(ctx);
   const schema = laneSchema(ctx.projectRoot, lane);
   const sessionId = previous?.sessionId ?? randomUUID();
-  const prompt = resume
-    ? (request.prompt ?? CONTINUATION_PROMPT)
-    : buildBrief({
-        projectRoot: ctx.projectRoot,
-        runsRoot,
-        config: ctx.config,
-        lane,
-        branch: ctx.branch,
-        worktree: ctx.worktree,
-        profile,
-        leases: ctx.leases,
-        schema,
-        ...(request.headStart === undefined ? {} : { headStart: request.headStart }),
-      });
+  const briefInput: BriefInput = {
+    projectRoot: ctx.projectRoot,
+    runsRoot,
+    config: ctx.config,
+    lane,
+    branch: ctx.branch,
+    worktree: ctx.worktree,
+    profile,
+    leases: ctx.leases,
+    schema,
+    ...(request.headStart === undefined ? {} : { headStart: request.headStart }),
+    ...(request.inputs === undefined || request.inputs.length === 0 ? {} : { inputs: request.inputs }),
+  };
+  const prompt = resume ? (request.prompt ?? CONTINUATION_PROMPT) : buildBrief(briefInput);
   const env = workerEnv(deps.hostEnv, {
     passEnv: ctx.config.passEnv,
     extra: {},
@@ -350,7 +378,7 @@ export async function runAttempt(ctx: AttemptContext, request: AttemptRequest): 
     args: elideSchema(args),
     envKeys: Object.keys(env).sort(),
     leases: ctx.leases,
-    ...(request.merged === undefined ? {} : { merged: request.merged }),
+    ...startedFields(request),
   };
   let registration: Registration = null;
   const watcher = createWatcher({

@@ -1,9 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ReadinessReport, ReviewRecord } from "../types";
-import { readReadinessReport, readReviewRecord, readVerifyRecord } from "./records";
+import { readReadinessReport, readReviewHistory, readReviewRecord, readVerifyRecord } from "./records";
 import { passedVerify } from "./testkit";
 
 let dir: string;
@@ -64,6 +64,45 @@ describe("readReviewRecord", () => {
     expect(() => readReviewRecord(bad({ severity: "CRITICAL" }), "rel")).toThrow(/not a review record/);
     expect(() => readReviewRecord(bad({ line: "3" }), "rel")).toThrow(/not a review record/);
     expect(() => readReviewRecord(file([review]), "rel")).toThrow(/not a review record/);
+  });
+
+  it("reads round and since when present, as a record from before them, and refuses ones that do not fit", () => {
+    expect(readReviewRecord(file(review), "rel")).not.toHaveProperty("round");
+    expect(readReviewRecord(file({ ...review, round: 2, since: "d".repeat(40) }), "rel")).toMatchObject({ round: 2, since: "d".repeat(40) });
+    expect(readReviewRecord(file({ ...review, round: 1, since: null }), "rel")?.since).toBeNull();
+    for (const bad of [{ round: 0 }, { round: 1.5 }, { round: "1" }, { since: 7 }]) {
+      expect(() => readReviewRecord(file({ ...review, ...bad }), "rel")).toThrow(/not a review record/);
+    }
+  });
+});
+
+describe("readReviewHistory", () => {
+  const integrationDir = (): string => join(dir, "rel");
+  const round = (n: number, value: unknown): void => {
+    mkdirSync(join(integrationDir(), "reviews"), { recursive: true });
+    writeFileSync(join(integrationDir(), "reviews", `${n}.json`), JSON.stringify(value));
+  };
+
+  it("reads every round by round, and nothing before the first", () => {
+    expect(readReviewHistory(integrationDir())).toEqual([]);
+    round(2, { ...review, round: 2, headSha: "d".repeat(40) });
+    round(1, { ...review, round: 1 });
+    round(10, { ...review, round: 10 });
+    writeFileSync(join(integrationDir(), "reviews", "notes.txt"), "not a round");
+    expect(readReviewHistory(integrationDir()).map((r) => [r.round, r.headSha])).toEqual([
+      [1, "c".repeat(40)],
+      [2, "d".repeat(40)],
+      [10, "c".repeat(40)],
+    ]);
+  });
+
+  it("refuses a round file of another round, another integration or no record", () => {
+    round(1, { ...review, round: 2 });
+    expect(() => readReviewHistory(integrationDir())).toThrow(/is not the review record of round 1/);
+    round(1, { ...review, round: 1, name: "other" });
+    expect(() => readReviewHistory(integrationDir())).toThrow(/not a review record for rel/);
+    round(1, review);
+    expect(() => readReviewHistory(integrationDir())).toThrow(/is not the review record of round 1/);
   });
 });
 

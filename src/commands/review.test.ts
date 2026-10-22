@@ -1,10 +1,17 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { IntegrationRecord, LaneSpec, ReviewFinding, ReviewRecord } from "../types";
+import { credentialMatcher } from "../profile";
+import { listWaiters } from "../registry";
+import type { IntegrationRecord, LaneSpec, ReviewFinding, ReviewRecord, WaiterEntry } from "../types";
 import { runIntegrate } from "./integrate";
-import { applyLensVerdicts, formatFindings, formatReview, reviewLenses, runReview } from "./review";
-import { DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, type LaneRun, type TestProject } from "./testkit";
+import { LAUNCH_POLL_MS } from "./launch";
+import { readReviewHistory } from "./records";
+import { applyLensVerdicts, formatFindings, formatReview, readLensFiles, reviewLenses, runReview, sinceCommit } from "./review";
+import { CLI_PID, DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -43,6 +50,86 @@ describe("reviewLenses", () => {
     expect(reviewLenses("perf,security,perf", { perf: "slow paths" })).toEqual(["perf", "security"]);
     expect(() => reviewLenses("speed", {})).toThrow(/unknown lens speed \(known: correctness, security, contracts\)/);
     expect(() => reviewLenses(",", {})).toThrow(/names no lens/);
+  });
+});
+
+describe("readLensFiles", () => {
+  const plain = credentialMatcher([], []);
+
+  it("reads each lens's file, project-relative or absolute inside the project, trimmed", () => {
+    p = makeProject({ files: { "lenses/perf.md": "  Hot paths.\n", "lenses/abs.md": "Absolute." } });
+    const abs = join(p.root, "lenses", "abs.md");
+    expect(readLensFiles(p.root, ["perf=lenses/perf.md", `security=${abs}`], plain)).toEqual({ perf: "Hot paths.", security: "Absolute." });
+    expect(readLensFiles(p.root, [], plain)).toEqual({});
+    expect(() => readLensFiles(p.root, ["perf=lenses"], plain)).toThrow(/cannot read the file of lens perf, lenses/);
+    expect(() => readLensFiles(p.root, ["perf=lenses/missing.md"], plain)).toThrow(/the file of lens perf, lenses\/missing.md, does not exist/);
+  });
+
+  it("refuses a file outside the project, by path or through a symlink, and a credential file in any case", () => {
+    p = makeProject();
+    p.write(".env.local", "TOKEN=x\n");
+    p.write("config/.ENV", "TOKEN=x\n");
+    p.write("x.pem", "KEY\n");
+    p.write("db.secret", "TOKEN=x\n");
+    const outside = join(p.dir, "outside.md");
+    writeFileSync(outside, "Outside.");
+    symlinkSync(outside, join(p.root, "link.md"));
+    symlinkSync(join(p.root, ".env.local"), join(p.root, "env-link.md"));
+    symlinkSync(join(p.root, "x.pem"), join(p.root, "pem-link.md"));
+    symlinkSync(join(p.root, "db.secret"), join(p.root, "secret-link.md"));
+    const usage = (message: RegExp) => ({ code: "usage", message: expect.stringMatching(message) });
+    const read = (option: string) => () => readLensFiles(p.root, [option], credentialMatcher(["**/*.secret"], []));
+    expect(read(`perf=${outside}`)).toThrow(expect.objectContaining(usage(/--lens-file perf=.*must be inside the project root/)));
+    expect(read("perf=../outside.md")).toThrow(expect.objectContaining(usage(/must be inside the project root/)));
+    expect(read("perf=link.md")).toThrow(expect.objectContaining(usage(/a symlink in it may not lead out/)));
+    const named = (label: string): RegExp => new RegExp(`is named like a credential file \\(${label.replace(/\./g, "\\.")}\\); a credential file is not a lens$`);
+    expect(read("perf=.env.local")).toThrow(expect.objectContaining(usage(named(".env.local"))));
+    expect(read(`perf=${join(p.root, "config", ".ENV")}`)).toThrow(expect.objectContaining(usage(named(".ENV"))));
+    expect(read("perf=x.pem")).toThrow(expect.objectContaining(usage(named("x.pem"))));
+    expect(read("perf=db.secret")).toThrow(expect.objectContaining(usage(named("db.secret"))));
+    expect(read("perf=env-link.md")).toThrow(expect.objectContaining(usage(/resolves to .*\.env\.local, which is named like a credential file/)));
+    expect(read("perf=pem-link.md")).toThrow(expect.objectContaining(usage(/resolves to .*x\.pem, which is named like a credential file/)));
+    expect(read("perf=secret-link.md")).toThrow(expect.objectContaining(usage(/resolves to .*db\.secret, which is named like a credential file/)));
+  });
+
+  it("refuses what a ~/ rule covers only with the home given", () => {
+    p = makeProject({ files: { "vault/perf.md": "Hot paths." } });
+    const rule = ["~/repo/vault/**"];
+    expect(() => readLensFiles(p.root, ["perf=vault/perf.md"], credentialMatcher(rule, [dirname(p.root)]))).toThrow(
+      /--lens-file perf=vault\/perf\.md: the file is under ~\/repo\/vault, where credentials live; a credential file is not a lens/,
+    );
+    expect(readLensFiles(p.root, ["perf=vault/perf.md"], credentialMatcher(rule, []))).toEqual({ perf: "Hot paths." });
+  });
+
+  it("reads a lens file in a project under a directory named like a credential, and still refuses one inside it", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "arbab-"));
+    try {
+      for (const parent of [".envs", "x.key"]) {
+        const root = join(tmp, parent, "app");
+        mkdirSync(join(root, "lenses"), { recursive: true });
+        writeFileSync(join(root, "lenses", "perf.md"), "Hot paths.");
+        writeFileSync(join(root, ".env"), "TOKEN=x\n");
+        expect(readLensFiles(root, ["perf=lenses/perf.md"], plain), parent).toEqual({ perf: "Hot paths." });
+        expect(readLensFiles(root, [`perf=${join(root, "lenses", "perf.md")}`], plain), parent).toEqual({ perf: "Hot paths." });
+        expect(() => readLensFiles(root, ["perf=.env"], plain), parent).toThrow(/is named like a credential file \(\.env\); a credential file is not a lens$/);
+        // Reached through a link, the real path is checked below the project's real path.
+        symlinkSync(root, join(tmp, `${parent}-link`));
+        expect(readLensFiles(join(tmp, `${parent}-link`), ["perf=lenses/perf.md"], plain), parent).toEqual({ perf: "Hot paths." });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("sinceCommit", () => {
+  it("resolves an ancestor of the head to its sha", () => {
+    p = makeProject();
+    const base = p.ok(["rev-parse", "main"]).trim();
+    const head = branchWith(p, "next", "n.txt", "n\n");
+    expect(sinceCommit(p.git, p.root, "main", head)).toBe(base);
+    expect(() => sinceCommit(p.git, p.root, "next", base)).toThrow(/is not an ancestor of the integration head/);
+    expect(() => sinceCommit(p.git, p.root, "", head)).toThrow(/is not a commit/);
   });
 });
 
@@ -208,6 +295,24 @@ describe("runReview", () => {
     expect(record.findings.map((f) => f.verdict)).toEqual(["unverified"]);
   });
 
+  it("is a waiter of its session while it waits for the reviewers and the skeptics, and no longer once it returns", async () => {
+    p = await integrated();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    simulateShepherds(p, { "rel-review-security": reviewer([finding("leak", "HIGH", 1)]) });
+    const seen: Array<{ launched: number; waiters: WaiterEntry[] }> = [];
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      if (ms !== LAUNCH_POLL_MS) seen.push({ launched: p.spawned.length, waiters: listWaiters(p.home, p.ctx.alive) });
+      await sleep(ms);
+    };
+    expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    // The skeptic's wait: the reviewer finished at once, so every tick is while the skeptic runs.
+    expect(seen.map((s) => s.launched)).toContain(2);
+    for (const tick of seen) expect(tick.waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+  });
+
   it("refuses unconfirmed manifest changes as verify does, whatever the dependency strategy, launching nothing", async () => {
     for (const dependencies of [{ strategy: "command", command: ["true"] }, { strategy: "none" }]) {
       p = await integrated({ dependencies }, true);
@@ -262,6 +367,174 @@ describe("runReview", () => {
     simulateShepherds(p, {});
     await expect(runReview(["rel", "--lenses", "speed"], p.ctx)).rejects.toMatchObject({ code: "usage" });
     expect(p.spawned).toEqual([]);
+  });
+
+  it("keeps every round in reviews/<round>.json beside review.json, which holds the latest", async () => {
+    p = await integrated();
+    simulateShepherds(p, { "rel-review-security": reviewer([finding("leak", "LOW", 1)]) });
+    expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    const latest = readRecord<ReviewRecord>(join(dir(p), "review.json"));
+    expect(latest).toMatchObject({ round: 2, since: null });
+    expect(readRecord<ReviewRecord>(join(dir(p), "reviews", "2.json"))).toEqual(latest);
+    expect(readReviewHistory(dir(p)).map((r) => [r.round, r.findings.length])).toEqual([
+      [1, 1],
+      [2, 1],
+    ]);
+    // The second round ran its reviewer again: the first was taken into a record.
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-security", "rel-review-security"]);
+  });
+
+  it("keeps the other lenses of the previous review of the same head on a --lenses run, and drops them for a new head", async () => {
+    p = await integrated();
+    simulateShepherds(p, {
+      "rel-review-correctness": reviewer([finding("off by one", "MEDIUM", 1)]),
+      "rel-review-security": reviewer([finding("leak", "HIGH", 2)]),
+      "rel-review-contracts": reviewer([]),
+      "rel-skeptic-correctness": () => ({
+        state: "finished",
+        endState: "success",
+        report: { verdicts: [{ id: "correctness-1", refuted: false, corrected_severity: "HIGH", reasoning: "real" }] },
+      }),
+      "rel-skeptic-security": () => ({
+        state: "finished",
+        endState: "success",
+        report: { verdicts: [{ id: "security-1", refuted: true, corrected_severity: "NONE", reasoning: "no" }] },
+      }),
+    });
+    expect(await runReview(["rel"], p.ctx)).toBe(0);
+
+    simulateShepherds(p, { "rel-review-security": reviewer([]) });
+    expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    const kept = readRecord<ReviewRecord>(join(dir(p), "review.json"));
+    expect(kept.round).toBe(2);
+    expect(kept.lenses.map((l) => l.lens)).toEqual(["correctness", "security", "contracts"]);
+    expect(kept.skeptics.map((s) => s.lane)).toEqual(["rel-skeptic-correctness"]);
+    expect(kept.findings.map((f) => [f.id, f.severity, f.verdict])).toEqual([["correctness-1", "HIGH", "confirmed"]]);
+
+    branchWith(p, "arbab/b", "b.txt", "b\n");
+    expect(await runIntegrate(["rel", "--lanes", "b"], p.ctx)).toBe(0);
+    expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    const fresh = readRecord<ReviewRecord>(join(dir(p), "review.json"));
+    expect(fresh.lenses.map((l) => l.lens)).toEqual(["security"]);
+    expect(fresh.findings).toEqual([]);
+    expect(readReviewHistory(dir(p)).map((r) => r.lenses.length)).toEqual([3, 3, 1]);
+  });
+
+  it("adds a --lens-file lens for this run only, and lets one replace a built-in's text", async () => {
+    p = await integrated({ review: { lenses: { docs: "Stale docs." } } });
+    p.write("lenses/perf.md", "\n## Perf\nHot paths and N+1 queries.\n");
+    const security = join(p.root, "lenses", "security-lens.md");
+    writeFileSync(security, "Only the token handling.");
+    simulateShepherds(p, {});
+    expect(await runReview(["rel", "--lens-file", "perf=lenses/perf.md", "--lens-file", `security=${security}`, "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-correctness", "rel-review-security", "rel-review-contracts", "rel-review-docs", "rel-review-perf"]);
+    const brief = (lens: string): string => readFileSync(join(dir(p), "lanes", `rel-review-${lens}.md`), "utf8");
+    expect(brief("perf")).toContain("> ## Perf\n> Hot paths and N+1 queries.");
+    expect(brief("security")).toContain("> Only the token handling.");
+    expect(brief("security")).not.toContain("Fence escapes");
+    // The config is untouched.
+    expect(readFileSync(join(p.root, "arbab.config.json"), "utf8")).not.toMatch(/perf|token/);
+  });
+
+  it("refuses a --lens-file that is malformed, missing, outside, a credential file, empty, too long, given twice or not run", async () => {
+    // The user's home is the parent of ctx.home (~/.arbab): the project's parent here.
+    p = await integrated({ credentialPaths: ["**/*.secret", "~/repo/vault/**"] });
+    simulateShepherds(p, {});
+    p.write("empty.md", " \n");
+    p.write("long.md", "x".repeat(8_001));
+    p.write("ok.md", "Look for x.");
+    p.write(".ENV", "TOKEN=x\n");
+    p.write("x.pem", "KEY\n");
+    p.write("db.secret", "TOKEN=x\n");
+    p.write("vault/perf.md", "Hot paths.");
+    symlinkSync(join(p.root, "x.pem"), join(p.root, "pem-link.md"));
+    const outside = join(p.dir, "outside.md");
+    writeFileSync(outside, "Outside.");
+    const refused = async (args: string[], message: RegExp): Promise<void> => {
+      await expect(runReview(["rel", ...args], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(message) });
+    };
+    await refused(["--lens-file", "perf"], /must be <name>=<file>/);
+    await refused(["--lens-file", "Perf=ok.md"], /^lens "Perf" must match/);
+    await refused(["--lens-file", "perf=none.md"], /the file of lens perf, none\.md, does not exist/);
+    await refused(["--lens-file", "perf=../outside.md"], /must be inside the project root/);
+    await refused(["--lens-file", `perf=${outside}`], /must be inside the project root/);
+    await refused(["--lens-file", "perf=.ENV"], /is named like a credential file \(\.ENV\); a credential file is not a lens/);
+    await refused(["--lens-file", "perf=x.pem"], /is named like a credential file \(x\.pem\)/);
+    await refused(["--lens-file", "perf=db.secret"], /is named like a credential file \(db\.secret\)/);
+    await refused(["--lens-file", "perf=pem-link.md"], /resolves to .*x\.pem, which is named like a credential file/);
+    await refused(["--lens-file", "perf=vault/perf.md"], /is under ~\/repo\/vault, where credentials live/);
+    await refused(["--lens-file", "perf=empty.md"], /has 0 characters/);
+    await refused(["--lens-file", "perf=long.md"], /has 8001 characters/);
+    await refused(["--lens-file", "perf=ok.md", "--lens-file", "perf=ok.md"], /names lens perf twice/);
+    await refused(["--lens-file", "perf=ok.md", "--lenses", "security"], /--lens-file gives perf, which --lenses does not run/);
+    await refused(["--lens-file", `${"x".repeat(37)}=ok.md`], /49 characters/);
+    expect(p.spawned).toEqual([]);
+  });
+
+  it("--since reviews what changed since an ancestor of the head, and records it", async () => {
+    p = await integrated();
+    const first = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
+    branchWith(p, "arbab/b", "b.txt", "b\n");
+    expect(await runIntegrate(["rel", "--lanes", "b"], p.ctx)).toBe(0);
+    simulateShepherds(p, {
+      "rel-review-security": reviewer([finding("leak", "HIGH", 1)]),
+      "rel-skeptic-security": () => ({ state: "finished", endState: "success", report: { verdicts: [] } }),
+    });
+    expect(await runReview(["rel", "--lenses", "security", "--since", first.slice(0, 12)], p.ctx)).toBe(0);
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json")).since).toBe(first);
+    for (const lane of ["rel-review-security", "rel-skeptic-security"]) {
+      expect(readFileSync(join(dir(p), "lanes", `${lane}.md`), "utf8")).toContain(`git diff ${first}..HEAD`);
+    }
+    expect(readFileSync(join(dir(p), "lanes", "rel-review-security.md"), "utf8")).toContain("this round covers only what changed since");
+  });
+
+  it("refuses a --since that is not a commit, not an ancestor of the head, or the head itself", async () => {
+    p = await integrated();
+    const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
+    const elsewhere = branchWith(p, "other", "o.txt", "o\n");
+    simulateShepherds(p, {});
+    await expect(runReview(["rel", "--since", "nope"], p.ctx)).rejects.toMatchObject({ code: "usage", message: "--since nope does not name a commit" });
+    await expect(runReview(["rel", "--since=--all"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is not a commit/) });
+    await expect(runReview(["rel", "--since", elsewhere], p.ctx)).rejects.toMatchObject({
+      code: "usage",
+      message: `--since ${elsewhere} (${elsewhere}) is not an ancestor of the integration head ${head}`,
+    });
+    await expect(runReview(["rel", "--since", head], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is the integration head itself/) });
+    expect(p.spawned).toEqual([]);
+  });
+
+  it("after the reviewers timed out, takes the ones that finished on the same head and relaunches the others", async () => {
+    p = await integrated();
+    simulateShepherds(p, { "rel-review-security": () => ({ state: "running" }), "rel-review-contracts": () => ({ state: "running" }) });
+    expect(await runReview(["rel", "--lenses", "security,contracts", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    const pid = (lane: string): number => readRecord<{ shepherdPid: number }>(join(p.runsRoot, lane, "state.json")).shepherdPid;
+    writeLaneRun(p.runsRoot, "rel-review-security", { ...reviewer([finding("leak", "HIGH", 1)])(), shepherdPid: pid("rel-review-security") });
+    // contracts finished without a report: nothing to take.
+    writeLaneRun(p.runsRoot, "rel-review-contracts", { state: "finished", endState: "success", shepherdPid: pid("rel-review-contracts") });
+    simulateShepherds(p, {
+      "rel-review-contracts": reviewer([]),
+      "rel-skeptic-security": () => ({ state: "finished", endState: "success", report: { verdicts: [{ id: "security-1", refuted: false, corrected_severity: "HIGH", reasoning: "real" }] } }),
+    });
+    expect(await runReview(["rel", "--lenses", "security,contracts"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-security", "rel-review-contracts", "rel-review-contracts", "rel-skeptic-security"]);
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json")).findings.map((f) => [f.id, f.verdict])).toEqual([["security-1", "confirmed"]]);
+  });
+
+  it("after the skeptics timed out, the next review takes the reviewers and the skeptics as they finished", async () => {
+    p = await integrated();
+    simulateShepherds(p, { "rel-review-security": reviewer([finding("leak", "HIGH", 1)]), "rel-skeptic-security": () => ({ state: "running" }) });
+    expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    const pid = readRecord<{ shepherdPid: number }>(join(p.runsRoot, "rel-skeptic-security", "state.json")).shepherdPid;
+    writeLaneRun(p.runsRoot, "rel-skeptic-security", {
+      state: "finished",
+      endState: "success",
+      shepherdPid: pid,
+      report: { verdicts: [{ id: "security-1", refuted: true, corrected_severity: "NONE", reasoning: "no" }] },
+    });
+    expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-security", "rel-skeptic-security"]);
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json"))).toMatchObject({ round: 2, findings: [{ id: "security-1", verdict: "refuted" }] });
   });
 
   it("refuses a lens whose skeptic lane name would be too long before launching any reviewer", async () => {

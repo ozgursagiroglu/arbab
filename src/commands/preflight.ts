@@ -2,7 +2,11 @@
 //
 // Writes two probe lanes under .arbab/preflight/<lane>/ (<lane>-pf-tools: the project's preflight steps on
 // haiku/low; <lane>-pf-model: `git rev-parse --short HEAD` on the lane's model), launches both, waits for both, and
-// checks the fence from what they recorded (DESIGN.md §11). The probes run in the lane's worktree when it exists.
+// checks the fence from what they recorded (DESIGN.md §11). The probes run in the lane's worktree when it exists;
+// otherwise each gets its own, removed with its arbab/<probe> branch before the probes launch (a stale one, refused
+// when git will not remove it unforced) and after the checks are printed (what git keeps is named on stderr). The
+// tools probe runs the project's preflight steps by exact allow rules, whatever the lane's role.
+// While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Text: one line per check, `ok|fail  <check>  <detail>`.
 // --json: {"ok": boolean, "timedOut": boolean, "lanes": [string, string],
 //          "checks": [{"status": "ok" | "fail", "check": string, "detail": string}]}
@@ -10,16 +14,28 @@
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { effectiveRole } from "../config";
-import { ack, attemptFiles, effectiveState, listAttempts, readAttempt, readState, runPaths } from "../registry";
-import { ensureIgnored } from "../run";
+import {
+  ack,
+  attemptFiles,
+  effectiveState,
+  listAttempts,
+  readAttempt,
+  readState,
+  registerWaiter,
+  runPaths,
+  sessionOf,
+  unregisterWaiter,
+} from "../registry";
+import { arbabIgnoreEntries, ensureArbabMarkers, ensureIgnored, untrustedTree, verifyWorktreeGit, type GitRunner } from "../run";
 import type { AttemptSummary, JsonSchema, LaneSpec } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson, readText, writeJsonAtomic, writeTextAtomic } from "../util/fs";
 import { assertValidName, isValidName } from "../util/names";
+import { isoAt } from "../util/proc";
 import type { CommandContext } from "./context";
 import { formatChecks } from "./doctor";
 import { formatIssue, hasErrors, issueSummary, lintLane, resolveGitCommonDir } from "./lint";
-import { launchLane } from "./launch";
+import { assertInactive, assertNoLiveWorker, launchLane } from "./launch";
 import { isActive, onePositional, openProject, parse, printJson, type Project } from "./project";
 import { WAIT_TIMEOUT_EXIT, parseTimeoutMin } from "./wait";
 
@@ -132,6 +148,8 @@ export function modelBrief(lane: string): string {
 export interface ProbeFiles {
   tools: { name: string; laneFile: string };
   model: { name: string; laneFile: string };
+  /** The lane worktree both probes run in, or null when each gets a worktree of its own (removed after the run). */
+  borrowed: string | null;
 }
 
 const PROBE_SUFFIXES = ["pf-tools", "pf-model"] as const;
@@ -151,7 +169,8 @@ export const preflightDir = (project: Project, lane: string): string => join(pro
 
 /**
  * Writes the two probe lanes, their briefs and schemas under preflightDir. The probes borrow the lane's worktree
- * when it already exists, so they check the tree the lane will run in. Returns project-relative lane paths.
+ * when it already exists, so they check the tree the lane will run in. The tools probe may run each preflight step
+ * by an exact allow rule, whatever the role's commands. Returns project-relative lane paths.
  */
 export function writeProbeLanes(project: Project, lane: LaneSpec): ProbeFiles {
   if (lane.name.length > MAX_PREFLIGHT_NAME) {
@@ -197,7 +216,8 @@ export function writeProbeLanes(project: Project, lane: LaneSpec): ProbeFiles {
       effort: "low",
       wallMin: 30,
       idleMin: 20,
-      ...(lane.allow !== undefined && { allow: lane.allow }),
+      // The steps are the project's checks, not the role's work: a reviewer's commands need not list them.
+      allow: [...new Set([...(lane.allow ?? []), ...steps.map((cmd) => `Bash(${cmd})`)])],
     }),
     model: write("pf-model", modelBrief(lane.name), MODEL_SCHEMA, {
       ...(lane.model !== undefined && { model: lane.model }),
@@ -206,7 +226,34 @@ export function writeProbeLanes(project: Project, lane: LaneSpec): ProbeFiles {
       idleMin: 5,
       allow: [...(lane.allow ?? []), `Bash(${SHA_COMMAND})`],
     }),
+    borrowed: worktree ?? null,
   };
+}
+
+const gitMessage = (r: { stdout: string; stderr: string }): string => (r.stderr || r.stdout).trim();
+
+/**
+ * Removes the worktree and the arbab/<probe> branch the shepherd created for a probe that borrows no worktree (each
+ * holds a dependency install). Nothing is forced and no hook runs, since a worker ran there. Returns why something
+ * was kept, or null when nothing of the probe's is left.
+ */
+export function removeProbeWorktree(git: GitRunner, project: Project, probe: string, gitCommonDir: string | undefined): string | null {
+  const path = join(project.worktreeRoot, assertValidName(probe, "probe lane"));
+  const branch = `arbab/${probe}`;
+  if (existsSync(path)) {
+    if (gitCommonDir === undefined) return `kept ${path}: the repository's git directory is unknown`;
+    // A worker could rewrite the worktree's .git file; git must not follow it to a config of the worker's.
+    const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir });
+    if (verified.gitDir === null) return `kept ${path}: ${verified.error}`;
+    const removed = git([...untrustedTree(), "worktree", "remove", path], project.root);
+    if (removed.code !== 0) return `kept ${path}: git worktree remove failed: ${gitMessage(removed)}`;
+  }
+  // A worktree directory deleted by hand stays registered and keeps its branch checked out.
+  git(["worktree", "prune"], project.root);
+  if (git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], project.root).code !== 0) return null;
+  // -d, not -D: git itself refuses a branch with commits that are not merged.
+  const deleted = git([...untrustedTree(), "branch", "-d", branch], project.root);
+  return deleted.code === 0 ? null : `kept ${branch}: git branch -d failed: ${gitMessage(deleted)}`;
 }
 
 const normalizeTool = (tool: string): string => (tool === "Agent" ? "Task" : tool);
@@ -344,6 +391,19 @@ export async function waitForProbes(
   }
 }
 
+/**
+ * Runs `wait` registered as a waiter of this session on `root`, as `arbab wait` is (DESIGN.md §21): the lanes a command
+ * launched are this session's, and without a waiter the Stop hook would block the turn the command is waiting in.
+ */
+export async function whileWaiting<T>(ctx: CommandContext, root: string, wait: () => Promise<T>): Promise<T> {
+  registerWaiter(ctx.home, { pid: ctx.pid, project: root, owner: sessionOf(ctx.hostEnv), startedAt: isoAt(ctx.clock) });
+  try {
+    return await wait();
+  } finally {
+    unregisterWaiter(ctx.home, ctx.pid);
+  }
+}
+
 export async function runPreflight(argv: string[], ctx: CommandContext): Promise<number> {
   const { values, positionals } = parse("preflight", {
     args: argv,
@@ -363,9 +423,10 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
   const expectedTools = effectiveRole(project.config, lane).tools;
   if (!expectedTools.includes("Bash")) throw new ArbabError("usage", `role ${lane.role} has no Bash tool; preflight needs one`);
 
-  // The probe lanes are generated files: keep them out of the project's git status, as the shepherd does for its own
-  // directories (it ignores only the worktree and runs roots).
-  ensureIgnored(project.root, [`${PREFLIGHT_DIR}/`], ctx.git);
+  // The probe lanes are generated files under .arbab/preflight/: keep them out of the project's git status with
+  // arbab's own entries, as the shepherd does.
+  ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
+  ensureArbabMarkers(project.root);
   const files = writeProbeLanes(project, lane);
   // Both probes are linted before either starts, so a refused second probe never leaves the first one running.
   for (const probe of [files.tools, files.model]) {
@@ -375,6 +436,16 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
       throw new ArbabError("lint", `${issueSummary(probe.name, probeLint)}; preflight not started`);
     }
   }
+  // Each run starts from fresh probe worktrees: a previous run's may be stale (a timeout, an interrupted preflight).
+  const own = files.borrowed === null ? [files.tools.name, files.model.name] : [];
+  for (const name of own) {
+    assertInactive(ctx, project, name);
+    assertNoLiveWorker(ctx, project, name);
+  }
+  for (const name of own) {
+    const kept = removeProbeWorktree(ctx.git, project, name, gitCommonDir);
+    if (kept !== null) throw new ArbabError("git", `a previous preflight's probe is in the way: ${kept}; remove it, then run preflight again`);
+  }
   const probes: Array<{ lane: string; pid: number; before: number }> = [];
   for (const probe of [files.tools, files.model]) {
     const before = listAttempts(project.runsRoot, probe.name).at(-1) ?? 0;
@@ -383,7 +454,7 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
   }
   ctx.stderr(`preflight: launched ${probes.map((p) => p.lane).join(" and ")}; waiting\n`);
 
-  const finished = await waitForProbes(ctx, project.runsRoot, probes, timeoutMs);
+  const finished = await whileWaiting(ctx, project.root, () => waitForProbes(ctx, project.runsRoot, probes, timeoutMs));
   const lanes = probes.map((p) => p.lane);
   if (!finished) {
     if (values.json === true) printJson(ctx, { ok: false, timedOut: true, lanes, checks: [] });
@@ -407,5 +478,10 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
   const ok = checks.every((c) => c.status === "ok");
   if (values.json === true) printJson(ctx, { ok, timedOut: false, lanes, checks });
   else ctx.stdout(formatChecks(checks) + "\n");
+  // The results are recorded; each probe worktree holds a dependency install that nothing will use again.
+  for (const name of own) {
+    const kept = removeProbeWorktree(ctx.git, project, name, gitCommonDir);
+    if (kept !== null) ctx.stderr(`preflight: ${kept}\n`);
+  }
   return ok ? 0 : 1;
 }

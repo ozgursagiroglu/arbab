@@ -211,4 +211,11 @@ describe("reviewRecord", () => {
     expect(record).toEqual({ name: "m3", headSha: "abc123", lenses, skeptics, findings, finishedAt: "2026-10-09T12:00:00.000Z" });
     expect(record.findings[0]).not.toBe(findings[0]);
   });
+
+  it("records --since when given, null included", () => {
+    const base = { name: "m3", headSha: "abc123", lenses: [], skeptics: [], findings: [], now: 0 };
+    expect(reviewRecord({ ...base, since: "1".repeat(40) }).since).toBe("1".repeat(40));
+    expect(reviewRecord({ ...base, since: null })).toHaveProperty("since", null);
+    expect(reviewRecord(base)).not.toHaveProperty("since");
+  });
 });

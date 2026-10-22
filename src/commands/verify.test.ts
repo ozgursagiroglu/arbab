@@ -1,12 +1,18 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { IntegrationRecord, LaneSpec, VerifyRecord } from "../types";
+import type { IntegrationRecord, LaneSpec, VerifyRecord, WaiterEntry } from "../types";
+import { isValidName } from "../util/names";
 import { runIntegrate } from "./integrate";
-import { runPaths } from "../registry";
+import { LAUNCH_POLL_MS } from "./launch";
+import { listWaiters, runPaths } from "../registry";
 import { plantNestedRepo, type NestedRepo } from "../run/testkit";
-import { DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, type LaneRun, type TestProject } from "./testkit";
-import { formatGateResult, runVerify } from "./verify";
+import { readVerifyRecord } from "./records";
+import { CLI_PID, DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+import { formatGateResult, refId, refSlug, runVerify } from "./verify";
+
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -258,6 +264,61 @@ describe("runVerify", () => {
     expect(existsSync(join(dir(p), "verify.json"))).toBe(false);
   });
 
+  it("is a waiter of its session while it waits for the lane, and no longer once it returns", async () => {
+    p = await integrated();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    p.alive.add(CLI_PID);
+    simulateShepherds(p, { "rel-verify": () => ({ state: "running" }) });
+    const seen: WaiterEntry[][] = [];
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      if (ms !== LAUNCH_POLL_MS) seen.push(listWaiters(p.home, p.ctx.alive));
+      await sleep(ms);
+    };
+    expect(await runVerify(["rel", "--timeout-min", "0.1"], p.ctx)).toBe(3);
+    expect(seen.length).toBeGreaterThan(0);
+    for (const waiters of seen) expect(waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+    expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
+  });
+
+  it("after a timeout, takes the lane's results when it finished on the same head, without relaunching it", async () => {
+    p = await integrated();
+    simulateWithMerges(p, { "rel-verify": () => ({ state: "running" }) });
+    expect(await runVerify(["rel", "--timeout-min", "1"], p.ctx)).toBe(3);
+    const pid = readRecord<{ shepherdPid: number }>(join(p.runsRoot, "rel-verify", "state.json")).shepherdPid;
+    // The lane finishes minutes after verify stopped waiting.
+    writeLaneRun(p.runsRoot, "rel-verify", { ...finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]]))(), shepherdPid: pid });
+    p.alive.delete(pid);
+
+    expect(await runVerify(["rel"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify"]);
+    expect(p.stderr()).toContain("adopted rel-verify");
+    const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ headSha: head, attempt: 1, passed: true });
+
+    // Taken into verify.json: the next verify runs the gates again.
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    expect(await runVerify(["rel"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify", "rel-verify"]);
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json")).attempt).toBe(2);
+  });
+
+  it("after a timeout, waits for the lane still running on the same head", async () => {
+    p = await integrated();
+    simulateWithMerges(p, { "rel-verify": () => ({ state: "running" }) });
+    expect(await runVerify(["rel", "--timeout-min", "1"], p.ctx)).toBe(3);
+    const pid = readRecord<{ shepherdPid: number }>(join(p.runsRoot, "rel-verify", "state.json")).shepherdPid;
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      writeLaneRun(p.runsRoot, "rel-verify", { ...finished(bashStream([["pnpm test", 1], ["pnpm typecheck", 0]]))(), shepherdPid: pid });
+      await sleep(ms);
+    };
+    expect(await runVerify(["rel"], p.ctx)).toBe(1);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify"]);
+    expect(p.stderr()).toContain("rel-verify still running for this head from an earlier run; waiting");
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json")).results.map((r) => r.exitCode)).toEqual([1, 0]);
+  });
+
   it("records every command as missing when the lane failed before its first attempt", async () => {
     p = await integrated();
     // Setup failed before the merge (the install, say): the branch stays at its base, and nothing ran there.
@@ -267,5 +328,100 @@ describe("runVerify", () => {
     expect(record.attempt).toBeNull();
     expect(record.results.every((r) => r.exitCode === null)).toBe(true);
     expect(p.stdout()).toContain("(lane rel-verify failed)");
+  });
+});
+
+describe("refSlug", () => {
+  it("lowercases, turns every character outside [a-z0-9] into -, and keeps 22", () => {
+    expect(refSlug("main")).toBe("main");
+    expect(refSlug("Feature/Ünïcode_x.1")).toBe("feature--n-code-x-1");
+    expect(refSlug("release/".repeat(6))).toBe("release-release-releas");
+    expect(refSlug("release/".repeat(6))).toHaveLength(22);
+  });
+});
+
+describe("refId", () => {
+  it("is ref-<slug>-<the first 6 hex of the branch name's sha1>, a valid lane prefix even at full length", () => {
+    expect(refId("main")).toBe(`ref-main-${createHash("sha1").update("main").digest("hex").slice(0, 6)}`);
+    expect(refId("main")).toMatch(/^ref-main-[0-9a-f]{6}$/);
+    expect(isValidName(`${refId("release/".repeat(20))}-verify`)).toBe(true);
+  });
+
+  it("tells apart branches whose slugs collide", () => {
+    expect(refSlug("Release/Next")).toBe(refSlug("release_next"));
+    expect(refId("Release/Next")).not.toBe(refId("release_next"));
+    expect(refId("release/".repeat(6) + "a")).not.toBe(refId("release/".repeat(6) + "b"));
+  });
+});
+
+describe("runVerify --ref", () => {
+  const refDir = (t: TestProject, branch: string): string => join(t.root, ".arbab", "refs", refId(branch));
+
+  it("runs the gates on the branch head with no integration, and writes the record under .arbab/refs", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, gates: GATES } });
+    const head = branchWith(p, "Release/Next", "r.txt", "r\n");
+    const id = refId("Release/Next");
+    simulateWithMerges(p, { [`${id}-verify`]: finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    expect(await runVerify(["--ref", "Release/Next"], p.ctx)).toBe(0);
+
+    const lane = readRecord<LaneSpec>(join(refDir(p, "Release/Next"), "lanes", `${id}-verify.json`));
+    // The branch head is the base: the same probe, tools and gates as an integration's verify, nothing merged on top.
+    expect(lane).toMatchObject({ name: `${id}-verify`, role: "probe", tools: ["Read", "Bash"], base: head, allow: ["Bash(pnpm test)", "Bash(pnpm typecheck)"] });
+    expect(lane).not.toHaveProperty("mergeBranches");
+    expect(lane.brief).toBe(`.arbab/refs/${id}/lanes/${id}-verify.md`);
+    const record = readRecord<VerifyRecord>(join(refDir(p, "Release/Next"), "verify.json"));
+    expect(record).toMatchObject({ name: "ref:Release/Next", lane: `${id}-verify`, headSha: head, passed: true, attempt: 1 });
+    expect(readVerifyRecord(join(refDir(p, "Release/Next"), "verify.json"), "ref:Release/Next")?.passed).toBe(true);
+    expect(p.stdout()).toBe(
+      `exit 0    gate   pnpm test\nexit 0    gate   pnpm typecheck\nverify ref:Release/Next: passed at ${head} (lane ${id}-verify success)\n`,
+    );
+    expect(existsSync(join(p.root, ".arbab", "integrations"))).toBe(false);
+  });
+
+  it("gives two branches whose slugs collide their own lane and record", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, gates: GATES } });
+    const upper = branchWith(p, "Release/Next", "r.txt", "r\n");
+    const lower = branchWith(p, "release_next", "s.txt", "s\n");
+    const ok = finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]]));
+    simulateWithMerges(p, { [`${refId("Release/Next")}-verify`]: ok, [`${refId("release_next")}-verify`]: ok });
+    expect(await runVerify(["--ref", "Release/Next"], p.ctx)).toBe(0);
+    expect(await runVerify(["--ref", "release_next"], p.ctx)).toBe(0);
+
+    expect(p.spawned.map((s) => s.lane)).toEqual([`${refId("Release/Next")}-verify`, `${refId("release_next")}-verify`]);
+    expect(readRecord<VerifyRecord>(join(refDir(p, "Release/Next"), "verify.json"))).toMatchObject({ name: "ref:Release/Next", headSha: upper });
+    expect(readRecord<VerifyRecord>(join(refDir(p, "release_next"), "verify.json"))).toMatchObject({ name: "ref:release_next", headSha: lower });
+  });
+
+  it("fails, as verify does, when the lane ran on another commit than the branch head", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, gates: GATES } });
+    const head = p.ok(["rev-parse", "main"]).trim();
+    const lane = `${refId("main")}-verify`;
+    simulateWithMerges(p, { [lane]: finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, () => {
+      // The branch moves on while the lane waits to start: the lane still checks the head verify resolved.
+      p.ok(["commit", "-q", "--allow-empty", "-m", "later"]);
+    });
+    expect(await runVerify(["--ref", "main", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { verify: VerifyRecord }).verify).toMatchObject({ name: "ref:main", headSha: head, passed: true });
+
+    // On the moved head, a lane whose branch ends elsewhere checked other code.
+    const moved = p.ok(["rev-parse", "main"]).trim();
+    simulateWithMerges(p, { [lane]: finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, undefined, (worktree) => {
+      p.ok(["reset", "-q", "--hard", head], worktree);
+    });
+    expect(await runVerify(["--ref", "main"], p.ctx)).toBe(1);
+    expect(readRecord<VerifyRecord>(join(refDir(p, "main"), "verify.json")).reason).toBe(
+      `${lane} ran on ${head}, not on the head of main ${moved}; run arbab verify --ref main again`,
+    );
+  });
+
+  it("refuses a name with --ref, no name at all, and a branch that does not exist", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, gates: GATES } });
+    simulateShepherds(p, {});
+    await expect(runVerify(["rel", "--ref", "main"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/not both/) });
+    await expect(runVerify([], p.ctx)).rejects.toMatchObject({ code: "usage", message: "usage: arbab verify <name>" });
+    await expect(runVerify(["--ref", "nope"], p.ctx)).rejects.toMatchObject({ code: "usage", message: "there is no branch nope" });
+    await expect(runVerify(["--ref", "main~1"], p.ctx)).rejects.toMatchObject({ code: "usage", message: "there is no branch main~1" });
+    await expect(runVerify(["--ref=-x"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is not a branch name/) });
+    expect(p.spawned).toEqual([]);
   });
 });

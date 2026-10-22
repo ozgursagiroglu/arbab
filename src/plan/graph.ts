@@ -22,17 +22,182 @@ export function fixedPath(glob: string): string[] {
   return out;
 }
 
-/**
- * Conservative: two globs overlap when one's fixed path is a segment-wise prefix of the other's (or equal), so
- * `src/plan/**` overlaps `src/plan/x.ts` but not `src/planner/**`. Segments compare case-insensitively, since on a
- * case-insensitive file system `src/Plan` and `src/plan` are one directory.
- */
-export function globsOverlap(a: string, b: string): boolean {
+/** The fallback for globs the segment comparison cannot read: one fixed path is a segment-wise prefix of the other. */
+function fixedPathsOverlap(a: string, b: string): boolean {
   const fa = fixedPath(a);
   const fb = fixedPath(b);
   const n = Math.min(fa.length, fb.length);
   for (let i = 0; i < n; i++) if (fa[i]?.toLowerCase() !== fb[i]?.toLowerCase()) return false;
   return true;
+}
+
+/** More alternatives than this and the brace sets are not expanded. */
+const MAX_EXPANSIONS = 256;
+
+/**
+ * `{a,b}` sets expanded, nested ones included. null for what is not a plain set (a range `{1..3}`, a set without a
+ * comma, an unbalanced brace) or for more than MAX_EXPANSIONS alternatives.
+ */
+function expandBraces(glob: string): string[] | null {
+  const open = glob.indexOf("{");
+  if (open === -1) return glob.includes("}") ? null : [glob];
+  let depth = 0;
+  let close = -1;
+  const commas: number[] = [];
+  for (let i = open; i < glob.length && close === -1; i++) {
+    const c = glob[i];
+    if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) close = i;
+    else if (c === "," && depth === 1) commas.push(i);
+  }
+  if (close === -1 || commas.length === 0 || glob.slice(0, open).includes("}")) return null;
+  const bounds = [open, ...commas, close];
+  const out: string[] = [];
+  for (let k = 0; k + 1 < bounds.length; k++) {
+    const alternative = glob.slice(0, open) + glob.slice((bounds[k] ?? 0) + 1, bounds[k + 1]) + glob.slice(close + 1);
+    const expanded = expandBraces(alternative);
+    if (expanded === null) return null;
+    out.push(...expanded);
+    if (out.length > MAX_EXPANSIONS) return null;
+  }
+  return out;
+}
+
+/**
+ * A brace-free glob's segments, split on "/" outside parentheses; empty and "." segments are dropped, and a trailing
+ * "/" names a directory, so it gains a `**`. null when a "/" sits inside an extglob group.
+ */
+function splitSegments(glob: string): string[] | null {
+  const out: string[] = [];
+  let depth = 0;
+  let current = "";
+  const push = (): void => {
+    if (current !== "" && current !== ".") out.push(current);
+    current = "";
+  };
+  for (const c of glob) {
+    if (c === "/") {
+      if (depth > 0) return null;
+      push();
+      continue;
+    }
+    if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    current += c;
+  }
+  push();
+  if (glob.endsWith("/")) out.push("**");
+  return out;
+}
+
+/**
+ * The paths a scope entry covers, as segment lists, one or two per brace alternative; null when the glob is beyond
+ * this reader (escapes, odd braces). An alternative without glob characters may name a directory, so it covers both
+ * itself and everything under it: `src/{plan,run}` covers `src/plan/graph.ts`.
+ */
+function scopeForms(glob: string): string[][] | null {
+  if (glob.includes("\\")) return null;
+  const alternatives = expandBraces(glob);
+  if (alternatives === null) return null;
+  const out: string[][] = [];
+  for (const alternative of alternatives) {
+    const segments = splitSegments(alternative);
+    if (segments === null) return null;
+    out.push(segments);
+    if (!PATTERN_SEGMENT.test(alternative) && segments.at(-1) !== "**") out.push([...segments, "**"]);
+  }
+  return out;
+}
+
+const EXTGLOB = /[@!+*?]\(/;
+
+/** A case-insensitive matcher for one segment pattern of `*`, `?` and `[...]`; null for an extglob or a POSIX class. */
+function segmentRegExp(pattern: string): RegExp | null {
+  if (EXTGLOB.test(pattern)) return null;
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const c = pattern[i] ?? "";
+    if (c === "*") source += "[^/]*";
+    else if (c === "?") source += "[^/]";
+    else if (c === "[" && pattern.indexOf("]", i + 2) !== -1) {
+      // As in globs, a "]" right after the opener (or its negation) is a member.
+      const negated = pattern[i + 1] === "!" || pattern[i + 1] === "^";
+      const start = i + 1 + (negated ? 1 : 0);
+      const end = pattern.indexOf("]", start + 1);
+      if (end === -1) return null;
+      const body = pattern.slice(start, end);
+      if (body.includes("[:")) return null;
+      source += `[${negated ? "^/" : ""}${body.replace(/[\\\]^[]/g, "\\$&")}]`;
+      i = end;
+    } else source += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  try {
+    return new RegExp(`^${source}$`, "i");
+  } catch {
+    return null;
+  }
+}
+
+/** The literal text of a segment pattern before its first and after its last wildcard, class or extglob. */
+function literalEnds(pattern: string): { prefix: string; suffix: string } {
+  const first = pattern.search(/[*?[]|[@!+]\(/);
+  const last = Math.max(...["*", "?", "]", ")"].map((c) => pattern.lastIndexOf(c)));
+  return { prefix: pattern.slice(0, first), suffix: pattern.slice(last + 1) };
+}
+
+/** Whether some single path segment matches both segment patterns. */
+function segmentsMeet(a: string, b: string): boolean {
+  const la = a.toLowerCase();
+  const lb = b.toLowerCase();
+  const globA = PATTERN_SEGMENT.test(a);
+  const globB = PATTERN_SEGMENT.test(b);
+  if (!globA && !globB) return la === lb;
+  if (globA && globB) {
+    const ea = literalEnds(la);
+    const eb = literalEnds(lb);
+    const prefixes = ea.prefix.startsWith(eb.prefix) || eb.prefix.startsWith(ea.prefix);
+    const suffixes = ea.suffix.endsWith(eb.suffix) || eb.suffix.endsWith(ea.suffix);
+    return prefixes && suffixes;
+  }
+  const [glob, literal] = globA ? [la, lb] : [lb, la];
+  const re = segmentRegExp(glob);
+  if (re !== null) return re.test(literal);
+  // An extglob: only its literal ends can rule the literal out.
+  const { prefix, suffix } = literalEnds(glob);
+  return literal.startsWith(prefix) && literal.endsWith(suffix) && literal.length >= prefix.length + suffix.length;
+}
+
+/** Whether some path matches both segment lists; `**` matches any number of segments, none included. */
+function pathsMeet(a: string[], b: string[]): boolean {
+  const memo = new Map<number, boolean>();
+  const meet = (i: number, j: number): boolean => {
+    const key = i * (b.length + 1) + j;
+    const known = memo.get(key);
+    if (known !== undefined) return known;
+    let result: boolean;
+    if (a[i] === "**") result = meet(i + 1, j) || (j < b.length && meet(i, j + 1));
+    else if (b[j] === "**") result = meet(i, j + 1) || (i < a.length && meet(i + 1, j));
+    else if (i === a.length || j === b.length) result = i === a.length && j === b.length;
+    else result = segmentsMeet(a[i] ?? "", b[j] ?? "") && meet(i + 1, j + 1);
+    memo.set(key, result);
+    return result;
+  };
+  return meet(0, 0);
+}
+
+/**
+ * Whether some path matches both globs, compared segment by segment: `**` spans any number of segments, `*`, `?` and
+ * classes stay within one, literals compare case-insensitively (on a case-insensitive file system `src/Plan` and
+ * `src/plan` are one directory). Two pattern segments meet unless their literal prefixes or suffixes contradict, and
+ * an extglob meets any literal its literal ends allow, so the answer errs toward overlap. A bare path, or a bare
+ * brace alternative, also covers what is under it (`src/plan` meets `src/plan/x.ts`). Brace sets are expanded; a glob this cannot read (escapes,
+ * ranges, a "/" inside an extglob) falls back to comparing fixed paths.
+ */
+export function globsOverlap(a: string, b: string): boolean {
+  const sa = scopeForms(a);
+  const sb = scopeForms(b);
+  if (sa === null || sb === null) return fixedPathsOverlap(a, b);
+  return sa.some((x) => sb.some((y) => pathsMeet(x, y)));
 }
 
 /** Name → dependencies, from each name's first occurrence (duplicates are checkPlan's error). */

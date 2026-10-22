@@ -189,6 +189,13 @@ describe("lintProfile", () => {
         { code: "reserved-env", severity: "warning", where: "XDG_CONFIG_HOME" },
       ]);
     });
+    it("warns for every temp-path key the settings env sets", () => {
+      const env = { XDG_CONFIG_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" };
+      expect(lint({ env }).map((issue) => issue.where)).toEqual(Object.keys(env));
+    });
+    it("does not reserve XDG_DATA_HOME or XDG_CACHE_HOME, which arbab leaves alone", () => {
+      expect(lint({ env: { XDG_DATA_HOME: "/x", XDG_CACHE_HOME: "/x" } })).toEqual([]);
+    });
     it("accepts ordinary keys, including ones named like Object methods", () => {
       expect(lint({ env: { FOO: "1", toString: "x" } })).toEqual([]);
     });

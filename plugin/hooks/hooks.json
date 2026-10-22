@@ -1,0 +1,16 @@
+{
+  "description": "arbab: approve bare runner calls; keep an orchestrator from ending its turn with unwatched lanes",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "if": "Bash(node *)", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs", "hook", "pre-tool-use"], "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs", "hook", "stop"], "timeout": 10 } ] }
+    ]
+  }
+}

@@ -451,7 +451,7 @@ export function integrate(input: IntegrateInput): IntegrateResult {
 export interface AdoptInput extends Omit<IntegrateInput, "lanes"> {
   /** The branch or commit the integration takes as its head. */
   ref: string;
-  /** What it lands into; config.baseBranch when absent. */
+  /** The branch it lands into; config.baseBranch when absent. */
   base?: string;
 }
 
@@ -465,8 +465,8 @@ function assertRevision(rev: string, what: string): void {
  * created and its dependencies prepared at the fork point of `ref` and the base, a commit of the base and so trusted,
  * and then fast-forwarded to `ref` with hooks off: `ref` may hold anyone's code. Its manifests are recorded as for any
  * integration. Refused before anything is created: a name that has an integration record, branch or worktree, a landed
- * name, a ref or base that names no commit or that share no history, a base config.baseBranch does not contain, and a
- * fork point isTrustedInstallPoint does not trust.
+ * name, a ref or base that names no commit or that share no history, a base that is not a branch (land merges into
+ * it), a base config.baseBranch does not contain, and a fork point isTrustedInstallPoint does not trust.
  */
 export function adoptIntegration(input: AdoptInput): IntegrateResult {
   const paths = integrationPaths(input.projectRoot, input.config, input.name);
@@ -489,6 +489,14 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
   if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
   const baseSha = commitOf(git, base, projectRoot);
   if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
+  // The record keeps the base as the branch land merges into; a commit there would make an integration that never lands.
+  // show-ref, not rev-parse: rev-parse would accept an expression such as `main~0`, which is no branch land can be on.
+  if (git(["show-ref", "--verify", "--quiet", `refs/heads/${base}`], projectRoot).code !== 0) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === undefined ? "baseBranch" : "--base"} ${base} is not a branch: land merges the integration into its base, so the base must be a branch`,
+    );
+  }
   // The install runs on the host at the fork point, which only a base inside the trusted base branch keeps trusted
   // (DESIGN.md §9, §17); a lane or integration branch as --base would install worker code.
   const trusted = input.config.baseBranch;
@@ -497,7 +505,7 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
     throw new ArbabError(
       "usage",
       `${input.base === undefined ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ` +
-        `${base} may hold worker code. Adopt against ${trusted} or a commit it contains`,
+        `${base} may hold worker code. Adopt against ${trusted}, or a branch it contains`,
     );
   }
   const fork = git(["merge-base", sha, baseSha], projectRoot);

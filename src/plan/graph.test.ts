@@ -150,6 +150,18 @@ describe("globsOverlap", () => {
     expect(overlap("src/{a,{b,c}}.ts", "src/c.ts")).toBe(true);
   });
 
+  it("lets a bare brace alternative cover what is under it", () => {
+    expect(overlap("src/{plan,run}", "src/plan/graph.ts")).toBe(true);
+    expect(overlap("src/{plan,run}", "src/run")).toBe(true);
+    expect(overlap("src/{plan,run}", "src/run/deps.ts")).toBe(true);
+    expect(overlap("src/{plan,run}", "src/planner.ts")).toBe(false);
+    expect(overlap("src/{plan,run}", "src/shepherd/x.ts")).toBe(false);
+    // An alternative with a pattern character stays what it matches.
+    expect(overlap("src/{a,b}/*.ts", "src/a/x/y.ts")).toBe(false);
+    expect(overlap("src/{a,b/*.ts}", "src/a/x.ts")).toBe(true);
+    expect(overlap("src/{a,b/*.ts}", "src/b/x.ts/y")).toBe(false);
+  });
+
   it("overlaps an extglob with any literal its literal ends allow", () => {
     expect(overlap("src/@(plan|run)/x.ts", "src/run/x.ts")).toBe(true);
     expect(overlap("src/@(plan|run)/x.ts", "src/run/y.ts")).toBe(false);

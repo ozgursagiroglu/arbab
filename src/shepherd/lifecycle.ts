@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { effectiveRole, loadConfig, loadLane } from "../config";
 import { holdDecision, lastQuotaReset, readQuota, resumeAt } from "../quota";
 import { listAttempts, runPaths, writeState } from "../registry";
@@ -8,9 +8,12 @@ import {
   acquireSemaphore,
   acquireSlot,
   acquireWriterLock,
+  arbabIgnoreEntries,
   createWorktree,
   discardWorktree,
+  ensureArbabMarkers,
   ensureIgnored,
+  ensureWorkerTmp,
   prepareDependencies,
   releaseLeases,
   releaseSemaphore,
@@ -69,11 +72,8 @@ export function resetSince(lastReset: number | null, attemptBeganMs: number): bo
   return lastReset !== null && lastReset > attemptBeganMs;
 }
 
-/** The info/exclude entries arbab needs: the worktree root, the runs root and the per-worker temp dirs. */
-export function ignoreEntries(projectRoot: string, config: Pick<ProjectConfig, "worktreeRoot" | "runsRoot">): string[] {
-  const rel = (p: string): string => `${relative(resolve(projectRoot), confine(projectRoot, p)).split(sep).join("/")}/`;
-  return [...new Set([rel(config.worktreeRoot), rel(config.runsRoot), ".arbab-tmp/"])];
-}
+/** The info/exclude entries the shepherd adds: arbab's own (src/run/project-files.ts). */
+export const ignoreEntries = arbabIgnoreEntries;
 
 const message = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
@@ -275,7 +275,8 @@ async function prepare(
   held: Held,
   wait: (why: string) => Promise<void>,
 ): Promise<{ worktree: string; branch: string; gitCommonDir: string; merged: MergedBranch[] }> {
-  ensureIgnored(root, ignoreEntries(root, config), deps.git);
+  ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
+  ensureArbabMarkers(root);
 
   const owner = lane.worktree ?? lane.name;
   if (owner !== lane.name && !existsSync(join(confine(root, config.worktreeRoot), owner))) {
@@ -384,6 +385,6 @@ async function prepare(
       merged = mergeBranches({ worktree, branch: wt.branch, gitCommonDir: wt.gitCommonDir, lane: lane.name, branches, git: deps.git });
     }
   }
-  mkdirSync(join(worktree, ".arbab-tmp", "xdg-config"), { recursive: true });
+  ensureWorkerTmp(worktree);
   return { worktree, branch: wt.branch, gitCommonDir: wt.gitCommonDir, merged };
 }

@@ -10,6 +10,7 @@ export {
 } from "./presets";
 export { commandRules, credentialDenies } from "./rules";
 export { compileProfile } from "./compile";
+export { envFileDenies } from "./envfiles";
 export { buildClaudeArgs } from "./args";
 export { workerEnv } from "./env";
 export type { WorkerEnvOptions } from "./env";

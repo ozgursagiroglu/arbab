@@ -2,6 +2,8 @@ import { ArbabError, exitCodeFor } from "../util/errors";
 import { runCleanup } from "./cleanup";
 import type { CommandContext } from "./context";
 import { runDoctor } from "./doctor";
+import { runHook } from "./hook";
+import { runHostCheck } from "./host-check";
 import { runIntegrate } from "./integrate";
 import { runLand } from "./land";
 import { runLaunch } from "./launch";
@@ -10,11 +12,13 @@ import { runPlan } from "./plan";
 import { runPreflight } from "./preflight";
 import { runQuota } from "./quota";
 import { runReadiness } from "./readiness";
+import { runReport } from "./report";
 import { runResume } from "./resume";
 import { runReview } from "./review";
 import { runShepherdProcess } from "./shepherd";
 import { runStatus } from "./status";
 import { runStop } from "./stop";
+import { runSummary } from "./summary";
 import { runUi } from "./ui";
 import { runVerify } from "./verify";
 import { runWait } from "./wait";
@@ -42,6 +46,10 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
   readiness: runReadiness,
   land: runLand,
   ui: runUi,
+  summary: runSummary,
+  report: runReport,
+  hook: runHook,
+  "host-check": runHostCheck,
   __shepherd: runShepherdProcess,
 };
 
@@ -84,7 +92,11 @@ export const HELP = `usage: arbab <command> [options]
                                           remove the worktrees it landed (lane branches stay) unless --keep-worktrees
   ui [--port N] [--hours N] [--no-open] [--json]
                                           serve the pyramid scene on 127.0.0.1 until stopped (read-only)
-  help, --help                            this text
+  summary [--all] [--json]                plans, lanes, integrations and what needs you (not implemented yet)
+  report <lane>                           a lane's latest report (not implemented yet)
+  hook <event>                            the plugin's Claude Code hooks (not implemented yet)
+  host-check <name>                       run hostGates on the integration head from a terminal (not implemented yet)
+  help, --help                           this text
   version, --version                      the arbab version
 
 Exit codes: 0 ok, 1 usage or lint error, 2 runtime error, 3 wait timeout.

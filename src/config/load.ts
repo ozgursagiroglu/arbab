@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { isAbsolute, join, sep } from "node:path";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { INTEGRATIONS_DIR, TIERS } from "../types";
 import type { DependencyStrategy, ProjectConfig, Role, RoleDefaults, Tier } from "../types";
 import { isForbiddenWorkerEnv, isReservedEnv } from "../util/env-policy";
@@ -214,7 +214,32 @@ function arbabRoot(projectRoot: string, v: unknown, field: string): string {
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
   const inside = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`);
   if (inside(path, records) || inside(records, path)) fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  // A lane worktree outside the project has no ancestor holding the project's config (inLaneWorktree), so a link
+  // inside the project must not lead out. A missing tail is fine: arbab creates it later as plain directories.
+  const real = realExisting(path);
+  const rel = real === null ? ".." : relative(realpathSync(projectRoot), real);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   return s;
+}
+
+// The real path of the deepest existing entry on the way to `path`; null when that entry is a dangling link.
+function realExisting(path: string): string | null {
+  for (let p = path; ; p = dirname(p)) {
+    let present = true;
+    try {
+      lstatSync(p);
+    } catch {
+      present = false;
+    }
+    if (present) {
+      try {
+        return realpathSync(p);
+      } catch {
+        return null;
+      }
+    }
+    if (dirname(p) === p) return null;
+  }
 }
 
 function dependencies(v: unknown): DependencyStrategy {

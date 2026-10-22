@@ -7,7 +7,7 @@ import { untrustedTree, type ArgvRunner, type GitRunner } from "../run";
 import { plantNestedRepo } from "../run/testkit";
 import type { IntegrationRecord, ProjectConfig } from "../types";
 import type { Clock } from "../util/proc";
-import { confirmDeps, integrate, integrationPaths, listIntegrations, readIntegration, type IntegrateResult } from "./index";
+import { adoptIntegration, confirmDeps, integrate, integrationPaths, listIntegrations, readIntegration, type IntegrateResult } from "./index";
 
 let project: TestProject;
 beforeEach(() => {
@@ -794,5 +794,207 @@ describe("confirmDeps", () => {
     const p = integrationPaths(project.root, config(), "m3");
     expect(confirmDeps(p, rec.headSha, project.git, later)).toEqual(rec);
     expect(readIntegration(p)).toEqual(rec);
+  });
+});
+
+/** A package.json with one dependency, and `fields` over it. */
+const pkg = (fields: Record<string, unknown> = {}): string =>
+  JSON.stringify({ name: "x", version: "1.0.0", dependencies: { a: "1" }, ...fields }, null, 2) + "\n";
+
+/** Commits package.json on main in the main checkout. */
+function mainPackageJson(): string {
+  writeFileSync(join(project.root, "package.json"), pkg());
+  git(["add", "package.json"]);
+  git(["commit", "-q", "-m", "package.json"]);
+  return git(["rev-parse", "main"]).trim();
+}
+
+describe("integrate's manifests", () => {
+  it("leaves out a package.json edit no install sees, and lists a dependency edit", () => {
+    mainPackageJson();
+    lane("exp", { "package.json": pkg({ version: "1.1.0", exports: { ".": "./index.js" }, scripts: { test: "vitest" } }) });
+    const first = run(["exp"]).record();
+    expect(first).toMatchObject({ manifests: [], depsConfirmed: true });
+    expect(first.merged).toEqual([expect.objectContaining({ lane: "exp", manifests: [] })]);
+
+    // A hand commit that only changes `exports` keeps a confirmation-free record too.
+    const p = integrationPaths(project.root, config(), "m3");
+    commit(p.worktree, { "package.json": pkg({ version: "1.1.0", exports: { ".": "./main.js" }, scripts: { test: "vitest" } }) });
+    expect(run([]).record()).toMatchObject({ manifests: [], depsConfirmed: true });
+
+    lane("dep", { "lib/package.json": pkg({ dependencies: { a: "1", b: "2" } }), "lib/x.ts": "x\n" });
+    const second = run(["dep"]).record();
+    expect(second).toMatchObject({ manifests: ["lib/package.json"], depsConfirmed: false });
+    expect(second.merged.find((m) => m.lane === "dep")?.manifests).toEqual(["lib/package.json"]);
+  });
+
+  it("records the install-relevant manifests of a lane already in the branch", () => {
+    mainPackageJson();
+    lane("exp", { "package.json": pkg({ exports: "./a.js" }) });
+    lane("dep", { "package.json": pkg({ scripts: { postinstall: "node x.js" } }) }, false, "arbab/exp");
+    run(["dep"]).record();
+    // arbab/exp is in the branch through arbab/dep: recorded without a merge, by what its own commits changed.
+    const r = run(["exp"]);
+    const { record: rec, alreadyIn } = r.result();
+    expect(alreadyIn).toEqual(["exp"]);
+    expect(rec.merged.map((m) => [m.lane, m.manifests])).toEqual([
+      ["dep", ["package.json"]],
+      ["exp", []],
+    ]);
+  });
+});
+
+describe("adoptIntegration", () => {
+  /** A branch `feature` off main with commits writing `files`; returns its head. */
+  function feature(files: Record<string, string>, branch = "feature"): string {
+    git(["branch", branch, "main"]);
+    const wt = join(project.dir, `wt-${branch}`);
+    git(["worktree", "add", wt, branch]);
+    return commit(wt, files, `${branch} work`);
+  }
+
+  function adopt(ref: string, opts: { base?: string; deps?: ArgvRunner; name?: string; cfg?: ProjectConfig } = {}) {
+    const calls: string[][] = [];
+    const deps: Run["deps"] = [];
+    const runner: GitRunner = (args, cwd) => {
+      calls.push(args);
+      return project.git(args, cwd);
+    };
+    const runCommand: ArgvRunner =
+      opts.deps ??
+      ((argv, cwd) => {
+        deps.push({ argv, cwd, head: git(["rev-parse", "HEAD"], cwd).trim() });
+        return { code: 0, output: "" };
+      });
+    const cfg = opts.cfg ?? config({ dependencies: { strategy: "command", command: ["pnpm", "install"] } });
+    const result = (): IntegrateResult =>
+      adoptIntegration({
+        projectRoot: project.root,
+        config: cfg,
+        name: opts.name ?? "m3",
+        ref,
+        ...(opts.base !== undefined && { base: opts.base }),
+        git: runner,
+        runCommand,
+        clock,
+      });
+    return { calls, deps, result };
+  }
+
+  it("makes a new integration whose branch is the ref's commit, installing on the fork point first", () => {
+    const fork = git(["rev-parse", "main"]).trim();
+    const sha = feature({ "f.txt": "f\n", ".npmrc": "registry=x\n" });
+    // main moves on: the base is the fork point, not main's head.
+    writeFileSync(join(project.root, "m.txt"), "m\n");
+    git(["add", "m.txt"]);
+    git(["commit", "-q", "-m", "main moves"]);
+    const a = adopt("feature");
+    const { record: rec, alreadyIn } = a.result();
+    const p = integrationPaths(project.root, config(), "m3");
+
+    expect(alreadyIn).toEqual([]);
+    expect(rec).toEqual({
+      name: "m3",
+      branch: "integrate/m3",
+      worktree: p.worktree,
+      base: "main",
+      baseSha: fork,
+      merged: [],
+      manifests: [".npmrc"],
+      depsConfirmedAt: null,
+      depsConfirmed: false,
+      headSha: sha,
+      updatedAt: "2026-10-09T12:00:00.000Z",
+    });
+    expect(readIntegration(p)).toEqual(rec);
+    // The install ran on the fork point, a commit of the base; then the branch was fast-forwarded with hooks off.
+    expect(a.deps).toEqual([{ argv: ["pnpm", "install"], cwd: p.worktree, head: fork }]);
+    expect(a.calls).toContainEqual(["worktree", "add", "-b", "integrate/m3", p.worktree, fork]);
+    const ff = a.calls.find((args) => args.includes("--ff-only"));
+    expect(ff?.slice(2, 2 + untrustedTree().length)).toEqual(untrustedTree());
+    expect(ff?.slice(-4)).toEqual(["merge", "--ff-only", "--no-verify", sha]);
+    expect(merges(a.calls)).toEqual([]);
+    expect(git(["rev-parse", "integrate/m3"]).trim()).toBe(sha);
+    expect(git(["rev-parse", "HEAD"], p.worktree).trim()).toBe(sha);
+    expect(git(["status", "--porcelain"], p.worktree)).toBe("");
+    expect(git(["status", "--porcelain"])).toBe("");
+
+    // Lanes merge into it as into any integration, against the same base.
+    lane("a", { "a.txt": "a\n" });
+    const next = run(["a"]).record();
+    expect(next).toMatchObject({ base: "main", merged: [expect.objectContaining({ lane: "a" })] });
+    expect(git(["merge-base", "--is-ancestor", sha, next.headSha]).trim()).toBe("");
+  });
+
+  it("takes --base as the base, with the fork point as baseSha", () => {
+    git(["branch", "release", "main"]);
+    const releaseWt = join(project.dir, "wt-release");
+    git(["worktree", "add", releaseWt, "release"]);
+    const release = commit(releaseWt, { "r.txt": "r\n" });
+    const sha = feature({ "f.txt": "f\n" }, "fix");
+    git(["merge", "-q", "--no-edit", "release"], join(project.dir, "wt-fix"));
+    const head = git(["rev-parse", "fix"]).trim();
+    expect(head).not.toBe(sha);
+    const rec = adopt("fix", { base: "release" }).result().record;
+    expect(rec).toMatchObject({ base: "release", baseSha: release, headSha: head, merged: [], manifests: [], depsConfirmed: true });
+  });
+
+  it("adopts a ref already in the base, with nothing to install on top", () => {
+    const main = git(["rev-parse", "main"]).trim();
+    const a = adopt("main", { cfg: config() });
+    expect(a.result().record).toMatchObject({ baseSha: main, headSha: main, manifests: [] });
+    expect(a.calls.some((args) => args.includes("--ff-only"))).toBe(false);
+  });
+
+  it("refuses an existing integration, its branch or worktree, before creating anything", () => {
+    feature({ "f.txt": "f\n" });
+    run([]).record();
+    const p = integrationPaths(project.root, config(), "m3");
+    expect(caught(adopt("feature").result)).toMatchObject({ code: "usage", message: expect.stringMatching(/^integration m3 already exists \(.*integration\.json, branch integrate\/m3, /) });
+
+    git(["branch", "integrate/n4", "main"]);
+    const b = adopt("feature", { name: "n4" });
+    expect(caught(b.result)).toMatchObject({ code: "usage", message: expect.stringMatching(/^integration n4 already exists \(branch integrate\/n4\)/) });
+    expect(b.calls.some((args) => args.includes("add"))).toBe(false);
+    expect(existsSync(p.worktree.replace(/m3$/, "n4"))).toBe(false);
+  });
+
+  it("refuses a landed name", () => {
+    feature({ "f.txt": "f\n" });
+    const p = integrationPaths(project.root, config(), "m3");
+    mkdirSync(p.dir, { recursive: true });
+    writeFileSync(p.landing, JSON.stringify({ name: "m3", landedAt: "2026-10-09T13:00:00.000Z" }));
+    const a = adopt("feature");
+    expect(caught(a.result)).toMatchObject({ code: "usage", message: expect.stringMatching(/^integration m3 landed at 2026-10-09T13:00:00\.000Z/) });
+    expect(a.calls).toEqual([]);
+  });
+
+  it("refuses a ref or base that names no commit, an option-like one, and a ref with no history in common", () => {
+    feature({ "f.txt": "f\n" });
+    for (const [ref, base, message] of [
+      ["nope", undefined, /^--adopt nope does not name a commit/],
+      ["feature", "nope", /^base nope does not name a commit/],
+      ["-x", undefined, /^--adopt "-x" is not a valid revision/],
+      ["feature", "--all", /^--base "--all" is not a valid revision/],
+    ] as const) {
+      const a = adopt(ref, base === undefined ? {} : { base });
+      expect(caught(a.result), ref).toMatchObject({ code: "usage", message: expect.stringMatching(message) });
+      expect(a.calls.some((args) => args.includes("add"))).toBe(false);
+    }
+    const tree = git(["rev-parse", "main^{tree}"]).trim();
+    const orphan = git(["commit-tree", tree, "-m", "unrelated"]).trim();
+    expect(caught(adopt(orphan).result)).toMatchObject({ code: "usage", message: expect.stringMatching(/shares no history with main/) });
+    expect(git(["branch", "--list", "integrate/m3"])).toBe("");
+    expect(existsSync(integrationPaths(project.root, config(), "m3").integration)).toBe(false);
+  });
+
+  it("removes the worktree and the branch when the dependencies fail, so adopting again starts over", () => {
+    feature({ "f.txt": "f\n" });
+    const p = integrationPaths(project.root, config(), "m3");
+    const failing = adopt("feature", { deps: () => ({ code: 1, output: "install failed" }) });
+    expect(caught(failing.result)).toMatchObject({ code: "runtime", message: expect.stringMatching(/dependencies failed .*install failed/s) });
+    expect(existsSync(p.worktree)).toBe(false);
+    expect(git(["branch", "--list", "integrate/m3"])).toBe("");
+    expect(adopt("feature").result().record.headSha).toBe(git(["rev-parse", "feature"]).trim());
   });
 });

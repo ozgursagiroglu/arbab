@@ -1,4 +1,5 @@
-import { explicitGit, isDependencyManifest, untrustedTree, type GitRunner, verifyWorktreeGit } from "../run";
+import { explicitGit, untrustedTree, type GitRunner, verifyWorktreeGit } from "../run";
+import { installRelevantPaths } from "../run/deps";
 import { ArbabError } from "../util/errors";
 
 /** A branch merged into a new worktree, at the commit it pointed to (recorded in started.json). */
@@ -26,7 +27,8 @@ const output = (r: { stdout: string; stderr: string }): string => (r.stderr || r
 /**
  * Merges each branch into a worktree no worker has run in yet (DESIGN.md §16), with the worktree's git dir and work
  * tree named explicitly as the checkpoint does. Each branch is resolved to a commit once, and that commit is the one
- * checked, merged (fast-forwarded when it descends from HEAD) and recorded. A branch that changes a dependency manifest, a missing branch or a failed merge
+ * checked, merged (fast-forwarded when it descends from HEAD) and recorded. A branch that changes a dependency manifest
+ * in a way an install sees (installRelevantChange), a missing branch or a failed merge
  * throws, after aborting the merge: the orchestrator resolves conflicts and lands dependency changes, never the worker.
  */
 export function mergeBranches(input: MergeInput): MergedBranch[] {
@@ -61,7 +63,8 @@ export function mergeBranches(input: MergeInput): MergedBranch[] {
     if (diff.code !== 0) {
       throw new ArbabError("git", `cannot list the files ${branch} changes in ${input.branch} (${diff.code}): ${output(diff)}`);
     }
-    const manifests = diff.stdout.split("\0").filter((path) => path !== "" && isDependencyManifest(path));
+    // Only changes an install can see: an `exports` or `version` edit in package.json runs nothing on the host.
+    const manifests = installRelevantPaths(git, "HEAD", sha, diff.stdout.split("\0").filter((path) => path !== ""));
     if (manifests.length > 0) {
       throw new ArbabError(
         "git",

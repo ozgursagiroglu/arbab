@@ -10,10 +10,11 @@ import { ArbabError } from "../util/errors";
 import { elideSchema, laneSchema, previousSession, profileInput, readRegistration, startedFields, worktreeUsedFile } from "./attempt";
 
 // envFileAllowReads has its own tests; here only whether and how the attempt calls it matters.
-const envFileCalls = vi.hoisted(() => [] as Array<{ worktree: string; readable: string[] }>);
+type EnvFileCall = { worktree: string; branch: string; gitCommonDir: string; readable: string[] };
+const envFileCalls = vi.hoisted(() => [] as EnvFileCall[]);
 vi.mock("../profile/envfiles", () => ({
-  envFileAllowReads: (input: { worktree: string; readable: string[] }) => {
-    envFileCalls.push({ worktree: input.worktree, readable: input.readable });
+  envFileAllowReads: (input: EnvFileCall) => {
+    envFileCalls.push({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir, readable: input.readable });
     return [`${input.worktree}/.env.example`];
   },
 }));
@@ -64,6 +65,7 @@ describe("profileInput", () => {
       fence: "strict" as const,
       leases: [],
       worktree: "/repo/.arbab/worktrees/m1-a",
+      branch: "arbab/m1-a",
       gitCommonDir: "/repo/.git",
       deps: { git },
     };
@@ -77,7 +79,7 @@ describe("profileInput", () => {
     expect(envFileCalls).toEqual([]);
   });
 
-  it("asks envFileAllowReads for the templates to re-open when some are readable", () => {
+  it("asks envFileAllowReads, with the branch and git dir to verify the worktree by, for the templates to re-open", () => {
     envFileCalls.length = 0;
     const input = profileInput(ctx({ readableEnvFiles: [".env.example"], bashOutputMaxChars: 4000 }));
     expect(input).toMatchObject({
@@ -87,7 +89,9 @@ describe("profileInput", () => {
       worktree: "/repo/.arbab/worktrees/m1-a",
     });
     expect(input).not.toHaveProperty("envFileDenies");
-    expect(envFileCalls).toEqual([{ worktree: "/repo/.arbab/worktrees/m1-a", readable: [".env.example"] }]);
+    expect(envFileCalls).toEqual([
+      { worktree: "/repo/.arbab/worktrees/m1-a", branch: "arbab/m1-a", gitCommonDir: "/repo/.git", readable: [".env.example"] },
+    ]);
   });
 
   it("passes the main checkout as projectRoot, so the relative credential denies are anchored there", () => {

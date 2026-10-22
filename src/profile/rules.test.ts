@@ -75,6 +75,30 @@ describe("credentialDenies", () => {
     }
   });
 
+  it("anchors a project root with a glob character in a directory name at its nearest ancestor without one", () => {
+    const rules = credentialDenies([], "/work/a[1]/b/repo");
+    expect(rules).toContain("Read(//work/**/.env*)");
+    expect(rules).toContain("Edit(//work/**/.env*)");
+    expect(rules.filter((r) => r.includes("["))).toEqual([]);
+    for (const special of ["*", "?", "]", "{", "}", "(", ")", "!", "\\"]) {
+      expect(credentialDenies([], `/work/x${special}y/repo`)).toContain("Read(//work/**/*.pem)");
+    }
+  });
+
+  it("anchors at the filesystem root when no ancestor below it is free of glob characters", () => {
+    const rules = credentialDenies(["**/*.secret"], "/w[ork]/repo");
+    expect(rules).toContain("Read(//**/.env*)");
+    expect(rules).toContain("Edit(//**/.env*)");
+    expect(rules.slice(-2)).toEqual(["Read(//**/*.secret)", "Edit(//**/*.secret)"]);
+    expect(rules.filter((r) => r.includes("///") || r.includes("["))).toEqual([]);
+  });
+
+  it("keeps a project root without glob characters as it is", () => {
+    const rules = credentialDenies([], "/work/my-repo.v2_x@y");
+    expect(rules).toContain("Read(//work/my-repo.v2_x@y/**/.env*)");
+    expect(rules.filter((r) => r.startsWith("Read(//"))).toHaveLength(RELATIVE.length);
+  });
+
   it("adds only the home pair without a project root", () => {
     const rules = credentialDenies([]);
     expect(rules).toContain("Read(~/**/.env*)");

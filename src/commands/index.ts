@@ -60,18 +60,20 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
 
   -C <dir>                                find the project from <dir> instead of the working directory
 
-  doctor [--json]                         node, git, claude binary, sandbox, config, ignored roots, ~/.arbab
+  doctor [--json]                         node, git, claude binary, sandbox, config, ignored roots, ~/.arbab, the
+                                          plugin hook, gates, env templates, scanners, disk, machine cap
   lint <lane.json> [--json]               profile, brief and schema lint; exit 1 on errors
   launch <lane.json> [--json]             lint, then start the lane's shepherd
   plan check <plan.json> [--json]         validate a plan, lint every phase, print the waves; exit 1 on errors
   plan next <plan.json> [--retry <phase>] [--json]
                                           launch every phase whose dependencies all succeeded and that never ran;
-                                          --retry relaunches a failed phase
+                                          --retry first relaunches a phase that failed or was orphaned
   plan status <plan.json> [--json]        one row per phase: wave, state, end state, dependencies
   status [<lane>…] [--active] [--mine] [--json]
                                           one row per lane, then the quota
-  wait [<lane>… | --any | --all] [--timeout-min N] [--notify] [--json]
-                                          report finished lanes not yet acked; exit 3 on timeout
+  wait [<lane>… | --any | --all] [--all-sessions] [--timeout-min N] [--notify] [--json]
+                                          report finished lanes not yet acked (without lanes: this session's runs and
+                                          ownerless ones, every session's with --all-sessions); exit 3 on timeout
   resume <lane> [--prompt <file> | --digest] [--json]
                                           a new attempt resuming the latest session; --digest starts a fresh
                                           session seeded with the latest attempt's digest
@@ -80,10 +82,10 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
                                           probe the lane's fence and model; exit 1 on any failed check
   quota [--reset | --refresh] [--json]    the account snapshot and the hold decision; --reset deletes the snapshot
                                           (after switching accounts), --refresh reads the current account's windows
-  cleanup [--worktrees] [--older-than <days>] [--mine] [--json]
-                                          reap orphans, release stale pool entries; --worktrees removes finished lanes'
-                                          merged clean worktrees (lane branches stay), and landed integrations'
-                                          worktrees and branches
+  cleanup [--worktrees [--older-than <days>]] [--mine] [--json]
+                                          reap orphans, release stale pool entries, remove empty lock directories;
+                                          --worktrees removes finished lanes' clean worktrees merged or landed (lane
+                                          branches stay), and landed integrations' worktrees and branches
   integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
                                           merge lane branches into integrate/<name>, in order or by plan waves
   integrate <name> --adopt <ref> [--base <ref>] [--json]
@@ -99,12 +101,13 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
   readiness <name> [--tier low|medium|high] [--waive id,…] [--json]
                                           the readiness report (verified, skipped, risks); exit 1 unless ready
   land <name> [--squash] [--message <file>] [--keep-worktrees] [--json]
-                                          merge a ready integration into the base branch; never pushes; then
-                                          remove the worktrees it landed (lane branches stay) unless --keep-worktrees
+                                          merge a ready integration into the base branch (--squash: one commit);
+                                          never pushes; then remove the worktrees it landed (lane branches stay)
+                                          unless --keep-worktrees
   ui [--port N] [--hours N] [--no-open] [--json]
                                           serve the pyramid scene on 127.0.0.1 until stopped (read-only)
   summary [--all] [--json]                plans, lanes by state, integrations by stage and what needs you
-  report <lane> [--attempt <n>] [--json]  a lane's latest report
+  report <lane> [--attempt <n>] [--json]  an attempt's summary and report, the latest unless --attempt
   host-check <name>                       run hostGates on the integration head from a terminal
   help [<command>], --help                this text, or a command's options
   version, --version                      the arbab version

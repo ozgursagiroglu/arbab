@@ -29,8 +29,8 @@ describe("USAGE", () => {
 
   it("carries the flags this milestone adds", () => {
     expect(USAGE.status).toContain("status [<lane>…] [--active] [--mine] [--json]");
-    expect(USAGE.wait).toContain("wait [<lane>… | --any | --all] [--timeout-min <n>] [--notify] [--json]");
-    expect(USAGE.cleanup).toContain("[--worktrees] [--older-than <days>] [--mine]");
+    expect(USAGE.wait).toContain("wait [<lane>… | --any | --all] [--all-sessions] [--timeout-min <n>] [--notify] [--json]");
+    expect(USAGE.cleanup).toContain("[--worktrees [--older-than <days>]] [--mine]");
     expect(USAGE.quota).toContain("quota [--reset | --refresh] [--json]");
     expect(USAGE.plan).toContain("plan next <plan.json> [--retry <phase>]");
     expect(USAGE.integrate).toContain("integrate <name> --adopt <ref> [--base <ref>]");

@@ -20,7 +20,7 @@ export const USAGE: Readonly<Record<string, string>> = {
   launch: block(["launch <lane.json> [--json]"], [JSON_OPT]),
   plan: block(
     ["plan check <plan.json> [--json]", "plan next <plan.json> [--retry <phase>] [--json]", "plan status <plan.json> [--json]"],
-    [["--retry <phase>", "next: relaunch a failed phase"], JSON_OPT],
+    [["--retry <phase>", "next: first relaunch a phase that failed or was orphaned, in its worktree"], JSON_OPT],
   ),
   status: block(
     ["status [<lane>…] [--active] [--mine] [--json]"],
@@ -31,10 +31,11 @@ export const USAGE: Readonly<Record<string, string>> = {
     ],
   ),
   wait: block(
-    ["wait [<lane>… | --any | --all] [--timeout-min <n>] [--notify] [--json]"],
+    ["wait [<lane>… | --any | --all] [--all-sessions] [--timeout-min <n>] [--notify] [--json]"],
     [
-      ["--any", "wait for runs owned by this session or by none (the default)"],
-      ["--all", "wait for every run"],
+      ["--any", "return when one run finished (the default)"],
+      ["--all", "return when every run finished"],
+      ["--all-sessions", "every session's runs; without it, this session's and ownerless ones (named lanes: any owner)"],
       timeout("none"),
       ["--notify", "a desktop notification per finished lane"],
       JSON_OPT,
@@ -54,16 +55,16 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["quota [--reset | --refresh] [--json]"],
     [
       ["--reset", "delete the snapshot (after switching accounts)"],
-      ["--refresh", "read the current account's windows with one call on the cheapest model"],
+      ["--refresh", "read the current account's windows with one tool-less haiku call"],
       JSON_OPT,
     ],
   ),
   cleanup: block(
-    ["cleanup [--worktrees] [--older-than <days>] [--mine] [--json]"],
+    ["cleanup [--worktrees [--older-than <days>]] [--mine] [--json]"],
     [
-      ["--worktrees", "also remove finished lanes' merged clean worktrees and landed integrations"],
-      ["--older-than <days>", "only what finished at least <days> days ago"],
-      ["--mine", "only runs owned by this session or by none"],
+      ["--worktrees", "also remove finished lanes' clean worktrees merged into the base or landed, and landed integrations'"],
+      ["--older-than <days>", "with --worktrees: also finished lanes' clean worktrees unchanged for over <days> days (branches stay)"],
+      ["--mine", "only runs this session owns (not ownerless ones), and no integration"],
       JSON_OPT,
     ],
   ),
@@ -76,8 +77,8 @@ export const USAGE: Readonly<Record<string, string>> = {
     [
       ["--lanes a,b,…", "merge these lane branches into integrate/<name>, in order"],
       ["--plan <plan.json>", "merge the plan's lane branches by waves"],
-      ["--adopt <ref>", "make an integration of an existing branch"],
-      ["--base <ref>", "with --adopt: the base it is compared with"],
+      ["--adopt <ref>", "make a new integration whose branch starts at <ref>'s commit, nothing merged"],
+      ["--base <ref>", "with --adopt: its base (default config baseBranch)"],
       ["--deps-installed <sha>", "record that you reviewed and installed changed dependencies at <sha>"],
       JSON_OPT,
     ],
@@ -90,8 +91,8 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["review <name> [--lenses a,b] [--lens-file <name>=<file>]… [--since <sha>] [--timeout-min <n>] [--json]"],
     [
       ["--lenses a,b", "only these lenses; the others' findings from the same head stay"],
-      ["--lens-file <name>=<file>", "take lens <name>'s text from <file>; repeatable"],
-      ["--since <sha>", "review what changed since <sha> (a fix round)"],
+      ["--lens-file <name>=<file>", "add lens <name>, or replace its text, from <file> for this run; repeatable"],
+      ["--since <sha>", "diff from <sha>, an ancestor of the head, instead of the base (a fix round)"],
       timeout("120"),
       JSON_OPT,
     ],
@@ -100,16 +101,16 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["readiness <name> [--tier low|medium|high] [--waive id,…] [--json]"],
     [
       ["--tier low|medium|high", "the risk tier (default config landing.tier)"],
-      ["--waive id,…", "waive these checks (terminal only)"],
+      ["--waive id,…", "waive these skipped items (a person in a terminal only)"],
       JSON_OPT,
     ],
   ),
   land: block(
     ["land <name> [--squash] [--message <file>] [--keep-worktrees] [--json]"],
     [
-      ["--squash", "make one commit (default config landing.squash)"],
-      ["--message <file>", "the commit message"],
-      ["--keep-worktrees", "keep the worktrees it landed"],
+      ["--squash", "one commit instead of a merge (default config landing.squash)"],
+      ["--message <file>", "the commit message, from a file (default \"Land <name>\")"],
+      ["--keep-worktrees", "skip removing the landed worktrees and branches"],
       JSON_OPT,
     ],
   ),

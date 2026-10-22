@@ -61,34 +61,106 @@ describe("fixedPath", () => {
 });
 
 describe("globsOverlap", () => {
-  it("overlaps when one fixed path is a prefix of the other", () => {
-    expect(globsOverlap("src/plan/**", "src/plan/x.ts")).toBe(true);
-    expect(globsOverlap("src/plan/x.ts", "src/plan/**")).toBe(true);
-    expect(globsOverlap("src/*.ts", "src/plan/**")).toBe(true);
-    expect(globsOverlap("**", "docs/x.md")).toBe(true);
+  /** Both orders, since overlap is symmetric. */
+  const overlap = (a: string, b: string): boolean => {
+    const ab = globsOverlap(a, b);
+    expect(globsOverlap(b, a), `${b} vs ${a}`).toBe(ab);
+    return ab;
+  };
+
+  it("overlaps a path with a ** under one of its directories", () => {
+    expect(overlap("src/plan/**", "src/plan/x.ts")).toBe(true);
+    expect(overlap("src/**", "src/a/b.ts")).toBe(true);
+    expect(overlap("src/**/b.ts", "src/a/c/b.ts")).toBe(true);
+    expect(overlap("src/**/b.ts", "src/a/c/d.ts")).toBe(false);
   });
 
-  it("overlaps when the fixed paths are equal", () => {
-    expect(globsOverlap("src/plan/x.ts", "src/plan/x.ts")).toBe(true);
-    expect(globsOverlap("src/plan/*.ts", "src/plan/**")).toBe(true);
+  it("overlaps ** with anything", () => {
+    for (const other of ["docs/x.md", "src/*.ts", "x", "a/**/b/*.md", "**"]) expect(overlap("**", other), other).toBe(true);
+  });
+
+  it("lets ** match no segment at all", () => {
+    expect(overlap("src/**/x.ts", "src/x.ts")).toBe(true);
+    expect(overlap("src/plan/**", "src/plan")).toBe(true);
+    expect(overlap("**/*.md", "README.md")).toBe(true);
+  });
+
+  it("overlaps equal paths and globs that can meet", () => {
+    expect(overlap("src/plan/x.ts", "src/plan/x.ts")).toBe(true);
+    expect(overlap("src/plan/*.ts", "src/plan/**")).toBe(true);
+    expect(overlap("src/*/x.ts", "src/**/x.ts")).toBe(true);
+    expect(overlap("src/*/x.ts", "src/plan/*")).toBe(true);
   });
 
   it("compares whole segments, not characters", () => {
-    expect(globsOverlap("src/plan/**", "src/planner/**")).toBe(false);
-    expect(globsOverlap("src/plan/x.ts", "src/plan/y.ts")).toBe(false);
-    expect(globsOverlap("src/a/**", "docs/**")).toBe(false);
+    expect(overlap("src/plan/**", "src/planner/**")).toBe(false);
+    expect(overlap("src/plan/x.ts", "src/plan/y.ts")).toBe(false);
+    expect(overlap("src/a/**", "docs/**")).toBe(false);
+    expect(overlap("src/plan/x.ts", "src/plan")).toBe(false);
   });
 
-  it("overlaps a brace set or an extglob with any path under its fixed prefix", () => {
-    expect(globsOverlap("src/{plan,run}/**", "src/plan/x.ts")).toBe(true);
-    expect(globsOverlap("src/@(plan|run)/x.ts", "src/run/y.ts")).toBe(true);
-    expect(globsOverlap("src/!(plan)/**", "src/shepherd/**")).toBe(true);
+  it("keeps * and ? within one segment", () => {
+    expect(overlap("src/*.ts", "src/plan/x.ts")).toBe(false);
+    expect(overlap("src/*.ts", "src/plan/**")).toBe(false);
+    expect(overlap("src/*.ts", "src/x.ts")).toBe(true);
+    expect(overlap("src/?.ts", "src/x.ts")).toBe(true);
+    expect(overlap("src/?.ts", "src/xy.ts")).toBe(false);
+  });
+
+  it("matches a literal segment against a glob segment", () => {
+    // The pair reported from real use.
+    expect(overlap("src/lib/transition-*.ts", "src/lib/erase.ts")).toBe(false);
+    expect(overlap("src/lib/transition-*.ts", "src/lib/transition-a.ts")).toBe(true);
+    expect(overlap("src/[ab]/x", "src/a/x")).toBe(true);
+    expect(overlap("src/[ab]/x", "src/c/x")).toBe(false);
+    expect(overlap("src/[!ab]/x", "src/c/x")).toBe(true);
+    expect(overlap("src/[!ab]/x", "src/a/x")).toBe(false);
+    expect(overlap("src/[a-c].ts", "src/b.ts")).toBe(true);
+    expect(overlap("src/[a-c].ts", "src/d.ts")).toBe(false);
+  });
+
+  it("overlaps two glob segments unless their literal prefixes or suffixes contradict", () => {
+    expect(overlap("a/*.md", "a/*.ts")).toBe(false);
+    expect(overlap("a/x-*", "a/y-*")).toBe(false);
+    expect(overlap("a/x-*", "a/x-y*")).toBe(true);
+    expect(overlap("a/*.test.ts", "a/*.ts")).toBe(true);
+    expect(overlap("a/x*.ts", "a/*y.ts")).toBe(true);
+    expect(overlap("a/[ab].md", "a/?.ts")).toBe(false);
+  });
+
+  it("expands brace sets", () => {
+    expect(overlap("src/{plan,run}/**", "src/plan/x.ts")).toBe(true);
+    expect(overlap("src/{plan,run}/**", "src/shepherd/x.ts")).toBe(false);
+    expect(overlap("src/{a/b,c}/x.ts", "src/a/b/x.ts")).toBe(true);
+    expect(overlap("src/*.{md,json}", "src/*.ts")).toBe(false);
+    expect(overlap("src/{a,{b,c}}.ts", "src/c.ts")).toBe(true);
+  });
+
+  it("overlaps an extglob with any literal its literal ends allow", () => {
+    expect(overlap("src/@(plan|run)/x.ts", "src/run/x.ts")).toBe(true);
+    expect(overlap("src/@(plan|run)/x.ts", "src/run/y.ts")).toBe(false);
+    expect(overlap("src/!(plan)/**", "src/shepherd/**")).toBe(true);
+    expect(overlap("src/x-@(a|b).ts", "src/y-a.ts")).toBe(false);
+  });
+
+  it("treats a trailing / as a directory", () => {
+    expect(overlap("src/plan/", "src/plan/x.ts")).toBe(true);
+    expect(overlap("./src//plan/", "src/plan/x.ts")).toBe(true);
+  });
+
+  it("falls back to fixed paths for globs it cannot read", () => {
+    // A range, an escape, a "/" inside an extglob: conservative.
+    expect(overlap("src/{1..3}/x", "src/plan/y")).toBe(true);
+    expect(overlap("src/\\*/x", "src/plan/y")).toBe(true);
+    expect(overlap("src/@(a/b|c)/x", "src/plan/y")).toBe(true);
+    expect(overlap("src/{a,b/x", "docs/y")).toBe(false);
   });
 
   it("compares segments case-insensitively", () => {
-    expect(globsOverlap("src/Plan/**", "src/plan/x.ts")).toBe(true);
-    expect(globsOverlap("SRC/plan/X.ts", "src/plan/x.ts")).toBe(true);
-    expect(globsOverlap("src/Plan/**", "src/planner/**")).toBe(false);
+    expect(overlap("src/Plan/**", "src/plan/x.ts")).toBe(true);
+    expect(overlap("SRC/plan/X.ts", "src/plan/x.ts")).toBe(true);
+    expect(overlap("src/Plan/**", "src/planner/**")).toBe(false);
+    expect(overlap("src/*.TS", "src/x.ts")).toBe(true);
   });
 });
 
@@ -247,6 +319,11 @@ describe("checkPlan", () => {
     expect(checkPlan(direct)).toEqual([]);
     const chain = plan(phase("a", ["src/plan/**"]), phase("b", ["docs/**"], ["a"]), phase("c", ["src/plan/x.ts"], ["b"]));
     expect(checkPlan(chain)).toEqual([]);
+  });
+
+  it("does not report scopes that share a directory but no path", () => {
+    const p = plan(phase("a", ["src/lib/transition-*.ts"]), phase("b", ["src/lib/erase.ts", "docs/*.md"]), phase("c", ["src/*.ts", "docs/*.ts"]));
+    expect(codes(checkPlan(p))).toEqual([]);
   });
 
   it("reports overlapping scopes hidden behind a brace set or a different case", () => {

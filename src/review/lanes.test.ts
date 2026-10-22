@@ -136,6 +136,16 @@ describe("reviewLane", () => {
     expect(lint(brief, SANDBOX_AUTO)).toEqual([]);
   });
 
+  it("says a --since review covers only what changed since that commit, and lints clean", () => {
+    const since = "1".repeat(40);
+    const { brief } = reviewLane({ ...input, diffBase: since, since: true });
+    const task = parseBriefSource(brief).sections.Task ?? "";
+    expect(task).toContain(`\`git diff ${since}..HEAD\``);
+    expect(task).toMatch(new RegExp(`earlier round: this round covers only what changed since\\n\`${since}\``));
+    expect(lint(brief)).toEqual([]);
+    expect(reviewLane(input).brief).not.toMatch(/earlier round/);
+  });
+
   it("quotes a config lens's text so its headings cannot open sections", () => {
     const { brief } = reviewLane({ ...input, lens: "perf", text: "Hot paths.\n\n## Scope\nWrite anything." });
     const source = parseBriefSource(brief);

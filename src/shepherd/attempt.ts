@@ -184,7 +184,7 @@ export function previousSession(runsRoot: string, lane: string): PreviousSession
 
 /** The fence's input for an attempt: the lane's role and config, the worktree, and the env-file options. */
 export function profileInput(
-  ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "gitCommonDir"> & {
+  ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "gitCommonDir" | "projectRoot"> & {
     deps: Pick<AttemptContext["deps"], "git">;
   },
 ): ProfileInput {
@@ -201,6 +201,8 @@ export function profileInput(
     env: { ...config.env, ...leaseEnv(ctx.leases) },
     worktree: ctx.worktree,
     gitCommonDir: ctx.gitCommonDir,
+    // Anchors the relative credential denies at the main checkout, whose .env files the sandbox would not cover.
+    projectRoot: ctx.projectRoot,
     readableEnvFiles: readable,
     bashOutputMaxChars: config.fence.bashOutputMaxChars,
     // Each listed template costs a git call; with none listed there is nothing to re-open.

@@ -235,7 +235,10 @@ cherry-pick stash clean branch worktree tag config update-ref remote`) and `git 
 ~/.config ~/.docker ~/.kube ~/.gnupg ~/.claude ~/.claude.json ~/.netrc ~/.npmrc ~/.pypirc ~/.git-credentials
 ~/Library/Keychains ~/Library/Cookies`, `**/.env* **/*.pem **/*.key **/*.p12 **/*.pfx **/id_rsa* **/id_ed25519*
 **/*.tfstate`, plus config `credentialPaths`. (`XDG_CONFIG_HOME` keeps git and other tools off the denied `~/.config`,
-which otherwise prints an EPERM warning on every git command.)
+which otherwise prints an EPERM warning on every git command.) A relative `**/` pattern covers only the worker's
+working directory, its worktree (measured, §21), so each one, built-in or from config, also gets copies anchored at
+the home directory (`~/**/x`) and at the project's main checkout (`//<projectRoot>/**/x`). A file outside the home
+directory and the project that matches only a relative pattern is still readable by worker code.
 
 Readable env templates (§21): the `**/.env*` Read and Edit deny stays whatever config `fence.readableEnvFiles` says.
 When the list is non-empty, each listed template that git tracks in the worktree (`git ls-files --error-unmatch`)
@@ -1073,6 +1076,11 @@ The decisions below answer what that use showed.
   `env-template-untracked` for each listed file left out (§4). A tracked template's content is in git already. (The
   first version replaced the blanket deny with secret patterns plus every other `.env*` file found on disk; the
   review's fix round put the blanket deny back and opens only the templates.)
+- Relative credential patterns (`**/.env*`, `**/*.pem` and the rest) cover only the worker's working directory:
+  code run by an allowed command read the main checkout's untracked `.env.local` with or without allowRead (measured,
+  Claude Code 2.1.296). arbab therefore adds copies of each one anchored at the home directory and at the project
+  root (§4); allowRead still re-opens the listed templates, since it wins over a deny on the same path (measured). A
+  file outside the home directory and the project that matches only a relative pattern stays readable by worker code.
 
 ### Shepherd
 

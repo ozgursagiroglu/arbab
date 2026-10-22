@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultConfig, resolveRole } from "../config";
+import { compileProfile } from "../profile";
 import { DEFAULT_SCHEMAS } from "../report";
 import type { GitRunner } from "../run";
 import { ArbabError } from "../util/errors";
@@ -87,6 +88,12 @@ describe("profileInput", () => {
     });
     expect(input).not.toHaveProperty("envFileDenies");
     expect(envFileCalls).toEqual([{ worktree: "/repo/.arbab/worktrees/m1-a", readable: [".env.example"] }]);
+  });
+
+  it("passes the main checkout as projectRoot, so the relative credential denies are anchored there", () => {
+    const input = profileInput(ctx({ readableEnvFiles: [], bashOutputMaxChars: 100000 }));
+    expect(input.projectRoot).toBe("/repo");
+    expect(compileProfile(input).settings.permissions.deny).toContain("Read(//repo/**/.env*)");
   });
 });
 

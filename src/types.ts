@@ -231,6 +231,11 @@ export interface ProfileInput {
    * lets a worktree's worker write there, refs and objects included, so the fence denies it (M1 review, measured).
    */
   gitCommonDir?: string;
+  /**
+   * Absolute path of the project's main checkout. Relative credential patterns (`**\/.env*`) cover only the worker's
+   * working directory in the sandbox (measured), so compile anchors them here and at the home directory too.
+   */
+  projectRoot?: string;
   /** config.fence.readableEnvFiles (DESIGN.md §21). */
   readableEnvFiles?: string[];
   /**

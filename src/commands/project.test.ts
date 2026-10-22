@@ -77,6 +77,22 @@ describe("inLaneWorktree", () => {
     expect(inLaneWorktree("/work/repo/.ARBAB/RUNS/a", io)).toBe(false);
   });
 
+  it("folds the pair as APFS does, ſ and NFD included", () => {
+    const io = fakeIo();
+    // ſ (U+017F) is s to APFS, but toLowerCase keeps it.
+    expect(inLaneWorktree("/work/repo/.arbab/worktreeſ/demo", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.ARBAB/WORKTREES/demo", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.arbab/worktreeſ-old/demo", io)).toBe(false);
+  });
+
+  it("folds a configured worktreeRoot as APFS does", () => {
+    const io = fakeIo({ "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "laneſ" }) });
+    expect(inLaneWorktree("/work/repo/LANES/a", io)).toBe(true);
+    const nfc = fakeIo({ "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "café" }) });
+    expect(inLaneWorktree("/work/repo/café/a", nfc)).toBe(true);
+    expect(inLaneWorktree("/work/repo/cafe/a", nfc)).toBe(false);
+  });
+
   it("checks the spelling on disk as well as the one given", () => {
     // A link into a worktree, and another spelling the file system folds to it.
     const io = fakeIo({}, { "/work/link": "/work/repo/.arbab/worktrees/a", "/WORK/REPO/LANE": "/work/repo/.arbab/worktrees/a" });
@@ -265,6 +281,14 @@ describe("findProjectRoot in a lane worktree", () => {
   it("refuses a .ARBAB/WORKTREES spelling", () => {
     p = makeProject();
     const lane = join(p.root, ".ARBAB", "WORKTREES", "demo");
+    mkdirSync(lane, { recursive: true });
+    writeFileSync(join(lane, "arbab.config.json"), "{}");
+    expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);
+  });
+
+  it("refuses a .arbab/worktreeſ spelling", () => {
+    p = makeProject();
+    const lane = join(p.root, ".arbab", "worktreeſ", "demo");
     mkdirSync(lane, { recursive: true });
     writeFileSync(join(lane, "arbab.config.json"), "{}");
     expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);

@@ -18,15 +18,22 @@
 // Text: `landed <name>: <head> into <base> as <merge sha>`, then `Not pushed. To publish: git push <remote> <base>`,
 // then `left alone: <paths>` when untracked files stayed in the main checkout (the first five), then cleanup's lines
 // (`removed worktree <path>`, `deleted branch <branch>`, `kept worktree <path>: <reason>`, …).
+// Once the merge (or squash) succeeded, in the same call, a `warning:` line on stderr for each other session the
+// landing affects (otherSessions: its lanes and waiters in this project, or the runner files of this project it runs
+// elsewhere); it never blocks on them, and a failed landing prints none. Too late to tell anyone first: those are told
+// from readiness's list, and these lines are a last record that also names sessions that appeared since. When it
+// cannot tell, one `warning:` line says so.
 // --json: {"landing": LandingRecord, "remote": string | null, "push": string[] | null,
-//          "cleanup": WorktreeCleanup | null (null with --keep-worktrees), "leftAlone": string[]}
+//          "cleanup": WorktreeCleanup | null (null with --keep-worktrees), "leftAlone": string[],
+//          "otherSessions"?: SessionActivity[] ([] for none, absent when it cannot tell)}
 // Exit 0; 1 on a refusal; 2 when the merge fails (it is aborted).
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { credentialMatcher, credentialReason, homeSpellings, type CredentialHit } from "../profile";
+import { otherSessions, sessionOf, sessionText } from "../registry";
 import { untrustedTree, type GitRunner } from "../run";
 import { TIERS } from "../types";
-import type { LandingRecord, ReadinessReport, ReviewRecord, Tier, VerifyRecord } from "../types";
+import type { LandingRecord, ReadinessReport, ReviewRecord, SessionActivity, Tier, VerifyRecord } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -66,6 +73,28 @@ function porcelainEntries(out: string): string[] {
   return entries;
 }
 
+/**
+ * The paths `git diff <revs>` touches, both sides of a rename included, relative to the repository's top level (as
+ * `git status` names them too), which lies above `root` when the project is a subdirectory of its repository.
+ * `-c diff.relative=false`: a diff.relative in the owner's config would make them relative to `root` instead. Not
+ * `--no-relative`, which git before 2.28 rejects; that git has no diff.relative, ignores the key and never prints
+ * relative paths.
+ */
+export function changedPaths(git: GitRunner, root: string, revs: readonly string[]): string[] {
+  return gitOut(git, ["-c", "diff.relative=false", "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root)
+    .split("\0")
+    .filter((p) => p !== "");
+}
+
+/**
+ * The other sessions a landing that changes `changed` (changedPaths: from git's top level) affects, seen from this
+ * CLI's session. Runner files are reported relative to `root`.
+ */
+export function sessionsAffected(ctx: CommandContext, root: string, changed: readonly string[]): SessionActivity[] {
+  const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
+  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed, changedBase });
+}
+
 const firstFive = (items: string[], sep: string): string =>
   items.slice(0, 5).join(sep) + (items.length > 5 ? `${sep}and ${items.length - 5} more` : "");
 
@@ -84,9 +113,7 @@ export function assertCleanBase(git: GitRunner, root: string, base: string, head
   if (tracked.length > 0) throw refuse(`the main checkout ${root} has uncommitted changes (${firstFive(tracked, "; ")})`);
   const untracked = status.map((e) => e.slice(3));
   if (untracked.length === 0) return [];
-  const written = gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "HEAD", head, "--"], root)
-    .split("\0")
-    .filter((p) => p !== "");
+  const written = changedPaths(git, root, ["HEAD", head]);
   const collides = (u: string): boolean => written.some((p) => (u.endsWith("/") ? p.startsWith(u) : p === u || p.startsWith(`${u}/`)));
   const blocking = untracked.filter(collides);
   if (blocking.length > 0) {
@@ -217,6 +244,17 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name, paths.worktree);
 
+  // Said, never enforced, and in the same call as the merge: the sessions were to be told from readiness's list, so
+  // this is a last record that also names the sessions that appeared since. Read before the merge, which moves HEAD;
+  // printed once it succeeded, so a failed landing says nothing about them. Undefined when it cannot tell.
+  let sessions: SessionActivity[] | undefined;
+  let sessionsUnknown: string | undefined;
+  try {
+    sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
+  } catch (err) {
+    sessionsUnknown = (err as Error).message;
+  }
+
   // By sha, so exactly the verified commit lands even if the branch moves meanwhile. Without hooks: the merge brings
   // in worker code, and a hook would run it on the host.
   if (squash) squashLand(ctx, project.root, head, message, `squashing ${paths.branch} into ${base}`);
@@ -227,6 +265,8 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
       throw new ArbabError("git", `merging ${paths.branch} into ${base} failed (${merge.code}): ${(merge.stderr || merge.stdout).trim()}; the merge was aborted`);
     }
   }
+  for (const activity of sessions ?? []) ctx.stderr(`warning: ${sessionText(activity, "land")}\n`);
+  if (sessionsUnknown !== undefined) ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${sessionsUnknown}\n`);
   const mergeSha = gitOut(ctx.git, ["rev-parse", "HEAD"], project.root).trim();
   const landing: LandingRecord = {
     name,
@@ -243,7 +283,14 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
 
   const remote = firstRemote(ctx.git, project.root);
   if (values.json === true) {
-    printJson(ctx, { landing, remote, push: remote === null ? null : ["git", "push", remote, base], cleanup, leftAlone });
+    printJson(ctx, {
+      landing,
+      remote,
+      push: remote === null ? null : ["git", "push", remote, base],
+      cleanup,
+      leftAlone,
+      ...(sessions !== undefined && { otherSessions: sessions }),
+    });
   } else {
     ctx.stdout(`landed ${name}: ${head} into ${base} as ${mergeSha}\n`);
     ctx.stdout(`Not pushed. To publish: git push ${remote ?? "<remote>"} ${base}${remote === null ? " (no remote configured)" : ""}\n`);

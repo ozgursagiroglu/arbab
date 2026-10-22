@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArbabError } from "../util/errors";
-import { copyInputs, MAX_INPUTS_BYTES } from "./inputs";
+import { copyInputs, inputRoots, MAX_INPUTS_BYTES } from "./inputs";
 
 // Swapping a source between the walk and the copy needs a step just before copyInputs opens it.
 const hooks = vi.hoisted(() => ({ beforeOpen: null as ((path: string) => void) | null }));
@@ -328,6 +328,61 @@ describe("copyInputs", () => {
     expect(refused([".env"])).toMatch(/named like a credential file \(\.env\)/);
     expect(refused([join(elsewhere, ".envs", "c.md")])).toMatch(/named like a credential file \(\.envs\)/);
     expect(refused([join(elsewhere, ".envs")])).toMatch(/named like a credential file \(\.envs\)/);
+  });
+
+  it("knows an input inside the project in any spelling the file system takes", () => {
+    const app = join(dir, ".envs", "app");
+    const lane = join(app, ".arbab", "worktrees", "m1-a");
+    const inApp = (inputs: string[]): string[] => copyInputs({ projectRoot: app, worktree: lane, inputs, userHome: home, credentialPaths: [] });
+    const refused = (inputs: string[]): string => {
+      try {
+        inApp(inputs);
+      } catch (err) {
+        expect(err).toBeInstanceOf(ArbabError);
+        return (err as Error).message;
+      }
+      throw new Error(`copyInputs accepted ${inputs.join(", ")}`);
+    };
+    write(join(app, "docs", "a.md"), "a\n");
+    write(join(app, ".env"));
+    write(join(dir, ".envs", "c.md"));
+    write(join(dir, ".envs", "app-old", "d.md"));
+    mkdirSync(lane, { recursive: true });
+
+    // Only a case-insensitive file system finds another spelling; elsewhere the input is missing and refused anyway.
+    if (existsSync(join(app, "DOCS"))) {
+      expect(inApp(["DOCS/a.md"])).toEqual(["a.md"]);
+      expect(readFileSync(join(lane, ".arbab-tmp", "inputs", "a.md"), "utf8")).toBe("a\n");
+      // The project's own part spelled otherwise: still inside it, so `.ENVS` above it does not count.
+      expect(inApp(["../APP/DOCS/a.md"])).toEqual(["a.md"]);
+      expect(inApp([join(dir, ".ENVS", "App", "docs", "a.md")])).toEqual(["a.md"]);
+      expect(refused([".ENV"])).toMatch(/named like a credential file \(\.ENV\)/i);
+      expect(refused(["../../.ENVS/c.md"])).toMatch(/named like a credential file \(\.envs\)/i);
+    }
+    expect(refused([".env"])).toMatch(/named like a credential file \(\.env\)/);
+    expect(refused(["../c.md"])).toMatch(/named like a credential file \(\.envs\)/);
+    expect(refused([join(dir, ".envs", "c.md")])).toMatch(/named like a credential file \(\.envs\)/);
+    // A sibling whose name starts like the project's is outside it.
+    expect(refused(["../app-old/d.md"])).toMatch(/named like a credential file \(\.envs\)/);
+  });
+
+  describe("inputRoots", () => {
+    it("compares the lexical spelling folded and the real one exactly", () => {
+      const app = join(dir, "app");
+      const roots = { lexical: app, real: app };
+      // A case-sensitive layout: <dir>/APP is a sibling of <dir>/app, and its real path is spelled so.
+      expect(inputRoots(roots, join(dir, "APP", "x"), join(dir, "APP", "x"))).toEqual({ pathRoot: app, realRoot: undefined });
+      // A case-insensitive one: the same spelling resolves into the project.
+      expect(inputRoots(roots, join(dir, "APP", "x"), join(app, "x"))).toEqual({ pathRoot: app, realRoot: app });
+      expect(inputRoots(roots, app, app)).toEqual({ pathRoot: app, realRoot: app });
+      expect(inputRoots(roots, join(dir, "app-old", "x"), join(dir, "app-old", "x"))).toEqual({ pathRoot: undefined, realRoot: undefined });
+    });
+
+    it("takes the lexical spelling under either root, the real one only under the real root", () => {
+      const roots = { lexical: join(dir, "link"), real: join(dir, "app") };
+      expect(inputRoots(roots, join(dir, "link", "x"), join(dir, "app", "x"))).toEqual({ pathRoot: roots.lexical, realRoot: roots.real });
+      expect(inputRoots(roots, join(dir, "app", "x"), join(dir, "link", "x"))).toEqual({ pathRoot: roots.real, realRoot: undefined });
+    });
   });
 
   describe("config.credentialPaths", () => {

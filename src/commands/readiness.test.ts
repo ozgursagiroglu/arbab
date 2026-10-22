@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { registerShepherd, registerWaiter } from "../registry";
 import type { HostCheckRecord, IntegrationRecord, ReadinessReport, ReviewRecord } from "../types";
 import { writeJsonAtomic } from "../util/fs";
 import { runIntegrate } from "./integrate";
-import { laneReports, parseTier, reviewRounds, runReadiness } from "./readiness";
+import { integrationChanges, laneReports, parseTier, reviewRounds, runReadiness } from "./readiness";
 import { DEFAULT_CONFIG, branchWith, makeProject, passedVerify, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
@@ -12,6 +13,9 @@ afterEach(() => p?.dispose());
 
 const dir = (t: TestProject): string => join(t.root, ".arbab", "integrations", "rel");
 const readRecord = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")) as T;
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
+const OTHER_SESSION = "bbbbbbbb-1111-2222-3333-444444444444";
+const AT = "2026-10-09T12:00:00.000Z";
 
 async function integrated(config: Record<string, unknown> = {}): Promise<{ t: TestProject; head: string }> {
   const t = makeProject({ config: { ...DEFAULT_CONFIG, ...config } });
@@ -51,6 +55,20 @@ describe("parseTier", () => {
   });
 });
 
+describe("integrationChanges", () => {
+  it("lists the paths the integration changes from its merge base with the base, and none when git cannot tell", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    // A commit the base gains after the integration is not the integration's change.
+    p.ok(["checkout", "-q", "main"]);
+    p.write("later.txt", "x\n");
+    p.ok(["add", "later.txt"]);
+    p.ok(["commit", "-q", "-m", "later"]);
+    expect(integrationChanges(p.ctx, p.root, "main", head)).toEqual(["a.txt"]);
+    expect(integrationChanges(p.ctx, p.root, "no-such-branch", head)).toEqual([]);
+  });
+});
+
 describe("laneReports", () => {
   it("each merged lane's latest report, then each borrower of one with the worktree it borrowed", async () => {
     ({ t: p } = await integrated());
@@ -85,6 +103,93 @@ describe("runReadiness", () => {
     const markdown = readFileSync(join(dir(p), "readiness.md"), "utf8");
     expect(p.stdout()).toBe(markdown);
     expect(markdown).toContain("Ready to land: yes");
+  });
+
+  it("lists other sessions the landing affects under Risks, and stays ready", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    registerShepherd(p.home, { pid: 7001, lane: "mine", project: p.root, owner: SESSION, startedAt: AT });
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: AT });
+    // Other projects' waiters: one runs a file the integration changes, one a file it leaves alone.
+    registerWaiter(p.home, { pid: 7003, project: "/work/elsewhere", owner: null, startedAt: AT, runner: join(p.root, "a.txt") });
+    registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: AT, runner: join(p.root, "lanes", "demo.md") });
+    for (const pid of [7001, 7002, 7003, 7004]) p.alive.add(pid);
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+
+    const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+    expect(report.ready).toBe(true);
+    expect(report.skipped).toEqual([]);
+    expect(report.otherSessions).toEqual([
+      { owner: OTHER_SESSION, lanes: ["theirs"], waiters: 0, runnerProjects: [], runnersChanged: [] },
+      { owner: null, lanes: [], waiters: 0, runnerProjects: ["/work/elsewhere"], runnersChanged: ["a.txt"] },
+    ]);
+    // Lane a wrote no report here, which is a risk of its own after the sessions.
+    expect(report.risks.map((r) => r.id)).toEqual(["session:bbbbbbbb", "session:outside", "report:a"]);
+    const markdown = readFileSync(join(dir(p), "readiness.md"), "utf8");
+    const risks = markdown.slice(markdown.indexOf("## Risks"));
+    expect(risks).toContain(
+      "- Session bbbbbbbb runs lane theirs in this project, whose base this landing moves. " +
+        "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.",
+    );
+    expect(risks).toContain("- Processes started outside Claude Code run this project's a.txt in /work/elsewhere, which this landing replaces.");
+  });
+
+  it("writes one risk, and stays ready, when the machine registry cannot be listed", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    writeLaneRun(p.runsRoot, "a", { state: "finished", endState: "success", report: { status: "done", open_questions: [], not_verified: [] } });
+    // A file where the shepherds' directory belongs.
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "shepherds"), "");
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+
+    const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+    expect(report).toMatchObject({ ready: true, skipped: [] });
+    expect(report.risks).toEqual([
+      { id: "session:unknown", text: expect.stringMatching(/^cannot tell which other sessions are working here: cannot list .*shepherds: /) },
+    ]);
+    expect(report).not.toHaveProperty("otherSessions");
+    expect(readFileSync(join(dir(p), "readiness.md"), "utf8")).toContain("- cannot tell which other sessions are working here: ");
+  });
+
+  it("finds a changed runner when the project is a subdirectory of its repository", async () => {
+    p = makeProject();
+    // The project moves into app/ of a new repository, which the integration then changes.
+    const top = join(p.dir, "mono");
+    const app = join(top, "app");
+    mkdirSync(top);
+    p.ok(["init", "-q", "-b", "main", top], p.dir);
+    renameSync(p.root, app);
+    rmSync(join(app, ".git"), { recursive: true, force: true });
+    p.ok(["add", "-A"], top);
+    p.ok(["commit", "-q", "-m", "init"], top);
+    p.ok(["checkout", "-q", "-b", "arbab/a"], top);
+    writeFileSync(join(app, "a.txt"), "a\n");
+    p.ok(["add", "-A"], top);
+    p.ok(["commit", "-q", "-m", "a"], top);
+    p.ok(["checkout", "-q", "main"], top);
+    p.ctx.cwd = app;
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    const integration = join(app, ".arbab", "integrations", "rel");
+    writeJsonAtomic(join(integration, "verify.json"), passedVerify(readRecord<IntegrationRecord>(join(integration, "integration.json")).headSha));
+    registerWaiter(p.home, { pid: 7003, project: "/work/elsewhere", owner: null, startedAt: AT, runner: join(app, "a.txt") });
+    p.alive.add(7003);
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(integration, "readiness.json")).otherSessions).toEqual([
+      { owner: null, lanes: [], waiters: 0, runnerProjects: ["/work/elsewhere"], runnersChanged: ["a.txt"] },
+    ]);
+  });
+
+  it("records no other sessions when none is live", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: AT });
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).otherSessions).toEqual([]);
   });
 
   it("takes the tier from config, lists what it needs as skipped, and accepts waivers by id", async () => {

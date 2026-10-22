@@ -82,6 +82,17 @@ describe("shepherd registry", () => {
     expect(readdirSync(dir).sort()).toEqual([".a1b2.tmp", "11.json", "12.json", "13.json", "14.json", "notes.txt"]);
   });
 
+  it("keeps a string runner and reads a missing or non-string one as no runner", () => {
+    const dir = join(home, "shepherds");
+    registerShepherd(home, shepherd(21, "2026-10-21T10:00:01.000Z", { runner: "/work/arbab/dist/arbab.mjs" }));
+    registerShepherd(home, shepherd(22, "2026-10-21T10:00:02.000Z"));
+    writeFileSync(join(dir, "23.json"), JSON.stringify({ ...shepherd(23, "2026-10-21T10:00:03.000Z"), runner: 7 }));
+    const listed = listShepherds(home, everyoneAlive);
+    expect(listed[0]).toEqual(shepherd(21, "2026-10-21T10:00:01.000Z", { runner: "/work/arbab/dist/arbab.mjs" }));
+    expect(listed.slice(1)).toEqual([shepherd(22, "2026-10-21T10:00:02.000Z"), shepherd(23, "2026-10-21T10:00:03.000Z")]);
+    expect("runner" in listed[2]!).toBe(false);
+  });
+
   it("lists none when the directory is missing", () => {
     expect(listShepherds(home, everyoneAlive)).toEqual([]);
     expect(listShepherds(join(home, "nope"), everyoneAlive)).toEqual([]);
@@ -113,6 +124,15 @@ describe("waiter registry", () => {
     unregisterWaiter(home, 41);
     unregisterWaiter(home, 41);
     expect(listWaiters(home, everyoneAlive).map((w) => w.pid)).toEqual([40]);
+  });
+
+  it("keeps a waiter's string runner and drops a non-string one", () => {
+    registerWaiter(home, { ...waiter(51, "2026-10-21T10:00:01.000Z"), runner: "/work/arbab/dist/arbab.mjs" });
+    writeFileSync(join(home, "waiters", "52.json"), JSON.stringify({ ...waiter(52, "2026-10-21T10:00:02.000Z"), runner: null }));
+    expect(listWaiters(home, everyoneAlive)).toEqual([
+      { ...waiter(51, "2026-10-21T10:00:01.000Z"), runner: "/work/arbab/dist/arbab.mjs" },
+      waiter(52, "2026-10-21T10:00:02.000Z"),
+    ]);
   });
 
   it("skips waiter files that do not parse or lack fields", () => {

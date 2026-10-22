@@ -3,13 +3,24 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { credentialMatcher } from "../profile";
+import { registerShepherd, registerWaiter } from "../registry";
 import { untrustedTree } from "../run";
-import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord } from "../types";
+import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord, SessionActivity } from "../types";
 import { writeJsonAtomic } from "../util/fs";
 import type { WorktreeCleanup } from "./cleanup";
 import { markGenerated } from "./generated";
 import { runIntegrate } from "./integrate";
-import { assertBaseInHead, assertCleanBase, assertReadinessCurrent, assertTier, firstRemote, readMessage, runLand } from "./land";
+import {
+  assertBaseInHead,
+  assertCleanBase,
+  assertReadinessCurrent,
+  assertTier,
+  changedPaths,
+  firstRemote,
+  readMessage,
+  runLand,
+  sessionsAffected,
+} from "./land";
 import { runReadiness } from "./readiness";
 import { DEFAULT_CONFIG, branchWith, makeProject, passedVerify, writeLaneRun, type TestProject } from "./testkit";
 
@@ -21,6 +32,8 @@ const readRecord = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")
 const hasBranch = (t: TestProject, branch: string): boolean => t.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], t.root).code === 0;
 const T = "2026-10-09T12:00:00.000Z";
 const LIVE = 101;
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
+const OTHER_SESSION = "bbbbbbbb-1111-2222-3333-444444444444";
 
 /** A finished lane's worktree on arbab/<lane>: the existing branch, or a new one at `from`. */
 function laneWorktree(t: TestProject, lane: string, from?: string): string {
@@ -67,6 +80,48 @@ describe("firstRemote", () => {
     p.ok(["remote", "add", "upstream", "/nonexistent/u.git"]);
     p.ok(["remote", "add", "origin", "/nonexistent/o.git"]);
     expect(firstRemote(p.git, p.root)).toBe("origin");
+  });
+});
+
+describe("changedPaths and sessionsAffected", () => {
+  it("matches runner files on git's top level when the project is a subdirectory of the repository", () => {
+    p = makeProject();
+    const app = join(p.root, "app");
+    mkdirSync(join(app, "dist"), { recursive: true });
+    writeFileSync(join(app, "dist", "arbab.mjs"), "");
+    p.ok(["add", "-A"]);
+    p.ok(["commit", "-q", "-m", "app"]);
+    writeFileSync(join(app, "dist", "arbab.mjs"), "new\n");
+    writeFileSync(join(p.root, "top.txt"), "top\n");
+    p.ok(["add", "-A"]);
+    p.ok(["commit", "-q", "-m", "change"]);
+    const changed = changedPaths(p.git, app, ["HEAD~1", "HEAD"]);
+    // From the top level, whatever the directory git runs in, and whatever the owner's diff.relative says.
+    expect(changed).toEqual(["app/dist/arbab.mjs", "top.txt"]);
+    p.ok(["config", "diff.relative", "true"]);
+    expect(p.ok(["diff", "--name-only", "HEAD~1", "HEAD"], app)).toBe("dist/arbab.mjs\n");
+    expect(changedPaths(p.git, app, ["HEAD~1", "HEAD"])).toEqual(changed);
+    // git before 2.28 rejects --no-relative, as this fake does; changedPaths does not pass it.
+    const oldGit: typeof p.git = (args, cwd) =>
+      args.includes("--no-relative") ? { code: 129, stdout: "", stderr: "error: invalid option: --no-relative" } : p.git(args, cwd);
+    expect(changedPaths(oldGit, app, ["HEAD~1", "HEAD"])).toEqual(changed);
+    registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: T, runner: join(app, "dist", "arbab.mjs") });
+    p.alive.add(7004);
+    expect(sessionsAffected(p.ctx, app, changed)).toEqual([
+      { owner: null, lanes: [], waiters: 0, runnerProjects: ["/work/elsewhere"], runnersChanged: ["dist/arbab.mjs"] },
+    ]);
+    expect(sessionsAffected(p.ctx, app, ["top.txt"])).toEqual([]);
+    expect(sessionsAffected(p.ctx, app, [])).toEqual([]);
+  });
+
+  it("throws when git cannot name the top level", () => {
+    p = makeProject();
+    const outside = mkdtempSync(join(tmpdir(), "arbab-"));
+    try {
+      expect(() => sessionsAffected(p.ctx, outside, ["a.txt"])).toThrow(expect.objectContaining({ code: "git" }));
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -263,6 +318,67 @@ describe("runLand", () => {
     expect(out.remote).toBe("origin");
     expect(out.push).toEqual(["git", "push", "origin", "main"]);
     expect(out.landing.pushed).toBe(false);
+  });
+
+  it("warns on stderr about other sessions the landing affects, and still lands", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    registerShepherd(p.home, { pid: 7001, lane: "mine", project: p.root, owner: SESSION, startedAt: T });
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    registerWaiter(p.home, { pid: 7003, project: p.root, owner: OTHER_SESSION, startedAt: T });
+    // Another project's waiter runs a file of this project that the merge writes.
+    registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: T, runner: join(p.root, "a.txt") });
+    for (const pid of [7001, 7002, 7003, 7004]) p.alive.add(pid);
+
+    expect(await runLand(["rel"], p.ctx)).toBe(0);
+    expect(existsSync(join(dir(p), "landing.json"))).toBe(true);
+    expect(p.ok(["log", "-1", "--format=%P", "main"])).toContain(head);
+    expect(p.stderr()).toBe(
+      "warning: Session bbbbbbbb runs lane theirs and a waiter in this project, whose base this landing moves. " +
+        "This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n" +
+        "warning: Processes started outside Claude Code run this project's a.txt in /work/elsewhere, which this landing " +
+        "replaces. This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n",
+    );
+    expect(p.stdout()).toMatch(/^landed rel: /);
+  });
+
+  it("carries the other sessions in --json, and an empty list when there are none", async () => {
+    ({ t: p } = await ready());
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    p.alive.add(7002);
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { otherSessions: SessionActivity[] }).otherSessions).toEqual([
+      { owner: OTHER_SESSION, lanes: ["theirs"], waiters: 0, runnerProjects: [], runnersChanged: [] },
+    ]);
+    expect(p.stderr()).toMatch(/^warning: Session bbbbbbbb runs lane theirs in this project/);
+
+    p.dispose();
+    ({ t: p } = await ready());
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { otherSessions: SessionActivity[] }).otherSessions).toEqual([]);
+    expect(p.stderr()).toBe("");
+  });
+
+  it("leaves otherSessions out of --json, and warns, when the machine registry cannot be listed", async () => {
+    ({ t: p } = await ready());
+    // A file where the shepherds' directory belongs.
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "shepherds"), "");
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).not.toHaveProperty("otherSessions");
+    expect(p.stderr()).toMatch(/^warning: cannot tell which other sessions this landing affects: cannot list .*shepherds: /);
+  });
+
+  it("says nothing about other sessions when it refuses", async () => {
+    ({ t: p } = await ready());
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    p.alive.add(7002);
+    p.write("dirty.txt", "x");
+    p.ok(["add", "dirty.txt"]);
+    await expect(runLand(["rel"], p.ctx)).rejects.toThrow(/uncommitted changes/);
+    expect(p.stderr()).toBe("");
   });
 
   it("removes the merged and generated lanes' worktrees, the generated lanes' and the integration's branches, and keeps the records", async () => {
@@ -538,6 +654,9 @@ describe("runLand", () => {
 
   it("fails with a git error and aborts when the merge fails", async () => {
     ({ t: p } = await ready());
+    // A failed landing says nothing about the other sessions it would have affected.
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    p.alive.add(7002);
     const real = p.ctx.git;
     const calls: string[][] = [];
     // The base is in the head, so a real merge cannot conflict; git failing it stands in.
@@ -553,6 +672,7 @@ describe("runLand", () => {
     expect(calls).toContainEqual([...untrustedTree(), "merge", "--abort"]);
     expect(calls.find((args) => args.includes("--no-ff"))?.slice(0, untrustedTree().length + 1)).toEqual([...untrustedTree(), "merge"]);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+    expect(p.stderr()).toBe("");
   });
 });
 
@@ -719,6 +839,9 @@ describe("runLand --squash and --message", () => {
 
   it("resets the squash and fails with a git error when the commit fails", async () => {
     ({ t: p } = await ready());
+    // Nor does it say it cannot tell which sessions it affects: a file where the shepherds' directory belongs.
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "shepherds"), "");
     const main = p.ok(["rev-parse", "main"]).trim();
     const real = p.ctx.git;
     const calls: string[][] = [];
@@ -737,6 +860,7 @@ describe("runLand --squash and --message", () => {
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(p.ok(["status", "--porcelain"])).toBe("");
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+    expect(p.stderr()).toBe("");
   });
 });
 

@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { INTEGRATIONS_DIR, TIERS } from "../types";
 import type { DependencyStrategy, ProjectConfig, Role, RoleDefaults, Tier } from "../types";
 import { isForbiddenWorkerEnv, isReservedEnv } from "../util/env-policy";
+import { foldPath, sameOrInside } from "../util/pathcase";
 import {
   argv,
   boolean,
@@ -224,20 +225,14 @@ function arbabRoot(projectRoot: string, v: unknown, field: string): string {
   return s;
 }
 
-// Case-insensitive file systems (macOS, Windows) take any spelling (`.ARBAB/Integrations`), so these checks ignore
-// case; where one does not, refusing a little more is the safe side.
-const fold = (path: string): string => path.toLowerCase();
+// Case-insensitive file systems (macOS, Windows) take any spelling (`.ARBAB/Integrations`, `.arbab/integrationſ`),
+// so these checks compare through foldPath.
 
 /** `path` is not the project root and does not overlap the integration records (when `records` is given). */
 function checkArbabRoot(path: string, root: string, records: string | null, field: string): void {
-  if (fold(path) === fold(root)) fail(field, "must not be the project root");
+  if (foldPath(path) === foldPath(root)) fail(field, "must not be the project root");
   // Integration records vouch for install points (depsConfirmedAt): no worker's worktree or run dir may overlap them.
-  const inside = (a: string, b: string): boolean => {
-    const fa = fold(a);
-    const fb = fold(b);
-    return fa === fb || fa.startsWith(fb.endsWith(sep) ? fb : `${fb}${sep}`);
-  };
-  if (records !== null && (inside(path, records) || inside(records, path))) {
+  if (records !== null && (sameOrInside(records, path) || sameOrInside(path, records))) {
     fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
   }
 }

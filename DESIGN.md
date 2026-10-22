@@ -114,6 +114,34 @@ path, so with `wt` a link to `.arbab/pool` a lane is refused as `<project>/wt/<l
 ignores case, so `.Arbab/Worktrees` on a case-insensitive file system is caught too. The hook's `-C` check uses the
 same test (§21).
 
+Paths are compared ignoring case in one way only, src/util/pathcase.ts: `foldPath` is the path in NFD, then upper
+case, then lower case (upper first, because lower case alone keeps `ſ`, which APFS takes as `s`; `ß` becomes `ss`),
+and `sameOrInside(parent, child)` compares two folded paths and counts a match only at a separator boundary, so
+`/a/b` holds `/A/B/c` but not `/a/bc`. Where a file system does not fold, this refuses a little more. It is used by
+the lane-worktree test above (src/commands/project.ts, so the hook's `-C` check too); by the config checks that
+`worktreeRoot` and `runsRoot` are not the project root and do not overlap the integration records
+(src/config/load.ts, so `.arbab/integrationſ` is refused); by the credential matcher's containment checks
+(src/profile/credentials.ts, §21); by lane inputs, to find the project root of an input's path as given and to
+refuse a folder holding the home directory or the worktree (src/shepherd/inputs.ts); and by `otherSessions`, to
+match a registry entry's project and runner (src/registry/sessions.ts, §21). The lane-worktree test, the config
+checks, lane inputs, `otherSessions` (and the `runner` it reads, recorded by the same `runnerPath`) and
+`homeSpellings` (the home directories handed to the credential matcher) resolve a path with `realpathSync.native`,
+which gives its spelling on disk, before they fold it. The other callers of the credential matcher resolve the file
+they check and the project root with `realpathSync`, which follows links but may keep the spelling as given: land's
+`--message` file, review's `--lens-file`, and the files lane, plan and config fields name (a brief, a schema,
+`instructions`; src/config/check.ts, which passes no home directories). The credential matcher's own containment
+checks still fold, so a spelling of case does not matter to them. The real-path containment those callers check
+themselves (`existingFile` in src/config/check.ts with `path.relative`, `--lens-file` and `--message` with
+`confine()`) compares the two real paths exactly, without folding: a real path whose case differs from the real
+root's is refused as outside the project.
+Two comparisons do not fold. The credential matcher's glob regexes (name rules and patterns) match the NFC pattern
+against the NFC path with the `iu` flags: NFC so that the NFC and NFD spellings of a name are one, as APFS takes
+them, while a precomposed `é` stays one code point that a `?` matches (NFD would split it into `e` and a combining
+accent); `iu` is Unicode case folding that takes `ſ` as `s` and U+212A as `k` but keeps every character one
+character, so a `?` still matches `ß`, which foldPath would turn into `ss`. And an input's real path is inside the project only when
+it is inside the project's real path exactly: both are spellings on disk, so a sibling that differs only in case is
+another directory where the file system tells them apart.
+
 Repository build output (git-ignored): `dist/arbab.mjs` (the bundle) and `plugin/` (what a marketplace installs, §17).
 
 Machine (`~/.arbab/`, never writable from a worker's sandbox):
@@ -126,9 +154,9 @@ slots/<i>.json                    maxParallel workers across all projects
 semaphores/<name>/<i>.json        shared external resources (config semaphores)
 leases/<type>/<value>.json        port, redis-db, database, custom
 locks/<sha1(worktree)>/0.json     one writer per worktree; the directory goes with its entry
-shepherds/<pid>.json              {pid, lane, project, owner, startedAt} while that shepherd lives
-waiters/<pid>.json                {pid, project, owner, startedAt} while that `arbab wait` runs, or a `verify`,
-                                  `review` or `preflight` waits for its lanes
+shepherds/<pid>.json              {pid, lane, project, owner, startedAt, runner} while that shepherd lives
+waiters/<pid>.json                {pid, project, owner, startedAt, runner} while that `arbab wait` runs, or a `verify`,
+                                  `review` or `preflight` waits for its lanes (`runner`: §21, absent before 0.2.1)
 projects/<sha1(root)>.json        {root, lastLaunchAt}: a project that launched a lane (`summary --all`, the hook's
                                   `-C` check, §21)
 tmp/                              `quota --refresh`'s working directory, removed after the call
@@ -727,7 +755,9 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
 
     At every tier: `deps` (manifests changed, install not confirmed) and, with config `hostGates`, `host` (§21).
     Each skipped item stays until it runs or is waived by name; `--waive` needs a terminal (§21).
-  - **risks**, by weight (§21): every confirmed finding, unverified MEDIUM+ findings and one line for the unverified
+  - **risks**, by weight (§21): first one `session:<id>` per other session the landing affects, or one
+    `session:unknown` when the machine registry cannot be listed (§21), then every
+    confirmed finding, unverified MEDIUM+ findings and one line for the unverified
     LOW ones, manifest changes, host gates, stale or unmatched items, then the merged lanes' `open_questions` and
     `not_verified` (and those of lanes that worked in a merged lane's worktree), repeated notes grouped.
   - verify counts only on the head itself. The review counts on the head, or on an earlier head when the head is
@@ -741,6 +771,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   - refuses unless the main checkout is on the integration's base and contained in the verified head, with no
     tracked change and no untracked file where the merge writes (§21: other untracked files are left alone and
     listed as `left alone:`);
+  - prints a `warning:` line on stderr for each other session the landing affects (§21), and never blocks on them:
+    it merges in the same call, so these lines are a last record, and the sessions are told from readiness's list;
   - merges `integrate/<name>` into it (`--no-ff`) and records `landing.json`; with `--squash` (or config
     `landing.squash`) it makes one commit instead (`merge --squash`, then a commit, hooks off). `--message <file>`
     replaces the `Land <name>` message of either; the file must lie inside the project, also after resolving links,
@@ -1078,7 +1110,44 @@ The decisions below answer what that use showed.
 - Machine registries under `~/.arbab/`: `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while
   `arbab wait` runs or `verify`, `review` or `preflight` waits for the lanes it launched (unregistered in a `finally`),
   `projects/<sha1(root)>.json` for each project that launched a lane. Shepherd and waiter entries of dead pids are
-  ignored and removed.
+  ignored and removed. Since 0.2.1 shepherd and waiter entries also record `runner`, the real path of the runner file
+  the process runs (`dist/arbab.mjs` of whichever checkout or plugin it came from); an entry without it, or with one
+  that is not a string, reads as written before 0.2.1.
+- A landing moves the base under other sessions' work and may replace a runner file they run. `otherSessions`
+  (src/registry/sessions.ts) reads the live shepherd and waiter entries of every session but this one and, per owner, names its lanes and waiters in this project, and the other projects whose
+  processes run a runner file of this project that the landing changes, with those files. An entry without `runner`
+  counts only by its project. Projects and runners match by real path through foldPath (§3), so an entry that
+  recorded the project in another spelling of case still counts. git names the changed paths from the repository's
+  top level, which lies above the project root when the project is a subdirectory of its repository; they are taken
+  from `git rev-parse --show-toplevel` (once, in the project root) before runner files are matched, and the runner
+  files are reported relative to the project root. "This one" is the caller's `CLAUDE_CODE_SESSION_ID`: readiness or
+  land run outside Claude Code (no session id, such as `readiness --waive` typed in a terminal) count every session
+  as another, the orchestrator's own included, so its lanes and waiters are named too.
+  - `readiness` checks the paths the integration changes since its merge base with the base, and lists each such
+    session as a risk `session:<id>` (`<id>` is the first 8 characters of the session id, or `outside` for
+    processes started outside Claude Code), first among the risks; it is never a skipped item and no waiver answers
+    it. The report, `readiness.json` and `--json`, also carries them as `otherSessions`. It is advisory, as in
+    `land`: when the registries cannot be read, the report holds one risk `session:unknown` ("cannot tell which
+    other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same. An empty
+    `otherSessions` means none.
+  - `land` checks the paths the merge changes in the main checkout just before it merges and, once the merge (or the
+    squash's commit) has succeeded, in the same call, prints one `warning:` line on stderr per session:
+    `sessionText(activity, "land")`, the readiness risk's description of the session with land's ending below. It
+    adds `otherSessions` to `--json` (empty for none, as in readiness). It never blocks: when the registries cannot
+    be read it lands, then warns that it cannot tell and leaves `otherSessions` out of `--json`. A landing that
+    fails (a refusal, or a merge or squash git fails) prints none of these lines. Nobody can be told "before
+    landing" from them; they are a last record, which also names sessions that appeared since readiness.
+  - So the order is: tell the sessions readiness names, then land. The sentence ends differently in each place.
+    Readiness: "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches
+    them." `land`: "This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name
+    and SendMessage reaches them." (`sessionText(activity, "readiness" | "land")`.)
+  - Both diffs run as `git -c diff.relative=false diff …`, so a `diff.relative` in the owner's git config cannot make
+    the changed paths relative to the project root instead of git's top level. Not `--no-relative`: git 2.20–2.27,
+    which `doctor` accepts, reject it. That git has no `diff.relative`, takes the unknown key, and never prints
+    relative paths; 2.28 and later honour the setting.
+  - The sentence names the lanes, waiters, projects and runner files: those are how the orchestrator recognises the
+    session in Claude Code's ListAgents and tells it with SendMessage (the skill's Land section). The 8-character id
+    is not ListAgents' short reference and does not match it (observed 2026-10-23).
 - A Stop hook (`arbab hook stop`) keeps the orchestrator from ending its turn when it owns live shepherds and no live
   waiter, once: `stop_hook_active` lets the next stop through.
 
@@ -1111,7 +1180,8 @@ The decisions below answer what that use showed.
   listed templates, since it wins over a deny on the same path (measured). A file outside the home directory and the project that matches only a relative pattern stays readable by worker code.
 - The fence stops only the worker; files arbab itself copies into a worktree, inlines into a prompt or puts in a
   commit pass one credential matcher (`credentialMatcher`, src/profile/credentials.ts), which reads the fence's list
-  as checks on paths and ignores case on every platform (`~/.AWS/credentials` is `~/.aws/credentials` on macOS). It
+  as checks on paths and ignores case on every platform (`~/.AWS/credentials` is `~/.aws/credentials` on macOS; §3
+  says how a glob's `?` stays one character). It
   guards lane `inputs` (with config `credentialPaths` and `~/Library`), `review --lens-file` and `land --message`
   (with config `credentialPaths`), each by the path as given and by its real path; and the files whose text goes into
   prompts (a lane's `brief` and `schema`, a plan phase's `brief` and `schema`, a plan's `defaults.schema`, config

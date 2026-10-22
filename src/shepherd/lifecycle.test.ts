@@ -1274,7 +1274,8 @@ describe("runShepherd: slots, owners, events, timing and inputs (DESIGN.md §21)
     quota(0.9);
     project.scenario({ fixture: fixture("success-report") });
     project.lane({ name: "m1-a" });
-    const deps = testDeps(project, { holdPollMs: 30 });
+    const runner = join(project.dir, "plugin", "dist", "arbab.mjs");
+    const deps = testDeps(project, { holdPollMs: 30, runner });
     deps.hostEnv = { ...deps.hostEnv, CLAUDE_CODE_SESSION_ID: "session-a" };
     const done = runShepherd(project.root, "m1-a", { kind: "start" }, deps, never());
     await heldFor(/five-hour/);
@@ -1282,7 +1283,7 @@ describe("runShepherd: slots, owners, events, timing and inputs (DESIGN.md §21)
     const record = readJsonFile<{ pid: number; startedAt: string; owner: string | null }>(join(runDir("m1-a"), "shepherd.json"));
     expect(record).toEqual({ pid: process.pid, startedAt: expect.any(String), owner: "session-a" });
     expect(listShepherds(project.home, isAlive)).toEqual([
-      { pid: process.pid, lane: "m1-a", project: project.root, owner: "session-a", startedAt: record.startedAt },
+      { pid: process.pid, lane: "m1-a", project: project.root, owner: "session-a", startedAt: record.startedAt, runner },
     ]);
     expect(listProjects(project.home)).toEqual([{ root: project.root, lastLaunchAt: record.startedAt }]);
 

@@ -42,6 +42,49 @@ describe("credentialMatcher", () => {
     expect(match("/srv/deploy.KEY")).toEqual({ kind: "name", label: "deploy.KEY" });
   });
 
+  it("folds as APFS does: ſ, the Kelvin sign and NFC against NFD", () => {
+    // ſ (U+017F) is s and U+212A is K to APFS; toLowerCase keeps both.
+    expect(match("/home/u/.awſ/credentials")).toEqual({ kind: "dir", label: "~/.aws" });
+    expect(match("/srv/tls.KEY")).toEqual({ kind: "name", label: "tls.KEY" });
+    const m = credentialMatcher(["//srv/café/**", "**/*.résumé", "~/café/*.txt"], [HOME]);
+    expect(m("/srv/café/menu.txt")).toEqual({ kind: "pattern", label: "//srv/café/**" });
+    expect(m("/srv/a/me.RÉSUMÉ")).toEqual({ kind: "name", label: "me.RÉSUMÉ" });
+    expect(m("/home/u/CAFÉ/a.txt")).toEqual({ kind: "pattern", label: "~/café/*.txt" });
+    // A root spelled otherwise is still the root.
+    expect(match("/work/x.key/app/notes.txt", "/WORK/X.KEY/APP")).toBeNull();
+  });
+
+  it("keeps `?` one character: ß is not folded to ss in a pattern or a path", () => {
+    const m = credentialMatcher(["**/stra?e.txt", "//srv/?/**", "~/gr?/*.txt", "notes/ma?.md"], [HOME]);
+    expect(m("/srv/app/straße.txt")).toEqual({ kind: "name", label: "straße.txt" });
+    expect(m("/srv/app/STRAßE.TXT")).toEqual({ kind: "name", label: "STRAßE.TXT" });
+    expect(m("/srv/ß/x")).toEqual({ kind: "pattern", label: "//srv/?/**" });
+    expect(m("/home/u/grß/a.txt")).toEqual({ kind: "pattern", label: "~/gr?/*.txt" });
+    expect(m("/a/notes/maß.md")).toEqual({ kind: "pattern", label: "notes/ma?.md" });
+    // Two characters are not one.
+    expect(m("/srv/app/strasse.txt")).toBeNull();
+    // A pattern's own ß is itself, case ignored.
+    expect(credentialMatcher(["**/maß.token"], [HOME])("/srv/MAß.TOKEN")).toEqual({ kind: "name", label: "MAß.TOKEN" });
+  });
+
+  it("keeps `?` one character for an accented letter, spelled NFC or NFD in the path or the pattern", () => {
+    const nfcCafe = "café";
+    const nfdCafe = "café";
+    for (const pattern of ["**/caf?", "//srv/caf?/**", "~/caf?/*.txt", "notes/caf?"]) {
+      const m = credentialMatcher([pattern], [HOME]);
+      for (const cafe of [nfcCafe, nfdCafe]) {
+        const path = pattern.startsWith("**/") ? `/srv/${cafe}` : pattern.startsWith("//") ? `/srv/${cafe}/x` : pattern.startsWith("~/") ? `/home/u/${cafe}/a.txt` : `/a/notes/${cafe}`;
+        expect(m(path), `${pattern} ${JSON.stringify(path)}`).not.toBeNull();
+      }
+      // A `?` is one character, not two.
+      expect(m(pattern.startsWith("~/") ? "/home/u/cafee/a.txt" : "/srv/cafee/x")).toBeNull();
+    }
+    // A pattern spelled NFD matches either spelling too.
+    const nfdPattern = credentialMatcher([`**/${nfdCafe}.key2`], [HOME]);
+    expect(nfdPattern(`/srv/${nfcCafe}.key2`)).toEqual({ kind: "name", label: `${nfcCafe}.key2` });
+    expect(nfdPattern(`/srv/${nfdCafe.toUpperCase()}.KEY2`)).toEqual({ kind: "name", label: `${nfdCafe.toUpperCase()}.KEY2` });
+  });
+
   it("adds `extra` rules of every shape, case ignored", () => {
     const m = credentialMatcher(["~/.vault/**", "**/*.secret", "//srv/secrets/**", "vault/*.md", "~/notes/*.txt"], [HOME]);
     expect(m("/home/u/.Vault/token")).toEqual({ kind: "dir", label: "~/.vault" });

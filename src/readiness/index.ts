@@ -1,4 +1,5 @@
 // The FR-21 readiness report (DESIGN §17 `arbab readiness`): verified, skipped and risks, and the landing decision.
+import { sessionId, sessionText } from "../registry";
 import { BUILTIN_LENSES } from "../review";
 import type {
   HostCheckRecord,
@@ -7,6 +8,7 @@ import type {
   ReadinessReport,
   ReviewFinding,
   ReviewRecord,
+  SessionActivity,
   Tier,
   VerifyRecord,
 } from "../types";
@@ -49,6 +51,10 @@ export interface ReadinessInput {
   hostChecks?: HostCheckRecord | null;
   /** The review history, any order. */
   reviewRounds?: ReviewRound[];
+  /** Other sessions the landing affects (otherSessions); risks, never skipped items. */
+  otherSessions?: SessionActivity[];
+  /** Why the other sessions could not be told (the machine registry could not be listed): a risk `session:unknown`. */
+  sessionsUnknown?: string;
 }
 
 type Skipped = ReadinessItem & { waived: boolean };
@@ -337,7 +343,20 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
   }
   const waived = new Set(waivers);
   const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
-  const risks = uniqueTexts([...confirmed, ...unverified, ...manifestRisks, ...hostRisks, ...stale, ...groupLaneNotes(notes)]);
+  // First: they ask for an action before landing, and no waiver answers them.
+  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity, "readiness") }));
+  if (input.sessionsUnknown !== undefined) {
+    sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
+  }
+  const risks = uniqueTexts([
+    ...sessionRisks,
+    ...confirmed,
+    ...unverified,
+    ...manifestRisks,
+    ...hostRisks,
+    ...stale,
+    ...groupLaneNotes(notes),
+  ]);
 
   return {
     name: input.name,
@@ -349,6 +368,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
     ready: currentVerify !== null && currentVerify.passed && skippedOut.every((item) => item.waived),
     createdAt: input.now,
     ...(carriedFrom !== null && { reviewCarriedOverFrom: carriedFrom }),
+    ...(input.otherSessions !== undefined && { otherSessions: input.otherSessions }),
   };
 }
 

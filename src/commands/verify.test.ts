@@ -277,7 +277,9 @@ describe("runVerify", () => {
     };
     expect(await runVerify(["rel", "--timeout-min", "0.1"], p.ctx)).toBe(3);
     expect(seen.length).toBeGreaterThan(0);
-    for (const waiters of seen) expect(waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String) }]);
+    for (const waiters of seen) {
+      expect(waiters).toEqual([{ pid: CLI_PID, project: p.root, owner: SESSION, startedAt: expect.any(String), runner: p.ctx.scriptPath }]);
+    }
     expect(listWaiters(p.home, p.ctx.alive)).toEqual([]);
   });
 

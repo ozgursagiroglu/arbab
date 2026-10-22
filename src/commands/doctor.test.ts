@@ -3,15 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig } from "../config";
+import { HOOK_MISSING } from "../doctor";
 import {
   checkClaude,
   checkGit,
   checkHome,
-  checkIgnored,
   checkNode,
   checkSandbox,
   doctorChecks,
   formatChecks,
+  projectChecks,
   runDoctor,
 } from "./doctor";
 import { fakeDeps, makeProject, type TestProject } from "./testkit";
@@ -50,14 +51,6 @@ describe("individual checks", () => {
     expect(checkSandbox("win32", deps).status).toBe("fail");
   });
 
-  it("ignored roots are a warning until the shepherd adds them", () => {
-    p = makeProject();
-    const config = defaultConfig();
-    expect(checkIgnored(p.ctx, p.root, config).status).toBe("warn");
-    writeFileSync(join(p.root, ".git", "info", "exclude"), ".arbab/\n");
-    expect(checkIgnored(p.ctx, p.root, config).status).toBe("ok");
-  });
-
   it("home must be writable", () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), "arbab-home-")));
     try {
@@ -81,9 +74,61 @@ describe("doctorChecks", () => {
       ["config", "ok"],
       ["claude", "ok"],
       ["sandbox", "ok"],
+      ["hook", "warn"],
       ["ignored", "warn"],
+      ["disk", "ok"],
       ["home", "ok"],
     ]);
+  });
+
+  it("runs the project checks of a project that has everything to check, warnings only", () => {
+    p = makeProject({
+      files: {
+        ".arbab/config.json": "{}",
+        "eslint.config.js": "export default [];\n",
+        "vitest.config.ts": "export default {};\n",
+        "package.json": JSON.stringify({ scripts: { test: "vitest run", lint: "eslint ." } }),
+      },
+    });
+    mkdirSync(join(p.dir, "plugin", "hooks"), { recursive: true });
+    writeFileSync(join(p.dir, "plugin", "hooks", "hooks.json"), '{"command": "arbab hook pre-tool-use"}');
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "machine.json"), JSON.stringify({ maxParallel: 2 }));
+    const checks = doctorChecks(p.ctx);
+    expect(checks.map((c) => [c.check, c.status])).toEqual([
+      ["node", "ok"],
+      ["git", "ok"],
+      ["config", "ok"],
+      ["configs", "warn"],
+      ["claude", "ok"],
+      ["sandbox", "ok"],
+      ["hook", "ok"],
+      ["ignored", "warn"],
+      ["eslint", "warn"],
+      ["tests", "warn"],
+      ["gates", "warn"],
+      ["disk", "ok"],
+      ["machine", "ok"],
+      ["home", "ok"],
+    ]);
+    expect(checks.find((c) => c.check === "machine")?.detail).toBe("maxParallel min(4, 2) = 2");
+  });
+
+  it("reports a project check that throws as a warning and goes on", () => {
+    p = makeProject();
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "machine.json"), "{");
+    const config = { ...defaultConfig(), worktreeRoot: "../outside" };
+    const checks = projectChecks(p.ctx, p.root, config);
+    expect(checks.find((c) => c.check === "ignored")).toMatchObject({ status: "warn", detail: expect.stringMatching(/^could not check: /) });
+    expect(checks.find((c) => c.check === "disk")).toMatchObject({ status: "warn", detail: expect.stringMatching(/^could not check: /) });
+    expect(checks.find((c) => c.check === "machine")?.status).toBe("fail");
+  });
+
+  it("skips the hook check when the runner is not in a dist directory", () => {
+    p = makeProject();
+    p.ctx.scriptPath = join(p.dir, "src", "cli.ts");
+    expect(doctorChecks(p.ctx).some((c) => c.check === "hook")).toBe(false);
   });
 
   it("fails config, claude and sandbox when they cannot be read", () => {
@@ -114,7 +159,10 @@ describe("runDoctor", () => {
     expect(await runDoctor([], p.ctx)).toBe(0);
     const lines = p.stdout().trimEnd().split("\n");
     expect(lines[0]).toBe("ok    node     20.11.0");
-    expect(lines.find((l) => l.startsWith("warn"))).toMatch(/^warn  ignored  /);
+    expect(lines.filter((l) => l.startsWith("warn"))).toEqual([
+      `warn  hook     ${HOOK_MISSING}`,
+      "warn  ignored  .arbab/ not ignored yet (the shepherd adds it to info/exclude on the next launch)",
+    ]);
   });
 
   it("exits 1 when a check fails, with --json", async () => {

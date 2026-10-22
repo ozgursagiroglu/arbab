@@ -8,19 +8,25 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { compareVersions, findOnPath, parseVersion, resolveBinary } from "../binary";
 import { defaultConfig, loadConfig } from "../config";
+import {
+  checkConfigFiles,
+  checkDisk,
+  checkEnvTemplates,
+  checkEslint,
+  checkGates,
+  checkHook,
+  checkIgnored,
+  checkMachineCap,
+  checkTestConfigs,
+  type DoctorCheck,
+} from "../doctor";
 import type { ShepherdDeps } from "../shepherd";
 import type { ProjectConfig } from "../types";
-import { createExclusive, ensureDir } from "../util/fs";
+import { confine, createExclusive, ensureDir } from "../util/fs";
 import type { CommandContext } from "./context";
 import { findProjectRoot, parse, printJson } from "./project";
 
-export type CheckStatus = "ok" | "warn" | "fail";
-
-export interface DoctorCheck {
-  status: CheckStatus;
-  check: string;
-  detail: string;
-}
+export type { CheckStatus, DoctorCheck } from "../doctor";
 
 const MIN_NODE = "20.0.0";
 const MIN_GIT = "2.20.0";
@@ -78,18 +84,6 @@ export function checkSandbox(platform: NodeJS.Platform, deps: Pick<ShepherdDeps,
   return { status: "fail", check: "sandbox", detail: `Claude Code has no sandbox on ${platform}` };
 }
 
-/** A warning only: the shepherd adds both roots to info/exclude before its first worktree. */
-export function checkIgnored(ctx: Pick<CommandContext, "git">, root: string, config: ProjectConfig): DoctorCheck {
-  const notIgnored: string[] = [];
-  for (const entry of [config.worktreeRoot, config.runsRoot]) {
-    const probe = `${entry.replace(/\/+$/, "")}/x`;
-    if (ctx.git(["check-ignore", "-q", "--", probe], root).code !== 0) notIgnored.push(entry);
-  }
-  return notIgnored.length === 0
-    ? { status: "ok", check: "ignored", detail: `${config.worktreeRoot} and ${config.runsRoot} are ignored` }
-    : { status: "warn", check: "ignored", detail: `${notIgnored.join(", ")} not ignored yet (the shepherd adds them to info/exclude)` };
-}
-
 export function checkHome(home: string): DoctorCheck {
   const probe = join(home, `.doctor-${randomBytes(6).toString("hex")}`);
   try {
@@ -100,6 +94,29 @@ export function checkHome(home: string): DoctorCheck {
   } catch (err) {
     return { status: "fail", check: "home", detail: `${home} is not writable: ${message(err)}` };
   }
+}
+
+/** A check that throws is reported as a warning under its name, so one surprise in a project hides no other check. */
+function guarded(check: string, run: () => DoctorCheck | DoctorCheck[] | null): DoctorCheck[] {
+  try {
+    const result = run();
+    return result === null ? [] : Array.isArray(result) ? result : [result];
+  } catch (err) {
+    return [{ status: "warn", check, detail: `could not check: ${message(err)}` }];
+  }
+}
+
+/** The checks of DESIGN.md §21: what made real projects fail after launch, named before it. */
+export function projectChecks(ctx: CommandContext, root: string, config: ProjectConfig): DoctorCheck[] {
+  return [
+    ...guarded("ignored", () => checkIgnored(ctx.git, root, config)),
+    ...guarded("eslint", () => checkEslint(root)),
+    ...guarded("tests", () => checkTestConfigs(root)),
+    ...guarded("gates", () => checkGates(root, config.gates)),
+    ...guarded("env", () => checkEnvTemplates(ctx.git, root, config.fence.readableEnvFiles)),
+    ...guarded("disk", () => checkDisk(confine(root, config.worktreeRoot), config.worktreeRoot, ctx.home)),
+    ...guarded("machine", () => checkMachineCap(ctx.home, root, config.maxParallel)),
+  ];
 }
 
 export function doctorChecks(ctx: CommandContext): DoctorCheck[] {
@@ -116,6 +133,7 @@ export function doctorChecks(ctx: CommandContext): DoctorCheck[] {
     } catch (err) {
       checks.push({ status: "fail", check: "config", detail: message(err) });
     }
+    checks.push(...guarded("configs", () => checkConfigFiles(root)));
   }
 
   let deps: ShepherdDeps | null = null;
@@ -129,8 +147,9 @@ export function doctorChecks(ctx: CommandContext): DoctorCheck[] {
     checks.push(checkClaude(deps, config ?? defaultConfig()));
     checks.push(checkSandbox(ctx.platform, deps));
   }
+  checks.push(...guarded("hook", () => checkHook(ctx.scriptPath)));
 
-  if (root !== null && config !== null) checks.push(checkIgnored(ctx, root, config));
+  if (root !== null && config !== null) checks.push(...projectChecks(ctx, root, config));
   checks.push(checkHome(ctx.home));
   return checks;
 }

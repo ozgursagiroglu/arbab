@@ -93,7 +93,8 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
   const tier = parseTier(values.tier, project.config.landing.tier);
   const { paths, record } = openIntegration(project, name);
   const review = readReviewRecord(paths.review, name);
-  const base = project.config.baseBranch;
+  // The integration's own base, which land merges into: config.baseBranch may have changed since integrate.
+  const base = record.base;
   const carried =
     review !== null && review.headSha !== record.headSha && reviewCarriesOver(ctx.git, project.root, review.headSha, record.headSha, base);
 

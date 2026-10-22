@@ -17,7 +17,7 @@ import type { CommandContext } from "./context";
 import { markGenerated, ownerTag, readGenerated, type GenerationOwner } from "./generated";
 import { assertInactive, assertNoLiveWorker, launchLane } from "./launch";
 import { formatIssue, hasErrors, issueSummary, lintLane, resolveGitCommonDir } from "./lint";
-import { waitForProbes } from "./preflight";
+import { waitForProbes, whileWaiting } from "./preflight";
 import { isActive, type Project } from "./project";
 
 export { markGenerated, type GenerationOwner } from "./generated";
@@ -387,7 +387,8 @@ export function attemptEvents(runsRoot: string, lane: string, attempts: number[]
  * Runs each lane and waits until every one has finished or `timeoutMs` has passed; outcomes come in the lanes' order.
  * A lane whose earlier run is reusable (reusableRun) is waited for or adopted as it is. Every other lane is written
  * and linted (all before any launch), started from the integration head (resetGeneratedWorktree) and launched, and its
- * run recorded in paths.lanesDir. On timeout the lanes keep running and nothing is collected.
+ * run recorded in paths.lanesDir. While it waits, this process is a registered waiter (whileWaiting). On timeout the
+ * lanes keep running and nothing is collected.
  */
 export async function runGeneratedLanes(
   ctx: CommandContext,
@@ -429,7 +430,7 @@ export async function runGeneratedLanes(
   if (fresh.length > 0) ctx.stderr(`launched ${fresh.map((p) => p.name).join(", ")}; waiting\n`);
 
   const started = plans.flatMap((p) => runs.get(p.name) ?? []);
-  if (!(await waitForProbes(ctx, project.runsRoot, started, timeoutMs))) return { timedOut: true, outcomes: [] };
+  if (!(await whileWaiting(ctx, project.root, () => waitForProbes(ctx, project.runsRoot, started, timeoutMs)))) return { timedOut: true, outcomes: [] };
   return { timedOut: false, outcomes: started.map((run) => collectRun(project.runsRoot, run)) };
 }
 

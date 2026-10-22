@@ -104,6 +104,16 @@ function globSegments(glob: string): string[][] | null {
   return out;
 }
 
+/**
+ * The paths a scope entry covers, as segment lists. An entry without glob characters may name a directory, so it
+ * covers both itself and everything under it.
+ */
+function scopeForms(glob: string): string[][] | null {
+  const forms = globSegments(glob);
+  if (forms === null || PATTERN_SEGMENT.test(glob)) return forms;
+  return forms.flatMap((segments) => (segments.at(-1) === "**" ? [segments] : [segments, [...segments, "**"]]));
+}
+
 const EXTGLOB = /[@!+*?]\(/;
 
 /** A case-insensitive matcher for one segment pattern of `*`, `?` and `[...]`; null for an extglob or a POSIX class. */
@@ -184,12 +194,13 @@ function pathsMeet(a: string[], b: string[]): boolean {
  * Whether some path matches both globs, compared segment by segment: `**` spans any number of segments, `*`, `?` and
  * classes stay within one, literals compare case-insensitively (on a case-insensitive file system `src/Plan` and
  * `src/plan` are one directory). Two pattern segments meet unless their literal prefixes or suffixes contradict, and
- * an extglob meets any literal its literal ends allow, so the answer errs toward overlap. Brace sets are expanded;
- * a glob this cannot read (escapes, ranges, a "/" inside an extglob) falls back to comparing fixed paths.
+ * an extglob meets any literal its literal ends allow, so the answer errs toward overlap. A bare path also covers
+ * what is under it (`src/plan` meets `src/plan/x.ts`). Brace sets are expanded; a glob this cannot read (escapes,
+ * ranges, a "/" inside an extglob) falls back to comparing fixed paths.
  */
 export function globsOverlap(a: string, b: string): boolean {
-  const sa = globSegments(a);
-  const sb = globSegments(b);
+  const sa = scopeForms(a);
+  const sb = scopeForms(b);
   if (sa === null || sb === null) return fixedPathsOverlap(a, b);
   return sa.some((x) => sb.some((y) => pathsMeet(x, y)));
 }

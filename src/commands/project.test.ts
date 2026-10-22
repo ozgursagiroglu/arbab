@@ -1,8 +1,9 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findProjectRoot, isActive, onePositional, openProject, parse, printJson } from "./project";
+import { dispatch } from "./index";
+import { findProjectRoot, inLaneWorktree, isActive, onePositional, openProject, parse, printJson } from "./project";
 import { isolatedGit, makeProject, type TestProject } from "./testkit";
 
 let p: TestProject;
@@ -28,6 +29,63 @@ describe("findProjectRoot", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("inLaneWorktree", () => {
+  it("is true for a path with a .arbab/worktrees pair of components", () => {
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a")).toBe(true);
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees/a/src")).toBe(true);
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees")).toBe(true);
+    expect(inLaneWorktree("/work/repo")).toBe(false);
+    expect(inLaneWorktree("/work/repo/.arbab/runs/a")).toBe(false);
+    expect(inLaneWorktree("/work/repo/x.arbab/worktrees/a")).toBe(false);
+    expect(inLaneWorktree("/work/repo/.arbab/worktrees-old/a")).toBe(false);
+    expect(inLaneWorktree("/work/.arbab/repo/worktrees")).toBe(false);
+  });
+});
+
+describe("findProjectRoot in a lane worktree", () => {
+  function laneWorktree(t: TestProject): string {
+    const lane = join(t.worktreeRoot, "demo");
+    t.ok(["worktree", "add", "-q", "-b", "arbab/demo", lane, "main"]);
+    return lane;
+  }
+
+  it("refuses a worktree found by git, with its .arbab/config.json, from it and from below it", () => {
+    p = makeProject();
+    const lane = laneWorktree(p);
+    mkdirSync(join(lane, ".arbab"), { recursive: true });
+    writeFileSync(join(lane, ".arbab", "config.json"), "{}");
+    rmSync(join(lane, "arbab.config.json"));
+    // The worktree has no arbab.config.json, but the walk up finds the project's: that root is the human's.
+    expect(findProjectRoot(lane, p.git)).toBe(p.root);
+    rmSync(join(p.root, "arbab.config.json"));
+    expect(() => findProjectRoot(lane, p.git)).toThrow(expect.objectContaining({ code: "usage" }));
+    mkdirSync(join(lane, "src"));
+    expect(() => findProjectRoot(join(lane, "src"), p.git)).toThrow(/lane worktree/);
+  });
+
+  it("refuses a worktree holding arbab.config.json, and a symlink to it", () => {
+    p = makeProject();
+    const lane = laneWorktree(p);
+    expect(() => findProjectRoot(lane, p.git)).toThrow(/lane worktree/);
+    symlinkSync(lane, join(p.dir, "lane-link"));
+    expect(() => findProjectRoot(join(p.dir, "lane-link"), p.git)).toThrow(/lane worktree/);
+    expect(() => openProject({ cwd: lane, git: p.git })).toThrow(expect.objectContaining({ code: "usage" }));
+  });
+
+  it("refuses it from the cwd and through -C, before loading its config", async () => {
+    p = makeProject();
+    const lane = laneWorktree(p);
+    // A config that would not load: the refusal comes first.
+    writeFileSync(join(lane, "arbab.config.json"), JSON.stringify({ nope: 1 }));
+    expect(await dispatch(["-C", lane, "status"], p.ctx)).toBe(1);
+    expect(p.stderr()).toMatch(/lane worktree/);
+    p.err.length = 0;
+    expect(await dispatch(["status"], { ...p.ctx, cwd: lane })).toBe(1);
+    expect(p.stderr()).toMatch(/lane worktree/);
+    expect(p.stderr()).not.toMatch(/unknown key/);
   });
 });
 

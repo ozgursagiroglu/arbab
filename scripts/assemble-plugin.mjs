@@ -1,6 +1,6 @@
 // Assembles the installable plugin directory. Installing from a marketplace copies the plugin's whole
 // source directory, ignored files included, so the plugin lives in a directory that holds only the plugin:
-// the manifest, the skills and the bundle.
+// the manifest, the skills, the hooks and the bundle.
 import { cpSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -20,8 +20,9 @@ export function assemblePlugin(root, bundle, outDir) {
   }
   const manifest = join(repo, ".claude-plugin", "plugin.json");
   const skills = join(repo, "skills");
+  const hooks = join(repo, "hooks", "hooks.json");
   const runner = resolve(repo, bundle);
-  for (const [what, path] of [["plugin manifest", manifest], ["bundle", runner]]) {
+  for (const [what, path] of [["plugin manifest", manifest], ["hooks file", hooks], ["bundle", runner]]) {
     if (!existsSync(path) || !statSync(path).isFile()) throw new Error(`assemblePlugin: ${what} not found: ${path}`);
   }
   if (!existsSync(skills) || !statSync(skills).isDirectory()) {
@@ -31,7 +32,10 @@ export function assemblePlugin(root, bundle, outDir) {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(join(out, ".claude-plugin"), { recursive: true });
   mkdirSync(join(out, "dist"), { recursive: true });
+  mkdirSync(join(out, "hooks"), { recursive: true });
   cpSync(manifest, join(out, ".claude-plugin", "plugin.json"));
+  // Claude Code finds hooks/hooks.json at the plugin root by itself; plugin.json needs no "hooks" key.
+  cpSync(hooks, join(out, "hooks", "hooks.json"));
   cpSync(skills, join(out, "skills"), { recursive: true, filter: (src) => basename(src) !== ".DS_Store" });
   cpSync(runner, join(out, "dist", "arbab.mjs"));
 }

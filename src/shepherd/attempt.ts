@@ -184,7 +184,7 @@ export function previousSession(runsRoot: string, lane: string): PreviousSession
 
 /** The fence's input for an attempt: the lane's role and config, the worktree, and the env-file options. */
 export function profileInput(
-  ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "gitCommonDir" | "projectRoot"> & {
+  ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "branch" | "gitCommonDir" | "projectRoot"> & {
     deps: Pick<AttemptContext["deps"], "git">;
   },
 ): ProfileInput {
@@ -205,8 +205,11 @@ export function profileInput(
     projectRoot: ctx.projectRoot,
     readableEnvFiles: readable,
     bashOutputMaxChars: config.fence.bashOutputMaxChars,
-    // Each listed template costs a git call; with none listed there is nothing to re-open.
-    envFileAllowReads: readable.length === 0 ? [] : envFileAllowReads({ worktree: ctx.worktree, readable, git: ctx.deps.git }),
+    // Listed templates cost a git call; with none listed there is nothing to re-open.
+    envFileAllowReads:
+      readable.length === 0
+        ? []
+        : envFileAllowReads({ worktree: ctx.worktree, branch: ctx.branch, gitCommonDir: ctx.gitCommonDir, readable, git: ctx.deps.git }),
   };
 }
 

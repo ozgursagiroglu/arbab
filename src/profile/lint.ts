@@ -73,15 +73,6 @@ export function lintProfile(profile: CompiledProfile, input: ProfileInput): Lint
     if (tool === "Task" || tool === "Agent") error("agent-tool", "nested agents are not budgeted", tool);
   }
 
-  const reopened = new Set((input.envFileAllowReads ?? []).map((p) => resolve(p)));
-  for (const listed of input.readableEnvFiles ?? []) {
-    const path = resolve(input.worktree, listed.split("\\").join("/"));
-    if (!reopened.has(path)) {
-      warn("env-template-untracked", `${listed} is not a regular file git tracks in the worktree, so it stays unreadable`,
-        "fence.readableEnvFiles");
-    }
-  }
-
   for (const key of Object.keys(input.env)) {
     if (Object.hasOwn(FIXED_ENV, key) || WORKER_TMP_ENV.includes(key)) {
       warn("reserved-env", `${key} is set by arbab; this value is ignored`, key);

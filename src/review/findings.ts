@@ -103,6 +103,8 @@ export function reviewRecord(input: {
   findings: ReviewFinding[];
   /** Epoch milliseconds. */
   now: number;
+  /** `review --since`: the commit the reviewers diffed from. */
+  since?: string | null;
 }): ReviewRecord {
   return {
     name: input.name,
@@ -111,5 +113,6 @@ export function reviewRecord(input: {
     skeptics: input.skeptics.map((s) => ({ ...s })),
     findings: input.findings.map((f) => ({ ...f })),
     finishedAt: new Date(input.now).toISOString(),
+    ...(input.since !== undefined && { since: input.since }),
   };
 }

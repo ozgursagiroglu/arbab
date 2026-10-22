@@ -42,6 +42,18 @@ describe("credentialMatcher", () => {
     expect(match("/srv/deploy.KEY")).toEqual({ kind: "name", label: "deploy.KEY" });
   });
 
+  it("folds as APFS does: ſ, the Kelvin sign and NFC against NFD", () => {
+    // ſ (U+017F) is s and U+212A is K to APFS; toLowerCase keeps both.
+    expect(match("/home/u/.awſ/credentials")).toEqual({ kind: "dir", label: "~/.aws" });
+    expect(match("/srv/tls.KEY")).toEqual({ kind: "name", label: "tls.KEY" });
+    const m = credentialMatcher(["//srv/café/**", "**/*.résumé", "~/café/*.txt"], [HOME]);
+    expect(m("/srv/café/menu.txt")).toEqual({ kind: "pattern", label: "//srv/café/**" });
+    expect(m("/srv/a/me.RÉSUMÉ")).toEqual({ kind: "name", label: "me.RÉSUMÉ" });
+    expect(m("/home/u/CAFÉ/a.txt")).toEqual({ kind: "pattern", label: "~/café/*.txt" });
+    // A root spelled otherwise is still the root.
+    expect(match("/work/x.key/app/notes.txt", "/WORK/X.KEY/APP")).toBeNull();
+  });
+
   it("adds `extra` rules of every shape, case ignored", () => {
     const m = credentialMatcher(["~/.vault/**", "**/*.secret", "//srv/secrets/**", "vault/*.md", "~/notes/*.txt"], [HOME]);
     expect(m("/home/u/.Vault/token")).toEqual({ kind: "dir", label: "~/.vault" });

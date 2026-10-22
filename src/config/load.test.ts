@@ -102,6 +102,17 @@ describe("loadConfig worktreeRoot and runsRoot through symbolic links", () => {
       expect(configError(project, field).message).toContain("must not overlap .arbab/integrations");
     });
 
+    it(`refuses ${field} spelling the integration records as APFS folds them`, () => {
+      // ſ (U+017F) is s to APFS, but toLowerCase keeps it.
+      for (const value of [".arbab/integrationſ", ".arbab/integrationſ/x", ".ARBAB/INTEGRATIONſ"]) {
+        writeConfig(project, { [field]: value });
+        expect(configError(project, field).message, value).toContain(`${field}: must not overlap .arbab/integrations`);
+      }
+      mkdirSync(join(project, ".arbab", "integrations"), { recursive: true });
+      writeConfig(project, { [field]: ".arbab/integrationſ" });
+      expect(configError(project, field).message).toContain("must not overlap .arbab/integrations");
+    });
+
     it(`refuses ${field} as a link whose target spells the records or the root in another case`, () => {
       mkdirSync(join(project, ".arbab", "integrations"), { recursive: true });
       // Only a case-insensitive file system resolves another spelling; elsewhere the link dangles and is refused anyway.

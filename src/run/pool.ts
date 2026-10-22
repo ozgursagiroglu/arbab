@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { linkSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { linkSync, readdirSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { ArbabError } from "../util/errors";
 import { createExclusive, readText } from "../util/fs";
@@ -171,10 +171,35 @@ function lockDir(home: string, key: string): string {
   return join(resolve(home), "locks", key);
 }
 
-export function acquireWriterLock(home: string, key: string, holder: Holder, alive: Alive): boolean {
-  return acquireFromPool(lockDir(home, key), [0], holder, alive) === 0;
+/** How often an acquire starts over when a releaser removed the lock's directory under it. */
+const LOCK_DIR_RETRIES = 5;
+
+function vanished(err: unknown): boolean {
+  return err instanceof ArbabError && (err.cause as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+export function acquireWriterLock(home: string, key: string, holder: Holder, alive: Alive): boolean {
+  const dir = lockDir(home, key);
+  for (let tries = 1; ; tries++) {
+    try {
+      return acquireFromPool(dir, [0], holder, alive) === 0;
+    } catch (err) {
+      // A release removed the directory between its creation and the entry's: create both again.
+      if (!vanished(err) || tries >= LOCK_DIR_RETRIES) throw err;
+    }
+  }
+}
+
+/** Removes the entry, then the key's directory, so locks/ does not keep one directory per worktree ever locked. */
 export function releaseWriterLock(home: string, key: string, holder: Holder): boolean {
-  return releaseToPool(lockDir(home, key), 0, holder);
+  const dir = lockDir(home, key);
+  const released = releaseToPool(dir, 0, holder);
+  if (released) {
+    try {
+      rmdirSync(dir);
+    } catch {
+      // Not empty (another acquirer's entry, a reclaim's tomb) or already gone: either way it is not ours to remove.
+    }
+  }
+  return released;
 }

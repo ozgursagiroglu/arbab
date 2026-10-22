@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
 import { effectiveRole } from "../config";
 import { ack, attemptFiles, effectiveState, listAttempts, readAttempt, readState, runPaths } from "../registry";
-import { ensureIgnored } from "../run";
+import { arbabIgnoreEntries, ensureArbabMarkers, ensureIgnored } from "../run";
 import type { AttemptSummary, JsonSchema, LaneSpec } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson, readText, writeJsonAtomic, writeTextAtomic } from "../util/fs";
@@ -363,9 +363,10 @@ export async function runPreflight(argv: string[], ctx: CommandContext): Promise
   const expectedTools = effectiveRole(project.config, lane).tools;
   if (!expectedTools.includes("Bash")) throw new ArbabError("usage", `role ${lane.role} has no Bash tool; preflight needs one`);
 
-  // The probe lanes are generated files: keep them out of the project's git status, as the shepherd does for its own
-  // directories (it ignores only the worktree and runs roots).
-  ensureIgnored(project.root, [`${PREFLIGHT_DIR}/`], ctx.git);
+  // The probe lanes are generated files under .arbab/preflight/: keep them out of the project's git status with
+  // arbab's own entries, as the shepherd does.
+  ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
+  ensureArbabMarkers(project.root);
   const files = writeProbeLanes(project, lane);
   // Both probes are linted before either starts, so a refused second probe never leaves the first one running.
   for (const probe of [files.tools, files.model]) {

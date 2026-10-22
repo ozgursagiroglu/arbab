@@ -111,7 +111,9 @@ describe("runShepherd", () => {
 
     const settings = readJsonFile<{ env: Record<string, string> }>(files.settings);
     expect(settings.env["XDG_CONFIG_HOME"]).toBe(join(started.cwd, ".arbab-tmp", "xdg-config"));
-    expect(existsSync(join(started.cwd, ".arbab-tmp", "xdg-config"))).toBe(true);
+    for (const dir of ["xdg-config", "xdg-data", "xdg-cache", "yarn-cache", "inputs", "npmrc"]) {
+      expect(existsSync(join(started.cwd, ".arbab-tmp", dir)), dir).toBe(true);
+    }
 
     expect(exit.killedBy).toBeNull();
     expect(exit.exitCode).toBe(0);
@@ -134,10 +136,11 @@ describe("runShepherd", () => {
     expect(readJsonFile<RateLimitSnapshot>(join(project.home, "quota.json")).fiveHour?.utilization).toBe(0.2);
     expect(poolEntries("slots")).toEqual([]);
     expect(lockEntries()).toEqual([]);
-    // The roots are ignored through info/exclude.
+    // .arbab/ as a whole is ignored through info/exclude, and ESLint's cascade stops there.
     const exclude = readFileSync(join(project.root, ".git", "info", "exclude"), "utf8");
-    expect(exclude).toContain(".arbab/worktrees/");
-    expect(exclude).toContain(".arbab-tmp/");
+    expect(exclude.split("\n")).toContain(".arbab/");
+    expect(exclude.split("\n")).toContain(".arbab-tmp/");
+    expect(readJsonFile<{ root: boolean }>(join(project.root, ".arbab", ".eslintrc.json"))).toEqual({ root: true });
   });
 
   it("waits out a usage limit and resumes the same session to success", async () => {
@@ -1213,9 +1216,9 @@ describe("resetSince", () => {
 });
 
 describe("ignoreEntries", () => {
-  it("lists the roots relative to the project with a trailing slash, without duplicates", () => {
-    expect(ignoreEntries("/p", defaultConfig())).toEqual([".arbab/worktrees/", ".arbab/runs/", ".arbab-tmp/"]);
-    expect(ignoreEntries("/p", { worktreeRoot: "./w/", runsRoot: "w" })).toEqual(["w/", ".arbab-tmp/"]);
+  it("is arbab's own list: .arbab/ as a whole, .arbab-tmp/, and roots outside .arbab/", () => {
+    expect(ignoreEntries("/p", defaultConfig())).toEqual([".arbab/", ".arbab-tmp/"]);
+    expect(ignoreEntries("/p", { worktreeRoot: "./w/", runsRoot: "w" })).toEqual([".arbab/", ".arbab-tmp/", "w/"]);
   });
 
   it("refuses a root outside the project", () => {

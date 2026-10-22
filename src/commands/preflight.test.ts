@@ -278,6 +278,8 @@ describe("runPreflight", () => {
     expect(existsSync(join(p.runsRoot, "demo-pf-tools", "attempt-1", "acked"))).toBe(true);
     // The generated probe lanes stay out of the project's git status.
     expect(p.git(["check-ignore", "-q", ".arbab/preflight/demo/x"], p.root).code).toBe(0);
+    expect(readFileSync(join(p.root, ".git", "info", "exclude"), "utf8")).toMatch(/^\.arbab\/$/m);
+    expect(JSON.parse(readFileSync(join(p.root, ".arbab", ".eslintrc.json"), "utf8"))).toEqual({ root: true });
   });
 
   it("lints the lane and both probes with the repository's shared git directory", async () => {

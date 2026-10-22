@@ -1,8 +1,10 @@
 // Integration (DESIGN.md §17): finished lanes are merged into integrate/<name>, a worktree no worker ever runs in.
 import { existsSync, readdirSync, realpathSync, renameSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { INTEGRATION_WORKTREE_PREFIX } from "../config/lane";
 import {
+  arbabIgnoreEntries,
+  ensureArbabMarkers,
   ensureIgnored,
   explicitGit,
   isDependencyManifest,
@@ -291,11 +293,6 @@ function removeWorktree(git: GitRunner, paths: IntegrationPaths): void {
   git(["worktree", "remove", "--force", paths.worktree], paths.projectRoot);
 }
 
-function ignoreEntries(projectRoot: string, config: ProjectConfig): string[] {
-  const rel = (p: string): string => `${relative(resolve(projectRoot), confine(projectRoot, p)).split(sep).join("/")}/`;
-  return [...new Set([rel(config.worktreeRoot), `${INTEGRATIONS_DIR}/`])];
-}
-
 export interface IntegrateResult {
   record: IntegrationRecord;
   /** The listed lanes whose commit the branch already held: recorded, not merged. */
@@ -334,7 +331,9 @@ export function integrate(input: IntegrateInput): IntegrateResult {
   if (!existsSync(paths.worktree)) createIntegrationWorktree(input, paths);
   // The merged branches are worker-written, so hooks their trees hold would be worker code on the host.
   const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
-  ensureIgnored(paths.projectRoot, ignoreEntries(paths.projectRoot, config), git);
+  // .arbab/ as a whole covers the integration records and worktrees.
+  ensureIgnored(paths.projectRoot, arbabIgnoreEntries(paths.projectRoot, config), git);
+  ensureArbabMarkers(paths.projectRoot);
 
   // A GitRunner that ignores its cwd: every call names the worktree's git dir and work tree.
   const wt = (args: string[]): ReturnType<GitRunner> => git([...prefix, ...args], paths.worktree);

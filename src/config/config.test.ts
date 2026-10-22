@@ -6,7 +6,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProjectConfig } from "../types";
 import { ROLES } from "../types";
 import { ArbabError } from "../util/errors";
-import { CONFIG_FILE, ROLE_DEFAULTS, defaultConfig, effectiveRole, loadConfig, loadLane, resolveRole } from "./index";
+import {
+  CONFIG_FILE,
+  LOCAL_CONFIG_FILE,
+  ROLE_DEFAULTS,
+  configPath,
+  defaultConfig,
+  effectiveRole,
+  loadConfig,
+  loadLane,
+  resolveRole,
+} from "./index";
 
 let dir: string;
 beforeEach(() => {
@@ -60,7 +70,7 @@ describe("ROLE_DEFAULTS", () => {
       budgetUsd: 5,
       wallMin: 30,
       idleMin: 15,
-      loopback: false,
+      loopback: true,
       checkpoint: false,
       autoResume: true,
       maxAttempts: 3,
@@ -144,7 +154,9 @@ describe("loadConfig", () => {
       minClaudeVersion: "2.1.290",
       verify: { smoke: null },
       review: { lenses: {} },
-      landing: { tier: "medium" },
+      landing: { tier: "medium", squash: false },
+      fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
+      hostGates: [],
     });
   });
 
@@ -194,7 +206,7 @@ describe("loadConfig", () => {
     expect(config.quota.holdAbove).toEqual({ fiveHour: 1, sevenDay: 0.95 });
     expect(config.verify).toEqual({ smoke: ["make", "smoke"] });
     expect(config.review.lenses).toEqual({ perf: "Hot paths that allocate per request." });
-    expect(config.landing).toEqual({ tier: "high" });
+    expect(config.landing).toEqual({ tier: "high", squash: false });
     expect(config.resources["redis-db"]).toEqual({ range: [0, 15] });
     expect(config.roles.probe).toEqual({ effort: "medium", loopback: false, maxAttempts: 2 });
   });
@@ -206,6 +218,34 @@ describe("loadConfig", () => {
   });
 
   it("rejects an unknown top-level key", () => configError({ maxparallel: 2 }, "maxparallel"));
+
+  it("reads .arbab/config.json when the repository has no arbab.config.json", () => {
+    expect(configPath(dir)).toBeNull();
+    mkdirSync(join(dir, ".arbab"));
+    writeFileSync(join(dir, LOCAL_CONFIG_FILE), JSON.stringify({ maxParallel: 3 }));
+    expect(configPath(dir)).toBe(join(dir, ".arbab", "config.json"));
+    expect(loadConfig(dir).maxParallel).toBe(3);
+  });
+
+  it("prefers arbab.config.json when both exist", () => {
+    mkdirSync(join(dir, ".arbab"));
+    writeFileSync(join(dir, LOCAL_CONFIG_FILE), JSON.stringify({ maxParallel: 3 }));
+    writeFileSync(join(dir, CONFIG_FILE), JSON.stringify({ maxParallel: 5 }));
+    expect(configPath(dir)).toBe(join(dir, CONFIG_FILE));
+    expect(loadConfig(dir).maxParallel).toBe(5);
+  });
+
+  it("validates .arbab/config.json as strictly, naming that file", () => {
+    mkdirSync(join(dir, ".arbab"));
+    writeFileSync(join(dir, LOCAL_CONFIG_FILE), "[]");
+    const err = errorOf(() => loadConfig(dir));
+    expect(err.code).toBe("config");
+    expect(err.message).toContain(LOCAL_CONFIG_FILE);
+    writeFileSync(join(dir, LOCAL_CONFIG_FILE), JSON.stringify({ bogus: 1 }));
+    expect(errorOf(() => loadConfig(dir)).message).toContain("bogus");
+    writeFileSync(join(dir, LOCAL_CONFIG_FILE), "{");
+    expect(errorOf(() => loadConfig(dir)).code).toBe("config");
+  });
 
   it("accepts a null smoke and rejects bad verify, review and landing values", () => {
     expect(loadWith({ verify: { smoke: null } }).verify).toEqual({ smoke: null });
@@ -324,6 +364,38 @@ describe("loadConfig", () => {
     configError({ preflight: { steps: [[""]] } }, "preflight.steps[0][0]");
     configError({ preflight: { steps: "x" } }, "preflight.steps");
     configError({ preflight: { step: [] } }, "preflight.step");
+  });
+
+  it("reads landing.squash, fence and hostGates", () => {
+    const config = loadWith({
+      landing: { squash: true },
+      fence: { readableEnvFiles: [".env.example", "apps/web/.env.sample"], bashOutputMaxChars: 4000 },
+      hostGates: [["docker", "compose", "up", "--wait"]],
+    });
+    expect(config.landing).toEqual({ tier: "medium", squash: true });
+    expect(config.fence).toEqual({ readableEnvFiles: [".env.example", "apps/web/.env.sample"], bashOutputMaxChars: 4000 });
+    expect(config.hostGates).toEqual([["docker", "compose", "up", "--wait"]]);
+    expect(loadWith({ fence: { bashOutputMaxChars: 128000 } }).fence).toEqual({ readableEnvFiles: [], bashOutputMaxChars: 128000 });
+    expect(loadWith({ fence: {} }).fence).toEqual(defaultConfig().fence);
+  });
+
+  it("rejects bad landing.squash, fence and hostGates values", () => {
+    configError({ landing: { squash: "yes" } }, "landing.squash");
+    configError({ landing: { merge: true } }, "landing.merge");
+    configError({ fence: [] }, "fence");
+    configError({ fence: { other: 1 } }, "fence.other");
+    configError({ fence: { bashOutputMaxChars: 3999 } }, "fence.bashOutputMaxChars");
+    configError({ fence: { bashOutputMaxChars: 128001 } }, "fence.bashOutputMaxChars");
+    configError({ fence: { bashOutputMaxChars: 5000.5 } }, "fence.bashOutputMaxChars");
+    configError({ fence: { readableEnvFiles: ".env.example" } }, "fence.readableEnvFiles");
+    for (const bad of ["/repo/.env.example", "~/.env.example", "../.env.example", "a/../.env.example", "a\\..\\.env.x", "config.env",
+      "env.example", ".env.example/", "", "a/.en"]) {
+      configError({ fence: { readableEnvFiles: [".env.sample", bad] } }, "fence.readableEnvFiles[1]");
+    }
+    configError({ fence: { readableEnvFiles: [".env.example", ".env.example"] } }, "fence.readableEnvFiles[1]");
+    configError({ hostGates: [[]] }, "hostGates[0]");
+    configError({ hostGates: ["docker compose up"] }, "hostGates[0]");
+    configError({ hostGates: "x" }, "hostGates");
   });
 
   it("rejects maxParallel outside 1–32", () => {

@@ -158,7 +158,8 @@ describe("integrate", () => {
     expect(readIntegration(p)).toEqual(rec);
     expect(JSON.parse(readFileSync(p.integration, "utf8"))).toEqual(rec);
     // The worktree and the records stay out of the main checkout's status.
-    expect(readFileSync(join(project.root, ".git", "info", "exclude"), "utf8")).toMatch(/^\.arbab\/integrations\/$/m);
+    expect(readFileSync(join(project.root, ".git", "info", "exclude"), "utf8")).toMatch(/^\.arbab\/$/m);
+    expect(JSON.parse(readFileSync(join(project.root, ".arbab", ".eslintrc.json"), "utf8"))).toEqual({ root: true });
     expect(git(["status", "--porcelain"])).toBe("");
     expect(git(["status", "--porcelain"], p.worktree)).toBe("");
   });

@@ -1,10 +1,21 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { defaultConfig, resolveRole } from "../config";
 import { DEFAULT_SCHEMAS } from "../report";
+import type { GitRunner } from "../run";
 import { ArbabError } from "../util/errors";
-import { elideSchema, laneSchema, previousSession, readRegistration, worktreeUsedFile } from "./attempt";
+import { elideSchema, laneSchema, previousSession, profileInput, readRegistration, startedFields, worktreeUsedFile } from "./attempt";
+
+// The real envFileDenies is another lane's; here only whether and how the attempt calls it matters.
+const envFileCalls = vi.hoisted(() => [] as Array<{ projectRoot: string; worktree: string; readable: string[] }>);
+vi.mock("../profile/envfiles", () => ({
+  envFileDenies: (input: { projectRoot: string; worktree: string; readable: string[] }) => {
+    envFileCalls.push({ projectRoot: input.projectRoot, worktree: input.worktree, readable: input.readable });
+    return ["/repo/.env", "/repo/.env.local"];
+  },
+}));
 
 let dir: string;
 beforeEach(() => {
@@ -18,6 +29,62 @@ describe("elideSchema", () => {
   it("replaces only the value after --json-schema", () => {
     expect(elideSchema(["-p", "--json-schema", '{"type":"object"}', "-n", "x"])).toEqual(["-p", "--json-schema", "<schema>", "-n", "x"]);
     expect(elideSchema(["-p", "-n", "x"])).toEqual(["-p", "-n", "x"]);
+  });
+});
+
+describe("startedFields", () => {
+  it("adds nothing for a bare request, so started.json keeps its old shape", () => {
+    expect(startedFields({ kind: "start" })).toEqual({});
+    expect(startedFields({ kind: "resume", prompt: "go on" })).toEqual({});
+  });
+
+  it("records timing as heldMs and prepareMs, the inputs and the merged branches", () => {
+    expect(
+      startedFields({
+        kind: "start",
+        timing: { heldMs: 1500, prepareMs: 0 },
+        inputs: ["design", "handoff.md"],
+        merged: [{ branch: "arbab/a", sha: "a".repeat(40) }],
+      }),
+    ).toEqual({ heldMs: 1500, prepareMs: 0, inputs: ["design", "handoff.md"], merged: [{ branch: "arbab/a", sha: "a".repeat(40) }] });
+    expect(startedFields({ kind: "start", inputs: [] })).toEqual({ inputs: [] });
+  });
+});
+
+describe("profileInput", () => {
+  const git: GitRunner = () => ({ code: 0, stdout: "", stderr: "" });
+  const ctx = (fence: { readableEnvFiles: string[]; bashOutputMaxChars: number }) => {
+    const config = { ...defaultConfig(), fence };
+    return {
+      projectRoot: "/repo",
+      config,
+      lane: { name: "m1-a", role: "implementer" as const, brief: "b.md" },
+      role: resolveRole(config, "implementer"),
+      fence: "strict" as const,
+      leases: [],
+      worktree: "/repo/.arbab/worktrees/m1-a",
+      gitCommonDir: "/repo/.git",
+      deps: { git },
+    };
+  };
+
+  it("passes the fence options and does not look for env files when none are readable", () => {
+    envFileCalls.length = 0;
+    const input = profileInput(ctx({ readableEnvFiles: [], bashOutputMaxChars: 100000 }));
+    expect(input).toMatchObject({ readableEnvFiles: [], bashOutputMaxChars: 100000, envFileDenies: [] });
+    expect(envFileCalls).toEqual([]);
+  });
+
+  it("asks envFileDenies for the files to deny when templates are readable", () => {
+    envFileCalls.length = 0;
+    const input = profileInput(ctx({ readableEnvFiles: [".env.example"], bashOutputMaxChars: 4000 }));
+    expect(input).toMatchObject({
+      readableEnvFiles: [".env.example"],
+      bashOutputMaxChars: 4000,
+      envFileDenies: ["/repo/.env", "/repo/.env.local"],
+      worktree: "/repo/.arbab/worktrees/m1-a",
+    });
+    expect(envFileCalls).toEqual([{ projectRoot: "/repo", worktree: "/repo/.arbab/worktrees/m1-a", readable: [".env.example"] }]);
   });
 });
 

@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { checkPlan, compilePhase, loadPlan, nextPhases, planStatus, planWaves } from "../plan";
 import type { NextPhases, PhaseState, PhaseStates, PlanStatusRow } from "../plan";
 import { attemptFiles, effectiveState, listAttempts, readState, runPaths } from "../registry";
-import { ensureIgnored } from "../run";
+import { arbabIgnoreEntries, ensureArbabMarkers, ensureIgnored } from "../run";
 import type { LaneSpec, LintIssue, PlanSpec } from "../types";
 import { ArbabError, exitCodeFor } from "../util/errors";
 import { readJson, writeJsonAtomic } from "../util/fs";
@@ -149,7 +149,9 @@ export async function planNext(ctx: CommandContext, project: Project, planPath: 
   const out: PlanNext = { plan: plan.name, launched: [], blocked: next.blocked, failed: next.failed, errors: [], warnings: [], code: 0 };
   if (next.launch.length === 0) return out;
 
-  ensureIgnored(project.root, [".arbab/plans/"], ctx.git);
+  // The generated lane files live under .arbab/plans/, which arbab's own entries cover.
+  ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
+  ensureArbabMarkers(project.root);
   for (const phase of next.launch) {
     const lane = check.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
     const laneFile = join(plansDir(project, plan.name), `${phase}.json`);

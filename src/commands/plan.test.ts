@@ -149,6 +149,8 @@ describe("arbab plan next", () => {
     );
     // The generated lane files stay out of git status.
     expect(p.git(["check-ignore", "-q", ".arbab/plans/p1/a.json"], p.root).code).toBe(0);
+    expect(readFileSync(join(p.root, ".git", "info", "exclude"), "utf8")).toMatch(/^\.arbab\/$/m);
+    expect(JSON.parse(readFileSync(join(p.root, ".arbab", ".eslintrc.json"), "utf8"))).toEqual({ root: true });
 
     // Twice in a row: nothing more.
     reset();

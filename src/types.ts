@@ -53,6 +53,12 @@ export interface LaneSpec {
    * is a setup failure the orchestrator resolves (DESIGN.md §16).
    */
   mergeBranches?: string[];
+  /**
+   * Files or directories outside the worktree the worker must read (a design folder beside the repository, a hand-off
+   * note). Absolute, `~/`-relative or project-relative paths. The shepherd copies each, before the run's first attempt,
+   * into `<worktree>/.arbab-tmp/inputs/<basename>` (DESIGN.md §21).
+   */
+  inputs?: string[];
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -76,6 +82,7 @@ export type PhaseLaneFields = Partial<Pick<
   | "checkpoint"
   | "autoResume"
   | "maxAttempts"
+  | "inputs"
   >
 >;
 
@@ -128,9 +135,36 @@ export interface ProjectConfig {
   verify: { smoke: string[] | null };
   /** Review lenses besides the built-in correctness, security and contracts: name → what to look for. */
   review: { lenses: Record<string, string> };
-  /** The risk tier readiness checks against when a command names none. */
-  landing: { tier: Tier };
+  /**
+   * `tier`: the risk tier readiness checks against when a command names none. `squash`: `land` makes one commit on the
+   * base instead of a merge (`land --squash` does it once; DESIGN.md §21).
+   */
+  landing: { tier: Tier; squash: boolean };
+  /** Fence options (DESIGN.md §21). */
+  fence: {
+    /**
+     * Tracked template env files workers may read, project-relative (".env.example"). Empty keeps every `**\/.env*`
+     * path denied; non-empty replaces that pattern with explicit secret patterns and the untracked env files found.
+     */
+    readableEnvFiles: string[];
+    /** Claude Code's `bashOutputMaxChars` for workers (4000–128000): longer output goes where a worker cannot read it. */
+    bashOutputMaxChars: number;
+  };
+  /**
+   * Checks that cannot run inside the fence (Docker, a browser, a database), as argv arrays. A human runs them on the
+   * host with `arbab host-check <name>`; readiness lists them until they passed on the head (DESIGN.md §21).
+   */
+  hostGates: string[][];
 }
+
+/**
+ * `~/.arbab/machine.json`: limits for every project on this machine (DESIGN.md §21). Missing file = no limits.
+ * `maxParallel` caps each project's own maxParallel; slots are machine-wide.
+ */
+export interface MachineConfig {
+  maxParallel: number | null;
+}
+export const MACHINE_CONFIG_FILE = "machine.json";
 
 /** Where every integration's records live, relative to the project root (DESIGN.md §17). */
 export const INTEGRATIONS_DIR = ".arbab/integrations";
@@ -170,6 +204,8 @@ export interface ClaudeSettings {
   };
   env: Record<string, string>;
   permissions: { allow: string[]; deny: string[] };
+  /** Inline output limit of the worker's Bash tool (Claude Code settings key; DESIGN.md §21). */
+  bashOutputMaxChars?: number;
 }
 
 export interface ProfileInput {
@@ -191,6 +227,12 @@ export interface ProfileInput {
    * lets a worktree's worker write there, refs and objects included, so the fence denies it (M1 review, measured).
    */
   gitCommonDir?: string;
+  /** config.fence.readableEnvFiles; non-empty replaces the `**\/.env*` deny (DESIGN.md §21). */
+  readableEnvFiles?: string[];
+  /** Absolute paths of env files to deny explicitly when readableEnvFiles is non-empty (src/profile/envfiles.ts). */
+  envFileDenies?: string[];
+  /** config.fence.bashOutputMaxChars, written to the settings as `bashOutputMaxChars`. */
+  bashOutputMaxChars?: number;
 }
 
 export interface CompiledProfile {
@@ -245,6 +287,8 @@ export interface BriefContext {
   schema: JsonSchema | null;
   /** BASH_MAX_TIMEOUT_MS in minutes, named in the tool belt. */
   bashMaxTimeoutMin: number;
+  /** Names of the lane inputs copied into `.arbab-tmp/inputs/` (DESIGN.md §21); absent or empty when none. */
+  inputs?: string[];
 }
 
 /** The JSON Schema subset arbab validates (and Claude Code's --json-schema enforces). */
@@ -325,6 +369,22 @@ export interface AttemptStarted {
   leases: Lease[];
   /** The branches merged into the worktree before this run's first attempt, with their head SHAs (M2). */
   merged?: Array<{ branch: string; sha: string }>;
+  /**
+   * On a run's first attempt: how long the run was held (no slot, quota, semaphores, writer lock) and how long it
+   * prepared (worktree, dependencies, merges, inputs) before the worker started, in ms (DESIGN.md §21).
+   */
+  heldMs?: number;
+  prepareMs?: number;
+  /** The lane inputs copied into `.arbab-tmp/inputs/`, by name. */
+  inputs?: string[];
+}
+
+/** Token use summed over an attempt's distinct assistant messages (each message's `usage` counted once). */
+export interface TokenUsage {
+  input: number;
+  cacheCreation: number;
+  cacheRead: number;
+  output: number;
 }
 
 export interface AttemptExit {
@@ -397,6 +457,13 @@ export interface StreamDigest {
   rateLimit: RateLimitSnapshot | null;
   /** Lines that did not parse (a truncated last line of a live stream is normal). */
   unparsedLines: number;
+  /** Token use over distinct assistant messages; null when no assistant message carried usage. */
+  tokens?: TokenUsage | null;
+  /**
+   * The longest gap between two consecutive events, in ms, from the events' own timestamps when they carry one; null
+   * when fewer than two events are timed (DESIGN.md §21).
+   */
+  maxGapMs?: number | null;
 }
 
 export interface AttemptSummary {
@@ -432,6 +499,9 @@ export interface AttemptSummary {
   /** null when the lane has no schema. */
   reportValid: boolean | null;
   reportErrors: ValidationError[];
+  /** Present even when no result event came (a killed attempt has no cost, but its tokens are known). */
+  tokens?: TokenUsage | null;
+  maxGapMs?: number | null;
 }
 
 export type LaneState = "queued" | "held" | "preparing" | "running" | "waiting-reset" | "finished" | "orphaned";
@@ -474,6 +544,57 @@ export interface StatusRow {
   costDeltaUsd: number | null;
   fiveHour: QuotaWindow | null;
   sevenDay: QuotaWindow | null;
+  /** The session that launched the run (shepherd.json owner); null for runs launched outside Claude Code or before §21. */
+  owner?: string | null;
+  /** state.json's reason (why it is held, why it failed), or null. */
+  reason?: string | null;
+  tokens?: TokenUsage | null;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Ownership and machine-wide registries (DESIGN.md §21)
+
+/** <runs>/<lane>/shepherd.json, written by the shepherd when a run starts. */
+export interface ShepherdRecord {
+  pid: number;
+  startedAt: string;
+  /** CLAUDE_CODE_SESSION_ID of the session that launched the run; null outside Claude Code. Absent before §21. */
+  owner?: string | null;
+}
+
+/** ~/.arbab/shepherds/<pid>.json, present while that shepherd lives. */
+export interface ShepherdEntry {
+  pid: number;
+  lane: string;
+  /** Absolute project root. */
+  project: string;
+  owner: string | null;
+  startedAt: string;
+}
+
+/** ~/.arbab/waiters/<pid>.json, present while that `arbab wait` runs. */
+export interface WaiterEntry {
+  pid: number;
+  project: string;
+  owner: string | null;
+  startedAt: string;
+}
+
+/** ~/.arbab/projects/<sha1(root)>.json: a project that launched a lane on this machine (for `summary --all`). */
+export interface ProjectEntry {
+  root: string;
+  lastLaunchAt: string;
+}
+
+/** One line of <runs>/<lane>/events.jsonl: a state change of a lane run, appended by the shepherd. */
+export interface LaneEvent {
+  at: string;
+  shepherdPid: number;
+  state: LaneState;
+  attempt: number;
+  reason?: string;
+  until?: number;
+  endState?: EndState;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -551,7 +672,10 @@ export interface ReviewFinding {
   verdictReason?: string;
 }
 
-/** review.json */
+/**
+ * review.json: the latest review. Every review run also writes `reviews/<round>.json` beside it (REVIEW_HISTORY_DIR),
+ * so earlier rounds stay readable (DESIGN.md §21).
+ */
 export interface ReviewRecord {
   name: string;
   headSha: string;
@@ -559,7 +683,26 @@ export interface ReviewRecord {
   skeptics: Array<{ lens: string; lane: string; endState: EndState | null }>;
   findings: ReviewFinding[];
   finishedAt: string;
+  /** 1 for an integration's first review, counting up; absent before §21. */
+  round?: number;
+  /** `review --since <sha>`: the commit the reviewers diffed from instead of the integration's base. */
+  since?: string | null;
 }
+
+export const REVIEW_HISTORY_DIR = "reviews";
+
+/** host-checks.json: the `hostGates` a human ran on the host with `arbab host-check <name>` (DESIGN.md §21). */
+export interface HostCheckRecord {
+  name: string;
+  headSha: string;
+  results: GateResult[];
+  passed: boolean;
+  /** Always true: the command refuses without a terminal. Kept so the record says how it was made. */
+  interactive: true;
+  finishedAt: string;
+}
+
+export const HOST_CHECKS_FILE = "host-checks.json";
 
 /**
  * A line of the readiness report. Skipped items carry stable ids a human may waive: "review", "review:<lens>",
@@ -582,6 +725,11 @@ export interface ReadinessReport {
   /** Verify passed for this head and every skipped item is waived. */
   ready: boolean;
   createdAt: string;
+  /**
+   * The head the current review was made at, when it differs from headSha only by a clean merge of the base (the
+   * review is carried over; DESIGN.md §21). Absent otherwise.
+   */
+  reviewCarriedOverFrom?: string;
 }
 
 /** landing.json */
@@ -589,7 +737,15 @@ export interface LandingRecord {
   name: string;
   into: string;
   integrationHead: string;
+  /** The merge commit, or the single commit of a squash landing. */
   mergeSha: string;
   landedAt: string;
   pushed: false;
+  /** One commit on the base instead of a merge (`land --squash`, config landing.squash). Absent before §21. */
+  squash?: boolean;
+  /**
+   * The lanes this landing carried, with the commit integrated last: how cleanup knows a lane landed when its branch
+   * is not an ancestor of the base (a squash landing, a reshaped base). Absent before §21.
+   */
+  lanes?: Array<{ lane: string; sha: string }>;
 }

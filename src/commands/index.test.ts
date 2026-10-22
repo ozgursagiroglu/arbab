@@ -57,6 +57,16 @@ describe("dispatch", () => {
     expect(p.stderr()).toContain("TypeError: oops");
   });
 
+  it("registers summary, report, hook and host-check, which refuse as not implemented yet", async () => {
+    p = makeProject();
+    for (const name of ["summary", "report", "hook", "host-check"]) {
+      expect(Object.hasOwn(COMMANDS, name), name).toBe(true);
+      p.err.length = 0;
+      expect(await dispatch([name, "x"], p.ctx), name).toBe(1);
+      expect(p.stderr()).toBe(`arbab ${name}: ${name} is not implemented yet\n`);
+    }
+  });
+
   it("runs a command and returns its status", async () => {
     p = makeProject();
     expect(await dispatch(["lint", "lanes/demo.json"], p.ctx)).toBe(0);

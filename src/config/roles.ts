@@ -42,7 +42,8 @@ export const ROLE_DEFAULTS: Readonly<Record<Role, RoleDefaults>> = Object.freeze
     budgetUsd: 5,
     wallMin: 30,
     idleMin: 15,
-    loopback: false,
+    // Reviewers and skeptics run tests to check findings, and tests listen on 127.0.0.1 (DESIGN.md §21).
+    loopback: true,
     checkpoint: false,
     autoResume: true,
     maxAttempts: 3,

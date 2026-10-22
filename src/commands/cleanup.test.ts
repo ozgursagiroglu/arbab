@@ -4,7 +4,17 @@ import { afterEach, describe, expect, it } from "vitest";
 import { readState } from "../registry";
 import { untrustedTree } from "../run";
 import { plantNestedRepo } from "../run/testkit";
-import { emptyWorktreeCleanup, formatCleanup, formatWorktreeCleanup, releaseStalePoolFiles, runCleanup, UNPARSED_GRACE_MS } from "./cleanup";
+import type { LandingRecord } from "../types";
+import {
+  emptyWorktreeCleanup,
+  formatCleanup,
+  formatWorktreeCleanup,
+  releaseStalePoolFiles,
+  removeEmptyLockDirs,
+  runCleanup,
+  UNPARSED_GRACE_MS,
+  type CleanupReport,
+} from "./cleanup";
 import { markGenerated } from "./generated";
 import { runIntegrate } from "./integrate";
 import { NOW_MS, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
@@ -13,8 +23,33 @@ let p: TestProject;
 afterEach(() => p?.dispose());
 
 const T = "2026-10-09T12:00:00.000Z";
+/** 40 and 2 days before NOW_MS. */
+const OLD = "2026-08-30T12:00:00.000Z";
+const RECENT = "2026-10-07T12:00:00.000Z";
+
+const empty = (): CleanupReport => ({ orphaned: [], reaped: [], released: [], ...emptyWorktreeCleanup(), worktreeRemovals: [], lockDirsRemoved: 0 });
 
 const hasBranch = (t: TestProject, branch: string): boolean => t.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], t.root).code === 0;
+
+/** A worktree on a new arbab/<lane> from main. */
+function addWorktree(t: TestProject, lane: string): string {
+  const path = join(t.worktreeRoot, lane);
+  t.ok(["worktree", "add", "-q", "-b", `arbab/${lane}`, path, "main"]);
+  return path;
+}
+
+/** Commits a file in the worktree and returns the new head. */
+function commitIn(t: TestProject, worktree: string, file: string): string {
+  writeFileSync(join(worktree, file), `${file}\n`);
+  t.ok(["add", "--", file], worktree);
+  t.ok(["commit", "-q", "-m", `writes ${file}`], worktree);
+  return t.ok(["rev-parse", "HEAD"], worktree).trim();
+}
+
+/** shepherd.json as a run launched by `owner` (absent: before §21) would have it. */
+function ownRun(t: TestProject, lane: string, owner?: string | null): void {
+  writeFileSync(join(t.runsRoot, lane, "shepherd.json"), JSON.stringify({ pid: 4242, startedAt: "2026-10-09T11:00:00.000Z", ...(owner !== undefined && { owner }) }));
+}
 
 const LIVE = 101;
 const DEAD = 202;
@@ -57,6 +92,26 @@ describe("releaseStalePoolFiles", () => {
   it("does nothing without a home directory", () => {
     p = makeProject();
     expect(releaseStalePoolFiles(join(p.dir, "none"), () => false, NOW_MS)).toEqual([]);
+  });
+});
+
+describe("removeEmptyLockDirs", () => {
+  it("removes empty lock directories and keeps non-empty ones and files", () => {
+    p = makeProject();
+    const locks = join(p.home, "locks");
+    mkdirSync(join(locks, "a".repeat(40)), { recursive: true });
+    mkdirSync(join(locks, "c".repeat(40)));
+    const held = entry(join(locks, "b".repeat(40), "0.json"), LIVE);
+    writeFileSync(join(locks, "notes.txt"), "x");
+    expect(removeEmptyLockDirs(p.home)).toBe(2);
+    expect(existsSync(join(locks, "a".repeat(40))) || existsSync(join(locks, "c".repeat(40)))).toBe(false);
+    expect(existsSync(held)).toBe(true);
+    expect(existsSync(join(locks, "notes.txt"))).toBe(true);
+  });
+
+  it("does nothing without a locks directory", () => {
+    p = makeProject();
+    expect(removeEmptyLockDirs(p.home)).toBe(0);
   });
 });
 
@@ -124,8 +179,12 @@ describe("runCleanup", () => {
       "worktreesKept",
       "branchesKept",
       "warnings",
+      "worktreeRemovals",
+      "lockDirsRemoved",
     ]);
     expect(out.worktreesRemoved).toEqual([merged]);
+    expect(out.worktreeRemovals).toEqual([{ path: merged, reason: "merged into main" }]);
+    expect(out.lockDirsRemoved).toBe(0);
     // A later plan phase merges arbab/<lane> by name; only the worktree goes.
     expect(out.branchesDeleted).toEqual([]);
     expect(out.worktreesKept).toEqual([
@@ -329,6 +388,195 @@ describe("runCleanup", () => {
     expect(existsSync(join(records, "rel", "integration.json"))).toBe(true);
   });
 
+  it("--worktrees removes the worktrees a squash landing's record lists, keeping the branches, and keeps a branch that moved on", async () => {
+    p = makeProject();
+    const squashed = addWorktree(p, "squashed");
+    const squashedHead = commitIn(p, squashed, "s.txt");
+    const gen = addWorktree(p, "gen");
+    commitIn(p, gen, "g.txt");
+    const moved = addWorktree(p, "moved");
+    const movedRecorded = commitIn(p, moved, "m1.txt");
+    commitIn(p, moved, "m2.txt");
+    for (const lane of ["squashed", "gen", "moved"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success" });
+    markGenerated(p.runsRoot, "gen", { integration: "rel", branch: "integrate/rel", head: "main" }, T);
+    expect(await runIntegrate(["rel", "--lanes", "squashed,gen"], p.ctx)).toBe(0);
+    const integrationHead = p.ok(["rev-parse", "integrate/rel"]).trim();
+    p.ok(["merge", "-q", "--squash", "integrate/rel"]);
+    p.ok(["commit", "-q", "-m", "Land rel"]);
+    const landing: LandingRecord = {
+      name: "rel",
+      into: "main",
+      integrationHead,
+      mergeSha: p.ok(["rev-parse", "HEAD"]).trim(),
+      landedAt: T,
+      pushed: false,
+      squash: true,
+      // gen's head is an ancestor of the recorded sha; moved's branch went on after the recorded one.
+      lanes: [
+        { lane: "squashed", sha: squashedHead },
+        { lane: "gen", sha: integrationHead },
+        { lane: "moved", sha: movedRecorded },
+      ],
+    };
+    writeFileSync(join(p.root, ".arbab", "integrations", "rel", "landing.json"), JSON.stringify(landing));
+    for (const branch of ["arbab/squashed", "arbab/gen"]) expect(p.git(["merge-base", "--is-ancestor", branch, "main"], p.root).code).toBe(1);
+    p.out.length = 0;
+
+    expect(await runCleanup(["--worktrees", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as CleanupReport;
+    const integration = join(p.worktreeRoot, "integrate-rel");
+    expect(out.worktreeRemovals).toEqual([
+      { path: gen, reason: "landed by integration rel" },
+      { path: squashed, reason: "landed by integration rel" },
+      { path: integration, reason: "landed by integration rel" },
+    ]);
+    expect(out.worktreesRemoved).toEqual([gen, squashed, integration]);
+    expect(out.worktreesKept).toEqual([{ path: moved, reason: "branch arbab/moved is not merged into main" }]);
+    // branch -d would refuse a squash-landed branch; even a generated lane's stays.
+    expect(out.branchesDeleted).toEqual([]);
+    expect(out.branchesKept).toEqual([]);
+    expect(out.warnings).toEqual([]);
+    for (const branch of ["arbab/squashed", "arbab/gen", "arbab/moved", "integrate/rel"]) expect(hasBranch(p, branch)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+  });
+
+  it("--worktrees ignores landing records without lanes or with malformed entries", async () => {
+    p = makeProject();
+    const lane = addWorktree(p, "ahead");
+    const head = commitIn(p, lane, "a.txt");
+    writeLaneRun(p.runsRoot, "ahead", { state: "finished", endState: "success" });
+    const records = join(p.root, ".arbab", "integrations");
+    for (const [name, text] of [
+      ["old", JSON.stringify({ name: "old", into: "main", integrationHead: "x", mergeSha: "y", landedAt: T, pushed: false })],
+      ["bad", JSON.stringify({ lanes: [null, { lane: "ahead", sha: "HEAD" }, { lane: "../x", sha: head }, { lane: "ahead", sha: head.toUpperCase() }] })],
+      ["torn", "{"],
+    ] as const) {
+      mkdirSync(join(records, name), { recursive: true });
+      writeFileSync(join(records, name, "landing.json"), text);
+    }
+    p.out.length = 0;
+
+    expect(await runCleanup(["--worktrees", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as CleanupReport;
+    expect(out.worktreesRemoved).toEqual([]);
+    expect(out.worktreesKept).toEqual([{ path: lane, reason: "branch arbab/ahead is not merged into main" }]);
+  });
+
+  it("--worktrees --older-than removes old, clean, unborrowed worktrees of finished lanes and keeps their branches", async () => {
+    p = makeProject();
+    // .arbab-tmp/ is excluded as arbab's own runs exclude it; the worker's temp files never block a removal.
+    writeFileSync(join(p.root, ".git", "info", "exclude"), ".arbab-tmp/\n");
+    const old = addWorktree(p, "old");
+    commitIn(p, old, "o.txt");
+    mkdirSync(join(old, ".arbab-tmp", "inputs"), { recursive: true });
+    writeFileSync(join(old, ".arbab-tmp", "inputs", "notes.md"), "x");
+    const gen = addWorktree(p, "old-verify");
+    commitIn(p, gen, "v.txt");
+    const dirty = addWorktree(p, "dirty");
+    writeFileSync(join(dirty, "new.txt"), "x");
+    const young = addWorktree(p, "young");
+    commitIn(p, young, "y.txt");
+    const lent = addWorktree(p, "lent");
+    commitIn(p, lent, "l.txt");
+    for (const lane of ["old", "old-verify", "dirty", "lent"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success", since: OLD });
+    markGenerated(p.runsRoot, "old-verify", { integration: "rel", branch: "integrate/rel", head: "main" }, T);
+    writeLaneRun(p.runsRoot, "young", { state: "finished", endState: "success", since: RECENT });
+    p.alive.add(LIVE);
+    writeLaneRun(p.runsRoot, "check", {
+      state: "running",
+      shepherdPid: LIVE,
+      since: OLD,
+      lane: { name: "check", role: "verifier", brief: "lanes/demo.md", worktree: "lent" },
+    });
+    // An integration that has not landed keeps its worktree: --older-than looks at lanes only.
+    branchWith(p, "arbab/b", "b.txt", "b\n");
+    expect(await runIntegrate(["wip", "--lanes", "b"], p.ctx)).toBe(0);
+    const wip = join(p.worktreeRoot, "integrate-wip");
+    p.out.length = 0;
+
+    expect(await runCleanup(["--worktrees", "--older-than", "30"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(
+      `removed worktree ${old}: unchanged for 40 days; branch arbab/old kept\n` +
+        `removed worktree ${gen}: unchanged for 40 days; branch arbab/old-verify kept\n` +
+        `kept worktree ${dirty}: uncommitted changes\n` +
+        `kept worktree ${lent}: in use by lane check\n` +
+        `kept worktree ${young}: branch arbab/young is not merged into main\n`,
+    );
+    expect(existsSync(old) || existsSync(gen)).toBe(false);
+    for (const path of [dirty, young, lent, wip]) expect(existsSync(path)).toBe(true);
+    for (const lane of ["old", "old-verify", "dirty", "young", "lent"]) expect(hasBranch(p, `arbab/${lane}`)).toBe(true);
+    expect(hasBranch(p, "integrate/wip")).toBe(true);
+  });
+
+  it("--older-than counts from the last state change, not the worktree's age", async () => {
+    p = makeProject();
+    const path = addWorktree(p, "ahead");
+    commitIn(p, path, "a.txt");
+    writeLaneRun(p.runsRoot, "ahead", { state: "finished", endState: "success", since: RECENT });
+    expect(await runCleanup(["--worktrees", "--older-than", "3"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`kept worktree ${path}: branch arbab/ahead is not merged into main\n`);
+    p.out.length = 0;
+    expect(await runCleanup(["--worktrees", "--older-than", "1", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as CleanupReport).worktreeRemovals).toEqual([{ path, reason: "unchanged for 2 days; branch arbab/ahead kept" }]);
+  });
+
+  it("--mine touches only the runs this session owns, not other sessions' or ownerless ones", async () => {
+    p = makeProject();
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: "session-mine" };
+    const paths = Object.fromEntries(["own", "other", "ownerless", "legacy"].map((lane) => [lane, addWorktree(p, lane)]));
+    for (const lane of ["own", "other", "ownerless", "legacy"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success" });
+    ownRun(p, "own", "session-mine");
+    ownRun(p, "other", "session-other");
+    ownRun(p, "ownerless", null);
+    // Dead shepherds: only this session's lane is marked orphaned.
+    writeLaneRun(p.runsRoot, "own-dead", { state: "running", shepherdPid: DEAD });
+    ownRun(p, "own-dead", "session-mine");
+    writeLaneRun(p.runsRoot, "other-dead", { state: "running", shepherdPid: DEAD });
+    ownRun(p, "other-dead", "session-other");
+    // A landed integration has no owner, so --mine leaves it.
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    p.ok(["merge", "-q", "--no-ff", "--no-edit", "integrate/rel"]);
+    writeFileSync(join(p.root, ".arbab", "integrations", "rel", "landing.json"), "{}");
+    p.out.length = 0;
+
+    expect(await runCleanup(["--worktrees", "--mine", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as CleanupReport;
+    expect(out.orphaned).toEqual(["own-dead"]);
+    expect(out.worktreesRemoved).toEqual([paths["own"]]);
+    expect(out.worktreesKept).toEqual([]);
+    for (const lane of ["other", "ownerless", "legacy"]) expect(existsSync(paths[lane] ?? "")).toBe(true);
+    expect(readState(p.runsRoot, "other-dead")?.state).toBe("running");
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(true);
+
+    // Outside Claude Code there is no session, and every run is the caller's.
+    p.ctx.hostEnv = {};
+    p.out.length = 0;
+    expect(await runCleanup(["--worktrees", "--mine", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as CleanupReport).worktreesRemoved).toEqual([
+      paths["legacy"],
+      paths["other"],
+      paths["ownerless"],
+      join(p.worktreeRoot, "integrate-rel"),
+    ]);
+  });
+
+  it("removes empty lock directories on every run and reports how many", async () => {
+    p = makeProject();
+    const locks = join(p.home, "locks");
+    mkdirSync(join(locks, "a".repeat(40)), { recursive: true });
+    const dead = entry(join(locks, "c".repeat(40), "0.json"), DEAD);
+    const held = entry(join(locks, "b".repeat(40), "0.json"), LIVE);
+    p.alive.add(LIVE);
+    expect(await runCleanup([], p.ctx)).toBe(0);
+    // The dead holder's entry goes first, then its directory with the empty one.
+    expect(p.stdout()).toBe(`released ${dead}\nremoved 2 empty lock directories\n`);
+    expect(existsSync(held)).toBe(true);
+    p.out.length = 0;
+    expect(await runCleanup(["--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as CleanupReport).lockDirsRemoved).toBe(0);
+  });
+
   it("warns about an unreadable state file instead of failing", async () => {
     p = makeProject();
     writeLaneRun(p.runsRoot, "demo", { state: "finished" });
@@ -342,6 +590,10 @@ describe("runCleanup", () => {
     p = makeProject();
     await expect(runCleanup(["demo"], p.ctx)).rejects.toMatchObject({ code: "usage" });
     await expect(runCleanup(["--all"], p.ctx)).rejects.toMatchObject({ code: "usage" });
+    await expect(runCleanup(["--older-than", "30"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/needs --worktrees/) });
+    for (const days of ["0", "1.5", "x", "", "07", "1e3", "99999999999999999"]) {
+      await expect(runCleanup(["--worktrees", `--older-than=${days}`], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/positive whole number/) });
+    }
   });
 });
 
@@ -352,20 +604,31 @@ describe("formatCleanup", () => {
         orphaned: ["a"],
         reaped: [{ lane: "a", pgid: 5 }],
         released: ["/h/slots/0.json"],
-        worktreesRemoved: ["/w/b"],
+        worktreesRemoved: ["/w/b", "/w/e"],
         branchesDeleted: ["arbab/b"],
         worktreesKept: [{ path: "/w/c", reason: "uncommitted changes" }],
         branchesKept: [{ branch: "arbab/d", reason: "branch arbab/d is not merged into main" }],
         warnings: ["w"],
+        worktreeRemovals: [{ path: "/w/b", reason: "merged into main" }],
+        lockDirsRemoved: 3,
       }),
     ).toBe(
-      "orphaned a\nreaped a pgid 5\nreleased /h/slots/0.json\nremoved worktree /w/b\ndeleted branch arbab/b\n" +
+      "orphaned a\nreaped a pgid 5\nreleased /h/slots/0.json\nremoved 3 empty lock directories\n" +
+        "removed worktree /w/b: merged into main\nremoved worktree /w/e\ndeleted branch arbab/b\n" +
         "kept worktree /w/c: uncommitted changes\nkept branch arbab/d: branch arbab/d is not merged into main\nwarning w",
     );
   });
 
+  it("says one lock directory in the singular", () => {
+    expect(formatCleanup({ ...empty(), lockDirsRemoved: 1 })).toBe("removed 1 empty lock directory");
+  });
+
   it("says when there is nothing to clean", () => {
-    expect(formatCleanup({ orphaned: [], reaped: [], released: [], ...emptyWorktreeCleanup() })).toBe("nothing to clean");
+    expect(formatCleanup(empty())).toBe("nothing to clean");
     expect(formatWorktreeCleanup(emptyWorktreeCleanup())).toEqual([]);
+  });
+
+  it("gives land's removals without reasons", () => {
+    expect(formatWorktreeCleanup({ ...emptyWorktreeCleanup(), worktreesRemoved: ["/w/a"] })).toEqual(["removed worktree /w/a"]);
   });
 });

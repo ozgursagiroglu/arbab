@@ -129,10 +129,13 @@ describe("arbab end to end", () => {
     expect(argv).not.toContain("--resume");
     expect(call.stdinBytes).toBe(readFileSync(join(dir, "brief.md")).length);
 
-    // The scrubbed environment: the host's CLAUDE_* and VSCODE_* never reach the worker; passEnv names do.
+    // The scrubbed environment: the host's CLAUDE_* and VSCODE_* never reach the worker; passEnv names do. The one
+    // exception is CLAUDE_CODE_SHELL, which arbab sets itself (src/profile/env.ts), never from the host.
     expect(project.env["CLAUDE_CODE_ENTRYPOINT"]).toBe("claude-vscode");
-    expect(call.envKeys.filter((k) => /^(CLAUDE|VSCODE)/.test(k))).toEqual([]);
-    expect(call.envKeys).toEqual(expect.arrayContaining(["FAKE_CLAUDE_LOG", "FAKE_CLAUDE_SCENARIO", "HOME", "PATH"]));
+    expect(call.envKeys.filter((k) => /^(CLAUDE|VSCODE)/.test(k))).toEqual(["CLAUDE_CODE_SHELL"]);
+    expect(call.envKeys).toEqual(
+      expect.arrayContaining(["CLAUDE_CODE_SHELL", "FAKE_CLAUDE_LOG", "FAKE_CLAUDE_SCENARIO", "HOME", "PATH"]),
+    );
 
     // The shepherd exits once the lane is finished.
     await until(() => (exists(launched.shepherdPid) ? undefined : true), 15_000, "shepherd exit");
@@ -209,10 +212,10 @@ describe("arbab end to end", () => {
     expect(readdirSync(project.laneDir("badbase")).filter((n) => n.startsWith("attempt-"))).toEqual([]);
     expect(project.calls()).toEqual([]);
 
-    // Acked: the next wait has nothing to report, and the text form names the lane without an attempt.
+    // Acked: nothing is pending or running, so the next wait returns at once instead of timing out.
     const again = await project.cli("wait", "--any", "--timeout-min", "0");
-    expect(again.code).toBe(3);
-    expect(again.stdout).toBe("");
+    expect(again.code).toBe(0);
+    expect(again.stdout).toBe("no lanes are running\n");
     await until(() => (exists(launched.shepherdPid) ? undefined : true), 15_000, "shepherd exit");
   }, 120_000);
 

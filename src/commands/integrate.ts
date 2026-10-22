@@ -30,6 +30,8 @@ import { manifestAdvice } from "./integration";
 import { assertInactive, assertNoLiveWorker } from "./launch";
 import { isActive, onePositional, openProject, parse, printJson, type Project } from "./project";
 
+const RESERVED_PREFIX = "ref-";
+
 /** `a,b , c` → ["a", "b", "c"]; empty entries are dropped. */
 export function splitList(text: string): string[] {
   return text
@@ -123,6 +125,10 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     allowPositionals: true,
   });
   const name = assertValidName(onePositional("integrate", positionals, "name"), "integration");
+  // verify --ref names its lane ref-<slug>-verify, which an integration ref-<slug> would share.
+  if (name.startsWith(RESERVED_PREFIX)) {
+    throw new ArbabError("usage", `integration name ${name}: the prefix ${RESERVED_PREFIX} is reserved for verify --ref; choose another name`);
+  }
   const project = openProject(ctx);
 
   let record: IntegrationRecord;

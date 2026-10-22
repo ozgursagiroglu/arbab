@@ -5,8 +5,11 @@ import {
   contentBlocks,
   digestStream,
   failureCause,
+  maxGapMs,
   parseStream,
   rateLimitFromEvent,
+  sumTokenUsage,
+  tokenUsageOf,
   toolResultText,
   toolUses,
 } from "./digest";
@@ -136,6 +139,8 @@ describe("digestStream", () => {
       lastTool: null,
       rateLimit: null,
       unparsedLines: 0,
+      tokens: null,
+      maxGapMs: null,
     });
   });
 
@@ -292,6 +297,77 @@ describe("digestStream", () => {
     expect(d.final?.apiErrorStatus).toBe(0);
   });
 
+  it("sums tokens over distinct message ids, each counted by its last usage", () => {
+    const usage = (input: number, cc: number, cr: number, output: number) => ({
+      input_tokens: input,
+      cache_creation_input_tokens: cc,
+      cache_read_input_tokens: cr,
+      output_tokens: output,
+      service_tier: "standard",
+    });
+    const msg = (id: string, u: unknown) => ({ type: "assistant", message: { id, content: [], usage: u } });
+    const d = digestStream(
+      [
+        msg("m1", usage(1, 100, 0, 5)),
+        msg("m1", usage(1, 100, 0, 40)), // the same message, streamed further
+        msg("m2", usage(2, 10, 100, 7)),
+        msg("m2", null), // a later event without usage does not erase the earlier one
+        { type: "assistant", message: { content: [], usage: usage(1000, 0, 0, 0) } }, // no id: not a turn
+        { type: "user", message: { id: "u1", usage: usage(1000, 0, 0, 0) } },
+        { type: "result", usage: usage(1000, 1000, 1000, 1000) },
+      ],
+      T,
+    );
+    expect(d.tokens).toEqual({ input: 3, cacheCreation: 110, cacheRead: 100, output: 47 });
+    expect(d.turns).toBe(2);
+  });
+
+  it("counts missing or malformed token fields as 0", () => {
+    const d = digestStream(
+      [
+        { type: "assistant", message: { id: "m1", usage: { output_tokens: 9 } } },
+        { type: "assistant", message: { id: "m2", usage: { input_tokens: "5", cache_read_input_tokens: null, output_tokens: 1 } } },
+      ],
+      T,
+    );
+    expect(d.tokens).toEqual({ input: 0, cacheCreation: 0, cacheRead: 0, output: 10 });
+  });
+
+  it("has null tokens when no assistant message carries a usage object", () => {
+    expect(digestStream([toolUse("m1", "a", "Bash"), { type: "assistant", message: { id: "m2", usage: "lots" } }], T).tokens).toBeNull();
+    expect(digestStream([{ type: "result", usage: { input_tokens: 4 } }], T).tokens).toBeNull();
+  });
+
+  it("knows the tokens of a killed stream without a result", () => {
+    const d = digestStream(
+      [
+        { type: "system", subtype: "init", session_id: SID },
+        { type: "assistant", timestamp: "2026-10-09T10:00:00.000Z", message: { id: "m1", usage: { input_tokens: 2, output_tokens: 3 } } },
+        { type: "user", timestamp: "2026-10-09T10:05:00.000Z", message: { content: [] } },
+      ],
+      T,
+    );
+    expect(d.final).toBeNull();
+    expect(d.tokens).toEqual({ input: 2, cacheCreation: 0, cacheRead: 0, output: 3 });
+    expect(d.maxGapMs).toBe(300_000);
+  });
+
+  it("finds the longest gap between consecutive timed events", () => {
+    const at = (timestamp: unknown) => ({ type: "assistant", timestamp, message: { id: "m", content: [] } });
+    const d = digestStream(
+      [
+        at("2026-10-09T10:00:00.000Z"),
+        { type: "rate_limit_event" }, // untimed: skipped
+        at("2026-10-09T10:00:02.500Z"),
+        at("not a date"),
+        at(1_791_531_000),
+        at("2026-10-09T10:00:03.000Z"),
+      ],
+      T,
+    );
+    expect(d.maxGapMs).toBe(2_500);
+  });
+
   it("uses the last valid rate_limit_event", () => {
     const rl = (u: number) => ({
       type: "rate_limit_event",
@@ -300,6 +376,73 @@ describe("digestStream", () => {
     expect(digestStream([rl(0.2), rl(0.5)], T).rateLimit?.fiveHour?.utilization).toBe(0.5);
     expect(digestStream([rl(0.2), { type: "rate_limit_event" }], T).rateLimit?.fiveHour?.utilization).toBe(0.2);
     expect(digestStream([rl(0.2)], T).rateLimit?.observedAt).toBe(T);
+  });
+});
+
+describe("tokenUsageOf", () => {
+  it("reads the four counts", () => {
+    expect(
+      tokenUsageOf({ input_tokens: 2, cache_creation_input_tokens: 7603, cache_read_input_tokens: 1, output_tokens: 16, cache_creation: {} }),
+    ).toEqual({ input: 2, cacheCreation: 7603, cacheRead: 1, output: 16 });
+  });
+  it("reads a missing or non-numeric count as 0", () => {
+    expect(tokenUsageOf({})).toEqual({ input: 0, cacheCreation: 0, cacheRead: 0, output: 0 });
+    expect(tokenUsageOf({ input_tokens: "2", output_tokens: Number.NaN, cache_read_input_tokens: 3 })).toEqual({
+      input: 0,
+      cacheCreation: 0,
+      cacheRead: 3,
+      output: 0,
+    });
+  });
+  it("is null when usage is not an object", () => {
+    for (const usage of [undefined, null, 3, "usage", [1]]) expect(tokenUsageOf(usage)).toBeNull();
+  });
+});
+
+describe("sumTokenUsage", () => {
+  it("adds field by field", () => {
+    expect(
+      sumTokenUsage([
+        { input: 1, cacheCreation: 2, cacheRead: 3, output: 4 },
+        { input: 10, cacheCreation: 20, cacheRead: 30, output: 40 },
+      ]),
+    ).toEqual({ input: 11, cacheCreation: 22, cacheRead: 33, output: 44 });
+  });
+  it("is null for no usages and zero for zero usages", () => {
+    expect(sumTokenUsage([])).toBeNull();
+    expect(sumTokenUsage([{ input: 0, cacheCreation: 0, cacheRead: 0, output: 0 }])).toEqual({ input: 0, cacheCreation: 0, cacheRead: 0, output: 0 });
+  });
+  it("does not modify its inputs", () => {
+    const first = { input: 1, cacheCreation: 1, cacheRead: 1, output: 1 };
+    sumTokenUsage([first, first]);
+    expect(first).toEqual({ input: 1, cacheCreation: 1, cacheRead: 1, output: 1 });
+  });
+});
+
+describe("maxGapMs", () => {
+  const at = (timestamp: unknown) => ({ type: "user", timestamp });
+  it("is null with fewer than two timed events", () => {
+    expect(maxGapMs([])).toBeNull();
+    expect(maxGapMs([at("2026-10-09T10:00:00.000Z")])).toBeNull();
+    expect(maxGapMs([at("2026-10-09T10:00:00.000Z"), at("garbage"), at(5), at(null), { type: "result" }, null, "x"])).toBeNull();
+  });
+  it("is 0 for two events at the same instant", () => {
+    expect(maxGapMs([at("2026-10-09T10:00:00.000Z"), at("2026-10-09T10:00:00.000Z")])).toBe(0);
+  });
+  it("counts a clock going backwards as no gap, and measures the next gap from the earlier time", () => {
+    expect(maxGapMs([at("2026-10-09T10:00:10.000Z"), at("2026-10-09T10:00:00.000Z")])).toBe(0);
+    expect(
+      maxGapMs([at("2026-10-09T10:00:00.000Z"), at("2026-10-09T10:00:01.000Z"), at("2026-10-09T09:00:00.000Z"), at("2026-10-09T09:00:04.000Z")]),
+    ).toBe(4_000);
+  });
+  it("follows file order, not time order", () => {
+    // Sorted, the gaps would be 1 s and 1 s; in file order they are 2 s forward, then 1 s back.
+    expect(maxGapMs([at("2026-10-09T10:00:00.000Z"), at("2026-10-09T10:00:02.000Z"), at("2026-10-09T10:00:01.000Z")])).toBe(2_000);
+  });
+  it("is exported from the module index", () => {
+    expect(stream.maxGapMs).toBe(maxGapMs);
+    expect(stream.sumTokenUsage).toBe(sumTokenUsage);
+    expect(stream.tokenUsageOf).toBe(tokenUsageOf);
   });
 });
 

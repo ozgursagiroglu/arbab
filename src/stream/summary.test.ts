@@ -143,5 +143,43 @@ describe("buildAttemptSummary", () => {
     const s = buildAttemptSummary(input({ digest: d }));
     s.toolCalls.Bash = 99;
     expect(d.toolCalls.Bash).toBe(2);
+    const killed = digestStream([{ type: "assistant", message: { id: "m1", usage: { input_tokens: 1 } } }], "T");
+    const k = buildAttemptSummary(input({ digest: killed }));
+    if (k.tokens) k.tokens.input = 99;
+    expect(killed.tokens?.input).toBe(1);
+  });
+
+  it("copies tokens and the longest gap from the digest, with or without a result", () => {
+    const events = [
+      { type: "system", subtype: "init", session_id: SID },
+      {
+        type: "assistant",
+        timestamp: "2026-10-09T10:00:00.000Z",
+        message: { id: "m1", usage: { input_tokens: 2, cache_creation_input_tokens: 10, cache_read_input_tokens: 0, output_tokens: 5 } },
+      },
+      { type: "user", timestamp: "2026-10-09T10:05:00.000Z", message: { content: [] } },
+      {
+        type: "assistant",
+        timestamp: "2026-10-09T10:05:01.000Z",
+        message: { id: "m2", usage: { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 10, output_tokens: 3 } },
+      },
+    ];
+    const tokens = { input: 3, cacheCreation: 10, cacheRead: 10, output: 8 };
+
+    const killed = buildAttemptSummary(input({ state: "killed:wall", digest: digestStream(events, "T"), previousCostUsd: 0.4 }));
+    expect(killed).toMatchObject({ tokens, maxGapMs: 300_000, costUsd: null, costDeltaUsd: null, resultEvents: 0 });
+
+    const finished = digestStream([...events, { type: "result", subtype: "success", is_error: false, total_cost_usd: 0.2 }], "T");
+    expect(buildAttemptSummary(input({ digest: finished }))).toMatchObject({ tokens, maxGapMs: 300_000, costUsd: 0.2 });
+  });
+
+  it("has null tokens and gap when the digest has none, including a digest built before they existed", () => {
+    const s = buildAttemptSummary(input({ digest: digestStream([], "T") }));
+    expect(s.tokens).toBeNull();
+    expect(s.maxGapMs).toBeNull();
+    const { tokens: _t, maxGapMs: _g, ...legacy } = digestStream([], "T");
+    const old = buildAttemptSummary(input({ digest: legacy }));
+    expect(old.tokens).toBeNull();
+    expect(old.maxGapMs).toBeNull();
   });
 });

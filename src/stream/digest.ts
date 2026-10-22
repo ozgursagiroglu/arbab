@@ -5,6 +5,7 @@ import type {
   RateLimitSnapshot,
   ResultFacts,
   StreamDigest,
+  TokenUsage,
 } from "../types";
 import { Counter, arrayOrEmpty, isRecord, numberOrNull, stringOrNull } from "./json";
 import type { JsonRecord } from "./json";
@@ -122,6 +123,47 @@ function resultFacts(event: JsonRecord): ResultFacts {
   };
 }
 
+/** A message's `usage`, missing or non-numeric counts read as 0; null when `usage` is not an object. */
+export function tokenUsageOf(usage: unknown): TokenUsage | null {
+  if (!isRecord(usage)) return null;
+  return {
+    input: numberOrNull(usage.input_tokens) ?? 0,
+    cacheCreation: numberOrNull(usage.cache_creation_input_tokens) ?? 0,
+    cacheRead: numberOrNull(usage.cache_read_input_tokens) ?? 0,
+    output: numberOrNull(usage.output_tokens) ?? 0,
+  };
+}
+
+/** Sums usages; null for none, so "no usage seen" stays distinct from "zero tokens". */
+export function sumTokenUsage(usages: Iterable<TokenUsage>): TokenUsage | null {
+  let total: TokenUsage | null = null;
+  for (const u of usages) {
+    total ??= { input: 0, cacheCreation: 0, cacheRead: 0, output: 0 };
+    total.input += u.input;
+    total.cacheCreation += u.cacheCreation;
+    total.cacheRead += u.cacheRead;
+    total.output += u.output;
+  }
+  return total;
+}
+
+/**
+ * The longest gap between consecutive timed events, in file order; untimed events are skipped. A clock that goes
+ * backwards is no gap. Null with fewer than two timed events.
+ */
+export function maxGapMs(events: unknown[]): number | null {
+  let previous: number | null = null;
+  let max: number | null = null;
+  for (const e of events) {
+    if (!isRecord(e) || typeof e.timestamp !== "string") continue;
+    const ms = Date.parse(e.timestamp);
+    if (Number.isNaN(ms)) continue;
+    if (previous !== null) max = Math.max(max ?? 0, ms - previous, 0);
+    previous = ms;
+  }
+  return max;
+}
+
 /** Tool-result text: `content` when it is a string, else the joined `text` of its items. */
 export function toolResultText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -162,6 +204,7 @@ export function digestStream(events: unknown[], observedAt: string, unparsedLine
   const toolCalls = new Counter();
   let lastTool: string | null = null;
   const messageIds = new Set<string>();
+  const usageById = new Map<string, TokenUsage>();
   const deniedTypes = new Map<string, string>();
   let permissionDenied = 0;
   let rateLimit: RateLimitSnapshot | null = null;
@@ -180,7 +223,12 @@ export function digestStream(events: unknown[], observedAt: string, unparsedLine
       const type = stringOrNull(e.decision_reason_type);
       if (typeof e.tool_use_id === "string" && type) deniedTypes.set(e.tool_use_id, type);
     } else if (e.type === "assistant") {
-      if (isRecord(e.message) && typeof e.message.id === "string") messageIds.add(e.message.id);
+      if (isRecord(e.message) && typeof e.message.id === "string") {
+        messageIds.add(e.message.id);
+        // A message streamed in several events repeats its usage, growing; the last one stands for it.
+        const usage = tokenUsageOf(e.message.usage);
+        if (usage !== null) usageById.set(e.message.id, usage);
+      }
       for (const { id, name } of toolUses(e)) {
         if (id !== null) {
           // A replayed block (same tool_use id) is one call, not two.
@@ -225,5 +273,7 @@ export function digestStream(events: unknown[], observedAt: string, unparsedLine
     lastTool,
     rateLimit,
     unparsedLines,
+    tokens: sumTokenUsage(usageById.values()),
+    maxGapMs: maxGapMs(records),
   };
 }

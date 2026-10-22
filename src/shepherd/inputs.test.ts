@@ -260,6 +260,17 @@ describe("copyInputs", () => {
     expect(refusal([`~/${name}`])).toMatch(new RegExp(`is the credential file ~/${name.replace(/\./g, "\\.")}$`));
   });
 
+  it("refuses a home credential directory spelled in another case", () => {
+    // Spelled so on disk too, so the test means the same on a file system that does not ignore case.
+    write(join(home, ".AWS", "credentials"));
+    write(join(home, "LIBRARY", "Prefs", "app.plist"));
+    expect(refusal(["~/.AWS/credentials"])).toMatch(/is under ~\/\.aws, where credentials live$/);
+    expect(refusal([join(home, ".AWS")])).toMatch(/is under ~\/\.aws, where credentials live$/);
+    expect(refusal(["~/LIBRARY/Prefs"])).toMatch(/is under ~\/Library, where credentials live$/);
+    symlinkSync(join(home, ".AWS"), join(elsewhere, "cloud"));
+    expect(refusal([join(elsewhere, "cloud", "credentials")])).toMatch(/is under ~\/\.aws/);
+  });
+
   it("refuses a credential location reached through a link in the path", () => {
     write(join(home, ".ssh", "config"));
     symlinkSync(join(home, ".ssh"), join(elsewhere, "keys"));

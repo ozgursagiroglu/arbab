@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { credentialMatcher } from "../profile";
 import { listWaiters } from "../registry";
 import type { IntegrationRecord, LaneSpec, ReviewFinding, ReviewRecord, WaiterEntry } from "../types";
 import { runIntegrate } from "./integrate";
@@ -52,31 +53,51 @@ describe("reviewLenses", () => {
 });
 
 describe("readLensFiles", () => {
+  const plain = credentialMatcher([], []);
+
   it("reads each lens's file, project-relative or absolute inside the project, trimmed", () => {
     p = makeProject({ files: { "lenses/perf.md": "  Hot paths.\n", "lenses/abs.md": "Absolute." } });
     const abs = join(p.root, "lenses", "abs.md");
-    expect(readLensFiles(p.root, ["perf=lenses/perf.md", `security=${abs}`])).toEqual({ perf: "Hot paths.", security: "Absolute." });
-    expect(readLensFiles(p.root, [])).toEqual({});
-    expect(() => readLensFiles(p.root, ["perf=lenses"])).toThrow(/cannot read the file of lens perf, lenses/);
-    expect(() => readLensFiles(p.root, ["perf=lenses/missing.md"])).toThrow(/the file of lens perf, lenses\/missing.md, does not exist/);
+    expect(readLensFiles(p.root, ["perf=lenses/perf.md", `security=${abs}`], plain)).toEqual({ perf: "Hot paths.", security: "Absolute." });
+    expect(readLensFiles(p.root, [], plain)).toEqual({});
+    expect(() => readLensFiles(p.root, ["perf=lenses"], plain)).toThrow(/cannot read the file of lens perf, lenses/);
+    expect(() => readLensFiles(p.root, ["perf=lenses/missing.md"], plain)).toThrow(/the file of lens perf, lenses\/missing.md, does not exist/);
   });
 
-  it("refuses a file outside the project, by path or through a symlink, and a .env file", () => {
+  it("refuses a file outside the project, by path or through a symlink, and a credential file in any case", () => {
     p = makeProject();
     p.write(".env.local", "TOKEN=x\n");
-    p.write("config/.env", "TOKEN=x\n");
+    p.write("config/.ENV", "TOKEN=x\n");
+    p.write("x.pem", "KEY\n");
+    p.write("db.secret", "TOKEN=x\n");
     const outside = join(p.dir, "outside.md");
     writeFileSync(outside, "Outside.");
     symlinkSync(outside, join(p.root, "link.md"));
     symlinkSync(join(p.root, ".env.local"), join(p.root, "env-link.md"));
+    symlinkSync(join(p.root, "x.pem"), join(p.root, "pem-link.md"));
+    symlinkSync(join(p.root, "db.secret"), join(p.root, "secret-link.md"));
     const usage = (message: RegExp) => ({ code: "usage", message: expect.stringMatching(message) });
-    const read = (option: string) => () => readLensFiles(p.root, [option]);
+    const read = (option: string) => () => readLensFiles(p.root, [option], credentialMatcher(["**/*.secret"], []));
     expect(read(`perf=${outside}`)).toThrow(expect.objectContaining(usage(/--lens-file perf=.*must be inside the project root/)));
     expect(read("perf=../outside.md")).toThrow(expect.objectContaining(usage(/must be inside the project root/)));
     expect(read("perf=link.md")).toThrow(expect.objectContaining(usage(/a symlink in it may not lead out/)));
-    expect(read("perf=.env.local")).toThrow(expect.objectContaining(usage(/a \.env file is not a lens/)));
-    expect(read(`perf=${join(p.root, "config", ".env")}`)).toThrow(expect.objectContaining(usage(/a \.env file is not a lens/)));
-    expect(read("perf=env-link.md")).toThrow(expect.objectContaining(usage(/a \.env file is not a lens/)));
+    const named = (label: string): RegExp => new RegExp(`is named like a credential file \\(${label.replace(/\./g, "\\.")}\\); a credential file is not a lens$`);
+    expect(read("perf=.env.local")).toThrow(expect.objectContaining(usage(named(".env.local"))));
+    expect(read(`perf=${join(p.root, "config", ".ENV")}`)).toThrow(expect.objectContaining(usage(named(".ENV"))));
+    expect(read("perf=x.pem")).toThrow(expect.objectContaining(usage(named("x.pem"))));
+    expect(read("perf=db.secret")).toThrow(expect.objectContaining(usage(named("db.secret"))));
+    expect(read("perf=env-link.md")).toThrow(expect.objectContaining(usage(/resolves to .*\.env\.local, which is named like a credential file/)));
+    expect(read("perf=pem-link.md")).toThrow(expect.objectContaining(usage(/resolves to .*x\.pem, which is named like a credential file/)));
+    expect(read("perf=secret-link.md")).toThrow(expect.objectContaining(usage(/resolves to .*db\.secret, which is named like a credential file/)));
+  });
+
+  it("refuses what a ~/ rule covers only with the home given", () => {
+    p = makeProject({ files: { "vault/perf.md": "Hot paths." } });
+    const rule = ["~/repo/vault/**"];
+    expect(() => readLensFiles(p.root, ["perf=vault/perf.md"], credentialMatcher(rule, [dirname(p.root)]))).toThrow(
+      /--lens-file perf=vault\/perf\.md: the file is under ~\/repo\/vault, where credentials live; a credential file is not a lens/,
+    );
+    expect(readLensFiles(p.root, ["perf=vault/perf.md"], credentialMatcher(rule, []))).toEqual({ perf: "Hot paths." });
   });
 });
 
@@ -395,13 +416,18 @@ describe("runReview", () => {
     expect(readFileSync(join(p.root, "arbab.config.json"), "utf8")).not.toMatch(/perf|token/);
   });
 
-  it("refuses a --lens-file that is malformed, missing, outside, a .env file, empty, too long, given twice or not run", async () => {
-    p = await integrated();
+  it("refuses a --lens-file that is malformed, missing, outside, a credential file, empty, too long, given twice or not run", async () => {
+    // The user's home is the parent of ctx.home (~/.arbab): the project's parent here.
+    p = await integrated({ credentialPaths: ["**/*.secret", "~/repo/vault/**"] });
     simulateShepherds(p, {});
     p.write("empty.md", " \n");
     p.write("long.md", "x".repeat(8_001));
     p.write("ok.md", "Look for x.");
-    p.write(".env", "TOKEN=x\n");
+    p.write(".ENV", "TOKEN=x\n");
+    p.write("x.pem", "KEY\n");
+    p.write("db.secret", "TOKEN=x\n");
+    p.write("vault/perf.md", "Hot paths.");
+    symlinkSync(join(p.root, "x.pem"), join(p.root, "pem-link.md"));
     const outside = join(p.dir, "outside.md");
     writeFileSync(outside, "Outside.");
     const refused = async (args: string[], message: RegExp): Promise<void> => {
@@ -412,7 +438,11 @@ describe("runReview", () => {
     await refused(["--lens-file", "perf=none.md"], /the file of lens perf, none\.md, does not exist/);
     await refused(["--lens-file", "perf=../outside.md"], /must be inside the project root/);
     await refused(["--lens-file", `perf=${outside}`], /must be inside the project root/);
-    await refused(["--lens-file", "perf=.env"], /a \.env file is not a lens/);
+    await refused(["--lens-file", "perf=.ENV"], /is named like a credential file \(\.ENV\); a credential file is not a lens/);
+    await refused(["--lens-file", "perf=x.pem"], /is named like a credential file \(x\.pem\)/);
+    await refused(["--lens-file", "perf=db.secret"], /is named like a credential file \(db\.secret\)/);
+    await refused(["--lens-file", "perf=pem-link.md"], /resolves to .*x\.pem, which is named like a credential file/);
+    await refused(["--lens-file", "perf=vault/perf.md"], /is under ~\/repo\/vault, where credentials live/);
     await refused(["--lens-file", "perf=empty.md"], /has 0 characters/);
     await refused(["--lens-file", "perf=long.md"], /has 8001 characters/);
     await refused(["--lens-file", "perf=ok.md", "--lens-file", "perf=ok.md"], /names lens perf twice/);

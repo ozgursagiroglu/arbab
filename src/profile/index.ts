@@ -12,6 +12,8 @@ export {
   WORKER_TMP_ENV,
 } from "./presets";
 export { commandRules, credentialDenies } from "./rules";
+export { credentialMatcher, credentialReason, homeSpellings } from "./credentials";
+export type { CredentialHit } from "./credentials";
 export { compileProfile } from "./compile";
 export { envFileAllowReads } from "./envfiles";
 export { buildClaudeArgs } from "./args";

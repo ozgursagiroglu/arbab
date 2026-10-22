@@ -165,8 +165,9 @@ Then:
 
 Some steps are always yours:
 
-- **Dependency changes.** If a worker changed what an install reads (a lockfile, or the dependencies or install
-  scripts of a `package.json`), nothing is installed. You review the change, install it yourself, and confirm with
+- **Dependency changes.** If a worker changed what an install reads (a lockfile, a package manager's config, a
+  dependency patch, a vendored yarn release or plugin, or the dependencies or install scripts of a `package.json`),
+  nothing is installed. You review the change, install it yourself, and confirm with
   `arbab integrate <name> --deps-installed <sha>` in your own terminal. The CLI refuses that confirmation without a
   terminal, so an agent cannot give it for you.
 - **Waivers and host checks.** `arbab readiness <name> --waive <id>` and `arbab host-check <name>` need a terminal
@@ -215,10 +216,12 @@ finishes.
 ui2-art#1 success 45m37s turns=115 calls=248 failed=12 cost=$15.46 report=~/arbab/.arbab/runs/ui2-art/attempt-1/report.json
 ```
 
-**5. Look at every lane.** `arbab status`, given the milestone's lanes, prints one row per lane, then the quota.
+**5. Look at every lane.** `arbab status`, given the milestone's lanes, prints one row per lane, then the quota. This
+capture predates the `why` column that `status` now prints last (see
+[Know what your workers are doing](#know-what-your-workers-are-doing)).
 
 ```text
-lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota            why
+lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
 ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
 ui2-scene            finished (success)  1        11m02s   31     51     Bash       high    2       $2.58   5h 35% · 7d 62%
 ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
@@ -328,7 +331,9 @@ Every worker gets:
 - **No writes to the repository's shared `.git`.** Git writes are denied, and the runner commits.
 - **A scrubbed environment, with credential paths denied.** The environment is built from scratch, and paths such as
   `~/.ssh`, `~/.aws` and `**/.env*` cannot be read or edited. A lane's `inputs`, files from outside the
-  repository, are copied into its worktree afresh on every run, never through a link the worker left there.
+  repository, are copied into its worktree afresh on every run, never through a link the worker left there. The same
+  credential list, matched in any case, keeps arbab itself from copying a credential file in as an input, inlining
+  one into a prompt (a brief, a schema, `instructions`, a review lens) or committing one as a landing message.
 - **A budget and a clock.** Every attempt has a dollar cap, a wall-clock limit and an idle limit.
 
 On your machine:
@@ -368,12 +373,12 @@ and its review lanes found two paths by which worker code could have run on the 
 
 ## Know what your workers are doing
 
-`arbab status` prints one row per lane: its state, attempt, time, work, effort, failures, cost, the quota it saw and
-why it is in its state. This is part of the `ui2` build of arbab's own page (finished lanes have no reason, so their
-`why` is empty):
+`arbab status` prints one row per lane: its state, attempt, time, work, effort, failures, cost and the quota it saw.
+This is part of the `ui2` build of arbab's own page, captured before `status` gained its last column, `why` (below),
+so the rows end at the quota:
 
 ```text
-lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota            why
+lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
 ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
 ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
 ui2-wire             finished (success)  1        24m59s   124    262    Bash       high    11      $10.30  5h 82% · 7d 70%
@@ -392,7 +397,12 @@ quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)
   attempt, say), the tokens it used instead: input, cache creation and output, as `41.2k tok`.
 - **quota**: the five-hour (5h) and seven-day (7d) windows as the lane last saw them. The last line is the account's
   newest snapshot, with each window's reset time.
-- **why**: the reason for the lane's state, such as `no free slot` for a held lane, cut to 40 characters.
+- **why**: the reason for the lane's state, such as `no free slot` for a held lane or `usage limit` for one waiting
+  for the reset, cut to 40 characters. A finished lane keeps a reason only when its shepherd itself hit an error,
+  for example while loading the lane, preparing the worktree or copying inputs: `why` holds the error's message, and
+  the row reads `finished (failed)` (or `finished (killed:stopped)` if a stop came in as well). A lane that finished
+  with the end state of its last attempt (`success`, a failed attempt, a budget or time limit) or by `arbab stop`
+  alone has an empty `why`.
 
 ### Costs and the quota
 
@@ -439,22 +449,23 @@ clink as a finished worker takes its pay.
 | `quota [--reset \| --refresh]` | Shows the account snapshot and the hold decision. After you switch accounts, `--refresh` reads the new account's windows with one haiku call; `--reset` only deletes the snapshot. |
 | `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than` adds clean worktrees unchanged for longer. `--mine`: only this session's runs. |
 | `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
-| `integrate <name> --adopt <ref> [--base <ref>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. The base must be contained in your base branch: the install runs at the fork point. |
+| `integrate <name> --adopt <ref> [--base <branch>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. The base (`--base`, or config `baseBranch`) must be a branch, since `land` merges into it, and contained in your base branch: the install runs at the fork point. |
 | `integrate <name> --refresh` | Records the integration's head again after a hand commit or a merge of the base in its worktree. Merges and installs nothing. |
 | `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. Terminal only. |
 | `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
 | `verify --ref <branch>` | The same on a branch head with no integration: the check after landing. |
-| `review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. `--lens-file` adds or replaces a lens for one run, from a file inside the project that is not `.env*`; `--since` diffs from an ancestor of the head instead of the base, for a fix round. |
+| `review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. `--lens-file` adds or replaces a lens for one run, from a file inside the project that is no credential file by the fence's list and `credentialPaths` (`.env*`, `*.pem`, `*.key`…, in any case); `--since` diffs from an ancestor of the head instead of the base, for a fix round. |
 | `readiness <name> [--tier low\|medium\|high] [--waive id,…]` | Writes the readiness report: verified, skipped, risks. Exit 1 unless ready. `--waive` needs a terminal. |
 | `host-check <name>` | Runs config `hostGates` on the integration head, on the host. Terminal only. |
-| `land <name> [--squash] [--message <file>] [--keep-worktrees]` | Merges a ready integration into the base, or as one commit with `--squash` (config `landing.squash`). The `--message` file must be inside the project and not `.env*`. Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
+| `land <name> [--squash] [--message <file>] [--keep-worktrees]` | Merges a ready integration into the base, or as one commit with `--squash` (config `landing.squash`). The `--message` file must be inside the project and no credential file, checked as for `--lens-file`. Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
 | `ui [--port N] [--hours N] [--no-open]` | Serves the live pyramid scene on 127.0.0.1, read-only, until stopped. |
 | `help [<command>]`, `--help` | Prints the command list, or one command's options (as does `arbab <command> --help`). |
 | `version`, `--version` | Prints the arbab version. |
 
 Every command except `help`, `version` and `host-check` also takes `--json`, which prints JSON instead of text. A
 leading `-C <dir>` finds the project from `<dir>` instead of the working directory. arbab refuses a lane worktree as
-a project, from `-C` or the working directory.
+a project, from `-C` or the working directory, whether it lies under `.arbab/worktrees` or the configured
+`worktreeRoot`, in any spelling of case.
 
 The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`, bare. The plugin's PreToolUse hook
 approves that form, with these limits:

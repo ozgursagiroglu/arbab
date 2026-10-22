@@ -56,7 +56,7 @@ urgent small fix (a demo is running, a one-line change) stays in-session, even i
    - `resources` (`{"port": {"range": [4100, 4199]}}`) and `semaphores` (`{"staging-db": 1}`) for shared things.
    - `hostGates`: argv arrays for checks the fence cannot run (Docker, a browser, a database); see [Land](#land).
    - `fence.readableEnvFiles`: tracked env templates (`[".env.example"]`) that workers may read with shell commands
-     (not the Read tool; lint warns about untracked ones); `fence.bashOutputMaxChars`
+     (not the Read tool; `doctor` warns about untracked ones); `fence.bashOutputMaxChars`
      (4000–128000, default 100000): longer Bash output goes to a file workers cannot read.
    - `landing.tier` (default `medium`), `landing.squash` (one commit per landing), `verify.smoke`, `review.lenses`.
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
@@ -304,8 +304,8 @@ Review rounds:
 - A round that finds only LOW findings ends the review: they go to risks, not to another round.
 - A fix round runs `arbab review <name> --since <sha>`, with the head the last round reviewed: the reviewers diff
   from that commit (an ancestor of the head) instead of the base.
-- A lens text for one round goes in a file inside the project (not `.env*`): `--lens-file <lens>=<file>` adds that
-  lens, or replaces its text, for this run only. Do not edit `review.lenses` for it.
+- A lens text for one round goes in a file inside the project (no credential file, `.env*` included, in any case):
+  `--lens-file <lens>=<file>` adds that lens, or replaces its text, for this run only. Do not edit `review.lenses`.
 - `--lenses a,b` re-runs some lenses and keeps the others' findings when the head is the same. Every round is kept
   in `reviews/<round>.json`; readiness shows each round's counts.
 - A re-run of `review` or `verify` on the same head, after a timeout, takes the results of its lanes that finished
@@ -320,9 +320,9 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
 
 1. `arbab integrate <name> --lanes a,b` (or `--plan plans/<p>.json`, in wave order) merges each finished lane's
    branch into `integrate/<name>`, in its own worktree, never the main checkout. A conflict aborts and names the
-   paths. `arbab integrate <name> --adopt <ref> [--base <ref>]` instead makes an integration of a branch built outside
-   lanes, so it gets verify and review; it installs at the fork point, so the base must be contained in config
-   `baseBranch`. A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or
+   paths. `arbab integrate <name> --adopt <ref> [--base <branch>]` instead makes an integration of a branch built
+   outside lanes, so it gets verify and review; the base must be a branch (`land` merges into it) and, as the install
+   runs at the fork point, one contained in config `baseBranch`. A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or
    a `package.json`'s dependency fields or install scripts) is merged but flagged and **not installed** (that would run
    worker code on the host). **This is the human's step, never yours**: show the human the manifest changes and what
    an install at that head runs (package.json scripts and the files they run, `.npmrc`, `.pnpmfile.*`); the human
@@ -354,7 +354,7 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    (`host`) until they passed on the head; the human starts `arbab host-check <name>` in a terminal, because it runs
    worker code on the host. Never run them on the host yourself.
 5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>`. When the project wants one commit per
-   landing, use `arbab land <name> --squash --message <file>` (a file inside the project, not `.env*`), or set config
+   landing, use `arbab land <name> --squash --message <file>` (inside the project, no credential file), or set config
    `landing.squash`. The plugin's hook never approves `land`.
    - It refuses unless:
      - readiness is ready for the integration head, newer than its verify and review, and at least

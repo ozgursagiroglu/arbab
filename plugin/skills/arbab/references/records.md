@@ -63,7 +63,7 @@ or the `--message` file).
 | File | Holds |
 | --- | --- |
 | `lane.json` | the lane as launched (a plan phase: as compiled) |
-| `state.json` | `{lane, state, attempt, since, shepherdPid, reason?, until?, endState?}`; `until` is the epoch second a held or waiting lane re-checks |
+| `state.json` | `{lane, state, attempt, since, shepherdPid, reason?, until?, endState?}`; `until` is the epoch second a held or waiting lane re-checks; a finished lane has a `reason` only when its shepherd hit an error (the message) |
 | `events.jsonl` | one line per change of state or reason: `{at, shepherdPid, state, attempt, reason?, until?, endState?}` |
 | `shepherd.json` | `{pid, startedAt, owner}`; `owner` is the launching session's id, null outside Claude Code, absent on older runs |
 | `acked.json` | the run `wait` last reported |
@@ -139,7 +139,8 @@ lane (what `summary --all` reads, and the projects the hook approves `-C` into).
   (other untracked files are left alone and listed);
 - the base's HEAD is an ancestor of the head; otherwise it prints the hooks-off merge to run in the integration
   worktree, then `integrate <name> --refresh` to record the new head;
-- the `--message` file, when given, is inside the project (also by its real path) and not a `.env*` file.
+- the `--message` file, when given, is inside the project (also by its real path) and, by either path, no credential
+  file by the fence's list and config `credentialPaths` (`.env*`, `*.pem`, `*.key`, …), matched in any case.
 
 It merges `--no-ff`, or with `--squash` (config `landing.squash`) makes one commit, hooks off; it never pushes. Then
 it removes what it landed unless `--keep-worktrees`; lane branches stay. After a squash, cleanup recognises landed

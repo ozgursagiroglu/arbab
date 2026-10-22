@@ -89,9 +89,9 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
                                           branches stay), and landed integrations' worktrees and branches
   integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
                                           merge lane branches into integrate/<name>, in order or by plan waves
-  integrate <name> --adopt <ref> [--base <ref>] [--json]
-                                          make an integration of an existing branch; the base must be contained in
-                                          config baseBranch
+  integrate <name> --adopt <ref> [--base <branch>] [--json]
+                                          make an integration of an existing branch; the base must be a branch
+                                          that config baseBranch contains
   integrate <name> --refresh [--json]     record the integration's head again after a hand commit or a base merge;
                                           merges and installs nothing
   integrate <name> --deps-installed <sha> [--json]

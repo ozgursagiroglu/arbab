@@ -1,5 +1,6 @@
 // arbab integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
 // arbab integrate <name> --deps-installed <sha> [--json]
+// arbab integrate <name> --adopt <ref> [--base <ref>] [--json]
 //
 // Merges the lanes' branches into integrate/<name>, in the worktree .arbab/worktrees/integrate-<name> (DESIGN.md
 // §17), in the order given or the plan's wave order (phases that borrow another lane's worktree have no branch to
@@ -9,12 +10,15 @@
 // uncommitted changes. A branch integrate creates starts a new record; an older one is moved aside.
 // --deps-installed <sha> records that a human reviewed and installed the changed dependencies at <sha>, the head
 // integrate printed; it refuses unless the record and the branch are both still at <sha>.
+// --adopt <ref> makes a new integration whose branch is <ref>'s commit, with nothing merged, based on --base or
+// config.baseBranch (DESIGN.md §21); refused for an existing or landed name, a ref that names no commit, and with
+// --lanes or --plan. Text: `adopted <ref> as <branch> (base <base> at <sha>)`, then the lines above.
 // Text: `<lane>: already in <branch>` per such lane, `merged <lane> <sha>[  manifests: <paths>]` per recorded lane,
 // `head <sha>`, then what the human must do about unconfirmed manifest changes. --deps-installed: `deps confirmed for
 // <name> at <sha>`, or `nothing to confirm for <name>: …` when no manifest changed.
 // --json: IntegrationRecord (src/types.ts).
 // Exit 0; 1 on usage errors; 2 on a conflict (the merge is aborted, earlier lanes stay merged) or a git failure.
-import { confirmDeps, integrate, integrationPaths, readIntegration } from "../integrate";
+import { adoptIntegration, confirmDeps, integrate, integrationPaths, readIntegration } from "../integrate";
 import { integrationLanes as planOrder, loadPlan } from "../plan";
 import { effectiveState, listLanes, readState, runPaths } from "../registry";
 import type { IntegrationRecord, PlanSpec } from "../types";
@@ -53,7 +57,7 @@ export function integrationLanes(
   } else if (opts.plan !== undefined) {
     lanes = planLanes(loadPlan(project.root, opts.plan));
   } else {
-    throw new ArbabError("usage", "usage: arbab integrate <name> (--lanes a,b,… | --plan <plan.json> | --deps-installed <sha>)");
+    throw new ArbabError("usage", "usage: arbab integrate <name> (--lanes a,b,… | --plan <plan.json> | --deps-installed <sha> | --adopt <ref>)");
   }
   if (lanes.length === 0) throw new ArbabError("usage", "no lanes to integrate");
   const seen = new Set<string>();
@@ -112,6 +116,8 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
       lanes: { type: "string" },
       plan: { type: "string" },
       "deps-installed": { type: "string" },
+      adopt: { type: "string" },
+      base: { type: "string" },
       json: { type: "boolean" },
     },
     allowPositionals: true,
@@ -121,10 +127,13 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
 
   let record: IntegrationRecord;
   const confirmed = values["deps-installed"];
+  const adopt = values.adopt;
+  if (values.base !== undefined && adopt === undefined) throw new ArbabError("usage", "--base goes with --adopt <ref>");
   if (confirmed !== undefined) {
     if (values.lanes !== undefined || values.plan !== undefined) {
       throw new ArbabError("usage", "--deps-installed takes no lanes: merge first, then confirm the install");
     }
+    if (adopt !== undefined) throw new ArbabError("usage", "--deps-installed and --adopt exclude each other: adopt first, then confirm the install");
     // The human's step: it lets verify and review install worker-changed dependencies on the host. An agent's shell
     // has no terminal, so an orchestrator cannot confirm on the human's behalf.
     if (!ctx.interactive) {
@@ -140,6 +149,25 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     if (values.json === true) printJson(ctx, record);
     else if (record.manifests.length === 0) ctx.stdout(`nothing to confirm for ${name}: no dependency manifest differs between ${record.base} and ${record.headSha}\n`);
     else ctx.stdout(`deps confirmed for ${name} at ${record.headSha}\n`);
+    return 0;
+  }
+
+  if (adopt !== undefined) {
+    if (values.lanes !== undefined || values.plan !== undefined) {
+      throw new ArbabError("usage", "--adopt takes no --lanes or --plan: it makes an integration of an existing branch; merge lanes into it afterwards");
+    }
+    const { record: adopted } = adoptIntegration({
+      projectRoot: project.root,
+      config: project.config,
+      name,
+      ref: adopt,
+      ...(values.base !== undefined && { base: values.base }),
+      git: ctx.git,
+      runCommand: ctx.runCommand,
+      clock: ctx.clock,
+    });
+    if (values.json === true) printJson(ctx, adopted);
+    else ctx.stdout(`adopted ${adopt} as ${adopted.branch} (base ${adopted.base} at ${adopted.baseSha})\n` + formatIntegration(adopted));
     return 0;
   }
 

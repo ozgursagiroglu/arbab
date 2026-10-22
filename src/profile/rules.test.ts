@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ArbabError } from "../util/errors";
-import { BUILTIN_CREDENTIAL_PATHS } from "./presets";
+import { BUILTIN_CREDENTIAL_PATHS, ENV_SECRET_PATTERNS } from "./presets";
 import { commandRules, credentialDenies, dedupe } from "./rules";
 
 function codeOf(fn: () => unknown): unknown {
@@ -55,6 +55,81 @@ describe("credentialDenies", () => {
     const rules = credentialDenies(["~/.secrets/**", "~/.ssh/**", "~/.secrets/**"]);
     expect(rules).toHaveLength(BUILTIN_CREDENTIAL_PATHS.length * 2 + 2);
     expect(rules.slice(-2)).toEqual(["Read(~/.secrets/**)", "Edit(~/.secrets/**)"]);
+  });
+
+  it("keeps the blanket env deny without env files, and with null", () => {
+    expect(credentialDenies([])).toEqual(credentialDenies([], null));
+    expect(credentialDenies([])).toContain("Read(**/.env*)");
+  });
+
+  it("swaps the blanket env deny for the secret patterns and absolute rules, in its place", () => {
+    const rules = credentialDenies(["~/.vault/**"], ["/repo/.env.example.local", "/repo/a/../.env", "/repo/b/./.env.d/**"]);
+    expect(rules).not.toContain("Read(**/.env*)");
+    const at = rules.indexOf("Read(**/.env)");
+    expect(rules[at - 1]).toBe("Edit(~/Library/Cookies/**)");
+    const expected = [...ENV_SECRET_PATTERNS, "//repo/.env.example.local", "//repo/.env", "//repo/b/.env.d/**"]
+      .flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
+    expect(rules.slice(at, at + expected.length)).toEqual(expected);
+    expect(rules[at + expected.length]).toBe("Read(**/*.pem)");
+    expect(rules.slice(-2)).toEqual(["Read(~/.vault/**)", "Edit(~/.vault/**)"]);
+  });
+
+  it("lifts the blanket deny for an empty list of env files", () => {
+    const rules = credentialDenies([], []);
+    expect(rules).not.toContain("Read(**/.env*)");
+    expect(rules).toContain("Read(**/.envrc)");
+  });
+
+  it("denies directories whole, in both the patterns and the absolute rules", () => {
+    const rules = credentialDenies([], ["/repo/.venv-like/.env/**"]);
+    for (const p of ["**/.env/**", "**/.env.*/**", "//repo/.venv-like/.env/**"]) {
+      expect(rules).toContain(`Read(${p})`);
+      expect(rules).toContain(`Edit(${p})`);
+    }
+  });
+
+  it.each([
+    "/repo/.env[1]",
+    "/repo/.env*",
+    "/repo/.env (copy)",
+    "/repo/.env{a,b}",
+    "/repo/.env?",
+    "/repo/!.env",
+    "/repo/.env\\x",
+    "/repo/.env\nx",
+    "/repo/.env*/**",
+    "/repo/**/.env",
+    "/repo/.env/*",
+  ])(
+    "keeps the blanket deny when %j cannot be an exact rule",
+    (file) => {
+      const rules = credentialDenies([], ["/repo/.env", file]);
+      expect(rules).toContain("Read(**/.env*)");
+      expect(rules).not.toContain("Read(//repo/.env)");
+    },
+  );
+
+  it("refuses a relative env file or directory", () => {
+    expect(codeOf(() => credentialDenies([], ["repo/.env"]))).toBe("usage");
+    expect(codeOf(() => credentialDenies([], ["repo/.env/**"]))).toBe("usage");
+    expect(codeOf(() => credentialDenies([], ["/**"]))).toBe("usage");
+  });
+});
+
+describe("env presets", () => {
+  it("lists the secret env patterns", () => {
+    expect(ENV_SECRET_PATTERNS).toEqual([
+      "**/.env",
+      "**/.env.local",
+      "**/.env.*.local",
+      "**/.env.development*",
+      "**/.env.production*",
+      "**/.env.staging*",
+      "**/.env.test*",
+      "**/.envrc",
+      "**/.env/**",
+      "**/.env.*/**",
+    ]);
   });
 });
 

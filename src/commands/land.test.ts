@@ -96,8 +96,11 @@ describe("changedPaths and sessionsAffected", () => {
     p.ok(["add", "-A"]);
     p.ok(["commit", "-q", "-m", "change"]);
     const changed = changedPaths(p.git, app, ["HEAD~1", "HEAD"]);
-    // From the top level, whatever the directory git runs in.
+    // From the top level, whatever the directory git runs in, and whatever the owner's diff.relative says.
     expect(changed).toEqual(["app/dist/arbab.mjs", "top.txt"]);
+    p.ok(["config", "diff.relative", "true"]);
+    expect(p.ok(["diff", "--name-only", "HEAD~1", "HEAD"], app)).toBe("dist/arbab.mjs\n");
+    expect(changedPaths(p.git, app, ["HEAD~1", "HEAD"])).toEqual(changed);
     registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: T, runner: join(app, "dist", "arbab.mjs") });
     p.alive.add(7004);
     expect(sessionsAffected(p.ctx, app, changed)).toEqual([
@@ -352,6 +355,16 @@ describe("runLand", () => {
     expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
     expect((JSON.parse(p.stdout()) as { otherSessions: SessionActivity[] }).otherSessions).toEqual([]);
     expect(p.stderr()).toBe("");
+  });
+
+  it("leaves otherSessions out of --json, and warns, when the machine registry cannot be listed", async () => {
+    ({ t: p } = await ready());
+    // A file where the shepherds' directory belongs.
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "shepherds"), "");
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect(JSON.parse(p.stdout())).not.toHaveProperty("otherSessions");
+    expect(p.stderr()).toMatch(/^warning: cannot tell which other sessions this landing affects: cannot list .*shepherds: /);
   });
 
   it("says nothing about other sessions when it refuses", async () => {

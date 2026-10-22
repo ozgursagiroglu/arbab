@@ -18,11 +18,13 @@
 // Text: `landed <name>: <head> into <base> as <merge sha>`, then `Not pushed. To publish: git push <remote> <base>`,
 // then `left alone: <paths>` when untracked files stayed in the main checkout (the first five), then cleanup's lines
 // (`removed worktree <path>`, `deleted branch <branch>`, `kept worktree <path>: <reason>`, …).
-// Before it merges, a `warning:` line on stderr for each other session the landing affects (otherSessions: its lanes
-// and waiters in this project, or the runner files of this project it runs elsewhere); it never blocks on them.
+// Just before it merges, in the same call, a `warning:` line on stderr for each other session the landing affects
+// (otherSessions: its lanes and waiters in this project, or the runner files of this project it runs elsewhere); it
+// never blocks on them. Too late to tell anyone first: those are told from readiness's list, and these lines are a
+// last record that also names sessions that appeared since. When it cannot tell, one `warning:` line says so.
 // --json: {"landing": LandingRecord, "remote": string | null, "push": string[] | null,
 //          "cleanup": WorktreeCleanup | null (null with --keep-worktrees), "leftAlone": string[],
-//          "otherSessions": SessionActivity[]}
+//          "otherSessions"?: SessionActivity[] ([] for none, absent when it cannot tell)}
 // Exit 0; 1 on a refusal; 2 when the merge fails (it is aborted).
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -73,9 +75,10 @@ function porcelainEntries(out: string): string[] {
 /**
  * The paths `git diff <revs>` touches, both sides of a rename included, relative to the repository's top level (as
  * `git status` names them too), which lies above `root` when the project is a subdirectory of its repository.
+ * `--no-relative`: a diff.relative in the owner's config would make them relative to `root` instead.
  */
 export function changedPaths(git: GitRunner, root: string, revs: readonly string[]): string[] {
-  return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root)
+  return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-relative", ...revs, "--"], root)
     .split("\0")
     .filter((p) => p !== "");
 }
@@ -238,8 +241,9 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name, paths.worktree);
 
-  // Said, never enforced: the human decided to land, and the other sessions only need to hear it first.
-  let sessions: SessionActivity[] = [];
+  // Said, never enforced, and in the same call as the merge: the sessions were to be told from readiness's list, so
+  // this is a last record that also names the sessions that appeared since. Undefined when it cannot tell.
+  let sessions: SessionActivity[] | undefined;
   try {
     sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
     for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity)}\n`);
@@ -279,7 +283,7 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
       push: remote === null ? null : ["git", "push", remote, base],
       cleanup,
       leftAlone,
-      otherSessions: sessions,
+      ...(sessions !== undefined && { otherSessions: sessions }),
     });
   } else {
     ctx.stdout(`landed ${name}: ${head} into ${base} as ${mergeSha}\n`);

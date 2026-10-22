@@ -161,8 +161,8 @@ Then:
 4. **Watch.** The skill starts `arbab ui`, which opens the lanes in your browser as workers building a pyramid.
    `arbab status` shows the same as a table.
 5. **Land.** The orchestrator integrates, verifies, reviews and writes `readiness.md`, then asks you. You say yes; it
-   lands. When the landing affects another session's lanes or runner, readiness and `land` name that session, and
-   the orchestrator tells it before landing.
+   lands. When the landing affects another session's lanes or runner, readiness names that session and the
+   orchestrator tells it before landing; `land` warns about it again as it merges, a last record.
 
 Some steps are always yours:
 
@@ -370,8 +370,11 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
 - **Verdicts:** each finding ends `confirmed`, `refuted` or `unverified`.
 - **A readiness report** lists what was verified, what was skipped, and every risk.
 - **Other sessions hear about a landing.** When another session runs lanes or waiters in the project, or
-  runs a runner file the landing replaces, readiness lists it as a `session:<id>` risk and `land` prints a warning
-  for it before merging. Neither blocks; the skill tells that session first.
+  runs a runner file the landing replaces, readiness lists it as a `session:<id>` risk, and the skill tells that
+  session before it runs `land`. `land` prints a warning for it too, but in the same call as the merge: a last
+  record, which also names sessions that appeared since readiness. Neither blocks. Run outside Claude Code (no
+  session id, such as `readiness --waive` in a terminal), readiness and `land` count every session as another, the
+  orchestrator's own included.
 - **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
   cannot be waived. Only you can waive one: `--waive` needs a terminal.
 

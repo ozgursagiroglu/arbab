@@ -67,6 +67,24 @@ describe("credentialMatcher", () => {
     expect(credentialMatcher(["**/maß.token"], [HOME])("/srv/MAß.TOKEN")).toEqual({ kind: "name", label: "MAß.TOKEN" });
   });
 
+  it("keeps `?` one character for an accented letter, spelled NFC or NFD in the path or the pattern", () => {
+    const nfcCafe = "café";
+    const nfdCafe = "café";
+    for (const pattern of ["**/caf?", "//srv/caf?/**", "~/caf?/*.txt", "notes/caf?"]) {
+      const m = credentialMatcher([pattern], [HOME]);
+      for (const cafe of [nfcCafe, nfdCafe]) {
+        const path = pattern.startsWith("**/") ? `/srv/${cafe}` : pattern.startsWith("//") ? `/srv/${cafe}/x` : pattern.startsWith("~/") ? `/home/u/${cafe}/a.txt` : `/a/notes/${cafe}`;
+        expect(m(path), `${pattern} ${JSON.stringify(path)}`).not.toBeNull();
+      }
+      // A `?` is one character, not two.
+      expect(m(pattern.startsWith("~/") ? "/home/u/cafee/a.txt" : "/srv/cafee/x")).toBeNull();
+    }
+    // A pattern spelled NFD matches either spelling too.
+    const nfdPattern = credentialMatcher([`**/${nfdCafe}.key2`], [HOME]);
+    expect(nfdPattern(`/srv/${nfcCafe}.key2`)).toEqual({ kind: "name", label: `${nfcCafe}.key2` });
+    expect(nfdPattern(`/srv/${nfdCafe.toUpperCase()}.KEY2`)).toEqual({ kind: "name", label: `${nfdCafe.toUpperCase()}.KEY2` });
+  });
+
   it("adds `extra` rules of every shape, case ignored", () => {
     const m = credentialMatcher(["~/.vault/**", "**/*.secret", "//srv/secrets/**", "vault/*.md", "~/notes/*.txt"], [HOME]);
     expect(m("/home/u/.Vault/token")).toEqual({ kind: "dir", label: "~/.vault" });

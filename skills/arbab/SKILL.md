@@ -356,9 +356,9 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    worker code on the host. Never run them on the host yourself.
 5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>` (one commit: `--squash --message <file>`,
    a file inside the project and no credential file, or config `landing.squash`). The hook never approves `land`.
-   - When readiness or `land`'s warnings name other sessions, tell each before landing, with SendMessage, what the
-     landing changes and when (ListAgents lists sessions by name, usually their project directory's). Recognise one
-     by the lanes and projects named, not the 8-character id: it is not ListAgents' short ref. Hold only if one asks.
+   - Tell each session readiness names, with SendMessage, what the landing changes and when, then land. Find it in
+     ListAgents by the lanes and projects named, not the 8-character id. `land` merges in the same call as its
+     warnings: a last record, naming sessions new since. Run in a terminal, both name yours too. Hold if one asks.
    - It refuses unless:
      - readiness is ready for the integration head, newer than its verify and review, and at least
        `config.landing.tier`;

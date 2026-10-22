@@ -1,4 +1,5 @@
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
+import { workerTmpPaths } from "../run/workertmp";
 import type { ClaudeSettings, CompiledProfile, ProfileInput, Role } from "../types";
 import { ArbabError } from "../util/errors";
 import { BACKGROUND_DENY, FILE_UTILITIES, FIXED_ENV, GIT_READ_VERBS, GIT_WRITE_VERBS, READ_UTILITIES } from "./presets";
@@ -15,6 +16,7 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
   const gitDir = input.gitCommonDir === undefined ? undefined : sharedGitDir(input.gitCommonDir);
+  const tmp = workerTmpPaths(input.worktree);
   let allow = dedupe([
     ...input.tools.filter((t) => FILE_TOOLS.has(t) && (!WRITE_TOOLS.has(t) || WRITERS.includes(input.role))),
     ...roleAllow(input.role),
@@ -24,8 +26,10 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
   // Sandboxed Bash is auto-allowed in sandbox-auto; a Bash allow rule there could only approve an unsandboxed retry.
   if (input.fence === "sandbox-auto") allow = allow.filter((rule) => !rule.startsWith("Bash("));
 
+  // Without the env files found on disk the blanket deny stays: lifting it blind would expose them.
+  const liftEnv = (input.readableEnvFiles ?? []).length > 0 && input.envFileDenies !== undefined;
   const deny = dedupe([
-    ...credentialDenies(input.credentialPaths),
+    ...credentialDenies(input.credentialPaths, liftEnv ? (input.envFileDenies ?? []) : null),
     // `//` makes the path absolute; a single `/` would be relative to the settings file.
     ...(gitDir === undefined ? [] : [`Edit(/${gitDir}/**)`, `Write(/${gitDir}/**)`]),
     BACKGROUND_DENY,
@@ -50,10 +54,15 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
     env: {
       ...input.env,
       ...FIXED_ENV,
-      // Keeps git and friends off the denied ~/.config, which otherwise warns with EPERM on every call.
-      XDG_CONFIG_HOME: join(input.worktree, ".arbab-tmp", "xdg-config"),
+      // Keeps git and package managers off the denied ~/.config and ~/.npmrc, which otherwise fail with EPERM.
+      XDG_CONFIG_HOME: tmp.xdgConfig,
+      XDG_DATA_HOME: tmp.xdgData,
+      XDG_CACHE_HOME: tmp.xdgCache,
+      YARN_CACHE_FOLDER: tmp.yarnCache,
+      NPM_CONFIG_USERCONFIG: tmp.npmrc,
     },
     permissions: { allow, deny },
+    ...(input.bashOutputMaxChars === undefined ? {} : { bashOutputMaxChars: input.bashOutputMaxChars }),
   };
   return { tools: input.tools, settings };
 }

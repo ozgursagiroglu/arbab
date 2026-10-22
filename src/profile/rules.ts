@@ -1,5 +1,6 @@
+import { isAbsolute, resolve } from "node:path";
 import { ArbabError } from "../util/errors";
-import { BUILTIN_CREDENTIAL_PATHS } from "./presets";
+import { BUILTIN_CREDENTIAL_PATHS, ENV_FILES_BLANKET, ENV_SECRET_PATTERNS } from "./presets";
 
 // Shell metacharacters would let a prefix rule match more than the command it names; `*` would make it a wildcard.
 const FORBIDDEN = /[;&|`$<>()\\*\n\r]/;
@@ -18,10 +19,27 @@ export function commandRules(prefix: string): string[] {
   return [`Bash(${prefix})`, `Bash(${prefix} *)`];
 }
 
-/** Read and Edit denies for the built-in credential paths, then the project's extra ones. */
-export function credentialDenies(extra: string[]): string[] {
+// A path rule is a glob: a file name with these could fail to match itself, so it cannot be denied one by one.
+const GLOB_SPECIAL = /[*?[\]{}()!\\]/;
+
+/**
+ * Read and Edit denies for the built-in credential paths, then the project's extra ones. With `envFiles` (absolute
+ * paths), the blanket `**\/.env*` gives way to the secret patterns plus one absolute rule per file (DESIGN.md §21);
+ * the blanket stays when a path could not be written as an exact rule.
+ */
+export function credentialDenies(extra: string[], envFiles: string[] | null = null): string[] {
+  for (const file of envFiles ?? []) {
+    if (!isAbsolute(file)) throw new ArbabError("usage", `env file ${JSON.stringify(file)} must be an absolute path`);
+  }
+  // `//` makes a rule path absolute; a single `/` would be relative to the settings file.
+  const exact = envFiles === null || envFiles.some((file) => GLOB_SPECIAL.test(file) || /[\n\r]/.test(file))
+    ? null
+    : envFiles.map((file) => `/${resolve(file)}`);
+  const paths = BUILTIN_CREDENTIAL_PATHS.flatMap((path) =>
+    exact !== null && path === ENV_FILES_BLANKET ? [...ENV_SECRET_PATTERNS, ...exact] : [path],
+  );
   const rules: string[] = [];
-  for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) rules.push(`Read(${path})`, `Edit(${path})`);
+  for (const path of [...paths, ...extra]) rules.push(`Read(${path})`, `Edit(${path})`);
   return dedupe(rules);
 }
 

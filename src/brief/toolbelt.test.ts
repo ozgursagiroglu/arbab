@@ -30,6 +30,9 @@ describe("toolBelt", () => {
     expect(belt).not.toContain("git grep");
     expect(belt).toContain("- File tools: Read, Edit, Write, Glob, Grep. Use Write to create directories and files; use Read and Grep instead of shell pipelines.");
     expect(belt).not.toContain("without an allowlist");
+    expect(belt).toContain("`pnpm typecheck …`.\n- Bash output longer than 100000 characters is saved to a file you cannot " +
+      "read: run one test file, use a quiet reporter, or print only what you need.\n- Quote paths that contain [ ] ( ), " +
+      "such as app/[slug]/page.tsx: unquoted, the shell or the permission check refuses them.\n- File tools:");
     expect(belt).toContain("- One command per call, in the foreground. These are refused:");
     expect(belt).toContain("  - `cd X && …`: commands already run in the worktree;");
     expect(belt).toContain("  - `&&`, `;` and pipes into `tail`/`head`: run single commands and read the full output;");
@@ -45,6 +48,13 @@ describe("toolBelt", () => {
     expect(belt).not.toContain("Shell commands you may run");
     expect(belt).toContain("up to 1 minute;");
     expect(belt).toContain("`ARBAB_PORT_0=42000`");
+    expect(belt).toContain("- Quote paths that contain [ ] ( )");
+  });
+  it("names the profile's Bash output limit, else the default", () => {
+    const limited = { ...STRICT, settings: { ...STRICT.settings, bashOutputMaxChars: 4000 } };
+    expect(toolBelt(limited, [], 15)).toContain("- Bash output longer than 4000 characters is saved to a file you cannot read");
+    expect(STRICT.settings.bashOutputMaxChars).toBeUndefined();
+    expect(toolBelt(STRICT, [], 15)).toContain("- Bash output longer than 100000 characters");
   });
   it("omits leases when there are none", () => {
     expect(toolBelt(STRICT, [], 15)).not.toContain("ARBAB_");
@@ -67,6 +77,8 @@ describe("toolBelt", () => {
     expect(belt).toContain("- You have no shell");
     expect(belt).toContain("- Other tools: WebSearch, WebFetch.");
     expect(belt).not.toContain("One command per call");
+    expect(belt).not.toContain("Bash output");
+    expect(belt).not.toContain("Quote paths");
     expect(belt).not.toContain("web tools");
     expect(belt).not.toContain("File tools");
   });

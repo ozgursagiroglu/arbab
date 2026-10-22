@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { CompiledProfile, LintIssue, ProfileInput } from "../types";
-import { ANY_CODE_PREFIXES, BACKGROUND_DENY, BASH_INPUT_PARAMS, FIXED_ENV } from "./presets";
+import { ANY_CODE_PREFIXES, BACKGROUND_DENY, BASH_INPUT_PARAMS, FIXED_ENV, WORKER_TMP_ENV } from "./presets";
 
 const BASH_RULE = /^Bash\((.*)\)$/s;
 const PARAM_RULE = /^\s*([A-Za-z_]+)\s*:/;
@@ -74,7 +74,7 @@ export function lintProfile(profile: CompiledProfile, input: ProfileInput): Lint
   }
 
   for (const key of Object.keys(input.env)) {
-    if (Object.hasOwn(FIXED_ENV, key) || key === "XDG_CONFIG_HOME") {
+    if (Object.hasOwn(FIXED_ENV, key) || WORKER_TMP_ENV.includes(key)) {
       warn("reserved-env", `${key} is set by arbab; this value is ignored`, key);
     }
   }

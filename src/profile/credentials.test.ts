@@ -61,7 +61,7 @@ describe("credentialMatcher", () => {
     expect(m("/home/u/.ssh/config")).toEqual({ kind: "dir", label: "~/.ssh" });
   });
 
-  it("given a root, tests the name rules only below it, and every other rule as before", () => {
+  it("given a root, tests the name rules and relative patterns only below it, and every other rule as before", () => {
     const m = credentialMatcher(["//work/.envs/**", "app/*.md"], [HOME]);
     // Any spelling of the root, case and a trailing separator aside.
     for (const root of ["/work/x.key/app", "/work/x.KEY/app/", "/WORK/X.KEY/APP"]) {
@@ -77,10 +77,16 @@ describe("credentialMatcher", () => {
     expect(m("/work/x.key/app/lanes/brief.txt")).toEqual({ kind: "name", label: "x.key" });
     expect(m("/work/x.key/other/brief.txt", "/work/x.key/app")).toEqual({ kind: "name", label: "x.key" });
     expect(m("/work/x.key/app-old/brief.txt", "/work/x.key/app")).toEqual({ kind: "name", label: "x.key" });
-    // Rules of other shapes still see the whole path.
+    // A relative pattern looks below the root, as the pattern is written there.
+    expect(m("/srv/app/readme.md", "/srv/app")).toBeNull();
+    expect(m("/srv/app/app/readme.md", "/srv/app")).toEqual({ kind: "pattern", label: "app/*.md" });
+    expect(m("/srv/app/sub/APP/readme.md", "/SRV/App/")).toEqual({ kind: "pattern", label: "app/*.md" });
+    expect(m("/srv/app/readme.md")).toEqual({ kind: "pattern", label: "app/*.md" });
+    expect(m("/srv/app/readme.md", "/srv/other")).toEqual({ kind: "pattern", label: "app/*.md" });
+    // `~/` and absolute patterns still see the whole path.
     expect(m("/work/.envs/app/brief.txt", "/work/.envs/app")).toEqual({ kind: "pattern", label: "//work/.envs/**" });
-    expect(m("/srv/app/readme.md", "/srv/app")).toEqual({ kind: "pattern", label: "app/*.md" });
     expect(m("/home/u/.ssh/x/brief.txt", "/home/u/.ssh/x")).toEqual({ kind: "dir", label: "~/.ssh" });
+    expect(credentialMatcher(["~/notes/*.txt"], [HOME])("/home/u/notes/a.txt", "/home/u/notes")).toEqual({ kind: "pattern", label: "~/notes/*.txt" });
   });
 
   it("matches nothing of a ~/ rule without homes, and the name rules still", () => {

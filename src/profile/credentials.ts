@@ -12,7 +12,7 @@ export interface CredentialHit {
   label: string;
 }
 
-/** `root`: when given and `path` lies inside it, name rules look only at the components below it. */
+/** `root`: when given and `path` lies inside it, name rules and relative patterns look only at what is below it. */
 type CredentialRule = (path: string, root?: string) => CredentialHit | null;
 
 const GLOB_CHARS = /[*?[\]{}]/;
@@ -88,7 +88,15 @@ function credentialRules(patterns: readonly string[], homes: readonly string[]):
       }
     }
     const res = patternRegexes(pattern, homes);
-    return (path) => (res.some((re) => re.test(path)) ? { kind: "pattern", label: pattern } : null);
+    const hit: CredentialHit = { kind: "pattern", label: pattern };
+    // A relative pattern, like a name rule, looks only below `root`: the directories holding the project are not its.
+    if (!pattern.startsWith("~/") && !pattern.startsWith("/")) {
+      return (path, root) => {
+        const subject = root === undefined || !within(root, path) ? path : componentsBelow(path, root).join("/");
+        return res.some((re) => re.test(subject)) ? hit : null;
+      };
+    }
+    return (path) => (res.some((re) => re.test(path)) ? hit : null);
   });
 }
 
@@ -114,7 +122,8 @@ export function credentialReason(hit: CredentialHit): string {
  * Checks absolute paths against the fence's credential list (BUILTIN_CREDENTIAL_PATHS) plus `extra`
  * (config.credentialPaths and the like). `homes`: the user's home directory spellings (lexical and real);
  * with none, `~/` patterns match nothing. Given `root` (a project root, in the spelling `path` has), the `**\/<name>`
- * rules test only the components of `path` below it; every other rule, and a path outside `root`, is unchanged.
+ * rules and the relative patterns (neither `~/` nor `/`) test only the part of `path` below it, `/`-joined; `~/` and
+ * absolute patterns, and a path outside `root`, are unchanged.
  */
 export function credentialMatcher(
   extra: readonly string[],

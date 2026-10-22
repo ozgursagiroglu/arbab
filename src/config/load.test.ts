@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -90,6 +90,32 @@ describe("loadConfig worktreeRoot and runsRoot through symbolic links", () => {
       expect(configError(project, field).message).toContain("must not overlap .arbab/integrations");
       writeConfig(project, { [field]: "state/pool" });
       expect(loadConfig(project)[field]).toBe("state/pool");
+    });
+
+    it(`refuses ${field} spelling the project root or the integration records in another case`, () => {
+      for (const value of [".ARBAB/Integrations/x", ".Arbab/INTEGRATIONS", ".ARBAB"]) {
+        writeConfig(project, { [field]: value });
+        expect(configError(project, field).message, value).toContain(`${field}: must not overlap .arbab/integrations, where integration records live`);
+      }
+      mkdirSync(join(project, ".arbab", "integrations"), { recursive: true });
+      writeConfig(project, { [field]: ".ARBAB/Integrations/x" });
+      expect(configError(project, field).message).toContain("must not overlap .arbab/integrations");
+    });
+
+    it(`refuses ${field} as a link whose target spells the records or the root in another case`, () => {
+      mkdirSync(join(project, ".arbab", "integrations"), { recursive: true });
+      // Only a case-insensitive file system resolves another spelling; elsewhere the link dangles and is refused anyway.
+      const caseInsensitive = existsSync(join(project, ".ARBAB", "INTEGRATIONS"));
+      symlinkSync(join(project, ".ARBAB", "INTEGRATIONS"), join(project, "recs"));
+      for (const value of ["recs", "recs/lanes"]) {
+        writeConfig(project, { [field]: value });
+        const message = configError(project, field).message;
+        if (caseInsensitive) expect(message, value).toContain("must not overlap .arbab/integrations");
+      }
+      symlinkSync(join(dir, "PROJECT"), join(project, "self"));
+      writeConfig(project, { [field]: "self" });
+      const message = configError(project, field).message;
+      if (caseInsensitive) expect(message).toContain(`${field}: must not be the project root`);
     });
 
     it(`accepts ${field} as a link to a directory inside the project`, () => {

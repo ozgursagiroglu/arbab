@@ -299,6 +299,37 @@ describe("copyInputs", () => {
     expect(refusal([join(elsewhere, "app")])).toMatch(/holds \.env\.d, named like a credential file/);
   });
 
+  it("tests an input inside the project only below its root, one outside on its whole path", () => {
+    const app = join(dir, ".envs", "app");
+    const inApp = (inputs: string[], credentialPaths: string[] = []): string[] =>
+      copyInputs({ projectRoot: app, worktree: join(app, ".arbab", "worktrees", "m1-a"), inputs, userHome: home, credentialPaths });
+    const refused = (inputs: string[], credentialPaths: string[] = []): string => {
+      try {
+        inApp(inputs, credentialPaths);
+      } catch (err) {
+        expect(err).toBeInstanceOf(ArbabError);
+        return (err as Error).message;
+      }
+      throw new Error(`copyInputs accepted ${inputs.join(", ")}`);
+    };
+    write(join(app, "docs", "a.md"), "a\n");
+    write(join(app, "notes", "b.md"), "b\n");
+    write(join(app, ".env"));
+    write(join(elsewhere, ".envs", "c.md"));
+    mkdirSync(join(app, ".arbab", "worktrees", "m1-a"), { recursive: true });
+
+    expect(inApp(["docs/a.md", join(app, "notes")])).toEqual(["a.md", "notes"]);
+    expect(readFileSync(join(app, ".arbab", "worktrees", "m1-a", ".arbab-tmp", "inputs", "a.md"), "utf8")).toBe("a\n");
+    // Through the project's real path too.
+    expect(inApp([join(realpathSync(app), "docs", "a.md")])).toEqual(["a.md"]);
+    // Relative patterns look below the root as well.
+    expect(inApp(["docs/a.md"], ["app/**"])).toEqual(["a.md"]);
+    expect(refused(["docs/a.md"], ["docs/*.md"])).toMatch(/matches the credential path docs\/\*\.md/);
+    expect(refused([".env"])).toMatch(/named like a credential file \(\.env\)/);
+    expect(refused([join(elsewhere, ".envs", "c.md")])).toMatch(/named like a credential file \(\.envs\)/);
+    expect(refused([join(elsewhere, ".envs")])).toMatch(/named like a credential file \(\.envs\)/);
+  });
+
   describe("config.credentialPaths", () => {
     it("refuses what a ~/dir/** path covers", () => {
       write(join(home, ".vault", "token"));

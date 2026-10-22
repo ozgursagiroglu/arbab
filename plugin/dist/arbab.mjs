@@ -213,8 +213,8 @@ function credentialRules(patterns, homes) {
       const dir = rest.endsWith("/**") ? rest.slice(0, -3) : null;
       const plain = dir ?? rest;
       if (plain !== "" && !GLOB_CHARS.test(plain)) {
-        const hit = { kind: dir !== null ? "dir" : "file", label: `~/${plain}` };
-        return (path) => homes.some((h) => within(join(h, plain), path)) ? hit : null;
+        const hit2 = { kind: dir !== null ? "dir" : "file", label: `~/${plain}` };
+        return (path) => homes.some((h) => within(join(h, plain), path)) ? hit2 : null;
       }
     }
     if (pattern.startsWith("**/")) {
@@ -228,7 +228,14 @@ function credentialRules(patterns, homes) {
       }
     }
     const res = patternRegexes(pattern, homes);
-    return (path) => res.some((re) => re.test(path)) ? { kind: "pattern", label: pattern } : null;
+    const hit = { kind: "pattern", label: pattern };
+    if (!pattern.startsWith("~/") && !pattern.startsWith("/")) {
+      return (path, root) => {
+        const subject = root === void 0 || !within(root, path) ? path : componentsBelow(path, root).join("/");
+        return res.some((re) => re.test(subject)) ? hit : null;
+      };
+    }
+    return (path) => res.some((re) => re.test(path)) ? hit : null;
   });
 }
 function homeSpellings(home) {
@@ -3631,15 +3638,20 @@ function arbabRoot(projectRoot, v, field) {
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
   checkArbabRoot(path, root, records, field);
   const real2 = realExisting(path);
-  const realRoot = realpathSync5(projectRoot);
+  const realRoot = realpathSync5.native(projectRoot);
   const rel = real2 === null ? ".." : relative6(realRoot, real2);
   if (rel === ".." || rel.startsWith(`..${sep5}`) || isAbsolute5(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   if (real2 !== null) checkArbabRoot(real2, realRoot, realExisting(records), field);
   return s;
 }
+var fold = (path) => path.toLowerCase();
 function checkArbabRoot(path, root, records, field) {
-  if (path === root) fail(field, "must not be the project root");
-  const inside = (a, b) => a === b || a.startsWith(`${b}${sep5}`);
+  if (fold(path) === fold(root)) fail(field, "must not be the project root");
+  const inside = (a, b) => {
+    const fa = fold(a);
+    const fb = fold(b);
+    return fa === fb || fa.startsWith(fb.endsWith(sep5) ? fb : `${fb}${sep5}`);
+  };
   if (records !== null && (inside(path, records) || inside(records, path))) {
     fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
   }
@@ -3655,7 +3667,7 @@ function realExisting(path) {
     if (present) {
       try {
         const tail = relative6(p, path);
-        return tail === "" ? realpathSync5(p) : join16(realpathSync5(p), tail);
+        return tail === "" ? realpathSync5.native(p) : join16(realpathSync5.native(p), tail);
       } catch {
         return null;
       }
@@ -4238,14 +4250,14 @@ function wildcardPrefix(content) {
 import { existsSync as existsSync7, readFileSync as readFileSync5, realpathSync as realpathSync7 } from "node:fs";
 import { dirname as dirname6, join as join19, resolve as resolve11, sep as sep7 } from "node:path";
 import { parseArgs } from "node:util";
-var fold = (path) => path.toLowerCase();
+var fold2 = (path) => path.toLowerCase();
 function atOrUnder(base, path) {
-  const b = fold(base);
-  const p = fold(path);
+  const b = fold2(base);
+  const p = fold2(path);
   return p === b || p.startsWith(b.endsWith(sep7) ? b : b + sep7);
 }
 function hasWorktreesPair(path) {
-  const parts = path.split(sep7).map(fold);
+  const parts = path.split(sep7).map(fold2);
   return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
 }
 function configuredWorktreeRoots(dir, io) {
@@ -4279,7 +4291,7 @@ function configuredWorktreeRoots(dir, io) {
     } catch {
       continue;
     }
-    if (realDir2 !== null && atOrUnder(realDir2, real2) && fold(real2) !== fold(realDir2)) roots.push(real2);
+    if (realDir2 !== null && atOrUnder(realDir2, real2) && fold2(real2) !== fold2(realDir2)) roots.push(real2);
   }
   return roots;
 }
@@ -10032,6 +10044,9 @@ function copyInputs(input) {
   const homes = homeSpellings(home);
   const worktree = realOr(resolve16(input.worktree));
   const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
+  const projectRoot = resolve16(input.projectRoot);
+  const projectRoots = [.../* @__PURE__ */ new Set([projectRoot, realOr(projectRoot)])];
+  const rootOf = (path) => projectRoots.find((r) => within2(r, path));
   const names2 = /* @__PURE__ */ new Map();
   const planned = [];
   let total = 0;
@@ -10042,7 +10057,7 @@ function copyInputs(input) {
     let path;
     if (raw === "~" || raw.startsWith("~/")) path = join42(home, raw.slice(2));
     else if (raw.startsWith("~")) path = refuse2("names another user's home; write the full path");
-    else path = resolve16(input.projectRoot, raw);
+    else path = resolve16(projectRoot, raw);
     const name2 = basename4(path);
     if (name2 === "") refuse2("has no name to copy it under");
     const clash = names2.get(name2);
@@ -10057,8 +10072,10 @@ function copyInputs(input) {
     if (stat.isSymbolicLink()) refuse2("is a symbolic link; name the file it points to");
     if (!stat.isFile() && !stat.isDirectory()) refuse2("is neither a file nor a directory");
     const real2 = realOr(path);
-    for (const p of [path, real2]) {
-      const hit = credential(p);
+    const pathRoot = rootOf(path);
+    const realRoot = rootOf(real2);
+    for (const [p, root] of [[path, pathRoot], [real2, realRoot]]) {
+      const hit = credential(p, root);
       if (hit !== null) refuse2(credentialReason(hit));
     }
     if (stat.isDirectory() && homes.some((h) => within2(real2, h))) refuse2("holds the home directory, credentials included");
@@ -10080,7 +10097,7 @@ function copyInputs(input) {
           const s = lstatSync4(full);
           if (s.isSymbolicLink()) continue;
           if (!s.isDirectory() && !s.isFile()) continue;
-          const hit = credential(full) ?? credential(join42(path, childRel));
+          const hit = credential(full, realRoot) ?? credential(join42(path, childRel), pathRoot);
           if (hit !== null) {
             if (hit.kind === "dir") refuse2(`holds ${hit.label}, where credentials live`);
             if (hit.kind === "file") refuse2(`holds ${hit.label}, a credential file`);

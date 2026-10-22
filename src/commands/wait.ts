@@ -1,10 +1,10 @@
-// arbab wait [--any|--all] [--timeout-min N] [--notify] [--json] [lane…]
+// arbab wait [--any|--all] [--all-sessions] [--timeout-min N] [--notify] [--json] [lane…]
 //
 // Level-triggered: reports lane runs that finished (or were orphaned) and are not acked yet, and acks them; otherwise
-// blocks until one finishes. A run that failed before its first attempt (worktree, dependencies, leases, binary,
-// brief…) is reported too.
-// Without lanes, --any (the default) waits for the runs this session owns and the ownerless ones (DESIGN.md §21);
-// --all for every run. With lanes, --any waits for one of them and --all for every one, whoever owns them.
+// blocks until one (--any, the default) or every run (--all) finishes. A run that failed before its first attempt
+// (worktree, dependencies, leases, binary, brief…) is reported too.
+// Without lanes, both wait for the runs this session owns and the ownerless ones (DESIGN.md §21); --all-sessions
+// takes every session's runs. Named lanes are waited for whoever owns them.
 // When nothing is pending and none of those runs is running, it prints `no lanes are running` and exits 0.
 // While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Text: one line per finished run; the attempt part only when the run made one, the report only when there is one,
@@ -102,6 +102,7 @@ export async function runWait(argv: string[], ctx: CommandContext): Promise<numb
     options: {
       any: { type: "boolean" },
       all: { type: "boolean" },
+      "all-sessions": { type: "boolean" },
       "timeout-min": { type: "string" },
       notify: { type: "boolean" },
       json: { type: "boolean" },
@@ -114,6 +115,7 @@ export async function runWait(argv: string[], ctx: CommandContext): Promise<numb
   const project = openProject(ctx);
   const named = positionals.length > 0;
   const session = sessionOf(ctx.hostEnv);
+  const owned = !named && values["all-sessions"] !== true;
 
   registerWaiter(ctx.home, { pid: ctx.pid, project: project.root, owner: session, startedAt: isoAt(ctx.clock) });
   let result: WaitResult;
@@ -121,9 +123,9 @@ export async function runWait(argv: string[], ctx: CommandContext): Promise<numb
     result = await waitForFinished({
       runsRoot: project.runsRoot,
       lanes: named ? positionals : null,
-      // Unnamed, --any is this session's runs (and the ownerless); --all is everyone's, one at a time as --any was.
-      ...(!named && values.all !== true && { include: (lane: string) => ownedBy(readShepherdRecord(project.runsRoot, lane), session) }),
-      mode: named && values.all === true ? "all" : "any",
+      // Another session's orchestrator acks its own runs; claiming them would hide them from it.
+      ...(owned && { include: (lane: string) => ownedBy(readShepherdRecord(project.runsRoot, lane), session) }),
+      mode: values.all === true ? "all" : "any",
       timeoutMs,
       pollMs: POLL_MS,
       clock: ctx.clock,

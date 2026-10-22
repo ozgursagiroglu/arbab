@@ -198,21 +198,25 @@ describe("runWait", () => {
     expect(finishedLanes(p.stdout())).toEqual(["theirs"]);
   });
 
-  it("--any does not wait on another session's running lane", async () => {
+  it("neither --any nor --all waits on another session's running lane; --all-sessions does", async () => {
     p = makeProject();
     p.alive.add(500);
     writeLaneRun(p.runsRoot, "theirs", { state: "running", shepherdPid: 500, started: {} });
     own(p, "theirs", OTHER, 500);
     p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
     const start = p.now.ms;
-    expect(await runWait(["--any"], p.ctx)).toBe(0);
-    expect(p.stdout()).toBe("no lanes are running\n");
+    for (const mode of ["--any", "--all"]) {
+      p.out.length = 0;
+      expect(await runWait([mode], p.ctx)).toBe(0);
+      expect(p.stdout()).toBe("no lanes are running\n");
+    }
     expect(p.now.ms).toBe(start);
-    // --all waits for it.
-    expect(await runWait(["--all", "--timeout-min", "0"], p.ctx)).toBe(WAIT_TIMEOUT_EXIT);
+    for (const mode of ["--any", "--all"]) {
+      expect(await runWait([mode, "--all-sessions", "--timeout-min", "0"], p.ctx)).toBe(WAIT_TIMEOUT_EXIT);
+    }
   });
 
-  it("--all acknowledges every session's runs, one wait at a time as --any", async () => {
+  it("--any --all-sessions acknowledges every session's runs, as --any did before §21", async () => {
     p = makeProject();
     for (const lane of ["mine", "theirs", "old"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success" });
     own(p, "mine", OWNER);
@@ -220,8 +224,64 @@ describe("runWait", () => {
     p.alive.add(500);
     writeLaneRun(p.runsRoot, "busy", { state: "running", shepherdPid: 500, started: {} });
     p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
-    expect(await runWait(["--all", "--json"], p.ctx)).toBe(0);
+    expect(await runWait(["--any", "--all-sessions", "--json"], p.ctx)).toBe(0);
     expect(finishedLanes(p.stdout())).toEqual(["mine", "old", "theirs"]);
+  });
+
+  it("--all blocks until every run of this session and the ownerless ones finishes, ignoring another session's", async () => {
+    p = makeProject();
+    p.alive.add(500);
+    p.alive.add(501);
+    p.alive.add(502);
+    writeLaneRun(p.runsRoot, "mine", { state: "finished", endState: "success" });
+    writeLaneRun(p.runsRoot, "old", { state: "running", shepherdPid: 501, started: {} });
+    writeLaneRun(p.runsRoot, "theirs", { state: "running", shepherdPid: 502, started: {} });
+    writeLaneRun(p.runsRoot, "theirs-done", { state: "finished", endState: "success" });
+    own(p, "mine", OWNER);
+    own(p, "old", null, 501);
+    own(p, "theirs", OTHER, 502);
+    own(p, "theirs-done", OTHER);
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    const start = p.now.ms;
+    const sleep = p.ctx.sleep;
+    let ticks = 0;
+    p.ctx.sleep = async (ms) => {
+      await sleep(ms);
+      if (++ticks === 3) writeState(p.runsRoot, { lane: "old", state: "finished", attempt: 1, since: "y", shepherdPid: 501, endState: "success" });
+    };
+    expect(await runWait(["--all", "--json"], p.ctx)).toBe(0);
+    // It did not return with "mine" alone: it waited for "old", and never for "theirs".
+    expect(p.now.ms - start).toBe(6000);
+    expect(finishedLanes(p.stdout())).toEqual(["mine", "old"]);
+    expect(existsSync(join(p.runsRoot, "theirs-done", "acked.json"))).toBe(false);
+  });
+
+  it("--all --all-sessions blocks until every run finishes, as --all did before §21", async () => {
+    p = makeProject();
+    p.alive.add(502);
+    writeLaneRun(p.runsRoot, "mine", { state: "finished", endState: "success" });
+    writeLaneRun(p.runsRoot, "theirs", { state: "running", shepherdPid: 502, started: {} });
+    own(p, "mine", OWNER);
+    own(p, "theirs", OTHER, 502);
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    const start = p.now.ms;
+    const sleep = p.ctx.sleep;
+    let ticks = 0;
+    p.ctx.sleep = async (ms) => {
+      await sleep(ms);
+      if (++ticks === 2) writeState(p.runsRoot, { lane: "theirs", state: "finished", attempt: 1, since: "y", shepherdPid: 502, endState: "failed" });
+    };
+    expect(await runWait(["--all", "--all-sessions", "--json"], p.ctx)).toBe(0);
+    expect(p.now.ms - start).toBe(4000);
+    expect(finishedLanes(p.stdout())).toEqual(["mine", "theirs"]);
+  });
+
+  it("without a session (outside Claude Code), --any and --all take every run", async () => {
+    p = makeProject();
+    writeLaneRun(p.runsRoot, "theirs", { state: "finished", endState: "success" });
+    own(p, "theirs", OTHER);
+    expect(await runWait(["--all", "--json"], p.ctx)).toBe(0);
+    expect(finishedLanes(p.stdout())).toEqual(["theirs"]);
   });
 
   it("named lanes are waited for whoever owns them", async () => {
@@ -231,10 +291,10 @@ describe("runWait", () => {
     p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
     expect(await runWait(["--any", "--json", "theirs"], p.ctx)).toBe(0);
     expect(finishedLanes(p.stdout())).toEqual(["theirs"]);
-    // Once acked, a named lane that no longer runs is idle too, in both modes.
-    for (const mode of ["--any", "--all"]) {
+    // Once acked, a named lane that no longer runs is idle too, in both modes, with or without --all-sessions.
+    for (const mode of [["--any"], ["--all"], ["--all", "--all-sessions"]]) {
       p.out.length = 0;
-      expect(await runWait([mode, "theirs"], p.ctx)).toBe(0);
+      expect(await runWait([...mode, "theirs"], p.ctx)).toBe(0);
       expect(p.stdout()).toBe("no lanes are running\n");
     }
   });

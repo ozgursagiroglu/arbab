@@ -20,7 +20,10 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
 - [ ] A conflict aborts the merge and names the paths; the lanes before it stay merged. A conflict between lanes
       means the plan's scopes overlapped: note it, fix the branches, integrate again.
 - [ ] Work done outside lanes: `arbab integrate <name> --adopt <ref> [--base <ref>]` makes an integration of that
-      branch, with nothing merged, so it goes through the same steps.
+      branch, with nothing merged, so it goes through the same steps. It installs at the fork point of `<ref>` and
+      the base, so it refuses a base that config `baseBranch` does not contain.
+- [ ] After a hand commit or a merge of the base in the integration worktree, `arbab integrate <name> --refresh`
+      records the new head (nothing merged, nothing installed); then verify, review and readiness again.
 - [ ] A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or a `package.json`'s
       dependency fields or install scripts) is merged but not installed: installing would run worker code on the
       host. An `exports` or `version` edit does not count. The **human** reviews the change and what an install
@@ -49,8 +52,9 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       output). Each confirmed finding is fixed (a new lane, then integrate and verify again) or stays a risk.
 - [ ] Fix rounds: `arbab review <name> --since <sha>` with the head the last round reviewed. A round with only LOW
       findings ends the review; they go to risks. Every round is kept in `reviews/<round>.json`.
-- [ ] A merge of the base into the integration does not make the review stale when git merged it cleanly (no hand
-      resolution): readiness says it carried the review over. Verify must run again on the new head.
+- [ ] A merge of the integration's own base into it does not make the review stale when git merged it cleanly (no
+      hand resolution): readiness says it carried the review over. Verify must run again on the new head.
+- [ ] A `--lens-file` lies inside the project and is not a `.env*` file.
 
 ## 5. Readiness report
 
@@ -72,16 +76,17 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       human runs `arbab readiness <name> --waive <id>,…` themselves.
 - [ ] On a yes, `arbab land <name>`. It refuses unless readiness is ready for the integration head and verify
       passed there, and unless the main checkout is on the base branch and contained in the verified head (a base
-      that moved is merged into the integration first, with hooks off as `land` prints, then checked again). The
-      checkout may have no tracked change and no untracked file where the merge writes; other untracked files are
-      left alone and listed (`left alone:`). It merges `--no-ff` and records `landing.json` with `pushed: false`.
-- [ ] When the project wants one commit per landing: `arbab land <name> --squash --message <file>`, or config
-      `landing.squash`. `landing.json` then records `squash: true` and the lanes it carried, which is how cleanup
-      knows they landed.
+      that moved is merged into the integration first, with hooks off as `land` prints, the new head recorded with
+      `arbab integrate <name> --refresh`, then verified, reviewed and checked again). The checkout may have no
+      tracked change and no untracked file where the merge writes; other untracked files are left alone and listed
+      (`left alone:`). It merges `--no-ff` and records `landing.json` with `pushed: false`.
+- [ ] When the project wants one commit per landing: `arbab land <name> --squash --message <file>` (a file inside
+      the project, not `.env*`), or config `landing.squash`. `landing.json` then records `squash: true` and the
+      lanes it carried, which is how cleanup knows they landed.
 - [ ] Push and deploy are human actions: `land` never pushes. Say so, with the push command it printed.
 - [ ] After landing, verify the base once more, inside the fence: `arbab verify --ref <base>` runs the gates on the
-      branch head and writes `.arbab/refs/<slug>/verify.json`. Record the exit codes. M1's landing found a test that
-      failed only on `main`.
+      branch head and writes `.arbab/refs/ref-<slug>-<hash>/verify.json`. Record the exit codes. M1's landing found
+      a test that failed only on `main`.
 - [ ] `land` removes the worktrees of what it landed (unless `--keep-worktrees`) and the generated lanes' and the
       integration's branches; lane branches stay, because later plan phases merge them by name. Lanes that were
       never landed: `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" cleanup --worktrees` removes those that are

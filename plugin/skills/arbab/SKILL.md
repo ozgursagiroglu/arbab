@@ -20,8 +20,10 @@ node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <cmd>
 `2>&1`, `tail` or shell variables. From a parent folder of several repositories, put `-C <repo>` before the command:
 `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" -C <repo> status`. The plugin's PreToolUse hook approves bare calls (the
 skill's `allowed-tools` grant lasts only for the turn that loaded it); a wrapped call waits for a person's click,
-which is what stalled real runs overnight. `arbab <command> --help` prints a command's options. Exit codes: 0 ok,
-1 usage or lint error, 2 runtime error, 3 wait timeout.
+which is what stalled real runs overnight. It never approves `land`, and approves `-C <repo>` only for an absolute
+path to a project that has launched a lane, never a lane worktree (arbab refuses those as projects) or a temp dir.
+`arbab <command> --help` prints a command's options. Exit codes: 0 ok, 1 usage or lint error, 2 runtime error,
+3 wait timeout.
 
 ## When to fan out
 
@@ -53,7 +55,8 @@ urgent small fix (a demo is running, a one-line change) stays in-session, even i
      sandbox), or `none`. Never symlink the main checkout's `node_modules`.
    - `resources` (`{"port": {"range": [4100, 4199]}}`) and `semaphores` (`{"staging-db": 1}`) for shared things.
    - `hostGates`: argv arrays for checks the fence cannot run (Docker, a browser, a database); see [Land](#land).
-   - `fence.readableEnvFiles`: tracked env templates workers may read (`[".env.example"]`); `fence.bashOutputMaxChars`
+   - `fence.readableEnvFiles`: tracked env templates (`[".env.example"]`) that workers may read with shell commands
+     (not the Read tool; lint warns about untracked ones); `fence.bashOutputMaxChars`
      (4000–128000, default 100000): longer Bash output goes to a file workers cannot read.
    - `landing.tier` (default `medium`), `landing.squash` (one commit per landing), `verify.smoke`, `review.lenses`.
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
@@ -125,7 +128,7 @@ A lane file (`lanes/<name>.json`) names the brief and overrides role defaults. P
 | `resources`, `semaphores` | Leases (`{"port": 2}` → `ARBAB_PORT_0`, `ARBAB_PORT_1`) and semaphore names |
 | `checkpoint`, `autoResume`, `maxAttempts` | Commit WIP on exit; resume after usage limits; attempt cap |
 | `coordination` | Sibling lanes and their scopes, inlined into the brief |
-| `inputs` | Files or folders outside the repository the worker must read (absolute, `~/` or project-relative; at most 20, 50 MB in all). Copied to `.arbab-tmp/inputs/<name>` before the first attempt and named in the brief; credential paths are refused |
+| `inputs` | Files or folders outside the repository the worker must read (absolute, `~/` or project-relative; at most 20, 50 MB in all). Copied afresh to `.arbab-tmp/inputs/<name>` on every run and named in the brief; credential paths are refused |
 
 Role defaults:
 
@@ -168,7 +171,8 @@ phases of its wave become its `coordination`.
 Converting a design document into a plan:
 
 - **One phase per lane**, each with a brief written as above.
-- **Disjoint scopes.** `plan check` refuses overlapping write scopes between phases not ordered by a dependency.
+- **Disjoint scopes.** `plan check` refuses overlapping write scopes between phases not ordered by a dependency;
+  a bare path (`src/plan`) covers everything under it.
 - **Dependencies only where a phase needs another's code.** Every extra edge serialises the plan for nothing.
 - **Shared contracts first.** Write and commit the types, interfaces and schemas the phases share on the plan's
   `base` yourself, before the first wave; no phase owns them.
@@ -216,7 +220,7 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
   and older runs without an owner; `--all-sessions` covers every session's runs. Named lanes are waited for whoever
   launched them. `wait --notify` also sends a desktop notification per finished lane.
 - The plugin's Stop hook blocks ending your turn while lanes this session launched run and no `wait` of this session
-  watches them; it names the `wait` command to start.
+  watches them (`verify`, `review` and `preflight` count while they wait); it names the `wait` command to start.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
 - When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
   what needs attention, quota and slots; `--all` across every repository that launched a lane on this machine) and
@@ -300,8 +304,8 @@ Review rounds:
 - A round that finds only LOW findings ends the review: they go to risks, not to another round.
 - A fix round runs `arbab review <name> --since <sha>`, with the head the last round reviewed: the reviewers diff
   from that commit (an ancestor of the head) instead of the base.
-- A lens text for one round goes in a file: `--lens-file <lens>=<file>` adds that lens, or replaces its text, for
-  this run only. Do not edit `review.lenses` for it.
+- A lens text for one round goes in a file inside the project (not `.env*`): `--lens-file <lens>=<file>` adds that
+  lens, or replaces its text, for this run only. Do not edit `review.lenses` for it.
 - `--lenses a,b` re-runs some lenses and keeps the others' findings when the head is the same. Every round is kept
   in `reviews/<round>.json`; readiness shows each round's counts.
 - A re-run of `review` or `verify` on the same head, after a timeout, takes the results of its lanes that finished
@@ -316,8 +320,9 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
 
 1. `arbab integrate <name> --lanes a,b` (or `--plan plans/<p>.json`, in wave order) merges each finished lane's
    branch into `integrate/<name>`, in its own worktree, never the main checkout. A conflict aborts and names the
-   paths. `arbab integrate <name> --adopt <ref>` instead makes an integration of a branch built outside lanes, so
-   it gets verify and review. A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or
+   paths. `arbab integrate <name> --adopt <ref> [--base <ref>]` instead makes an integration of a branch built outside
+   lanes, so it gets verify and review; it installs at the fork point, so the base must be contained in config
+   `baseBranch`. A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or
    a `package.json`'s dependency fields or install scripts) is merged but flagged and **not installed** (that would run
    worker code on the host). **This is the human's step, never yours**: show the human the manifest changes and what
    an install at that head runs (package.json scripts and the files they run, `.npmrc`, `.pnpmfile.*`); the human
@@ -342,14 +347,15 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    Each skipped item has an id (`verify`, `review`, `review:<lens>`, `skeptic`, `smoke`, `deps`, `host`) and stays
    until it runs or the **human** waives it by that id. Waivers are the human's: `--waive` needs a terminal, so your
    shell cannot run it; show the human the command. `verify` cannot be waived: readiness and `land` require it to have
-   passed on the head. A review stays current when the head adds only a clean merge of the base; verify never
-   carries over. Exit 0 when ready.
+   passed on the head. A review stays current when the head adds only a clean merge of the integration's own base;
+   verify never carries over. Exit 0 when ready.
 
    Checks the fence cannot run (Docker, a browser, a database) go in config `hostGates`. Readiness lists them
    (`host`) until they passed on the head; the human starts `arbab host-check <name>` in a terminal, because it runs
    worker code on the host. Never run them on the host yourself.
 5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>`. When the project wants one commit per
-   landing, use `arbab land <name> --squash --message <file>`, or set config `landing.squash`.
+   landing, use `arbab land <name> --squash --message <file>` (a file inside the project, not `.env*`), or set config
+   `landing.squash`. The plugin's hook never approves `land`.
    - It refuses unless:
      - readiness is ready for the integration head, newer than its verify and review, and at least
        `config.landing.tier`;
@@ -358,8 +364,8 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
        the merge writes (other untracked files are left alone and listed);
      - the base has not moved past the integration: its HEAD is contained in the verified head. If it moved, merge
        the base into the integration worktree with hooks off (the command `land` prints:
-       `git -C <integration worktree> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c diff.ignoreSubmodules=all -c submodule.recurse=false merge --no-verify --no-edit <base>`; a plain `git merge` there would run worker-written hooks on the host), then integrate,
-       verify, review and readiness again.
+       `git -C <integration worktree> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c diff.ignoreSubmodules=all -c submodule.recurse=false merge --no-verify --no-edit <base>`; a plain `git merge` there would run worker-written hooks on the host), then record
+       the new head with `arbab integrate <name> --refresh` and run verify, review and readiness again.
    - Then it merges `--no-ff` (`Land <name>`), or makes one squash commit, with hooks disabled (the branch holds
      worker code), writes `landing.json` and prints the push command.
    - **It never pushes.** Push and deploy are human actions; say that nothing was pushed.

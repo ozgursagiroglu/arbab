@@ -129,7 +129,11 @@ checks, lane inputs, `otherSessions` (and the `runner` it reads, recorded by the
 which gives its spelling on disk, before they fold it. The other callers of the credential matcher resolve the file
 they check and the project root with `realpathSync`, which follows links but may keep the spelling as given: land's
 `--message` file, review's `--lens-file`, and the files lane, plan and config fields name (a brief, a schema,
-`instructions`; src/config/check.ts, which passes no home directories); their containment checks still fold, so a spelling of case does not matter.
+`instructions`; src/config/check.ts, which passes no home directories). The credential matcher's own containment
+checks still fold, so a spelling of case does not matter to them. The real-path containment those callers check
+themselves (`existingFile` in src/config/check.ts with `path.relative`, `--lens-file` and `--message` with
+`confine()`) compares the two real paths exactly, without folding: a real path whose case differs from the real
+root's is refused as outside the project.
 Two comparisons do not fold. The credential matcher's glob regexes (name rules and patterns) match the NFC pattern
 against the NFC path with the `iu` flags: NFC so that the NFC and NFD spellings of a name are one, as APFS takes
 them, while a precomposed `é` stays one code point that a `?` matches (NFD would split it into `e` and a combining
@@ -1126,17 +1130,21 @@ The decisions below answer what that use showed.
     `land`: when the registries cannot be read, the report holds one risk `session:unknown` ("cannot tell which
     other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same. An empty
     `otherSessions` means none.
-  - `land` checks the paths the merge changes in the main checkout and, just before it merges and in the same call,
-    prints one `warning:` line on stderr per session (the risk's sentence) and adds `otherSessions` to `--json`
-    (empty for none, as in readiness). It never blocks: when the registries cannot be read it warns that it cannot
-    tell, leaves `otherSessions` out of `--json`, and lands. Nobody can be told "before landing" from these lines;
-    they are a last record, which also names sessions that appeared since readiness.
+  - `land` checks the paths the merge changes in the main checkout just before it merges and, once the merge (or the
+    squash's commit) has succeeded, in the same call, prints one `warning:` line on stderr per session:
+    `sessionText(activity, "land")`, the readiness risk's description of the session with land's ending below. It
+    adds `otherSessions` to `--json` (empty for none, as in readiness). It never blocks: when the registries cannot
+    be read it lands, then warns that it cannot tell and leaves `otherSessions` out of `--json`. A landing that
+    fails (a refusal, or a merge or squash git fails) prints none of these lines. Nobody can be told "before
+    landing" from them; they are a last record, which also names sessions that appeared since readiness.
   - So the order is: tell the sessions readiness names, then land. The sentence ends differently in each place.
     Readiness: "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches
-    them." `land`: "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name
+    them." `land`: "This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name
     and SendMessage reaches them." (`sessionText(activity, "readiness" | "land")`.)
-  - Both diffs pass `--no-relative`, so a `diff.relative` in the owner's git config cannot make the changed paths
-    relative to the project root instead of git's top level.
+  - Both diffs run as `git -c diff.relative=false diff …`, so a `diff.relative` in the owner's git config cannot make
+    the changed paths relative to the project root instead of git's top level. Not `--no-relative`: git 2.20–2.27,
+    which `doctor` accepts, reject it. That git has no `diff.relative`, takes the unknown key, and never prints
+    relative paths; 2.28 and later honour the setting.
   - The sentence names the lanes, waiters, projects and runner files: those are how the orchestrator recognises the
     session in Claude Code's ListAgents and tells it with SendMessage (the skill's Land section). The 8-character id
     is not ListAgents' short reference and does not match it (observed 2026-10-23).

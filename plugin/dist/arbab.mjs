@@ -2451,7 +2451,7 @@ function sessionText(activity, when) {
       `${verb} this project's ${activity.runnersChanged.join(", ")} in ${activity.runnerProjects.join(", ")}, which this landing replaces`
     );
   }
-  const ending = when === "land" ? "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them." : "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.";
+  const ending = when === "land" ? "This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them." : "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.";
   return `${who} ${clauses.join(", and ")}. ${ending}`;
 }
 
@@ -7614,7 +7614,7 @@ function porcelainEntries(out) {
   return entries3;
 }
 function changedPaths(git, root, revs) {
-  return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-relative", ...revs, "--"], root).split("\0").filter((p) => p !== "");
+  return gitOut(git, ["-c", "diff.relative=false", "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root).split("\0").filter((p) => p !== "");
 }
 function sessionsAffected(ctx, root, changed) {
   const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
@@ -7723,13 +7723,11 @@ async function runLand(argv2, ctx) {
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
   let sessions;
+  let sessionsUnknown;
   try {
     sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
-    for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity, "land")}
-`);
   } catch (err) {
-    ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${err.message}
-`);
+    sessionsUnknown = err.message;
   }
   if (squash) squashLand(ctx, project.root, head, message5, `squashing ${paths.branch} into ${base}`);
   else {
@@ -7739,6 +7737,10 @@ async function runLand(argv2, ctx) {
       throw new ArbabError("git", `merging ${paths.branch} into ${base} failed (${merge.code}): ${(merge.stderr || merge.stdout).trim()}; the merge was aborted`);
     }
   }
+  for (const activity of sessions ?? []) ctx.stderr(`warning: ${sessionText(activity, "land")}
+`);
+  if (sessionsUnknown !== void 0) ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${sessionsUnknown}
+`);
   const mergeSha = gitOut(ctx.git, ["rev-parse", "HEAD"], project.root).trim();
   const landing = {
     name: name2,

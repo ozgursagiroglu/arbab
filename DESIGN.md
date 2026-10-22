@@ -713,7 +713,7 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     is written to the config. The file must lie inside the project by its path and by its real path, and neither
     may be a credential file by the fence's whole list plus config `credentialPaths` (`.env*`, `*.pem`, `*.key`,
     `id_rsa*`, …), matched without case (`.ENV` is refused too; §21), so a lens cannot carry a credential file into
-    a reviewer's brief; the name rules look only below the project root (§21, Fence);
+    a reviewer's brief; the name rules and relative patterns look only below the project root (§21, Fence);
   - `--since <sha>` diffs from that commit, an ancestor of the head other than the head, instead of the base (a fix
     round), and records it as `since`;
   - a re-run on the same head waits for, or adopts, reviewer and skeptic lanes still running or finished after an
@@ -1026,7 +1026,8 @@ Decided while building it (plan `ui2`):
   project has no ancestor holding the project's config, so nothing would recognise it as a lane worktree (§3). Neither
   may be the project root nor overlap `.arbab/integrations`, checked as written and again by real path (the real
   project root, and the real path of `.arbab/integrations`, or where it would be), so a link to the root or into the
-  records is refused with the same message. The failures seen (ESLint's cascade, tools that scan `.arbab/`) are
+  records is refused with the same message. Real paths are taken in the spelling on disk and every comparison ignores
+  case, so `.ARBAB/Integrations` on a case-insensitive file system is refused too. The failures seen (ESLint's cascade, tools that scan `.arbab/`) are
   covered by the root marker and by doctor.
 - `land --squash` has no opposite: with config `landing.squash` set, a single landing cannot ask for a merge commit.
 - Readiness drops a damaged `reviews/<round>.json` from its round counts without saying so, while
@@ -1116,11 +1117,13 @@ The decisions below answer what that use showed.
   prompts (a lane's `brief` and `schema`, a plan phase's `brief` and `schema`, a plan's `defaults.schema`, config
   `instructions`), by the list plus config `credentialPaths` with no home directory, so `~/` entries match nothing
   there, again by both spellings. `credentialPaths` is read before `instructions`, so the config's own instructions
-  are checked against it. The name rules (`**/.env*`, `**/*.pem`, `**/*.key`, …) test every component of an input's
-  path, but for a file inside the project (lens file, `--message`, brief, schema, instructions) only the components
-  below the project root: the path as given below the root as given, the real path below the root's real path. A
+  are checked against it. The name rules (`**/.env*`, `**/*.pem`, `**/*.key`, …) and the relative patterns (an entry
+  starting with neither `~/` nor `/`, such as `vault/*.md`) test the whole path of a file outside the project, but for
+  a file inside it (an input, a lens file, `--message`, a brief, a schema, instructions) only what lies below the
+  project root, `/`-joined: the path as given below the root as given, the real path below the root's real path. A
   project kept under `~/.envs/app` or `~/keys.key/app` therefore still works, and `.env` inside it is still refused;
-  every other rule sees the whole path. A refusal names the rule that matched.
+  `~/` and absolute (`//`) entries see the whole path. A file a folder input holds follows the input's rule. A
+  refusal names the rule that matched.
 
 ### Shepherd
 
@@ -1136,7 +1139,9 @@ The decisions below answer what that use showed.
   passes: symbolic links, paths the fence denies as credentials (its built-in list and config `credentialPaths`, and
   `~/Library`) by the path as given or its real path, credential-like file names, a folder holding the home directory
   or the worktree, and two inputs with one name are refused; links inside a folder are skipped. The check is the
-  shared credential matcher (Fence, above), so it ignores case.
+  shared credential matcher (Fence, above), so it ignores case; for an input inside the project, by either spelling,
+  the name rules and relative patterns look only below the project root, so a project under `~/.envs/` can take an
+  input from itself.
 - Inputs are rebuilt on every run, under the writer lock, whether the lane has inputs or not: `.arbab-tmp/inputs` is
   removed whole (unlinked when it is a link) and created again, so an input the lane dropped disappears and the files
   outside the repository are copied as they are now. The copies are never written through a link a worker left (§3);
@@ -1186,8 +1191,8 @@ The decisions below answer what that use showed.
 - `review --lens-file <name>=<file>` adds a lens, or replaces a lens's text, from a file for one run, with no config
   edit; `--since <sha>` diffs from an ancestor of the head instead of the base, for a fix round. The lens file must
   lie inside the project, by its path and its real path, and neither may be a credential file by the fence's list
-  and config `credentialPaths`, ignoring case, the name rules looking only below the project root (the credential
-  matcher, Fence above).
+  and config `credentialPaths`, ignoring case, the name rules and relative patterns looking only below the project
+  root (the credential matcher, Fence above).
 - A re-run of `verify` or `review` on the same head adopts its generated lanes' results when they finished after a
   timeout, and waits for them when they still run. `verify`, `review` and `preflight` register as waiters while they
   wait, so the Stop hook does not hold the turn they wait in.

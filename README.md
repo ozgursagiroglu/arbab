@@ -334,8 +334,10 @@ Every worker gets:
   repository, are copied into its worktree afresh on every run, never through a link the worker left there. The same
   credential list plus your `credentialPaths`, matched in any case, keeps arbab itself from copying a credential file
   in as an input, inlining one into a prompt (a brief, a schema, `instructions`, a review lens) or committing one as a
-  landing message. For files inside the project, name rules such as `.env*` look only below the project root, so a
-  project kept under a folder like `~/.envs/` still works.
+  landing message. Every kind of `credentialPaths` entry guards inputs, lens files and `--message`; the brief, schema
+  and `instructions` files are guarded by the relative, `//` and `**/` entries only, since `~/` entries match nothing
+  there. For files inside the project, inputs included, name rules such as `.env*` and relative entries such as
+  `vault/*.md` look only below the project root, so a project kept under a folder like `~/.envs/` still works.
 - **A budget and a clock.** Every attempt has a dollar cap, a wall-clock limit and an idle limit.
 
 On your machine:
@@ -402,9 +404,8 @@ quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)
 - **why**: the reason for the lane's state, such as `no free slot` for a held lane or `usage limit` for one waiting
   for the reset, cut to 40 characters. A finished lane keeps a reason only when its shepherd itself hit an error,
   for example while loading the lane, preparing the worktree or copying inputs: `why` holds the error's message, and
-  the row reads `finished (failed)` (or `finished (killed:stopped)` if a stop came in as well). A lane that finished
-  with the end state of its last attempt (`success`, a failed attempt, a budget or time limit) or by `arbab stop`
-  alone has an empty `why`.
+  the row reads `finished (failed)`. A lane that finished with the end state of its last attempt (`success`, a failed
+  attempt, a budget or time limit) or by `arbab stop` has an empty `why`.
 
 ### Costs and the quota
 

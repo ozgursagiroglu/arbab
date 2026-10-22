@@ -63,6 +63,11 @@ export function copyInputs(input: {
   const homes = homeSpellings(home);
   const worktree = realOr(resolve(input.worktree));
   const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
+  // An input inside the project is tested below its root, as the project's own files are: a project kept under
+  // `~/.envs/` may still take an input from itself. One outside it is tested on its whole path.
+  const projectRoot = resolve(input.projectRoot);
+  const projectRoots = [...new Set([projectRoot, realOr(projectRoot)])];
+  const rootOf = (path: string): string | undefined => projectRoots.find((r) => within(r, path));
 
   const names = new Map<string, string>();
   const planned: Planned[] = [];
@@ -74,7 +79,7 @@ export function copyInputs(input: {
     let path: string;
     if (raw === "~" || raw.startsWith("~/")) path = join(home, raw.slice(2));
     else if (raw.startsWith("~")) path = refuse("names another user's home; write the full path");
-    else path = resolve(input.projectRoot, raw);
+    else path = resolve(projectRoot, raw);
 
     const name = basename(path);
     if (name === "") refuse("has no name to copy it under");
@@ -91,8 +96,11 @@ export function copyInputs(input: {
     if (stat.isSymbolicLink()) refuse("is a symbolic link; name the file it points to");
     if (!stat.isFile() && !stat.isDirectory()) refuse("is neither a file nor a directory");
     const real = realOr(path);
-    for (const p of [path, real]) {
-      const hit = credential(p);
+    // Each spelling keeps its root for the walk too: what an input holds follows the input's rule.
+    const pathRoot = rootOf(path);
+    const realRoot = rootOf(real);
+    for (const [p, root] of [[path, pathRoot], [real, realRoot]] as const) {
+      const hit = credential(p, root);
       if (hit !== null) refuse(credentialReason(hit));
     }
     if (stat.isDirectory() && homes.some((h) => within(real, h))) refuse("holds the home directory, credentials included");
@@ -117,7 +125,7 @@ export function copyInputs(input: {
           if (s.isSymbolicLink()) continue;
           if (!s.isDirectory() && !s.isFile()) continue;
           // Both spellings, as for the input itself: a pattern may name the path through a link.
-          const hit = credential(full) ?? credential(join(path, childRel));
+          const hit = credential(full, realRoot) ?? credential(join(path, childRel), pathRoot);
           if (hit !== null) {
             if (hit.kind === "dir") refuse(`holds ${hit.label}, where credentials live`);
             if (hit.kind === "file") refuse(`holds ${hit.label}, a credential file`);

@@ -217,25 +217,33 @@ function arbabRoot(projectRoot: string, v: unknown, field: string): string {
   // A lane worktree outside the project has no ancestor holding the project's config (inLaneWorktree), so a link
   // inside the project must not lead out. A missing tail is fine: arbab creates it later as plain directories.
   const real = realExisting(path);
-  const realRoot = realpathSync(projectRoot);
+  const realRoot = realpathSync.native(projectRoot);
   const rel = real === null ? ".." : relative(realRoot, real);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   if (real !== null) checkArbabRoot(real, realRoot, realExisting(records), field);
   return s;
 }
 
+// Case-insensitive file systems (macOS, Windows) take any spelling (`.ARBAB/Integrations`), so these checks ignore
+// case; where one does not, refusing a little more is the safe side.
+const fold = (path: string): string => path.toLowerCase();
+
 /** `path` is not the project root and does not overlap the integration records (when `records` is given). */
 function checkArbabRoot(path: string, root: string, records: string | null, field: string): void {
-  if (path === root) fail(field, "must not be the project root");
+  if (fold(path) === fold(root)) fail(field, "must not be the project root");
   // Integration records vouch for install points (depsConfirmedAt): no worker's worktree or run dir may overlap them.
-  const inside = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`);
+  const inside = (a: string, b: string): boolean => {
+    const fa = fold(a);
+    const fb = fold(b);
+    return fa === fb || fa.startsWith(fb.endsWith(sep) ? fb : `${fb}${sep}`);
+  };
   if (records !== null && (inside(path, records) || inside(records, path))) {
     fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
   }
 }
 
-// The real path of the deepest existing entry on the way to `path`, with the missing tail appended as written; null
-// when that entry is a dangling link.
+// The real path of the deepest existing entry on the way to `path`, in the spelling on disk, with the missing tail
+// appended as written; null when that entry is a dangling link.
 function realExisting(path: string): string | null {
   for (let p = path; ; p = dirname(p)) {
     let present = true;
@@ -247,7 +255,7 @@ function realExisting(path: string): string | null {
     if (present) {
       try {
         const tail = relative(p, path);
-        return tail === "" ? realpathSync(p) : join(realpathSync(p), tail);
+        return tail === "" ? realpathSync.native(p) : join(realpathSync.native(p), tail);
       } catch {
         return null;
       }

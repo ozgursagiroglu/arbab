@@ -183,7 +183,7 @@ var BACKGROUND_DENY = "Bash(run_in_background:true)";
 // src/profile/credentials.ts
 var GLOB_CHARS = /[*?[\]{}]/;
 var escapeRe = (text2) => text2.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-var nfd = (text2) => text2.normalize("NFD");
+var nfc = (text2) => text2.normalize("NFC");
 var credentialRe = (source) => new RegExp(source, "iu");
 function componentsBelow(path, root) {
   if (root === void 0 || !sameOrInside(root, path)) return path.split(sep2);
@@ -209,10 +209,10 @@ function globSource(glob) {
   return whole ? `${out}(?:/.*)?` : out;
 }
 function patternRegexes(pattern, homes) {
-  const anchored = (prefix, glob) => credentialRe(`^${escapeRe(nfd(prefix))}${globSource(nfd(glob))}$`);
+  const anchored = (prefix, glob) => credentialRe(`^${escapeRe(nfc(prefix))}${globSource(nfc(glob))}$`);
   if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
   if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
-  return [credentialRe(`(?:^|/)${globSource(nfd(pattern))}$`)];
+  return [credentialRe(`(?:^|/)${globSource(nfc(pattern))}$`)];
 }
 function credentialRules(patterns, homes) {
   return patterns.map((pattern) => {
@@ -228,9 +228,9 @@ function credentialRules(patterns, homes) {
     if (pattern.startsWith("**/")) {
       const name2 = pattern.slice(3);
       if (name2 !== "" && !name2.includes("/") && !name2.includes("**")) {
-        const re = credentialRe(`^${globSource(nfd(name2))}$`);
+        const re = credentialRe(`^${globSource(nfc(name2))}$`);
         return (path, root) => {
-          const component = componentsBelow(path, root).find((c) => re.test(nfd(c)));
+          const component = componentsBelow(path, root).find((c) => re.test(nfc(c)));
           return component === void 0 ? null : { kind: "name", label: component };
         };
       }
@@ -239,12 +239,12 @@ function credentialRules(patterns, homes) {
     const hit = { kind: "pattern", label: pattern };
     if (!pattern.startsWith("~/") && !pattern.startsWith("/")) {
       return (path, root) => {
-        const subject = nfd(root === void 0 || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
+        const subject = nfc(root === void 0 || !sameOrInside(root, path) ? path : componentsBelow(path, root).join("/"));
         return res.some((re) => re.test(subject)) ? hit : null;
       };
     }
     return (path) => {
-      const subject = nfd(path);
+      const subject = nfc(path);
       return res.some((re) => re.test(subject)) ? hit : null;
     };
   });
@@ -7613,7 +7613,7 @@ function porcelainEntries(out) {
   return entries3;
 }
 function changedPaths(git, root, revs) {
-  return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root).split("\0").filter((p) => p !== "");
+  return gitOut(git, ["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-relative", ...revs, "--"], root).split("\0").filter((p) => p !== "");
 }
 function sessionsAffected(ctx, root, changed) {
   const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
@@ -7721,7 +7721,7 @@ async function runLand(argv2, ctx) {
   const branchAt = branchHead(ctx.git, project.root, paths.branch);
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
-  let sessions = [];
+  let sessions;
   try {
     sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
     for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity)}
@@ -7759,7 +7759,7 @@ async function runLand(argv2, ctx) {
       push: remote === null ? null : ["git", "push", remote, base],
       cleanup,
       leftAlone,
-      otherSessions: sessions
+      ...sessions !== void 0 && { otherSessions: sessions }
     });
   } else {
     ctx.stdout(`landed ${name2}: ${head} into ${base} as ${mergeSha}

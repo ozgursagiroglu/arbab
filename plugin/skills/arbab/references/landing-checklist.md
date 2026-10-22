@@ -78,11 +78,15 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
 
 - [ ] Present `readiness.md` and ask whether to land. Waivers are the human's: `--waive` needs a terminal, so the
       human runs `arbab readiness <name> --waive <id>,…` themselves.
-- [ ] When readiness names other sessions (`session:<id>` risks), or `land` prints a `warning:` line for one before
-      it merges, tell each session before landing what the landing changes and when, with Claude Code's SendMessage.
+- [ ] When readiness names other sessions (`session:<id>` risks), tell each session what the landing changes and
+      when, with Claude Code's SendMessage, before you run `land`. `land` also prints a `warning:` line per session,
+      but in the same call as the merge: those lines are a last record (they also name sessions that appeared since
+      readiness), not a cue to tell anyone first.
       ListAgents lists sessions by name; one started in a project directory usually carries that directory's name.
       Recognise the session by the lanes, waiters and projects the text names: the 8-character id is not
       ListAgents' short ref. Hold the landing only if one asks; neither readiness nor `land` blocks on them.
+      Run outside Claude Code (no session id, such as `--waive` in the human's terminal), readiness and `land` count
+      every session as another, the orchestrator's own included: its own lanes and waiters show up there too.
 - [ ] On a yes, `arbab land <name>`. It refuses unless readiness is ready for the integration head and verify
       passed there, and unless the main checkout is on the base branch and contained in the verified head (a base
       that moved is merged into the integration first, with hooks off as `land` prints, the new head recorded with

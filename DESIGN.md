@@ -123,11 +123,18 @@ the lane-worktree test above (src/commands/project.ts, so the hook's `-C` check 
 (src/config/load.ts, so `.arbab/integrationſ` is refused); by the credential matcher's containment checks
 (src/profile/credentials.ts, §21); by lane inputs, to find the project root of an input's path as given and to
 refuse a folder holding the home directory or the worktree (src/shepherd/inputs.ts); and by `otherSessions`, to
-match a registry entry's project and runner (src/registry/sessions.ts, §21). Each of them resolves a path with
-`realpathSync.native`, which gives its spelling on disk, before it folds it. Two comparisons do not fold. The
-credential matcher's glob regexes (name rules and patterns) match the NFD pattern against the NFD path with the `iu`
-flags, Unicode case folding that takes `ſ` as `s` and U+212A as `k` but keeps every character one character, so a
-`?` still matches `ß`, which foldPath would turn into `ss`. And an input's real path is inside the project only when
+match a registry entry's project and runner (src/registry/sessions.ts, §21). The lane-worktree test, the config
+checks, lane inputs, `otherSessions` (and the `runner` it reads, recorded by the same `runnerPath`) and
+`homeSpellings` (the home directories handed to the credential matcher) resolve a path with `realpathSync.native`,
+which gives its spelling on disk, before they fold it. The other callers of the credential matcher resolve the file
+they check and the project root with `realpathSync`, which follows links but may keep the spelling as given: land's
+`--message` file, review's `--lens-file`, and the files lane, plan and config fields name (a brief, a schema,
+`instructions`; src/config/check.ts, which passes no home directories); their containment checks still fold, so a spelling of case does not matter.
+Two comparisons do not fold. The credential matcher's glob regexes (name rules and patterns) match the NFC pattern
+against the NFC path with the `iu` flags: NFC so that the NFC and NFD spellings of a name are one, as APFS takes
+them, while a precomposed `é` stays one code point that a `?` matches (NFD would split it into `e` and a combining
+accent); `iu` is Unicode case folding that takes `ſ` as `s` and U+212A as `k` but keeps every character one
+character, so a `?` still matches `ß`, which foldPath would turn into `ss`. And an input's real path is inside the project only when
 it is inside the project's real path exactly: both are spellings on disk, so a sibling that differs only in case is
 another directory where the file system tells them apart.
 
@@ -760,7 +767,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   - refuses unless the main checkout is on the integration's base and contained in the verified head, with no
     tracked change and no untracked file where the merge writes (§21: other untracked files are left alone and
     listed as `left alone:`);
-  - prints a `warning:` line on stderr for each other session the landing affects (§21), and never blocks on them;
+  - prints a `warning:` line on stderr for each other session the landing affects (§21), and never blocks on them:
+    it merges in the same call, so these lines are a last record, and the sessions are told from readiness's list;
   - merges `integrate/<name>` into it (`--no-ff`) and records `landing.json`; with `--squash` (or config
     `landing.squash`) it makes one commit instead (`merge --squash`, then a commit, hooks off). `--message <file>`
     replaces the `Land <name>` message of either; the file must lie inside the project, also after resolving links,
@@ -1102,23 +1110,31 @@ The decisions below answer what that use showed.
   the process runs (`dist/arbab.mjs` of whichever checkout or plugin it came from); an entry without it, or with one
   that is not a string, reads as written before 0.2.1.
 - A landing moves the base under other sessions' work and may replace a runner file they run. `otherSessions`
-  (src/registry/sessions.ts) reads the live shepherd and waiter entries of every session but this one (all of them
-  outside Claude Code) and, per owner, names its lanes and waiters in this project, and the other projects whose
+  (src/registry/sessions.ts) reads the live shepherd and waiter entries of every session but this one and, per owner, names its lanes and waiters in this project, and the other projects whose
   processes run a runner file of this project that the landing changes, with those files. An entry without `runner`
   counts only by its project. Projects and runners match by real path through foldPath (§3), so an entry that
   recorded the project in another spelling of case still counts. git names the changed paths from the repository's
   top level, which lies above the project root when the project is a subdirectory of its repository; they are taken
   from `git rev-parse --show-toplevel` (once, in the project root) before runner files are matched, and the runner
-  files are reported relative to the project root.
+  files are reported relative to the project root. "This one" is the caller's `CLAUDE_CODE_SESSION_ID`: readiness or
+  land run outside Claude Code (no session id, such as `readiness --waive` typed in a terminal) count every session
+  as another, the orchestrator's own included, so its lanes and waiters are named too.
   - `readiness` checks the paths the integration changes since its merge base with the base, and lists each such
     session as a risk `session:<id>` (`<id>` is the first 8 characters of the session id, or `outside` for
     processes started outside Claude Code), first among the risks; it is never a skipped item and no waiver answers
     it. The report, `readiness.json` and `--json`, also carries them as `otherSessions`. It is advisory, as in
     `land`: when the registries cannot be read, the report holds one risk `session:unknown` ("cannot tell which
-    other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same.
-  - `land` checks the paths the merge changes in the main checkout and, before it merges, prints one `warning:` line
-    on stderr per session (the risk's sentence) and adds `otherSessions` to `--json`. It never blocks: when the
-    registries cannot be read it warns that it cannot tell and lands.
+    other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same. An empty
+    `otherSessions` means none.
+  - `land` checks the paths the merge changes in the main checkout and, just before it merges and in the same call,
+    prints one `warning:` line on stderr per session (the risk's sentence) and adds `otherSessions` to `--json`
+    (empty for none, as in readiness). It never blocks: when the registries cannot be read it warns that it cannot
+    tell, leaves `otherSessions` out of `--json`, and lands. Nobody can be told "before landing" from these lines;
+    they are a last record, which also names sessions that appeared since readiness.
+  - So the order is: tell the sessions readiness names, then land. The sentence's "Tell them before landing" is
+    for readiness.md; in land's warnings it comes too late.
+  - Both diffs pass `--no-relative`, so a `diff.relative` in the owner's git config cannot make the changed paths
+    relative to the project root instead of git's top level.
   - The sentence names the lanes, waiters, projects and runner files: those are how the orchestrator recognises the
     session in Claude Code's ListAgents and tells it with SendMessage (the skill's Land section). The 8-character id
     is not ListAgents' short reference and does not match it (observed 2026-10-23).

@@ -760,7 +760,11 @@ export interface ReadinessReport {
    * review is carried over; DESIGN.md §21). Absent otherwise.
    */
   reviewCarriedOverFrom?: string;
-  /** Other sessions this landing affects, also listed under risks (id `session:<owner>`). Absent before 0.2.1. */
+  /**
+   * Other sessions this landing affects, also listed under risks (id `session:<owner>`). Empty means none; absent
+   * when the machine registry could not be read (a `session:unknown` risk says so) and before 0.2.1. `land --json`'s
+   * field of the same name means the same: empty for none, absent when it cannot tell.
+   */
   otherSessions?: SessionActivity[];
 }
 

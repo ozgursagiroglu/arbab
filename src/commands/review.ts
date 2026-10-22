@@ -18,7 +18,8 @@
 // reviewers did not finish in time (nothing written) or the skeptics did not (review.json keeps their findings
 // unverified).
 import { realpathSync } from "node:fs";
-import { basename } from "node:path";
+import { dirname } from "node:path";
+import { credentialMatcher, credentialReason, homeSpellings, type CredentialHit } from "../profile";
 import {
   applyVerdicts,
   assertReviewLaneNames,
@@ -58,6 +59,9 @@ import { WAIT_TIMEOUT_EXIT, parseTimeoutMin } from "./wait";
 const DEFAULT_TIMEOUT_MIN = 120;
 const SHA = /^[0-9a-f]{40,64}$/;
 
+/** What `credentialMatcher` returns. */
+type CredentialCheck = (path: string) => CredentialHit | null;
+
 /** The lenses to run: --lenses as given (each must be known), or every configured lens. */
 export function reviewLenses(option: string | undefined, configLenses: Record<string, string>): string[] {
   const known = lensNames(configLenses);
@@ -72,18 +76,18 @@ export function reviewLenses(option: string | undefined, configLenses: Record<st
 
 /**
  * Where a lens file is: inside the project root by its path and by its real path, so neither an absolute path nor a
- * symlink pulls a file from elsewhere (a credential file) into a reviewer's brief; never a .env file.
+ * symlink pulls a file from elsewhere into a reviewer's brief; never a path `credential` hits, by either spelling.
  */
-function lensFilePath(root: string, name: string, file: string): string {
+function lensFilePath(root: string, name: string, file: string, credential: CredentialCheck): string {
   const refuse = (why: string): ArbabError => new ArbabError("usage", `--lens-file ${name}=${file}: ${why}`);
-  const isEnv = (path: string): boolean => basename(path).startsWith(".env");
   let path: string;
   try {
     path = confine(root, file);
   } catch {
     throw refuse("the file must be inside the project root");
   }
-  if (isEnv(path)) throw refuse("a .env file is not a lens");
+  const hit = credential(path);
+  if (hit !== null) throw refuse(`the file ${credentialReason(hit)}; a credential file is not a lens`);
   let real: string;
   try {
     real = realpathSync(path);
@@ -96,20 +100,21 @@ function lensFilePath(root: string, name: string, file: string): string {
   } catch {
     throw refuse("the file must be inside the project root, and a symlink in it may not lead out");
   }
-  if (isEnv(real)) throw refuse("a .env file is not a lens");
+  const realHit = credential(real);
+  if (realHit !== null) throw refuse(`the file resolves to ${real}, which ${credentialReason(realHit)}; a credential file is not a lens`);
   return real;
 }
 
 /**
- * The --lens-file lenses by name, each text read from its file, a path inside the project root (lensFilePath).
- * Nothing is written to the config.
+ * The --lens-file lenses by name, each text read from its file, a path inside the project root that is no credential
+ * file (lensFilePath). Nothing is written to the config.
  */
-export function readLensFiles(root: string, options: readonly string[]): Record<string, string> {
+export function readLensFiles(root: string, options: readonly string[], credential: CredentialCheck): Record<string, string> {
   const lenses: Record<string, string> = {};
   for (const option of options) {
     const { name, file } = parseLensFileOption(option);
     if (Object.hasOwn(lenses, name)) throw new ArbabError("usage", `--lens-file names lens ${name} twice`);
-    const path = lensFilePath(root, name, file);
+    const path = lensFilePath(root, name, file, credential);
     let text: string | null;
     try {
       text = readText(path);
@@ -194,7 +199,9 @@ export async function runReview(argv: string[], ctx: CommandContext): Promise<nu
   const name = assertValidName(onePositional("review", positionals, "name"), "integration");
   const timeoutMs = parseTimeoutMin(values["timeout-min"] ?? String(DEFAULT_TIMEOUT_MIN));
   const project = openProject(ctx);
-  const fileLenses = readLensFiles(project.root, values["lens-file"] ?? []);
+  // ctx.home is ~/.arbab.
+  const credential = credentialMatcher(project.config.credentialPaths, homeSpellings(dirname(ctx.home)));
+  const fileLenses = readLensFiles(project.root, values["lens-file"] ?? [], credential);
   const runLenses = { ...project.config.review.lenses, ...fileLenses };
   const lenses = reviewLenses(values.lenses, runLenses);
   const unrun = Object.keys(fileLenses).filter((lens) => !lenses.includes(lens));

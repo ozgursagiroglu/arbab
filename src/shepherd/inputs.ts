@@ -1,7 +1,7 @@
 import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { BUILTIN_CREDENTIAL_PATHS } from "../profile/presets";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { credentialMatcher, credentialReason, homeSpellings } from "../profile";
 import { realDir, WORKER_TMP_DIR } from "../run/workertmp";
 import { ArbabError } from "../util/errors";
 
@@ -21,80 +21,13 @@ function within(parent: string, child: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+/** The path as spelled on disk (`~/.AWS` is `~/.aws` on macOS), or the path itself when it cannot be resolved. */
 function realOr(path: string): string {
   try {
-    return realpathSync(path);
+    return realpathSync.native(path);
   } catch {
     return path;
   }
-}
-
-interface Hit {
-  kind: "dir" | "file" | "name" | "pattern";
-  label: string;
-}
-
-type CredentialRule = (path: string) => Hit | null;
-
-const GLOB_CHARS = /[*?[\]{}]/;
-
-const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-
-/** A Read/Edit rule glob as a regex source: `*` and `?` stay within a component, `**` crosses them. */
-function globSource(glob: string): string {
-  const whole = glob.endsWith("/**");
-  const body = whole ? glob.slice(0, -3) : glob;
-  let out = "";
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i] as string;
-    if (c === "*" && body[i + 1] === "*") {
-      i++;
-      if (body[i + 1] === "/") {
-        i++;
-        out += "(?:.*/)?";
-      } else out += ".*";
-    } else if (c === "*") out += "[^/]*";
-    else if (c === "?") out += "[^/]";
-    else out += escapeRe(c);
-  }
-  // `dir/**` covers the directory itself too: copying it would copy what is under it.
-  return whole ? `${out}(?:/.*)?` : out;
-}
-
-function patternRegexes(pattern: string, homes: readonly string[]): RegExp[] {
-  const anchored = (prefix: string, glob: string): RegExp => new RegExp(`^${escapeRe(prefix)}${globSource(glob)}$`);
-  if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
-  // `//x` is absolute; a single `/` is relative to the settings file, which lint flags, so taken as absolute here.
-  if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
-  // Relative to wherever the worker runs: matched anywhere.
-  return [new RegExp(`(?:^|/)${globSource(pattern)}$`)];
-}
-
-/** One check per pattern of the fence's credential list (src/profile/presets.ts) and config.credentialPaths. */
-function credentialRules(patterns: readonly string[], homes: readonly string[]): CredentialRule[] {
-  return patterns.map((pattern): CredentialRule => {
-    if (pattern.startsWith("~/")) {
-      const rest = pattern.slice(2);
-      const dir = rest.endsWith("/**") ? rest.slice(0, -3) : null;
-      const plain = dir ?? rest;
-      if (plain !== "" && !GLOB_CHARS.test(plain)) {
-        const hit: Hit = { kind: dir !== null ? "dir" : "file", label: `~/${plain}` };
-        return (path) => (homes.some((h) => within(join(h, plain), path)) ? hit : null);
-      }
-    }
-    if (pattern.startsWith("**/")) {
-      const name = pattern.slice(3);
-      if (name !== "" && !name.includes("/") && !name.includes("**")) {
-        const re = new RegExp(`^${globSource(name)}$`);
-        return (path) => {
-          const component = path.split(sep).find((c) => re.test(c));
-          return component === undefined ? null : { kind: "name", label: component };
-        };
-      }
-    }
-    const res = patternRegexes(pattern, homes);
-    return (path) => (res.some((re) => re.test(path)) ? { kind: "pattern", label: pattern } : null);
-  });
 }
 
 interface Entry {
@@ -127,17 +60,9 @@ export function copyInputs(input: {
   credentialPaths: string[];
 }): string[] {
   const home = resolve(input.userHome);
-  // Lexical and real: a home reached through a link is the same home.
-  const homes = [...new Set([home, realOr(home)])];
+  const homes = homeSpellings(home);
   const worktree = realOr(resolve(input.worktree));
-  const rules = credentialRules([...BUILTIN_CREDENTIAL_PATHS, LIBRARY, ...input.credentialPaths], homes);
-  const credential = (path: string): Hit | null => {
-    for (const rule of rules) {
-      const hit = rule(path);
-      if (hit !== null) return hit;
-    }
-    return null;
-  };
+  const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
 
   const names = new Map<string, string>();
   const planned: Planned[] = [];
@@ -168,11 +93,7 @@ export function copyInputs(input: {
     const real = realOr(path);
     for (const p of [path, real]) {
       const hit = credential(p);
-      if (hit === null) continue;
-      if (hit.kind === "dir") refuse(`is under ${hit.label}, where credentials live`);
-      if (hit.kind === "file") refuse(`is the credential file ${hit.label}`);
-      if (hit.kind === "name") refuse(`is named like a credential file (${hit.label})`);
-      refuse(`matches the credential path ${hit.label}`);
+      if (hit !== null) refuse(credentialReason(hit));
     }
     if (stat.isDirectory() && homes.some((h) => within(real, h))) refuse("holds the home directory, credentials included");
     if (stat.isDirectory() && within(real, worktree)) refuse("holds the worktree it would be copied into");

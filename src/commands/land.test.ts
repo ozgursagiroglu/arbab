@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { credentialMatcher } from "../profile";
 import { untrustedTree } from "../run";
 import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord } from "../types";
 import { writeJsonAtomic } from "../util/fs";
@@ -29,8 +30,8 @@ function laneWorktree(t: TestProject, lane: string, from?: string): string {
 }
 
 /** An integration of lane a that verified and is ready at tier low. */
-async function ready(landing: Record<string, unknown> = { tier: "low" }): Promise<{ t: TestProject; head: string }> {
-  const t = makeProject({ config: { ...DEFAULT_CONFIG, landing } });
+async function ready(landing: Record<string, unknown> = { tier: "low" }, config: Record<string, unknown> = {}): Promise<{ t: TestProject; head: string }> {
+  const t = makeProject({ config: { ...DEFAULT_CONFIG, ...config, landing } });
   // A real shepherd ignores the run dirs the tests write; the main checkout must stay clean to land.
   appendFileSync(join(t.root, ".git", "info", "exclude"), ".arbab/runs/\n");
   branchWith(t, "arbab/a", "a.txt", "a\n");
@@ -116,39 +117,57 @@ describe("assertCleanBase", () => {
 });
 
 describe("readMessage", () => {
+  const plain = credentialMatcher([], []);
+
   it("reads an absolute or project-relative file and refuses a missing or blank one", () => {
     p = makeProject();
     p.write("msg.txt", "Ship it\n\nBody.\n");
     p.write("notes/msg.txt", "Relative\n");
-    expect(readMessage(p.root, join(p.root, "msg.txt"))).toBe("Ship it\n\nBody.\n");
-    expect(readMessage(p.root, "notes/msg.txt")).toBe("Relative\n");
-    expect(() => readMessage(p.root, "missing.txt")).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/cannot read the --message file .*missing\.txt/) }));
-    expect(() => readMessage(p.root, "notes")).toThrow(/cannot read the --message file/);
+    expect(readMessage(p.root, join(p.root, "msg.txt"), plain)).toBe("Ship it\n\nBody.\n");
+    expect(readMessage(p.root, "notes/msg.txt", plain)).toBe("Relative\n");
+    expect(() => readMessage(p.root, "missing.txt", plain)).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/cannot read the --message file .*missing\.txt/) }));
+    expect(() => readMessage(p.root, "notes", plain)).toThrow(/cannot read the --message file/);
     p.write("blank.txt", " \n\n");
-    expect(() => readMessage(p.root, "blank.txt")).toThrow(/--message file .*blank\.txt is empty/);
+    expect(() => readMessage(p.root, "blank.txt", plain)).toThrow(/--message file .*blank\.txt is empty/);
   });
 
   it("refuses a file outside the project, absolute, relative or through a symlink", () => {
     p = makeProject();
     writeFileSync(join(p.dir, "outside.txt"), "secret\n");
     const outside = expect.objectContaining({ code: "usage", message: expect.stringMatching(/^not landed: the --message file .*outside\.txt is outside the project/) });
-    expect(() => readMessage(p.root, join(p.dir, "outside.txt"))).toThrow(outside);
-    expect(() => readMessage(p.root, "../outside.txt")).toThrow(outside);
+    expect(() => readMessage(p.root, join(p.dir, "outside.txt"), plain)).toThrow(outside);
+    expect(() => readMessage(p.root, "../outside.txt", plain)).toThrow(outside);
     symlinkSync(join(p.dir, "outside.txt"), join(p.root, "link.txt"));
-    expect(() => readMessage(p.root, "link.txt")).toThrow(/--message file .*link\.txt resolves outside the project/);
+    expect(() => readMessage(p.root, "link.txt", plain)).toThrow(/--message file .*link\.txt resolves outside the project/);
   });
 
-  it("refuses a .env file, by name or through a symlink", () => {
+  it("refuses a credential file in any case, by name or through a symlink, naming the rule", () => {
     p = makeProject();
-    for (const name of [".env", ".env.local", ".ENV.production"]) {
-      writeFileSync(join(p.root, name), "TOKEN=x\n");
-      expect(() => readMessage(p.root, name), name).toThrow(
-        expect.objectContaining({ code: "usage", message: expect.stringMatching(/is a \.env file, which may hold credentials$/) }),
-      );
-      expect(() => readMessage(p.root, join(p.root, name)), name).toThrow(/is a \.env file/);
+    const credential = credentialMatcher(["**/*.secret"], []);
+    for (const [name, rule] of [
+      [".ENV", /is named like a credential file \(\.ENV\)$/],
+      [".Env.local", /is named like a credential file \(\.Env\.local\)$/],
+      ["x.pem", /is named like a credential file \(x\.pem\)$/],
+      ["db.secret", /is named like a credential file \(db\.secret\)$/],
+    ] as const) {
+      p.write(name, "TOKEN=x\n");
+      expect(() => readMessage(p.root, name, credential), name).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(rule) }));
+      expect(() => readMessage(p.root, join(p.root, name), credential), name).toThrow(rule);
+      symlinkSync(join(p.root, name), join(p.root, "link.txt"));
+      expect(() => readMessage(p.root, "link.txt", credential), name).toThrow(new RegExp(`--message file .*link\\.txt resolves to .*, which ${rule.source}`));
+      rmSync(join(p.root, "link.txt"));
     }
-    symlinkSync(join(p.root, ".env"), join(p.root, "msg.txt"));
-    expect(() => readMessage(p.root, "msg.txt")).toThrow(/resolves to a \.env file/);
+    p.write("msg.txt", "Ship it\n");
+    expect(readMessage(p.root, "msg.txt", credential)).toBe("Ship it\n");
+  });
+
+  it("refuses what a config credentialPaths rule anchored at the home covers", () => {
+    p = makeProject();
+    p.write("vault/msg.txt", "Ship it\n");
+    const home = dirname(p.root);
+    expect(() => readMessage(p.root, "vault/msg.txt", credentialMatcher(["~/repo/vault/**"], [home]))).toThrow(/msg\.txt is under ~\/repo\/vault, where credentials live$/);
+    expect(() => readMessage(p.root, "vault/msg.txt", credentialMatcher(["~/repo/*/msg.txt"], [home]))).toThrow(/msg\.txt matches the credential path ~\/repo\/\*\/msg\.txt$/);
+    expect(readMessage(p.root, "vault/msg.txt", credentialMatcher(["~/repo/vault/**"], []))).toBe("Ship it\n");
   });
 });
 
@@ -645,14 +664,23 @@ describe("runLand --squash and --message", () => {
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
   });
 
-  it("refuses a --message file outside the project or named .env before anything lands", async () => {
-    ({ t: p } = await ready());
+  it("refuses a --message file outside the project or a credential file before anything lands", async () => {
+    // The user's home is the parent of ctx.home (~/.arbab): the project's parent here.
+    ({ t: p } = await ready({ tier: "low" }, { credentialPaths: ["**/*.secret", "~/repo/vault/**"] }));
     const main = p.ok(["rev-parse", "main"]).trim();
     writeFileSync(join(p.dir, "msg.txt"), "Outside\n");
     await expect(runLand(["rel", "--message", join(p.dir, "msg.txt")], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is outside the project/) });
     await expect(runLand(["rel", "--message", "../msg.txt"], p.ctx)).rejects.toThrow(/is outside the project/);
-    p.write(".env", "TOKEN=x\n");
-    await expect(runLand(["rel", "--message", ".env"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is a \.env file/) });
+    p.write(".ENV", "TOKEN=x\n");
+    await expect(runLand(["rel", "--message", ".ENV"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/is named like a credential file \(\.ENV\)$/) });
+    p.write("x.pem", "KEY\n");
+    await expect(runLand(["rel", "--message", "x.pem"], p.ctx)).rejects.toThrow(/is named like a credential file \(x\.pem\)$/);
+    p.write("db.secret", "TOKEN=x\n");
+    await expect(runLand(["rel", "--message", "db.secret"], p.ctx)).rejects.toThrow(/is named like a credential file \(db\.secret\)$/);
+    symlinkSync(join(p.root, "db.secret"), join(p.root, "msg-link.txt"));
+    await expect(runLand(["rel", "--message", "msg-link.txt"], p.ctx)).rejects.toThrow(/msg-link\.txt resolves to .*db\.secret, which is named like a credential file/);
+    p.write("vault/msg.txt", "Ship it\n");
+    await expect(runLand(["rel", "--message", "vault/msg.txt"], p.ctx)).rejects.toThrow(/msg\.txt is under ~\/repo\/vault, where credentials live$/);
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
   });

@@ -19,9 +19,10 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       checkout. Dependencies are installed there once, on the trusted base, before any merge.
 - [ ] A conflict aborts the merge and names the paths; the lanes before it stay merged. A conflict between lanes
       means the plan's scopes overlapped: note it, fix the branches, integrate again.
-- [ ] Work done outside lanes: `arbab integrate <name> --adopt <ref> [--base <ref>]` makes an integration of that
-      branch, with nothing merged, so it goes through the same steps. It installs at the fork point of `<ref>` and
-      the base, so it refuses a base that config `baseBranch` does not contain.
+- [ ] Work done outside lanes: `arbab integrate <name> --adopt <ref> [--base <branch>]` makes an integration of
+      that branch, with nothing merged, so it goes through the same steps. The base (`--base`, else `baseBranch`)
+      must be a branch, because `land` merges into it. It installs at the fork point of `<ref>` and the base, so it
+      refuses a base that config `baseBranch` does not contain.
 - [ ] After a hand commit or a merge of the base in the integration worktree, `arbab integrate <name> --refresh`
       records the new head (nothing merged, nothing installed); then verify, review and readiness again.
 - [ ] A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or a `package.json`'s
@@ -54,7 +55,8 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       findings ends the review; they go to risks. Every round is kept in `reviews/<round>.json`.
 - [ ] A merge of the integration's own base into it does not make the review stale when git merged it cleanly (no
       hand resolution): readiness says it carried the review over. Verify must run again on the new head.
-- [ ] A `--lens-file` lies inside the project and is not a `.env*` file.
+- [ ] A `--lens-file` lies inside the project and is no credential file (the fence's list and `credentialPaths`,
+      `.env*` included, matched in any case), by its path or its real path.
 
 ## 5. Readiness report
 
@@ -81,7 +83,7 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       tracked change and no untracked file where the merge writes; other untracked files are left alone and listed
       (`left alone:`). It merges `--no-ff` and records `landing.json` with `pushed: false`.
 - [ ] When the project wants one commit per landing: `arbab land <name> --squash --message <file>` (a file inside
-      the project, not `.env*`), or config `landing.squash`. `landing.json` then records `squash: true` and the
+      the project and no credential file, as for `--lens-file`), or config `landing.squash`. `landing.json` then records `squash: true` and the
       lanes it carried, which is how cleanup knows they landed.
 - [ ] Push and deploy are human actions: `land` never pushes. Say so, with the push command it printed.
 - [ ] After landing, verify the base once more, inside the fence: `arbab verify --ref <base>` runs the gates on the

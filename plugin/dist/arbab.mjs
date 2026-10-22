@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { readFileSync as readFileSync9 } from "node:fs";
+import { readFileSync as readFileSync10 } from "node:fs";
 
 // src/commands/index.ts
 import { statSync as statSync8 } from "node:fs";
-import { resolve as resolve17 } from "node:path";
+import { resolve as resolve18 } from "node:path";
 
 // src/util/errors.ts
 var ArbabError = class extends Error {
@@ -32,15 +32,15 @@ function exitCodeFor(err) {
 }
 
 // src/commands/cleanup.ts
-import { existsSync as existsSync14, readdirSync as readdirSync10, rmdirSync as rmdirSync2, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
-import { join as join31 } from "node:path";
+import { existsSync as existsSync15, readdirSync as readdirSync10, rmdirSync as rmdirSync2, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
+import { join as join32 } from "node:path";
 
 // src/config/lane.ts
-import { resolve as resolve2 } from "node:path";
+import { resolve as resolve3 } from "node:path";
 
 // src/config/check.ts
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute as isAbsolute2, relative as relative2, sep } from "node:path";
+import { realpathSync as realpathSync2, statSync } from "node:fs";
+import { isAbsolute as isAbsolute3, relative as relative3, sep as sep2 } from "node:path";
 
 // src/types.ts
 var ROLES = ["implementer", "verifier", "reviewer", "researcher", "probe"];
@@ -52,10 +52,209 @@ var NO_FREE_SLOT_REASON = "no free slot";
 var REVIEW_HISTORY_DIR = "reviews";
 var HOST_CHECKS_FILE = "host-checks.json";
 
+// src/profile/credentials.ts
+import { realpathSync } from "node:fs";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+
+// src/profile/presets.ts
+var BUILTIN_CREDENTIAL_PATHS = [
+  "~/.ssh/**",
+  "~/.aws/**",
+  "~/.azure/**",
+  "~/.config/**",
+  "~/.docker/**",
+  "~/.kube/**",
+  "~/.gnupg/**",
+  "~/.claude/**",
+  "~/.claude.json",
+  "~/.netrc",
+  "~/.npmrc",
+  "~/.pypirc",
+  "~/.git-credentials",
+  "~/Library/Keychains/**",
+  "~/Library/Cookies/**",
+  "**/.env*",
+  "**/*.pem",
+  "**/*.key",
+  "**/*.p12",
+  "**/*.pfx",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/*.tfstate"
+];
+var GIT_WRITE_VERBS = [
+  "commit",
+  "push",
+  "reset",
+  "checkout",
+  "switch",
+  "restore",
+  "rebase",
+  "merge",
+  "cherry-pick",
+  "stash",
+  "clean",
+  "branch",
+  "worktree",
+  "tag",
+  "config",
+  "update-ref",
+  "remote"
+];
+var GIT_READ_VERBS = ["status", "diff", "log", "show", "ls-files", "blame"];
+var READ_UTILITIES = ["ls", "cat", "head", "tail", "wc"];
+var FILE_UTILITIES = ["mkdir", "cp", "mv", "rm", "touch"];
+var ANY_CODE_PREFIXES = [
+  "node",
+  "npx",
+  "npm",
+  "pnpm",
+  "yarn",
+  "bun",
+  "bunx",
+  "deno",
+  "python",
+  "python3",
+  "ruby",
+  "perl",
+  "php",
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "env",
+  "eval",
+  "exec",
+  "xargs",
+  "find",
+  "awk",
+  "sed",
+  "make",
+  "sudo",
+  "osascript",
+  "open",
+  "docker",
+  "kubectl",
+  "ssh",
+  "curl",
+  "wget",
+  "git",
+  "pnpm exec",
+  "pnpm dlx",
+  "pnpm run",
+  "npm exec",
+  "npm run",
+  "yarn run",
+  "yarn dlx",
+  "bun run",
+  "bun x",
+  "git -C",
+  "git config"
+];
+var BASH_INPUT_PARAMS = [
+  "timeout",
+  "description",
+  "run_in_background",
+  "dangerouslyDisableSandbox"
+];
+var FIXED_ENV = {
+  BASH_DEFAULT_TIMEOUT_MS: "300000",
+  BASH_MAX_TIMEOUT_MS: "900000"
+};
+var WORKER_TMP_ENV = [
+  "XDG_CONFIG_HOME",
+  "YARN_CACHE_FOLDER",
+  "NPM_CONFIG_USERCONFIG"
+];
+var WORKER_SHELL = "/bin/bash";
+var DEFAULT_BASH_OUTPUT_MAX_CHARS = 1e5;
+var BACKGROUND_DENY = "Bash(run_in_background:true)";
+
+// src/profile/credentials.ts
+var GLOB_CHARS = /[*?[\]{}]/;
+var escapeRe = (text2) => text2.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+function within(parent, child2) {
+  const rel = relative(parent.toLowerCase(), child2.toLowerCase());
+  return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
+}
+function globSource(glob) {
+  const whole = glob.endsWith("/**");
+  const body = whole ? glob.slice(0, -3) : glob;
+  let out = "";
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "*" && body[i + 1] === "*") {
+      i++;
+      if (body[i + 1] === "/") {
+        i++;
+        out += "(?:.*/)?";
+      } else out += ".*";
+    } else if (c === "*") out += "[^/]*";
+    else if (c === "?") out += "[^/]";
+    else out += escapeRe(c);
+  }
+  return whole ? `${out}(?:/.*)?` : out;
+}
+function patternRegexes(pattern, homes) {
+  const anchored = (prefix, glob) => new RegExp(`^${escapeRe(prefix)}${globSource(glob)}$`, "i");
+  if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
+  if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
+  return [new RegExp(`(?:^|/)${globSource(pattern)}$`, "i")];
+}
+function credentialRules(patterns, homes) {
+  return patterns.map((pattern) => {
+    if (pattern.startsWith("~/")) {
+      const rest = pattern.slice(2);
+      const dir = rest.endsWith("/**") ? rest.slice(0, -3) : null;
+      const plain = dir ?? rest;
+      if (plain !== "" && !GLOB_CHARS.test(plain)) {
+        const hit = { kind: dir !== null ? "dir" : "file", label: `~/${plain}` };
+        return (path) => homes.some((h) => within(join(h, plain), path)) ? hit : null;
+      }
+    }
+    if (pattern.startsWith("**/")) {
+      const name2 = pattern.slice(3);
+      if (name2 !== "" && !name2.includes("/") && !name2.includes("**")) {
+        const re = new RegExp(`^${globSource(name2)}$`, "i");
+        return (path) => {
+          const component = path.split(sep).find((c) => re.test(c));
+          return component === void 0 ? null : { kind: "name", label: component };
+        };
+      }
+    }
+    const res = patternRegexes(pattern, homes);
+    return (path) => res.some((re) => re.test(path)) ? { kind: "pattern", label: pattern } : null;
+  });
+}
+function homeSpellings(home) {
+  const lexical = resolve(home);
+  try {
+    return [.../* @__PURE__ */ new Set([lexical, realpathSync.native(lexical)])];
+  } catch {
+    return [lexical];
+  }
+}
+function credentialReason(hit) {
+  if (hit.kind === "dir") return `is under ${hit.label}, where credentials live`;
+  if (hit.kind === "file") return `is the credential file ${hit.label}`;
+  if (hit.kind === "name") return `is named like a credential file (${hit.label})`;
+  return `matches the credential path ${hit.label}`;
+}
+function credentialMatcher(extra, homes) {
+  const rules = credentialRules([...BUILTIN_CREDENTIAL_PATHS, ...extra], homes);
+  return (path) => {
+    for (const rule of rules) {
+      const hit = rule(path);
+      if (hit !== null) return hit;
+    }
+    return null;
+  };
+}
+
 // src/util/fs.ts
 import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute as isAbsolute2, join as join2, relative as relative2, resolve as resolve2 } from "node:path";
 function readJson(path) {
   let text2;
   try {
@@ -80,7 +279,7 @@ function readText(path) {
 }
 function writeTextAtomic(path, text2) {
   ensureDir(dirname(path));
-  const tmp = join(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`);
+  const tmp = join2(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`);
   try {
     writeFileSync(tmp, text2, { flag: "wx" });
     renameSync(tmp, path);
@@ -112,10 +311,10 @@ function ensureDir(path) {
   mkdirSync(path, { recursive: true });
 }
 function confine(root, candidate) {
-  const base = resolve(root);
-  const full = resolve(base, candidate);
-  const rel = relative(base, full);
-  if (rel === "" || !rel.startsWith("..") && !isAbsolute(rel)) return full;
+  const base = resolve2(root);
+  const full = resolve2(base, candidate);
+  const rel = relative2(base, full);
+  if (rel === "" || !rel.startsWith("..") && !isAbsolute2(rel)) return full;
   throw new ArbabError("usage", `path ${candidate} is outside ${base}`);
 }
 
@@ -214,19 +413,24 @@ function confined(root, v, field) {
     return fail(field, `${s} is outside the project`);
   }
 }
+var credentialNames = credentialMatcher([], []);
 function existingFile(projectRoot, v, field) {
   const s = nonEmptyString(v, field);
   const full = confined(projectRoot, s, field);
+  const hit = credentialNames(full);
+  if (hit !== null) fail(field, `${s} ${credentialReason(hit)}; its text would go into a worker's prompt`);
   let real2;
   try {
     if (!statSync(full).isFile()) fail(field, `${s} is not a file`);
-    real2 = realpathSync(full);
+    real2 = realpathSync2(full);
   } catch (err) {
     if (err instanceof ArbabError) throw err;
     return fail(field, `${s} does not exist`);
   }
-  const rel = relative2(realpathSync(projectRoot), real2);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute2(rel)) fail(field, `${s} resolves outside the project`);
+  const rel = relative3(realpathSync2(projectRoot), real2);
+  if (rel === ".." || rel.startsWith(`..${sep2}`) || isAbsolute3(rel)) fail(field, `${s} resolves outside the project`);
+  const realHit = credentialNames(real2);
+  if (realHit !== null) fail(field, `${s} resolves to ${real2}, which ${credentialReason(realHit)}; its text would go into a worker's prompt`);
   return s;
 }
 var ROLE_FIELDS = [
@@ -368,7 +572,7 @@ function inputList(v, field) {
   });
 }
 function loadLane(projectRoot, lanePath) {
-  const file = resolve2(projectRoot, lanePath);
+  const file = resolve3(projectRoot, lanePath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `lane file ${lanePath} does not exist`);
   const obj = record(raw, lanePath);
@@ -394,13 +598,13 @@ function loadLane(projectRoot, lanePath) {
 }
 
 // src/integrate/integrate.ts
-import { existsSync as existsSync2, readdirSync as readdirSync3, realpathSync as realpathSync3, renameSync as renameSync3 } from "node:fs";
-import { dirname as dirname3, join as join8, resolve as resolve7 } from "node:path";
+import { existsSync as existsSync2, readdirSync as readdirSync3, realpathSync as realpathSync4, renameSync as renameSync3 } from "node:fs";
+import { dirname as dirname3, join as join9, resolve as resolve8 } from "node:path";
 
 // src/run/git.ts
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, realpathSync as realpathSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute as isAbsolute3, join as join2, relative as relative3, resolve as resolve3, sep as sep2 } from "node:path";
+import { existsSync, lstatSync, realpathSync as realpathSync3, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute as isAbsolute4, join as join3, relative as relative4, resolve as resolve4, sep as sep3 } from "node:path";
 function makeGitRunner(env2) {
   return (args, cwd) => {
     const r = spawnSync("git", args, { cwd, env: env2, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
@@ -419,7 +623,7 @@ function must(git, args, cwd, options = []) {
 function ensureIgnored(projectRoot, entries3, git) {
   const excludeRel = must(git, ["rev-parse", "--git-path", "info/exclude"], projectRoot).trim();
   if (excludeRel === "") throw new ArbabError("git", "git rev-parse --git-path info/exclude printed nothing");
-  const exclude = resolve3(projectRoot, excludeRel);
+  const exclude = resolve4(projectRoot, excludeRel);
   const text2 = readText(exclude) ?? "";
   const present = new Set(text2.split(/\r?\n/).map((line2) => line2.trim()));
   const missing = entries3.filter((entry) => !present.has(entry));
@@ -436,9 +640,9 @@ function ensureIgnored(projectRoot, entries3, git) {
 }
 function canonical(path) {
   try {
-    return realpathSync2(path);
+    return realpathSync3(path);
   } catch {
-    return resolve3(path);
+    return resolve4(path);
   }
 }
 function listWorktrees(projectRoot, git) {
@@ -472,11 +676,11 @@ function assertRevision(rev, what) {
 function commonDir(projectRoot, git) {
   const out = must(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
   if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
-  return canonical(resolve3(projectRoot, out));
+  return canonical(resolve4(projectRoot, out));
 }
 function createWorktree(input) {
   const lane = assertValidName(input.lane, "lane");
-  const path = join2(confine(input.projectRoot, input.root), lane);
+  const path = join3(confine(input.projectRoot, input.root), lane);
   const branch = `arbab/${lane}`;
   if (existsSync(path)) {
     const ref2 = listWorktrees(input.projectRoot, input.git).get(canonical(path));
@@ -502,7 +706,7 @@ function createWorktree(input) {
 }
 function discardWorktree(input) {
   const lane = assertValidName(input.lane, "lane");
-  const path = join2(confine(input.projectRoot, input.root), lane);
+  const path = join3(confine(input.projectRoot, input.root), lane);
   const branch = `arbab/${lane}`;
   const sources = input.sources.map((s) => assertRevision(s, "source"));
   const head = branchExists(input.projectRoot, branch, input.git);
@@ -546,17 +750,17 @@ function verifyWorktreeGit(input) {
     }
   };
   const common = canonical(input.gitCommonDir);
-  const pointer = /^gitdir: (.+)$/.exec((read2(join2(input.worktree, ".git")) ?? "").trim());
-  if (pointer?.[1] === void 0) return fail2(`${join2(input.worktree, ".git")} is not a worktree's gitdir pointer`);
-  const gitDir = canonical(resolve3(input.worktree, pointer[1]));
-  const rel = relative3(join2(common, "worktrees"), gitDir);
-  if (rel === "" || rel.startsWith("..") || isAbsolute3(rel) || rel.includes(sep2)) {
-    return fail2(`git dir ${gitDir} is not under ${join2(common, "worktrees")}`);
+  const pointer = /^gitdir: (.+)$/.exec((read2(join3(input.worktree, ".git")) ?? "").trim());
+  if (pointer?.[1] === void 0) return fail2(`${join3(input.worktree, ".git")} is not a worktree's gitdir pointer`);
+  const gitDir = canonical(resolve4(input.worktree, pointer[1]));
+  const rel = relative4(join3(common, "worktrees"), gitDir);
+  if (rel === "" || rel.startsWith("..") || isAbsolute4(rel) || rel.includes(sep3)) {
+    return fail2(`git dir ${gitDir} is not under ${join3(common, "worktrees")}`);
   }
-  const head = read2(join2(gitDir, "HEAD"))?.trim();
+  const head = read2(join3(gitDir, "HEAD"))?.trim();
   if (head !== `ref: refs/heads/${input.branch}`) return fail2(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ref: refs/heads/${input.branch}`);
-  const commondir = read2(join2(gitDir, "commondir"))?.trim();
-  if (commondir === void 0 || commondir === "" || canonical(resolve3(gitDir, commondir)) !== common) {
+  const commondir = read2(join3(gitDir, "commondir"))?.trim();
+  if (commondir === void 0 || commondir === "" || canonical(resolve4(gitDir, commondir)) !== common) {
     return fail2(`commondir of ${gitDir} does not lead to ${common}`);
   }
   return { gitDir, error: null };
@@ -578,7 +782,7 @@ function untrustedTree() {
 }
 function holdsGit(path) {
   try {
-    lstatSync(join2(path, ".git"));
+    lstatSync(join3(path, ".git"));
     return true;
   } catch {
     return false;
@@ -590,7 +794,7 @@ function indexGitlinks(worktree, gitDir, git) {
 function worktreeStatus(worktree, gitDir, git) {
   const args = [...explicitGit(gitDir, worktree), "status", "--porcelain", "--ignore-submodules=all"];
   const lines = must(git, args, worktree, untrustedTree()).split("\n").filter((line2) => line2.trim() !== "");
-  const nested = indexGitlinks(worktree, gitDir, git).filter((path) => holdsGit(join2(worktree, path))).map((path) => `?? ${path}/`);
+  const nested = indexGitlinks(worktree, gitDir, git).filter((path) => holdsGit(join3(worktree, path))).map((path) => `?? ${path}/`);
   return [...lines, ...nested.filter((line2) => !lines.includes(line2))];
 }
 
@@ -609,12 +813,24 @@ var DEPENDENCY_MANIFESTS = [
   ".yarnrc",
   ".yarnrc.yml",
   ".pnpmfile.cjs",
-  ".pnpmfile.mjs"
+  ".pnpmfile.mjs",
+  // bun's install config: registries, scopes.
+  "bunfig.toml",
+  // yarn PnP's loader, which yarn loads into the scripts it runs.
+  ".pnp.cjs",
+  ".pnp.loader.mjs"
 ];
 var MANIFEST_NAMES = new Set(DEPENDENCY_MANIFESTS.map((name2) => name2.toLowerCase()));
+var PATCH_SUFFIX = ".patch";
+var YARN_DIRECTORIES = ["releases", "plugins", "patches"];
 function isDependencyManifest(path) {
-  const base = path.split("/").at(-1) ?? "";
-  return MANIFEST_NAMES.has(base.toLowerCase());
+  const segments = path.toLowerCase().split("/");
+  const base = segments.at(-1) ?? "";
+  if (MANIFEST_NAMES.has(base) || base.endsWith(PATCH_SUFFIX)) return true;
+  for (let i = 0; i + 2 < segments.length; i++) {
+    if (segments[i] === ".yarn" && YARN_DIRECTORIES.includes(segments[i + 1] ?? "")) return true;
+  }
+  return false;
 }
 var INSTALL_FIELDS = [
   "dependencies",
@@ -637,9 +853,21 @@ var INSTALL_FIELDS = [
   "os",
   "cpu",
   "libc",
-  "trustedDependencies"
+  "trustedDependencies",
+  // It can make the package manager fetch and use another runtime.
+  "devEngines"
 ];
-var INSTALL_SCRIPTS = ["preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare", "prepublish"];
+var INSTALL_SCRIPTS = [
+  "preinstall",
+  "install",
+  "postinstall",
+  "preprepare",
+  "prepare",
+  "postprepare",
+  "prepublish",
+  "dependencies",
+  "pnpm:devPreinstall"
+];
 var isPlainObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function canonical2(v) {
   if (Array.isArray(v)) return `[${v.map(canonical2).join(",")}]`;
@@ -712,7 +940,7 @@ function prepareDependencies(strategy, worktree, run) {
 // src/run/pool.ts
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
 import { linkSync, readdirSync, renameSync as renameSync2, rmdirSync, rmSync as rmSync2 } from "node:fs";
-import { join as join3, resolve as resolve4 } from "node:path";
+import { join as join4, resolve as resolve5 } from "node:path";
 function isHolder(value) {
   if (typeof value !== "object" || value === null) return false;
   const v = value;
@@ -723,7 +951,7 @@ function assertHolder(holder2) {
 }
 function entryPath(dir, value) {
   if (!Number.isSafeInteger(value) || value < 0) throw new ArbabError("usage", `pool value ${value} is not a non-negative integer`);
-  return join3(dir, `${value}.json`);
+  return join4(dir, `${value}.json`);
 }
 function parseHolder(text2) {
   try {
@@ -786,12 +1014,12 @@ function list(dir) {
 }
 var POOL_FILE = /^\d+\.json(\.[0-9a-f]+\.stale)?$/;
 function listPoolEntries(home) {
-  const root = resolve4(home);
-  const dirs = [join3(root, "slots")];
+  const root = resolve5(home);
+  const dirs = [join4(root, "slots")];
   for (const kind of ["semaphores", "leases", "locks"]) {
-    for (const name2 of list(join3(root, kind))) dirs.push(join3(root, kind, name2));
+    for (const name2 of list(join4(root, kind))) dirs.push(join4(root, kind, name2));
   }
-  return dirs.flatMap((dir) => list(dir).filter((name2) => POOL_FILE.test(name2)).map((name2) => join3(dir, name2)));
+  return dirs.flatMap((dir) => list(dir).filter((name2) => POOL_FILE.test(name2)).map((name2) => join4(dir, name2)));
 }
 var range = (n) => Array.from({ length: n }, (_, i) => i);
 function assertCount(n, what) {
@@ -799,26 +1027,26 @@ function assertCount(n, what) {
 }
 function acquireSlot(home, maxParallel, holder2, alive) {
   assertCount(maxParallel, "maxParallel");
-  return acquireFromPool(join3(resolve4(home), "slots"), range(maxParallel), holder2, alive);
+  return acquireFromPool(join4(resolve5(home), "slots"), range(maxParallel), holder2, alive);
 }
 function releaseSlot(home, slot, holder2) {
-  return releaseToPool(join3(resolve4(home), "slots"), slot, holder2);
+  return releaseToPool(join4(resolve5(home), "slots"), slot, holder2);
 }
 function acquireSemaphore(home, name2, capacity, holder2, alive) {
   assertValidName(name2, "semaphore");
   assertCount(capacity, `semaphore ${name2} capacity`);
-  return acquireFromPool(join3(resolve4(home), "semaphores", name2), range(capacity), holder2, alive);
+  return acquireFromPool(join4(resolve5(home), "semaphores", name2), range(capacity), holder2, alive);
 }
 function releaseSemaphore(home, name2, slot, holder2) {
   assertValidName(name2, "semaphore");
-  return releaseToPool(join3(resolve4(home), "semaphores", name2), slot, holder2);
+  return releaseToPool(join4(resolve5(home), "semaphores", name2), slot, holder2);
 }
 function writerLockKey(worktreeRealpath) {
   return createHash("sha1").update(worktreeRealpath).digest("hex");
 }
 function lockDir(home, key) {
   if (!/^[0-9a-f]{40}$/.test(key)) throw new ArbabError("usage", `writer lock key ${JSON.stringify(key)} is not a sha1`);
-  return join3(resolve4(home), "locks", key);
+  return join4(resolve5(home), "locks", key);
 }
 var LOCK_DIR_RETRIES = 5;
 function vanished(err) {
@@ -848,7 +1076,7 @@ function releaseWriterLock(home, key, holder2) {
 
 // src/run/leases.ts
 import { createServer } from "node:net";
-import { join as join4, resolve as resolve5 } from "node:path";
+import { join as join5, resolve as resolve6 } from "node:path";
 function isPortFree(port) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.resolve(false);
   return new Promise((done) => {
@@ -860,7 +1088,7 @@ function isPortFree(port) {
   });
 }
 function leaseDir(home, type) {
-  return join4(resolve5(home), "leases", assertValidName(type, "resource type"));
+  return join5(resolve6(home), "leases", assertValidName(type, "resource type"));
 }
 function checkedRange(type, ranges) {
   const spec = Object.hasOwn(ranges, type) ? ranges[type] : void 0;
@@ -1177,9 +1405,9 @@ function createWatcher(input) {
 
 // src/run/checkpoint.ts
 import { readdirSync as readdirSync2 } from "node:fs";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 function nestedUnder(worktree, rel, out) {
-  const abs = join5(worktree, rel);
+  const abs = join6(worktree, rel);
   if (holdsGit(abs)) {
     out.push(rel);
     return;
@@ -1235,7 +1463,7 @@ function checkpoint(input) {
   });
   const untracked = untrackedRepositories(git, input.worktree);
   if (!Array.isArray(untracked)) return failed("git ls-files --others", untracked);
-  const left = [.../* @__PURE__ */ new Set([...tracked.filter((p) => holdsGit(join5(input.worktree, p))), ...untracked])].sort();
+  const left = [.../* @__PURE__ */ new Set([...tracked.filter((p) => holdsGit(join6(input.worktree, p))), ...untracked])].sort();
   const leftOut = left.length === 0 ? null : `nested repositories were not committed: ${left.join(", ")}; arbab never commits or inspects them`;
   const state = ARBAB_STATE.filter((path) => git(["check-ignore", "-q", "--", path]).code !== 0);
   const add = git([
@@ -1269,16 +1497,16 @@ Co-Authored-By: Claude <noreply@anthropic.com>`;
 
 // src/run/workertmp.ts
 import { closeSync as closeSync4, constants, lstatSync as lstatSync2, mkdirSync as mkdirSync2, openSync as openSync4, rmSync as rmSync3, unlinkSync } from "node:fs";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 var WORKER_TMP_DIR = ".arbab-tmp";
 function workerTmpPaths(worktree) {
-  const root = join6(worktree, WORKER_TMP_DIR);
+  const root = join7(worktree, WORKER_TMP_DIR);
   return {
     root,
-    xdgConfig: join6(root, "xdg-config"),
-    yarnCache: join6(root, "yarn-cache"),
-    npmrc: join6(root, "npmrc"),
-    inputs: join6(root, "inputs")
+    xdgConfig: join7(root, "xdg-config"),
+    yarnCache: join7(root, "yarn-cache"),
+    npmrc: join7(root, "npmrc"),
+    inputs: join7(root, "inputs")
   };
 }
 function lstatOrNull(path) {
@@ -1302,7 +1530,7 @@ function realDir(worktree, rel) {
   for (const part of rel.split(/[\\/]+/)) {
     if (part === "" || part === ".") continue;
     if (part === "..") throw new ArbabError("usage", `${rel} leaves the worktree`);
-    at = join6(at, part);
+    at = join7(at, part);
     const stat = lstatOrNull(at);
     if (stat?.isDirectory() === true) continue;
     if (stat !== null) removeEntry(at, stat);
@@ -1316,7 +1544,7 @@ function realDir(worktree, rel) {
 }
 function ensureWorkerTmp(worktree) {
   const paths = workerTmpPaths(worktree);
-  for (const dir of ["xdg-config", "yarn-cache", "inputs"]) realDir(worktree, join6(WORKER_TMP_DIR, dir));
+  for (const dir of ["xdg-config", "yarn-cache", "inputs"]) realDir(worktree, join7(WORKER_TMP_DIR, dir));
   const stat = lstatOrNull(paths.npmrc);
   if (stat?.isFile() === true) return paths;
   if (stat !== null) removeEntry(paths.npmrc, stat);
@@ -1331,17 +1559,17 @@ function ensureWorkerTmp(worktree) {
 }
 
 // src/run/project-files.ts
-import { join as join7, relative as relative4, resolve as resolve6, sep as sep3 } from "node:path";
+import { join as join8, relative as relative5, resolve as resolve7, sep as sep4 } from "node:path";
 var ARBAB_DIR = ".arbab";
 var ESLINT_MARKER = ".eslintrc.json";
 function arbabIgnoreEntries(projectRoot, config) {
-  const rel = (p) => `${relative4(resolve6(projectRoot), confine(projectRoot, p)).split(sep3).join("/")}/`;
+  const rel = (p) => `${relative5(resolve7(projectRoot), confine(projectRoot, p)).split(sep4).join("/")}/`;
   const own2 = `${ARBAB_DIR}/`;
   const outside = [rel(config.worktreeRoot), rel(config.runsRoot)].filter((r) => !r.startsWith(own2));
   return [.../* @__PURE__ */ new Set([own2, `${WORKER_TMP_DIR}/`, ...outside])];
 }
 function ensureArbabMarkers(projectRoot) {
-  createExclusive(join7(projectRoot, ARBAB_DIR, ESLINT_MARKER), `${JSON.stringify({ root: true }, null, 2)}
+  createExclusive(join8(projectRoot, ARBAB_DIR, ESLINT_MARKER), `${JSON.stringify({ root: true }, null, 2)}
 `);
 }
 
@@ -1423,7 +1651,7 @@ function installPlan(base, input) {
 // src/integrate/integrate.ts
 function listIntegrations(projectRoot) {
   try {
-    return readdirSync3(join8(resolve7(projectRoot), INTEGRATIONS_DIR), { withFileTypes: true }).filter((e) => e.isDirectory() && isValidName(e.name)).map((e) => e.name).sort();
+    return readdirSync3(join9(resolve8(projectRoot), INTEGRATIONS_DIR), { withFileTypes: true }).filter((e) => e.isDirectory() && isValidName(e.name)).map((e) => e.name).sort();
   } catch {
     return [];
   }
@@ -1433,20 +1661,20 @@ function integrationPaths(projectRoot, config, name2) {
   if (valid === "integrate" || valid.startsWith("integrate-")) {
     throw new ArbabError("usage", `integration name ${valid} may not be integrate or start with integrate-`);
   }
-  const root = resolve7(projectRoot);
-  const dir = join8(root, INTEGRATIONS_DIR, valid);
+  const root = resolve8(projectRoot);
+  const dir = join9(root, INTEGRATIONS_DIR, valid);
   return {
     name: valid,
     projectRoot: root,
     dir,
-    integration: join8(dir, "integration.json"),
-    verify: join8(dir, "verify.json"),
-    review: join8(dir, "review.json"),
-    readiness: join8(dir, "readiness.json"),
-    readinessMd: join8(dir, "readiness.md"),
-    landing: join8(dir, "landing.json"),
-    lanesDir: join8(dir, "lanes"),
-    worktree: join8(confine(root, config.worktreeRoot), `${INTEGRATION_WORKTREE_PREFIX}${valid}`),
+    integration: join9(dir, "integration.json"),
+    verify: join9(dir, "verify.json"),
+    review: join9(dir, "review.json"),
+    readiness: join9(dir, "readiness.json"),
+    readinessMd: join9(dir, "readiness.md"),
+    landing: join9(dir, "landing.json"),
+    lanesDir: join9(dir, "lanes"),
+    worktree: join9(confine(root, config.worktreeRoot), `${INTEGRATION_WORKTREE_PREFIX}${valid}`),
     branch: `integrate/${valid}`
   };
 }
@@ -1459,9 +1687,9 @@ function must2(git, args, cwd) {
 }
 function canonical3(path) {
   try {
-    return realpathSync3(path);
+    return realpathSync4(path);
   } catch {
-    return resolve7(path);
+    return resolve8(path);
   }
 }
 function commitOf(git, rev, cwd) {
@@ -1489,7 +1717,7 @@ function worktreeBranches(projectRoot, git) {
 function gitCommonDir(projectRoot, git) {
   const out = must2(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
   if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
-  return canonical3(resolve7(projectRoot, out));
+  return canonical3(resolve8(projectRoot, out));
 }
 function refuseLaneWorktree(paths, git) {
   const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
@@ -1536,8 +1764,8 @@ function supersedeRecord(paths) {
   } catch {
   }
   const stamp = typeof updatedAt === "string" && updatedAt !== "" ? updatedAt.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-") : "unknown";
-  let target = join8(paths.dir, `integration.superseded-${stamp}.json`);
-  for (let n = 2; existsSync2(target); n++) target = join8(paths.dir, `integration.superseded-${stamp}-${n}.json`);
+  let target = join9(paths.dir, `integration.superseded-${stamp}.json`);
+  for (let n = 2; existsSync2(target); n++) target = join9(paths.dir, `integration.superseded-${stamp}-${n}.json`);
   renameSync3(paths.integration, target);
 }
 function createIntegrationWorktree(input, paths) {
@@ -1581,7 +1809,7 @@ function refuseDirtyLanes(input, lanes) {
   const root = confine(projectRoot, input.config.worktreeRoot);
   let common = null;
   for (const lane of lanes) {
-    const worktree = join8(root, lane);
+    const worktree = join9(root, lane);
     if (!existsSync2(worktree)) continue;
     common ??= gitCommonDir(projectRoot, git);
     const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: common });
@@ -1726,12 +1954,18 @@ function adoptIntegration(input) {
   if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
   const baseSha = commitOf(git, base, projectRoot);
   if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
+  if (git(["show-ref", "--verify", "--quiet", `refs/heads/${base}`], projectRoot).code !== 0) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not a branch: land merges the integration into its base, so the base must be a branch`
+    );
+  }
   const trusted = input.config.baseBranch;
   assertRevision3(trusted, "baseBranch");
   if (!isAncestor(git, baseSha, trusted, projectRoot)) {
     throw new ArbabError(
       "usage",
-      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ${base} may hold worker code. Adopt against ${trusted} or a commit it contains`
+      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ${base} may hold worker code. Adopt against ${trusted}, or a branch it contains`
     );
   }
   const fork = git(["merge-base", sha, baseSha], projectRoot);
@@ -1842,35 +2076,35 @@ function confirmDeps(paths, sha, git, clock) {
 
 // src/registry/paths.ts
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4 } from "node:fs";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 var ATTEMPT_DIR = /^attempt-([1-9][0-9]*)$/;
 function runPaths(runsRoot, lane) {
   assertValidName(lane, "lane");
   const laneDir = confine(runsRoot, lane);
   return {
     laneDir,
-    laneFile: join9(laneDir, "lane.json"),
-    stateFile: join9(laneDir, "state.json"),
-    shepherdFile: join9(laneDir, "shepherd.json"),
+    laneFile: join10(laneDir, "lane.json"),
+    stateFile: join10(laneDir, "state.json"),
+    shepherdFile: join10(laneDir, "shepherd.json"),
     attemptDir(n) {
       if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("usage", `attempt ${n} must be a positive integer`);
-      return join9(laneDir, `attempt-${n}`);
+      return join10(laneDir, `attempt-${n}`);
     }
   };
 }
 function attemptFiles(dir) {
   return {
-    brief: join9(dir, "brief.md"),
-    settings: join9(dir, "settings.json"),
-    args: join9(dir, "args.json"),
-    started: join9(dir, "started.json"),
-    stream: join9(dir, "stream.jsonl"),
-    stderr: join9(dir, "stderr.log"),
-    registration: join9(dir, "registration.json"),
-    exit: join9(dir, "exit.json"),
-    summary: join9(dir, "summary.json"),
-    report: join9(dir, "report.json"),
-    acked: join9(dir, "acked")
+    brief: join10(dir, "brief.md"),
+    settings: join10(dir, "settings.json"),
+    args: join10(dir, "args.json"),
+    started: join10(dir, "started.json"),
+    stream: join10(dir, "stream.jsonl"),
+    stderr: join10(dir, "stderr.log"),
+    registration: join10(dir, "registration.json"),
+    exit: join10(dir, "exit.json"),
+    summary: join10(dir, "summary.json"),
+    report: join10(dir, "report.json"),
+    acked: join10(dir, "acked")
   };
 }
 function entries(dir) {
@@ -1927,7 +2161,7 @@ function readAttempt(dir) {
 
 // src/registry/events.ts
 import { appendFileSync, mkdirSync as mkdirSync4, readFileSync as readFileSync2 } from "node:fs";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 
 // src/registry/state.ts
 var LANE_STATES = [
@@ -1963,12 +2197,12 @@ function effectiveState(record2, alive) {
 // src/registry/events.ts
 var EVENTS_FILE = "events.jsonl";
 function eventsFile(runsRoot, lane) {
-  return join10(runPaths(runsRoot, lane).laneDir, EVENTS_FILE);
+  return join11(runPaths(runsRoot, lane).laneDir, EVENTS_FILE);
 }
 function appendLaneEvent(runsRoot, lane, event) {
   try {
     const file = eventsFile(runsRoot, lane);
-    mkdirSync4(join10(file, ".."), { recursive: true });
+    mkdirSync4(join11(file, ".."), { recursive: true });
     appendFileSync(file, `${JSON.stringify(event)}
 `);
   } catch {
@@ -1978,14 +2212,14 @@ function appendLaneEvent(runsRoot, lane, event) {
 // src/registry/machine.ts
 import { createHash as createHash2 } from "node:crypto";
 import { readdirSync as readdirSync5, readFileSync as readFileSync3, rmSync as rmSync4 } from "node:fs";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 var SHEPHERDS_DIR = "shepherds";
 var WAITERS_DIR = "waiters";
 var PROJECTS_DIR = "projects";
 var ENTRY_FILE = /^([1-9][0-9]*)\.json$/;
 function pidFile(home, dir, pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) throw new ArbabError("usage", `pid ${pid} must be a positive integer`);
-  return join11(home, dir, `${pid}.json`);
+  return join12(home, dir, `${pid}.json`);
 }
 function remove(path) {
   try {
@@ -2029,10 +2263,10 @@ function asProject(v) {
 }
 function listByPid(home, dir, as, alive) {
   const out = [];
-  for (const file of fileNames(join11(home, dir))) {
+  for (const file of fileNames(join12(home, dir))) {
     const match = ENTRY_FILE.exec(file);
     if (match === null) continue;
-    const path = join11(home, dir, file);
+    const path = join12(home, dir, file);
     const entry = as(parsed(path));
     if (entry === null || entry.pid !== Number(match[1])) continue;
     if (!alive(entry.pid)) {
@@ -2062,7 +2296,7 @@ function listWaiters(home, alive) {
   return listByPid(home, WAITERS_DIR, asWaiter, alive);
 }
 function projectFile(home, root) {
-  return join11(home, PROJECTS_DIR, `${createHash2("sha1").update(root).digest("hex")}.json`);
+  return join12(home, PROJECTS_DIR, `${createHash2("sha1").update(root).digest("hex")}.json`);
 }
 function registerProject(home, root, at) {
   const entry = { root, lastLaunchAt: at };
@@ -2070,9 +2304,9 @@ function registerProject(home, root, at) {
 }
 function listProjects(home) {
   const out = [];
-  for (const file of fileNames(join11(home, PROJECTS_DIR))) {
+  for (const file of fileNames(join12(home, PROJECTS_DIR))) {
     if (!/^[0-9a-f]{40}\.json$/.test(file)) continue;
-    const entry = asProject(parsed(join11(home, PROJECTS_DIR, file)));
+    const entry = asProject(parsed(join12(home, PROJECTS_DIR, file)));
     if (entry !== null) out.push(entry);
   }
   return out.sort((a, b) => a.root < b.root ? -1 : a.root > b.root ? 1 : 0);
@@ -2224,7 +2458,7 @@ function formatStatusTable(rows, nowSec) {
 // src/registry/wait.ts
 import { createHash as createHash3 } from "node:crypto";
 import { existsSync as existsSync4 } from "node:fs";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 var isDone = (state) => state === "finished" || state === "orphaned";
 function doneRecord(runsRoot, lane, alive) {
   const record2 = readState(runsRoot, lane);
@@ -2239,11 +2473,11 @@ function isRunning(runsRoot, lane, alive) {
   return shepherd !== null && alive(shepherd.pid);
 }
 function ackedFile(runsRoot, lane) {
-  return join12(runPaths(runsRoot, lane).laneDir, "acked.json");
+  return join13(runPaths(runsRoot, lane).laneDir, "acked.json");
 }
 function runMarker(runsRoot, lane, run) {
   const since = createHash3("sha256").update(run.since).digest("hex").slice(0, 16);
-  return join12(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
+  return join13(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
 }
 var sameRun = (a, b) => typeof a === "object" && a !== null && a["shepherdPid"] === b.shepherdPid && a["since"] === b.since;
 function isAcked(runsRoot, lane, run) {
@@ -2333,12 +2567,12 @@ async function waitForFinished(options) {
 
 // src/commands/generated.ts
 import { existsSync as existsSync5 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 var GENERATED = "generated.json";
 var BY = "integration:";
 var SHA3 = /^[0-9a-f]{40,64}$/;
 var ownerTag = (owner) => `${BY}${owner.integration}`;
-var markerPath = (runsRoot, lane) => join13(runsRoot, assertValidName(lane, "lane"), GENERATED);
+var markerPath = (runsRoot, lane) => join14(runsRoot, assertValidName(lane, "lane"), GENERATED);
 function markGenerated(runsRoot, lane, owner, now) {
   const marker = { by: ownerTag(owner), createdAt: now, baseSha: owner.head };
   writeJsonAtomic(markerPath(runsRoot, lane), marker);
@@ -2379,8 +2613,8 @@ function assertNotGenerated(runsRoot, lane) {
 
 // src/commands/integration.ts
 import { createHash as createHash4 } from "node:crypto";
-import { existsSync as existsSync13 } from "node:fs";
-import { join as join30 } from "node:path";
+import { existsSync as existsSync14 } from "node:fs";
+import { join as join31 } from "node:path";
 
 // src/stream/classify.ts
 var UNSUPPORTED_CLI = /does not support this model|or newer is required/i;
@@ -2691,7 +2925,7 @@ function buildAttemptSummary(input) {
 
 // src/stream/transcript.ts
 import { readdirSync as readdirSync6, statSync as statSync3 } from "node:fs";
-import { join as join14 } from "node:path";
+import { join as join15 } from "node:path";
 var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function findTranscript(projectsDir, sessionId) {
   if (!UUID.test(sessionId)) return null;
@@ -2703,7 +2937,7 @@ function findTranscript(projectsDir, sessionId) {
   }
   const file = `${sessionId}.jsonl`;
   for (const dir of dirs) {
-    const candidate = join14(projectsDir, dir, file);
+    const candidate = join15(projectsDir, dir, file);
     if (statSync3(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
   }
   return null;
@@ -2720,11 +2954,11 @@ function measuredEffort(transcriptText) {
 
 // src/commands/launch.ts
 import { rmSync as rmSync5, statSync as statSync4 } from "node:fs";
-import { join as join20 } from "node:path";
+import { join as join21 } from "node:path";
 
 // src/commands/lint.ts
-import { realpathSync as realpathSync6 } from "node:fs";
-import { join as join19, resolve as resolve11 } from "node:path";
+import { realpathSync as realpathSync8 } from "node:fs";
+import { join as join20, resolve as resolve12 } from "node:path";
 
 // src/brief/markdown.ts
 var OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -2806,120 +3040,6 @@ function describeSchema(schema) {
   if (schema.properties === void 0) return `- the whole answer: \`${typeName(schema)}\``;
   return fieldLines(schema, 0).join("\n");
 }
-
-// src/profile/presets.ts
-var BUILTIN_CREDENTIAL_PATHS = [
-  "~/.ssh/**",
-  "~/.aws/**",
-  "~/.azure/**",
-  "~/.config/**",
-  "~/.docker/**",
-  "~/.kube/**",
-  "~/.gnupg/**",
-  "~/.claude/**",
-  "~/.claude.json",
-  "~/.netrc",
-  "~/.npmrc",
-  "~/.pypirc",
-  "~/.git-credentials",
-  "~/Library/Keychains/**",
-  "~/Library/Cookies/**",
-  "**/.env*",
-  "**/*.pem",
-  "**/*.key",
-  "**/*.p12",
-  "**/*.pfx",
-  "**/id_rsa*",
-  "**/id_ed25519*",
-  "**/*.tfstate"
-];
-var GIT_WRITE_VERBS = [
-  "commit",
-  "push",
-  "reset",
-  "checkout",
-  "switch",
-  "restore",
-  "rebase",
-  "merge",
-  "cherry-pick",
-  "stash",
-  "clean",
-  "branch",
-  "worktree",
-  "tag",
-  "config",
-  "update-ref",
-  "remote"
-];
-var GIT_READ_VERBS = ["status", "diff", "log", "show", "ls-files", "blame"];
-var READ_UTILITIES = ["ls", "cat", "head", "tail", "wc"];
-var FILE_UTILITIES = ["mkdir", "cp", "mv", "rm", "touch"];
-var ANY_CODE_PREFIXES = [
-  "node",
-  "npx",
-  "npm",
-  "pnpm",
-  "yarn",
-  "bun",
-  "bunx",
-  "deno",
-  "python",
-  "python3",
-  "ruby",
-  "perl",
-  "php",
-  "sh",
-  "bash",
-  "zsh",
-  "fish",
-  "env",
-  "eval",
-  "exec",
-  "xargs",
-  "find",
-  "awk",
-  "sed",
-  "make",
-  "sudo",
-  "osascript",
-  "open",
-  "docker",
-  "kubectl",
-  "ssh",
-  "curl",
-  "wget",
-  "git",
-  "pnpm exec",
-  "pnpm dlx",
-  "pnpm run",
-  "npm exec",
-  "npm run",
-  "yarn run",
-  "yarn dlx",
-  "bun run",
-  "bun x",
-  "git -C",
-  "git config"
-];
-var BASH_INPUT_PARAMS = [
-  "timeout",
-  "description",
-  "run_in_background",
-  "dangerouslyDisableSandbox"
-];
-var FIXED_ENV = {
-  BASH_DEFAULT_TIMEOUT_MS: "300000",
-  BASH_MAX_TIMEOUT_MS: "900000"
-};
-var WORKER_TMP_ENV = [
-  "XDG_CONFIG_HOME",
-  "YARN_CACHE_FOLDER",
-  "NPM_CONFIG_USERCONFIG"
-];
-var WORKER_SHELL = "/bin/bash";
-var DEFAULT_BASH_OUTPUT_MAX_CHARS = 1e5;
-var BACKGROUND_DENY = "Bash(run_in_background:true)";
 
 // src/brief/toolbelt.ts
 var FILE_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"];
@@ -3328,7 +3448,8 @@ function lintBrief(markdown, source, profile) {
 }
 
 // src/config/load.ts
-import { isAbsolute as isAbsolute4, join as join15, sep as sep4 } from "node:path";
+import { existsSync as existsSync6, lstatSync as lstatSync3, realpathSync as realpathSync5 } from "node:fs";
+import { dirname as dirname4, isAbsolute as isAbsolute5, join as join16, relative as relative6, sep as sep5 } from "node:path";
 
 // src/util/env-policy.ts
 var FORBIDDEN_PREFIX = /^(CLAUDE|VSCODE|CURSOR|TERM_PROGRAM)/;
@@ -3401,7 +3522,7 @@ function loadConfig(projectRoot) {
   let raw = null;
   let label = CONFIG_FILE;
   for (const rel of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
-    raw = readJsonFile(join15(projectRoot, rel));
+    raw = readJsonFile(join16(projectRoot, rel));
     label = rel;
     if (raw !== null) break;
   }
@@ -3472,7 +3593,7 @@ function readableEnvFiles(v) {
   const seen = /* @__PURE__ */ new Set();
   return stringArray(v, "fence.readableEnvFiles").map((p, i) => {
     const field = `fence.readableEnvFiles[${i}]`;
-    if (isAbsolute4(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (isAbsolute5(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
     if (/[\0\n\r]/.test(p)) fail(field, "must not contain NUL or a newline");
     const segments = p.split(/[\\/]/);
     if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
@@ -3502,9 +3623,30 @@ function arbabRoot(projectRoot, v, field) {
   const path = confined(projectRoot, s, field);
   if (path === confined(projectRoot, ".", field)) fail(field, "must not be the project root");
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
-  const inside = (a, b) => a === b || a.startsWith(`${b}${sep4}`);
+  const inside = (a, b) => a === b || a.startsWith(`${b}${sep5}`);
   if (inside(path, records) || inside(records, path)) fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  const real2 = realExisting(path);
+  const rel = real2 === null ? ".." : relative6(realpathSync5(projectRoot), real2);
+  if (rel === ".." || rel.startsWith(`..${sep5}`) || isAbsolute5(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   return s;
+}
+function realExisting(path) {
+  for (let p = path; ; p = dirname4(p)) {
+    let present = true;
+    try {
+      lstatSync3(p);
+    } catch {
+      present = false;
+    }
+    if (present) {
+      try {
+        return realpathSync5(p);
+      } catch {
+        return null;
+      }
+    }
+    if (dirname4(p) === p) return null;
+  }
 }
 function dependencies(v) {
   const obj = record(v, "dependencies");
@@ -3605,9 +3747,9 @@ function roles(v) {
 }
 
 // src/config/machine.ts
-import { join as join16 } from "node:path";
+import { join as join17 } from "node:path";
 function loadMachineConfig(home) {
-  const raw = readJsonFile(join16(home, MACHINE_CONFIG_FILE));
+  const raw = readJsonFile(join17(home, MACHINE_CONFIG_FILE));
   const config = { maxParallel: null };
   if (raw === null) return config;
   const obj = record(raw, MACHINE_CONFIG_FILE);
@@ -3717,6 +3859,7 @@ function effectiveRole(config, lane) {
 }
 
 // src/profile/rules.ts
+import { posix } from "node:path";
 var FORBIDDEN2 = /[;&|`$<>()\\*\n\r]/;
 var WORDS = /^\S+( \S+)*$/;
 function commandRules(prefix) {
@@ -3730,28 +3873,35 @@ function commandRules(prefix) {
   return [`Bash(${prefix})`, `Bash(${prefix} *)`];
 }
 function credentialDenies(extra, projectRoot) {
+  const anchor = projectRoot === void 0 ? void 0 : globFreeAncestor(projectRoot);
   const rules = [];
   for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) {
     const paths = [path];
     if (path.startsWith("**/")) {
       paths.push(`~/${path}`);
-      if (projectRoot !== void 0) paths.push(`/${projectRoot}/${path}`);
+      if (anchor !== void 0) paths.push(anchor === "/" ? `//${path}` : `/${anchor}/${path}`);
     }
     for (const p of paths) rules.push(`Read(${p})`, `Edit(${p})`);
   }
   return dedupe(rules);
+}
+var GLOB_SPECIAL = /[*?[\]{}()!\\]/;
+function globFreeAncestor(dir) {
+  let at = dir;
+  while (at !== "/" && GLOB_SPECIAL.test(at)) at = posix.dirname(at);
+  return at;
 }
 function dedupe(items) {
   return [...new Set(items)];
 }
 
 // src/profile/compile.ts
-import { isAbsolute as isAbsolute5, relative as relative5, resolve as resolve8 } from "node:path";
+import { isAbsolute as isAbsolute6, relative as relative7, resolve as resolve9 } from "node:path";
 var FILE_TOOLS2 = /* @__PURE__ */ new Set(["Read", "Glob", "Grep", "Edit", "Write"]);
 var WRITE_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "Write"]);
 var WRITERS = ["implementer", "verifier", "probe"];
 function compileProfile(input) {
-  if (!isAbsolute5(input.worktree)) {
+  if (!isAbsolute6(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
   const gitDir = input.gitCommonDir === void 0 ? void 0 : absoluteDir("gitCommonDir", input.gitCommonDir);
@@ -3805,19 +3955,19 @@ function compileProfile(input) {
   return { tools: input.tools, settings };
 }
 function absoluteDir(field, dir) {
-  if (!isAbsolute5(dir)) {
+  if (!isAbsolute6(dir)) {
     throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
-  const normal = resolve8(dir);
+  const normal = resolve9(dir);
   if (normal === "/") throw new ArbabError("usage", `${field} must not be the filesystem root`);
   return normal;
 }
 function envAllowReads(worktree, paths) {
   return dedupe(paths.map((path) => {
-    if (!isAbsolute5(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
-    const normal = resolve8(path);
-    const rel = relative5(resolve8(worktree), normal);
-    if (rel === "" || rel.startsWith("..") || isAbsolute5(rel)) {
+    if (!isAbsolute6(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    const normal = resolve9(path);
+    const rel = relative7(resolve9(worktree), normal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute6(rel)) {
       throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
     }
     return normal;
@@ -3841,16 +3991,18 @@ function roleAllow(role2) {
 }
 
 // src/profile/envfiles.ts
-import { readdirSync as readdirSync7, realpathSync as realpathSync4 } from "node:fs";
-import { basename, dirname as dirname4, join as join17, posix, relative as relative6, sep as sep5 } from "node:path";
+import { readdirSync as readdirSync7, realpathSync as realpathSync6 } from "node:fs";
+import { basename, dirname as dirname5, join as join18, posix as posix2, relative as relative8, sep as sep6 } from "node:path";
 function envFileAllowReads(input) {
   let real2;
   try {
-    real2 = realpathSync4(input.worktree);
+    real2 = realpathSync6(input.worktree);
   } catch {
     return [];
   }
-  const out = /* @__PURE__ */ new Set();
+  const verified = verifyWorktreeGit({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir });
+  if (verified.gitDir === null) return [];
+  const candidates = /* @__PURE__ */ new Map();
   for (const listed of input.readable) {
     let path;
     try {
@@ -3858,22 +4010,27 @@ function envFileAllowReads(input) {
     } catch {
       continue;
     }
-    const rel = relative6(input.worktree, path).split(sep5).join("/");
+    const rel = relative8(input.worktree, path).split(sep6).join("/");
     if (rel === "") continue;
-    if (isRegularFile(input.worktree, real2, path) && isTracked(input.git, input.worktree, rel)) out.add(path);
+    if (isRegularFile(input.worktree, real2, path)) candidates.set(rel, path);
   }
-  return [...out].sort();
+  if (candidates.size === 0) return [];
+  const tracked = trackedOf(input.git, input.worktree, verified.gitDir, [...candidates.keys()]);
+  return [...candidates].filter(([rel]) => tracked.has(rel)).map(([, path]) => path).sort();
 }
 function normalRel(path) {
-  return posix.normalize(path.split("\\").join("/"));
+  return posix2.normalize(path.split("\\").join("/"));
 }
-function isTracked(git, root, rel) {
-  return git(["ls-files", "--error-unmatch", "--", `:(literal)${rel}`], root).code === 0;
+function trackedOf(git, worktree, gitDir, rels) {
+  const args = [...explicitGit(gitDir, worktree), ...untrustedTree(), "ls-files", "-z", "--", ...rels.map((rel) => `:(literal)${rel}`)];
+  const r = git(args, worktree);
+  if (r.code !== 0) return /* @__PURE__ */ new Set();
+  return new Set(r.stdout.split("\0").filter((p) => p !== ""));
 }
 function isRegularFile(worktree, realWorktree, path) {
-  const dir = dirname4(path);
+  const dir = dirname5(path);
   try {
-    if (realpathSync4(dir) !== join17(realWorktree, relative6(worktree, dir))) return false;
+    if (realpathSync6(dir) !== join18(realWorktree, relative8(worktree, dir))) return false;
     const entry = readdirSync7(dir, { withFileTypes: true }).find((e) => e.name === basename(path));
     return entry !== void 0 && entry.isFile();
   } catch {
@@ -3938,7 +4095,7 @@ function buildClaudeArgs(input) {
 }
 
 // src/profile/env.ts
-import { isAbsolute as isAbsolute6 } from "node:path";
+import { isAbsolute as isAbsolute7 } from "node:path";
 var HOST_KEYS = ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"];
 var SYSTEM_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 var ENV_NAME2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -3947,7 +4104,7 @@ function workerEnv(host, opts) {
   for (const name2 of Object.keys(opts.extra)) assertWorkerEnvName(name2, isReservedEnv);
   const dirs = opts.pnpmDir === void 0 ? [opts.nodeDir] : [opts.nodeDir, opts.pnpmDir];
   for (const dir of dirs) {
-    if (!isAbsolute6(dir) || dir.includes(":")) {
+    if (!isAbsolute7(dir) || dir.includes(":")) {
       throw new ArbabError("config", `PATH entry ${JSON.stringify(dir)} must be an absolute path without ":"`);
     }
   }
@@ -3977,7 +4134,7 @@ function assertWorkerEnvName(name2, refused) {
 }
 
 // src/profile/lint.ts
-import { resolve as resolve9 } from "node:path";
+import { resolve as resolve10 } from "node:path";
 var BASH_RULE = /^Bash\((.*)\)$/s;
 var PARAM_RULE = /^\s*([A-Za-z_]+)\s*:/;
 var PATH_RULE = /^(?:Read|Edit)\((.*)\)$/s;
@@ -4037,23 +4194,12 @@ function lintProfile(profile, input) {
         "no shared git directory is known, so sandboxed commands can write its refs and objects",
         "sandbox.filesystem.denyWrite"
       );
-    } else if (!(sandbox.filesystem?.denyWrite ?? []).map((p) => resolve9(p)).includes(resolve9(gitDir))) {
+    } else if (!(sandbox.filesystem?.denyWrite ?? []).map((p) => resolve10(p)).includes(resolve10(gitDir))) {
       warn("shared-git-writable", `${gitDir} is not in the sandbox's denyWrite`, "sandbox.filesystem.denyWrite");
     }
   }
   for (const tool of profile.tools) {
     if (tool === "Task" || tool === "Agent") error("agent-tool", "nested agents are not budgeted", tool);
-  }
-  const reopened = new Set((input.envFileAllowReads ?? []).map((p) => resolve9(p)));
-  for (const listed of input.readableEnvFiles ?? []) {
-    const path = resolve9(input.worktree, listed.split("\\").join("/"));
-    if (!reopened.has(path)) {
-      warn(
-        "env-template-untracked",
-        `${listed} is not a regular file git tracks in the worktree, so it stays unreadable`,
-        "fence.readableEnvFiles"
-      );
-    }
   }
   for (const key of Object.keys(input.env)) {
     if (Object.hasOwn(FIXED_ENV, key) || WORKER_TMP_ENV.includes(key)) {
@@ -4074,30 +4220,72 @@ function wildcardPrefix(content) {
 }
 
 // src/commands/project.ts
-import { existsSync as existsSync6, realpathSync as realpathSync5 } from "node:fs";
-import { dirname as dirname5, join as join18, resolve as resolve10, sep as sep6 } from "node:path";
+import { existsSync as existsSync7, readFileSync as readFileSync5, realpathSync as realpathSync7 } from "node:fs";
+import { dirname as dirname6, join as join19, resolve as resolve11, sep as sep7 } from "node:path";
 import { parseArgs } from "node:util";
-function inLaneWorktree(path) {
-  const parts = path.split(sep6);
+var fold = (path) => path.toLowerCase();
+function atOrUnder(base, path) {
+  const b = fold(base);
+  const p = fold(path);
+  return p === b || p.startsWith(b.endsWith(sep7) ? b : b + sep7);
+}
+function hasWorktreesPair(path) {
+  const parts = path.split(sep7).map(fold);
   return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
 }
-function notALaneWorktree(root) {
-  let real2;
-  try {
-    real2 = realpathSync5(root);
-  } catch {
-    real2 = resolve10(root);
+function configuredWorktreeRoots(dir, io) {
+  const roots = [];
+  for (const file of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
+    let parsed2;
+    try {
+      parsed2 = JSON.parse(io.readFile(join19(dir, file)));
+    } catch {
+      continue;
+    }
+    if (typeof parsed2 !== "object" || parsed2 === null || Array.isArray(parsed2)) continue;
+    const value = parsed2["worktreeRoot"];
+    if (typeof value !== "string" || value === "") continue;
+    let full;
+    try {
+      full = confine(dir, value);
+    } catch {
+      continue;
+    }
+    if (full !== resolve11(dir)) roots.push(full);
   }
-  if (inLaneWorktree(real2) || inLaneWorktree(resolve10(root))) {
+  return roots;
+}
+function underConfiguredRoot(path, io) {
+  for (let dir = path; ; dir = dirname6(dir)) {
+    if (configuredWorktreeRoots(dir, io).some((root) => atOrUnder(root, path))) return true;
+    if (dirname6(dir) === dir) return false;
+  }
+}
+function inLaneWorktree(path, io = {}) {
+  const full = {
+    realpath: io.realpath ?? ((p) => realpathSync7.native(p)),
+    readFile: io.readFile ?? ((p) => readFileSync5(p, "utf8"))
+  };
+  const lexical = resolve11(path);
+  let canonical4;
+  try {
+    canonical4 = full.realpath(lexical);
+  } catch {
+    canonical4 = lexical;
+  }
+  return [.../* @__PURE__ */ new Set([canonical4, lexical])].some((p) => hasWorktreesPair(p) || underConfiguredRoot(p, full));
+}
+function notALaneWorktree(root) {
+  if (inLaneWorktree(root)) {
     throw new ArbabError("usage", `${root} is in a lane worktree, not a project; run arbab from the project root`);
   }
   return root;
 }
 function findProjectRoot(cwd, git) {
-  let dir = resolve10(cwd);
+  let dir = resolve11(cwd);
   for (; ; ) {
-    if (existsSync6(join18(dir, CONFIG_FILE))) return notALaneWorktree(dir);
-    const parent = dirname5(dir);
+    if (existsSync7(join19(dir, CONFIG_FILE))) return notALaneWorktree(dir);
+    const parent = dirname6(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -4135,9 +4323,9 @@ function resolveGitCommonDir(git, root) {
   const r = git(["rev-parse", "--git-common-dir"], root);
   const out = r.stdout.trim();
   if (r.code !== 0 || out === "") return void 0;
-  const path = resolve11(root, out);
+  const path = resolve12(root, out);
   try {
-    return realpathSync6(path);
+    return realpathSync8(path);
   } catch {
     return path;
   }
@@ -4156,7 +4344,7 @@ function profileInputFor(project, lane, gitCommonDir2) {
     laneAllow: lane.allow ?? [],
     credentialPaths: project.config.credentialPaths,
     env: { ...project.config.env, ...leaseEnv(leases) },
-    worktree: join19(project.worktreeRoot, lane.worktree ?? lane.name),
+    worktree: join20(project.worktreeRoot, lane.worktree ?? lane.name),
     ...gitCommonDir2 !== void 0 && { gitCommonDir: gitCommonDir2 }
   };
 }
@@ -4219,7 +4407,7 @@ async function runLint(argv2, ctx) {
 // src/commands/launch.ts
 var LAUNCH_LOCK_MS = 1e4;
 var LAUNCH_POLL_MS = 50;
-var launchLockPath = (project, lane) => join20(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
+var launchLockPath = (project, lane) => join21(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
 function takeLaunchLock(ctx, project, lane, pid) {
   const path = launchLockPath(project, lane);
   const holder2 = { pid, lane, project: project.root, createdAt: isoAt(ctx.clock) };
@@ -4324,29 +4512,29 @@ async function runLaunch(argv2, ctx) {
 }
 
 // src/commands/preflight.ts
-import { existsSync as existsSync12 } from "node:fs";
-import { join as join29, relative as relative7 } from "node:path";
+import { existsSync as existsSync13 } from "node:fs";
+import { join as join30, relative as relative9 } from "node:path";
 
 // src/commands/doctor.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { rmSync as rmSync6 } from "node:fs";
-import { join as join28 } from "node:path";
+import { join as join29 } from "node:path";
 
 // src/binary/node.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { existsSync as existsSync7, realpathSync as realpathSync7 } from "node:fs";
+import { existsSync as existsSync8, realpathSync as realpathSync9 } from "node:fs";
 function runVersion(path, args) {
   return execFileSync2(path, args, { encoding: "utf8", timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
 }
 function pathExists(p) {
-  return existsSync7(p);
+  return existsSync8(p);
 }
 function realpath(p) {
-  return realpathSync7(p);
+  return realpathSync9(p);
 }
 
 // src/binary/resolve.ts
-import { isAbsolute as isAbsolute7, join as join21 } from "node:path";
+import { isAbsolute as isAbsolute8, join as join22 } from "node:path";
 function parseVersion(text2) {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(text2);
   if (m === null) return null;
@@ -4368,8 +4556,8 @@ function compareVersions(a, b) {
 function findOnPath(cmd, pathEnv, exists) {
   if (cmd === "" || cmd.includes("/")) return null;
   for (const dir of pathEnv.split(":")) {
-    if (dir === "" || !isAbsolute7(dir)) continue;
-    const candidate = join21(dir, cmd);
+    if (dir === "" || !isAbsolute8(dir)) continue;
+    const candidate = join22(dir, cmd);
     if (exists(candidate)) return candidate;
   }
   return null;
@@ -4423,30 +4611,48 @@ function readVersion(path, run) {
 }
 
 // src/doctor/env.ts
-import { posix as posix2 } from "node:path";
+import { posix as posix3 } from "node:path";
 var ENV_TEMPLATES = [".env.example", ".env.sample", ".env.template", ".env.dist", ".env.defaults"];
 function trackedEnvTemplates(git, root) {
   const r = git(["ls-files", "-z", "--", ...ENV_TEMPLATES.map((n) => `*${n}`)], root);
   if (r.code !== 0) return [];
-  return r.stdout.split("\0").filter((p) => p !== "" && ENV_TEMPLATES.includes(posix2.basename(p))).sort();
+  return r.stdout.split("\0").filter((p) => p !== "" && ENV_TEMPLATES.includes(posix3.basename(p))).sort();
+}
+function trackedListed(git, root, listed) {
+  const asked = listed.filter((p) => p !== "." && p !== ".." && !p.startsWith("../") && !p.startsWith("/"));
+  if (asked.length === 0) return /* @__PURE__ */ new Set();
+  const r = git(["ls-files", "-z", "--", ...asked.map((p) => `:(literal)${p}`)], root);
+  if (r.code !== 0) return /* @__PURE__ */ new Set();
+  return new Set(r.stdout.split("\0").filter((p) => p !== ""));
 }
 function checkEnvTemplates(git, root, readableEnvFiles2) {
   const tracked = trackedEnvTemplates(git, root);
-  if (tracked.length === 0) return null;
-  const listed = new Set(readableEnvFiles2.map((p) => posix2.normalize(p.split("\\").join("/"))));
+  const listed = /* @__PURE__ */ new Map();
+  for (const p of readableEnvFiles2) {
+    const normal = posix3.normalize(p.split("\\").join("/"));
+    if (!listed.has(normal)) listed.set(normal, p);
+  }
+  if (tracked.length === 0 && listed.size === 0) return null;
   const missing = tracked.filter((p) => !listed.has(p));
-  return missing.length === 0 ? { status: "ok", check: "env", detail: `fence.readableEnvFiles lists ${tracked.join(", ")}` } : { status: "warn", check: "env", detail: `workers cannot read ${missing.join(", ")}; add them to fence.readableEnvFiles` };
+  const known = trackedListed(git, root, [...listed.keys()]);
+  const untracked = [...listed].filter(([normal]) => !known.has(normal)).map(([, written]) => written);
+  const problems = [];
+  if (missing.length > 0) problems.push(`workers cannot read ${missing.join(", ")}; add them to fence.readableEnvFiles`);
+  if (untracked.length > 0) {
+    problems.push(`git does not track ${untracked.join(", ")} from fence.readableEnvFiles, so each stays unreadable`);
+  }
+  return problems.length === 0 ? { status: "ok", check: "env", detail: `fence.readableEnvFiles lists ${[.../* @__PURE__ */ new Set([...tracked, ...listed.keys()])].sort().join(", ")}` } : { status: "warn", check: "env", detail: problems.join("; ") };
 }
 
 // src/doctor/gates.ts
-import { basename as basename2, join as join23 } from "node:path";
+import { basename as basename2, join as join24 } from "node:path";
 
 // src/doctor/read.ts
-import { readdirSync as readdirSync8, readFileSync as readFileSync5 } from "node:fs";
-import { join as join22 } from "node:path";
+import { readdirSync as readdirSync8, readFileSync as readFileSync6 } from "node:fs";
+import { join as join23 } from "node:path";
 function readOptional(path) {
   try {
-    return readFileSync5(path, "utf8");
+    return readFileSync6(path, "utf8");
   } catch {
     return null;
   }
@@ -4459,7 +4665,7 @@ function listNames(dir) {
   }
 }
 function readPackageJson(root) {
-  const text2 = readOptional(join22(root, "package.json"));
+  const text2 = readOptional(join23(root, "package.json"));
   if (text2 === null) return null;
   try {
     const value = JSON.parse(text2);
@@ -4560,10 +4766,10 @@ function checkGates(root, gates) {
   const out = [
     missing.length === 0 ? { status: "ok", check: "gates", detail: `gates run ${checks.join(", ")}` } : { status: "warn", check: "gates", detail: `no gate runs these package.json scripts: ${missing.join(", ")}` }
   ];
-  const workflows = join23(root, ".github", "workflows");
+  const workflows = join24(root, ".github", "workflows");
   const inCi = /* @__PURE__ */ new Set();
   for (const file of listNames(workflows).filter((n) => /\.ya?ml$/.test(n))) {
-    for (const line2 of workflowRunLines(readOptional(join23(workflows, file)) ?? "")) {
+    for (const line2 of workflowRunLines(readOptional(join24(workflows, file)) ?? "")) {
       for (const call of scriptCalls(line2)) for (const name2 of matching(call, missing)) inCi.add(name2);
     }
   }
@@ -4572,11 +4778,11 @@ function checkGates(root, gates) {
 }
 
 // src/doctor/hook.ts
-import { basename as basename3, dirname as dirname6, join as join24 } from "node:path";
+import { basename as basename3, dirname as dirname7, join as join25 } from "node:path";
 var HOOK_MISSING = "runner calls will wait for approval: the plugin hook is missing (update the plugin)";
 function hookFile(scriptPath2) {
-  const dist = dirname6(scriptPath2);
-  return basename3(dist) === "dist" ? join24(dirname6(dist), "hooks", "hooks.json") : null;
+  const dist = dirname7(scriptPath2);
+  return basename3(dist) === "dist" ? join25(dirname7(dist), "hooks", "hooks.json") : null;
 }
 function checkHook(scriptPath2) {
   const file = hookFile(scriptPath2);
@@ -4585,8 +4791,8 @@ function checkHook(scriptPath2) {
 }
 
 // src/doctor/machine.ts
-import { existsSync as existsSync8, readdirSync as readdirSync9 } from "node:fs";
-import { join as join25 } from "node:path";
+import { existsSync as existsSync9, readdirSync as readdirSync9 } from "node:fs";
+import { join as join26 } from "node:path";
 var MAX_WORKTREE_DIRS = 30;
 var MAX_EMPTY_LOCK_DIRS = 100;
 var message = (err) => err instanceof Error ? err.message : String(err);
@@ -4601,11 +4807,11 @@ function countDirs(dir) {
   return entries2(dir).filter((e) => e.isDirectory()).length;
 }
 function countEmptyDirs(dir) {
-  return entries2(dir).filter((e) => e.isDirectory() && entries2(join25(dir, e.name)).length === 0).length;
+  return entries2(dir).filter((e) => e.isDirectory() && entries2(join26(dir, e.name)).length === 0).length;
 }
 function checkDisk(worktreeDir, worktreeLabel, home) {
   const worktrees = countDirs(worktreeDir);
-  const locks = countEmptyDirs(join25(home, "locks"));
+  const locks = countEmptyDirs(join26(home, "locks"));
   const out = [];
   if (worktrees > MAX_WORKTREE_DIRS) {
     out.push({
@@ -4638,7 +4844,7 @@ function checkMachineCap(home, root, maxParallel) {
   } catch {
   }
   for (const p of projects) {
-    if (caps.has(p.root) || !existsSync8(p.root)) continue;
+    if (caps.has(p.root) || !existsSync9(p.root)) continue;
     try {
       caps.set(p.root, loadConfig(p.root).maxParallel);
     } catch {
@@ -4654,8 +4860,8 @@ function checkMachineCap(home, root, maxParallel) {
 }
 
 // src/doctor/project.ts
-import { existsSync as existsSync9 } from "node:fs";
-import { join as join26 } from "node:path";
+import { existsSync as existsSync10 } from "node:fs";
+import { join as join27 } from "node:path";
 function checkIgnored(git, root, config) {
   const entries3 = arbabIgnoreEntries(root, config).filter((e) => e !== `${WORKER_TMP_DIR}/`);
   const notIgnored = entries3.filter((e) => git(["check-ignore", "-q", "--", `${e}x`], root).code !== 0);
@@ -4668,13 +4874,13 @@ function checkIgnored(git, root, config) {
   };
 }
 function checkConfigFiles(root) {
-  if (!existsSync9(join26(root, CONFIG_FILE)) || !existsSync9(join26(root, LOCAL_CONFIG_FILE))) return null;
+  if (!existsSync10(join27(root, CONFIG_FILE)) || !existsSync10(join27(root, LOCAL_CONFIG_FILE))) return null;
   return { status: "warn", check: "configs", detail: `both ${CONFIG_FILE} and ${LOCAL_CONFIG_FILE} exist: ${CONFIG_FILE} wins` };
 }
 
 // src/doctor/scanners.ts
-import { existsSync as existsSync10 } from "node:fs";
-import { join as join27 } from "node:path";
+import { existsSync as existsSync11 } from "node:fs";
+import { join as join28 } from "node:path";
 var FLAT_CONFIG = /^eslint\.config\.(js|mjs|cjs|ts|mts|cts)$/;
 var TEST_CONFIG = /^(vitest|vite|jest)\.config\.(js|mjs|cjs|ts|mts|cts|json)$/;
 var ESLINT_FLAT_UNGUARDED = "eslint in this checkout also lints .arbab/worktrees: add '.arbab/**' to its ignores";
@@ -4685,10 +4891,10 @@ function checkEslint(root) {
   if (readPackageJson(root)?.["eslintConfig"] !== void 0) legacy.push("package.json eslintConfig");
   if (flat2.length === 0 && legacy.length === 0) return [];
   const out = [];
-  const unguarded = flat2.filter((n) => !(readOptional(join27(root, n)) ?? "").includes(ARBAB_DIR));
+  const unguarded = flat2.filter((n) => !(readOptional(join28(root, n)) ?? "").includes(ARBAB_DIR));
   if (unguarded.length > 0) out.push({ status: "warn", check: "eslint", detail: `${ESLINT_FLAT_UNGUARDED} (${unguarded.join(", ")})` });
   const marker = `${ARBAB_DIR}/${ESLINT_MARKER}`;
-  if (legacy.length > 0 && !existsSync10(join27(root, marker))) {
+  if (legacy.length > 0 && !existsSync11(join28(root, marker))) {
     out.push({
       status: "warn",
       check: "eslint",
@@ -4705,7 +4911,7 @@ function checkTestConfigs(root) {
   const configs = [];
   const open2 = [];
   for (const name2 of listNames(root).filter((n) => TEST_CONFIG.test(n))) {
-    const text2 = readOptional(join27(root, name2)) ?? "";
+    const text2 = readOptional(join28(root, name2)) ?? "";
     if (name2.startsWith("vite.") && !/\btest\s*:/.test(text2)) continue;
     configs.push(name2);
     if (!confinesTests(text2)) open2.push(name2);
@@ -4761,7 +4967,7 @@ function checkSandbox(platform, deps) {
   return { status: "fail", check: "sandbox", detail: `Claude Code has no sandbox on ${platform}` };
 }
 function checkHome(home) {
-  const probe = join28(home, `.doctor-${randomBytes3(6).toString("hex")}`);
+  const probe = join29(home, `.doctor-${randomBytes3(6).toString("hex")}`);
   try {
     ensureDir(home);
     createExclusive(probe, "");
@@ -4835,7 +5041,7 @@ async function runDoctor(argv2, ctx) {
 }
 
 // src/commands/wait.ts
-import { existsSync as existsSync11 } from "node:fs";
+import { existsSync as existsSync12 } from "node:fs";
 var WAIT_TIMEOUT_EXIT = 3;
 var POLL_MS = 2e3;
 var NONE = "\u2014";
@@ -4854,7 +5060,7 @@ function describeFinished(runsRoot, item) {
     toolCalls: s?.toolCallTotal ?? 0,
     failed: s?.failedTotal ?? 0,
     costDeltaUsd: s?.costDeltaUsd ?? null,
-    report: report !== null && existsSync11(report) ? report : null
+    report: report !== null && existsSync12(report) ? report : null
   };
 }
 function formatFinished(line2) {
@@ -5007,7 +5213,7 @@ var MAX_PREFLIGHT_NAME = (() => {
   return n;
 })();
 var PREFLIGHT_DIR = ".arbab/preflight";
-var preflightDir = (project, lane) => join29(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
+var preflightDir = (project, lane) => join30(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
 function writeProbeLanes(project, lane) {
   if (lane.name.length > MAX_PREFLIGHT_NAME) {
     throw new ArbabError(
@@ -5016,9 +5222,9 @@ function writeProbeLanes(project, lane) {
     );
   }
   const dir = preflightDir(project, lane.name);
-  const rel = (path) => relative7(project.root, path);
+  const rel = (path) => relative9(project.root, path);
   const owner = lane.worktree ?? lane.name;
-  const worktree = lane.worktree !== void 0 || existsSync12(join29(project.worktreeRoot, owner)) ? owner : void 0;
+  const worktree = lane.worktree !== void 0 || existsSync13(join30(project.worktreeRoot, owner)) ? owner : void 0;
   const shared = {
     role: lane.role,
     ...lane.fence !== void 0 && { fence: lane.fence },
@@ -5035,9 +5241,9 @@ function writeProbeLanes(project, lane) {
   };
   const write = (suffix, brief, schema, fields) => {
     const name2 = assertValidName(`${lane.name}-${suffix}`, "probe lane");
-    const briefFile = join29(dir, `${name2}.md`);
-    const schemaFile = join29(dir, `${name2}.schema.json`);
-    const laneFile = join29(dir, `${name2}.json`);
+    const briefFile = join30(dir, `${name2}.md`);
+    const schemaFile = join30(dir, `${name2}.schema.json`);
+    const laneFile = join30(dir, `${name2}.json`);
     writeTextAtomic(briefFile, brief);
     writeJsonAtomic(schemaFile, schema);
     writeJsonAtomic(laneFile, { name: name2, ...shared, brief: rel(briefFile), schema: rel(schemaFile), ...fields });
@@ -5065,9 +5271,9 @@ function writeProbeLanes(project, lane) {
 }
 var gitMessage = (r) => (r.stderr || r.stdout).trim();
 function removeProbeWorktree(git, project, probe, gitCommonDir2) {
-  const path = join29(project.worktreeRoot, assertValidName(probe, "probe lane"));
+  const path = join30(project.worktreeRoot, assertValidName(probe, "probe lane"));
   const branch = `arbab/${probe}`;
-  if (existsSync12(path)) {
+  if (existsSync13(path)) {
     if (gitCommonDir2 === void 0) return `kept ${path}: the repository's git directory is unknown`;
     const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: gitCommonDir2 });
     if (verified.gitDir === null) return `kept ${path}: ${verified.error}`;
@@ -5337,7 +5543,7 @@ function writeGeneratedLane(project, paths, lane) {
     if (lane.spec.schema === void 0) throw new ArbabError("usage", `lane ${name2} has a schema but no schema path`);
     writeJsonAtomic(confine(project.root, lane.spec.schema), lane.schema);
   }
-  const file = join30(paths.lanesDir, `${name2}.json`);
+  const file = join31(paths.lanesDir, `${name2}.json`);
   writeJsonAtomic(file, lane.spec);
   return file;
 }
@@ -5390,11 +5596,11 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
   assertInactive(ctx, project, name2);
   assertNoLiveWorker(ctx, project, name2);
   assertNotBorrowed(ctx, project, name2);
-  const runDir = join30(project.runsRoot, name2);
-  const path = join30(project.worktreeRoot, name2);
+  const runDir = join31(project.runsRoot, name2);
+  const path = join31(project.worktreeRoot, name2);
   const branch = `arbab/${name2}`;
   const head = branchHead(ctx.git, project.root, branch);
-  if (!existsSync13(runDir) && !existsSync13(path) && head === null) return;
+  if (!existsSync14(runDir) && !existsSync14(path) && head === null) return;
   const marker = readGenerated(project.runsRoot, name2);
   if (marker === null || marker.by !== ownerTag(owner)) {
     throw new ArbabError(
@@ -5408,7 +5614,7 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
       throw new ArbabError("git", `${branch} has commits that are not on ${owner.branch}, so nothing was removed`);
     }
   }
-  if (existsSync13(path)) mustGit(ctx, [...untrustedTree(), "worktree", "remove", "--force", path], project.root);
+  if (existsSync14(path)) mustGit(ctx, [...untrustedTree(), "worktree", "remove", "--force", path], project.root);
   mustGit(ctx, ["worktree", "prune"], project.root);
   if (head !== null) mustGit(ctx, [...untrustedTree(), "branch", "-D", branch], project.root);
 }
@@ -5440,7 +5646,7 @@ function collectRun(runsRoot, run) {
   if (own2 !== null) ackRun(runsRoot, run.lane, { shepherdPid: own2.shepherdPid, since: own2.since }, outcome2.attempts.at(-1) ?? null);
   return outcome2;
 }
-var runRecordPath = (lanesDir, lane) => join30(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
+var runRecordPath = (lanesDir, lane) => join31(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
 function readGeneratedRun(lanesDir, lane) {
   let raw;
   try {
@@ -5552,7 +5758,7 @@ function releaseStalePoolFiles(home, alive, nowMs) {
   return released;
 }
 function removeEmptyLockDirs(home) {
-  const root = join31(home, "locks");
+  const root = join32(home, "locks");
   let entries3;
   try {
     entries3 = readdirSync10(root, { withFileTypes: true });
@@ -5563,7 +5769,7 @@ function removeEmptyLockDirs(home) {
   for (const entry of entries3) {
     if (!entry.isDirectory()) continue;
     try {
-      rmdirSync2(join31(root, entry.name));
+      rmdirSync2(join32(root, entry.name));
       removed++;
     } catch {
     }
@@ -5683,7 +5889,7 @@ function judge(git, root, target, hasWorktree, hasBranch, rules, common) {
   return { keep: `branch ${target.branch} is not merged into ${rules.base}` };
 }
 function removeWorktreeAndBranch(git, root, target, rules, out, blocker, common) {
-  const hasWorktree = existsSync14(target.path);
+  const hasWorktree = existsSync15(target.path);
   if (!hasWorktree && !target.deleteBranch) return;
   const hasBranch = branchHead(git, root, target.branch) !== null;
   if (!hasWorktree && !hasBranch) return;
@@ -5751,7 +5957,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
     }
     try {
       const target = {
-        path: join31(project.worktreeRoot, lane),
+        path: join32(project.worktreeRoot, lane),
         branch: `arbab/${lane}`,
         deleteBranch: readGenerated(project.runsRoot, lane) !== null
       };
@@ -5759,7 +5965,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
       if (owner !== lane) {
         const where = typeof owner === "string" && isValidName(owner) ? `lane ${owner}'s worktree` : `worktree ${JSON.stringify(owner)}`;
         const reason = `lane ${lane} works in ${where}`;
-        if (existsSync14(target.path)) out.worktreesKept.push({ path: target.path, reason });
+        if (existsSync15(target.path)) out.worktreesKept.push({ path: target.path, reason });
         else if (target.deleteBranch && branchHead(ctx.git, project.root, target.branch) !== null) out.branchesKept.push({ branch: target.branch, reason });
         continue;
       }
@@ -5768,7 +5974,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
         if (state === void 0) {
           const error = unreadable.get(lane);
           if (error !== void 0) return error;
-          return existsSync14(runPaths(project.runsRoot, lane).laneDir) ? "no run state" : null;
+          return existsSync15(runPaths(project.runsRoot, lane).laneDir) ? "no run state" : null;
         }
         if (isActive(state)) return `lane ${lane} is ${state}`;
         if (state === "orphaned") return "orphaned: run arbab cleanup first";
@@ -5795,7 +6001,7 @@ function removeLandedIntegrations(ctx, project, out, opts = {}) {
   for (const name2 of listIntegrations(project.root)) {
     try {
       const paths = integrationPaths(project.root, project.config, name2);
-      if (!existsSync14(paths.landing)) continue;
+      if (!existsSync15(paths.landing)) continue;
       const record2 = readIntegration(paths);
       if (record2 === null) {
         out.warnings.push(`integration ${name2} landed but has no integration.json`);
@@ -5882,10 +6088,10 @@ async function runCleanup(argv2, ctx) {
 }
 
 // src/commands/hook.ts
-import { realpathSync as realpathSync8 } from "node:fs";
+import { realpathSync as realpathSync10 } from "node:fs";
 
 // src/hook/approve.ts
-import { isAbsolute as isAbsolute8, resolve as resolve12, sep as sep7 } from "node:path";
+import { isAbsolute as isAbsolute9, resolve as resolve13, sep as sep8 } from "node:path";
 
 // src/hook/command.ts
 var UNQUOTED = /^[A-Za-z0-9_@%+=:,./~-]+$/;
@@ -5948,26 +6154,26 @@ function sameFile(a, b, realpath2) {
   return ra !== null && ra === real(b, realpath2);
 }
 function under(base, path) {
-  const b = resolve12(base);
-  return path === b || path.startsWith(b.endsWith(sep7) ? b : b + sep7);
+  const b = resolve13(base);
+  return path === b || path.startsWith(b.endsWith(sep8) ? b : b + sep8);
 }
 function knownProject(dir, opts) {
-  if (!isAbsolute8(dir)) return false;
+  if (!isAbsolute9(dir)) return false;
   const path = real(dir, opts.realpath);
-  if (path === null || inLaneWorktree(path)) return false;
+  if (path === null || inLaneWorktree(dir, { realpath: opts.realpath })) return false;
   for (const temp of opts.tempDirs) {
-    if (!isAbsolute8(temp)) continue;
+    if (!isAbsolute9(temp)) continue;
     const realTemp = real(temp, opts.realpath);
     if (under(temp, path) || realTemp !== null && under(realTemp, path)) return false;
   }
-  return opts.projectRoots().some((root) => isAbsolute8(root) && (root === path || real(root, opts.realpath) === path));
+  return opts.projectRoots().some((root) => isAbsolute9(root) && (root === path || real(root, opts.realpath) === path));
 }
 function isRunnerCall(command, opts) {
   const words = tokenize(command);
   if (words === null || words.length < 3) return false;
   const [node, runner] = words;
   if (node?.value !== "node" || runner === void 0) return false;
-  if (!isAbsolute8(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
+  if (!isAbsolute9(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
   let at = 2;
   if (words[at]?.value === "-C") at += 2;
   const name2 = words[at]?.value;
@@ -6046,7 +6252,8 @@ async function answer(event, ctx, tempDirs) {
       scriptPath: ctx.scriptPath,
       // COMMANDS is read here, not at load: index.ts imports this module.
       commands: Object.keys(COMMANDS),
-      realpath: realpathSync8,
+      // The native one returns the spelling on disk, so a case-insensitive file system's other spellings compare equal.
+      realpath: (path) => realpathSync10.native(path),
       projectRoots: () => listProjects(ctx.home).map((entry) => entry.root),
       tempDirs: tmp === void 0 || tmp === "" ? tempDirs : [...tempDirs, tmp]
     });
@@ -6071,8 +6278,8 @@ async function runHook(argv2, ctx, tempDirs = TEMP_DIRS) {
 }
 
 // src/commands/host-check.ts
-import { existsSync as existsSync15 } from "node:fs";
-import { join as join32 } from "node:path";
+import { existsSync as existsSync16 } from "node:fs";
+import { join as join33 } from "node:path";
 
 // src/verify/index.ts
 var VERIFY_TIMEOUT_MS = 9e5;
@@ -6179,7 +6386,7 @@ function readHostCheckRecord(path, name2) {
   return raw;
 }
 function assertWorktreeAt(ctx, worktree, head) {
-  if (!existsSync15(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
+  if (!existsSync16(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
   const at = ctx.git([...untrustedTree(), "rev-parse", "HEAD"], worktree);
   if (at.code !== 0 || at.stdout.trim() !== head) {
     throw new ArbabError("usage", `${worktree} is at ${at.code === 0 ? at.stdout.trim() : "no commit"}, not at the integration head ${head}`);
@@ -6226,7 +6433,7 @@ ${r.output.endsWith("\n") ? r.output : `${r.output}
     interactive: true,
     finishedAt: isoAt(ctx.clock)
   };
-  writeJsonAtomic(join32(integration.paths.dir, HOST_CHECKS_FILE), record2);
+  writeJsonAtomic(join33(integration.paths.dir, HOST_CHECKS_FILE), record2);
   return record2.passed ? 0 : 1;
 }
 
@@ -6295,7 +6502,7 @@ function splitSegments(glob) {
   if (glob.endsWith("/")) out.push("**");
   return out;
 }
-function globSegments(glob) {
+function scopeForms(glob) {
   if (glob.includes("\\")) return null;
   const alternatives = expandBraces(glob);
   if (alternatives === null) return null;
@@ -6304,13 +6511,9 @@ function globSegments(glob) {
     const segments = splitSegments(alternative);
     if (segments === null) return null;
     out.push(segments);
+    if (!PATTERN_SEGMENT.test(alternative) && segments.at(-1) !== "**") out.push([...segments, "**"]);
   }
   return out;
-}
-function scopeForms(glob) {
-  const forms = globSegments(glob);
-  if (forms === null || PATTERN_SEGMENT.test(glob)) return forms;
-  return forms.flatMap((segments) => segments.at(-1) === "**" ? [segments] : [segments, [...segments, "**"]]);
 }
 var EXTGLOB = /[@!+*?]\(/;
 function segmentRegExp(pattern) {
@@ -6586,11 +6789,11 @@ function coordination(plan, siblings) {
 }
 
 // src/plan/load.ts
-import { isAbsolute as isAbsolute9, resolve as resolve13 } from "node:path";
+import { isAbsolute as isAbsolute10, resolve as resolve14 } from "node:path";
 var PLAN_KEYS = ["name", "base", "defaults", "phases"];
 var PHASE_KEYS = ["name", "brief", "scope", "dependsOn", ...PHASE_LANE_KEYS];
 function loadPlan(projectRoot, planPath) {
-  const file = resolve13(projectRoot, planPath);
+  const file = resolve14(projectRoot, planPath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `plan file ${planPath} does not exist`);
   const obj = record(raw, planPath);
@@ -6625,7 +6828,7 @@ function scope(v, field) {
   if (!Array.isArray(v) || v.length === 0) fail(field, "must be a non-empty array of globs");
   return v.map((item, i) => {
     const glob = nonEmptyString(item, `${field}[${i}]`);
-    if (isAbsolute9(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
+    if (isAbsolute10(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
     if (glob.split(/[\\/]/).includes("..")) fail(`${field}[${i}]`, `${glob} must not contain ".."`);
     return glob;
   });
@@ -6858,8 +7061,8 @@ async function runIntegrate(argv2, ctx) {
 }
 
 // src/commands/land.ts
-import { existsSync as existsSync16, readFileSync as readFileSync6, realpathSync as realpathSync9 } from "node:fs";
-import { basename as basename4, resolve as resolve14 } from "node:path";
+import { existsSync as existsSync17, readFileSync as readFileSync7, realpathSync as realpathSync11 } from "node:fs";
+import { dirname as dirname8, resolve as resolve15 } from "node:path";
 
 // src/review/findings.ts
 var SEVERITIES = ["HIGH", "MEDIUM", "LOW"];
@@ -6938,19 +7141,19 @@ function reviewRecord(input) {
 
 // src/review/history.ts
 import { readdirSync as readdirSync11 } from "node:fs";
-import { join as join33 } from "node:path";
+import { join as join34 } from "node:path";
 var ROUND_FILE = /^([1-9][0-9]{0,8})\.json$/;
 function reviewRoundPath(integrationDir, round) {
   if (!Number.isInteger(round) || round < 1) throw new ArbabError("usage", `review round ${round} is not a positive integer`);
-  return join33(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
+  return join34(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
 }
 function reviewRounds(integrationDir) {
   let names2;
   try {
-    names2 = readdirSync11(join33(integrationDir, REVIEW_HISTORY_DIR));
+    names2 = readdirSync11(join34(integrationDir, REVIEW_HISTORY_DIR));
   } catch (err) {
     if (err.code === "ENOENT") return [];
-    throw new ArbabError("io", `cannot list ${join33(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
+    throw new ArbabError("io", `cannot list ${join34(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
   }
   return names2.flatMap((n) => {
     const round = ROUND_FILE.exec(n)?.[1];
@@ -6988,17 +7191,17 @@ function keepOtherLenses(previous, current, ran) {
 }
 
 // src/review/lanes.ts
-import { isAbsolute as isAbsolute10, relative as relative8, sep as sep8 } from "node:path";
+import { isAbsolute as isAbsolute11, relative as relative10, sep as sep9 } from "node:path";
 var MAX_LANE_NAME = 48;
 var MAX_FINDINGS = 10;
 var REF = /^[A-Za-z0-9._/@^~{}-]+$/;
 function reviewLaneFiles(paths, lane) {
   const name2 = assertValidName(lane, "lane name");
-  const rel = relative8(paths.projectRoot, paths.lanesDir);
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute10(rel)) {
+  const rel = relative10(paths.projectRoot, paths.lanesDir);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute11(rel)) {
     throw new ArbabError("usage", `the lanes directory ${paths.lanesDir} is not inside the project ${paths.projectRoot}`);
   }
-  const dir = rel.split(sep8).join("/");
+  const dir = rel.split(sep9).join("/");
   return { brief: `${dir}/${name2}.md`, schema: `${dir}/${name2}.schema.json` };
 }
 function startFields(start) {
@@ -7285,25 +7488,26 @@ function assertCleanBase(git, root, base, head) {
   }
   return untracked;
 }
-var isEnvFile = (path) => basename4(path).toLowerCase().startsWith(".env");
-function readMessage(root, file) {
+function readMessage(root, file, credential) {
   let path;
   try {
     path = confine(root, file);
   } catch {
-    throw refuse(`the --message file ${file} is outside the project ${resolve14(root)}`);
+    throw refuse(`the --message file ${file} is outside the project ${resolve15(root)}`);
   }
-  if (isEnvFile(path)) throw refuse(`the --message file ${path} is a .env file, which may hold credentials`);
+  const hit = credential(path);
+  if (hit !== null) throw refuse(`the --message file ${path} ${credentialReason(hit)}`);
   let text2;
   try {
-    const real2 = realpathSync9(path);
+    const real2 = realpathSync11(path);
     try {
-      confine(realpathSync9(root), real2);
+      confine(realpathSync11(root), real2);
     } catch {
       throw refuse(`the --message file ${path} resolves outside the project`);
     }
-    if (isEnvFile(real2)) throw refuse(`the --message file ${path} resolves to a .env file, which may hold credentials`);
-    text2 = readFileSync6(real2, "utf8");
+    const realHit = credential(real2);
+    if (realHit !== null) throw refuse(`the --message file ${path} resolves to ${real2}, which ${credentialReason(realHit)}`);
+    text2 = readFileSync7(real2, "utf8");
   } catch (err) {
     if (err instanceof ArbabError) throw err;
     throw refuse(`cannot read the --message file ${path}: ${err.message}`);
@@ -7344,7 +7548,8 @@ async function runLand(argv2, ctx) {
   });
   const name2 = assertValidName(onePositional("land", positionals, "name"), "integration");
   const project = openProject(ctx);
-  const message5 = values.message === void 0 ? `Land ${name2}` : readMessage(project.root, values.message);
+  const credential = credentialMatcher(project.config.credentialPaths, homeSpellings(dirname8(ctx.home)));
+  const message5 = values.message === void 0 ? `Land ${name2}` : readMessage(project.root, values.message, credential);
   const squash = values.squash ?? project.config.landing.squash;
   const { paths, record: record2 } = openIntegration(project, name2);
   const base = record2.base;
@@ -7362,7 +7567,7 @@ async function runLand(argv2, ctx) {
   assertReadinessCurrent(readiness, verify, readReviewRecord(paths.review, name2), name2);
   const leftAlone = assertCleanBase(ctx.git, project.root, base, head);
   if (ctx.git(["merge-base", "--is-ancestor", head, "HEAD"], project.root).code === 0) throw refuse(`${head} is already in ${base}`);
-  if (existsSync16(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
+  if (existsSync17(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
   const branchAt = branchHead(ctx.git, project.root, paths.branch);
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
@@ -7443,9 +7648,9 @@ function deleteSquashedBranches(ctx, root, branches, landedHead, out) {
 }
 
 // src/commands/plan.ts
-import { join as join34 } from "node:path";
+import { join as join35 } from "node:path";
 var phaseNames = (plan) => [...new Set(plan.phases.map((p) => p.name))];
-var plansDir = (project, plan) => join34(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
+var plansDir = (project, plan) => join35(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
 function checkPlanFile(ctx, project, planPath) {
   const plan = loadPlan(project.root, planPath);
   const issues = checkPlan(plan);
@@ -7515,7 +7720,7 @@ async function planNext(ctx, project, planPath, opts = {}) {
       prepared = true;
     }
     const lane = check2.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
-    const laneFile = join34(plansDir(project, plan.name), `${phase}.json`);
+    const laneFile = join35(plansDir(project, plan.name), `${phase}.json`);
     try {
       writeJsonAtomic(laneFile, lane);
       const launched = await launchLane(ctx, project, laneFile, { onlyNew });
@@ -7630,10 +7835,10 @@ async function runPlan(argv2, ctx) {
 }
 
 // src/quota/quota.ts
-import { existsSync as existsSync17, rmSync as rmSync8 } from "node:fs";
-import { join as join35 } from "node:path";
-var quotaPath = (home) => join35(home, "quota.json");
-var resetFile = (home) => join35(home, "quota-reset.json");
+import { existsSync as existsSync18, rmSync as rmSync8 } from "node:fs";
+import { join as join36 } from "node:path";
+var quotaPath = (home) => join36(home, "quota.json");
+var resetFile = (home) => join36(home, "quota-reset.json");
 function isWindow(value) {
   if (typeof value !== "object" || value === null) return false;
   const v = value;
@@ -7664,7 +7869,7 @@ function updateQuota(home, snapshot) {
 }
 function resetQuota(home, clock) {
   const path = quotaPath(home);
-  const existed = existsSync17(path);
+  const existed = existsSync18(path);
   try {
     rmSync8(path, { force: true });
   } catch (err) {
@@ -7755,7 +7960,7 @@ function formatQuota(snapshot, nowSec) {
 
 // src/quota/refresh.ts
 import { mkdtempSync, rmSync as rmSync9 } from "node:fs";
-import { join as join36 } from "node:path";
+import { join as join37 } from "node:path";
 var REFRESH_PROMPT = "Reply with the single word: ok";
 var REFRESH_TIMEOUT_MS = 6e4;
 var STDERR_TAIL_LINES = 5;
@@ -7780,7 +7985,7 @@ function refreshArgs() {
   ];
 }
 function makeRefreshSpawn(spawnImpl, graceMs = 2e3) {
-  return (binary, args, opts) => new Promise((resolve18) => {
+  return (binary, args, opts) => new Promise((resolve19) => {
     const out = [];
     let err = "";
     let timedOut = false;
@@ -7791,7 +7996,7 @@ function makeRefreshSpawn(spawnImpl, graceMs = 2e3) {
       if (done) return;
       done = true;
       for (const t of timers) clearTimeout(t);
-      resolve18({ code: exit?.code ?? null, signal: exit?.signal ?? null, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: err });
+      resolve19({ code: exit?.code ?? null, signal: exit?.signal ?? null, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: err });
     };
     let child2;
     try {
@@ -7843,11 +8048,11 @@ function stderrTail(stderr) {
 }
 async function refreshQuota(input) {
   const timeoutMs = input.timeoutMs ?? REFRESH_TIMEOUT_MS;
-  const tmpRoot = join36(input.home, "tmp");
+  const tmpRoot = join37(input.home, "tmp");
   let cwd;
   try {
     ensureDir(tmpRoot);
-    cwd = mkdtempSync(join36(tmpRoot, "quota-refresh-"));
+    cwd = mkdtempSync(join37(tmpRoot, "quota-refresh-"));
   } catch (err) {
     throw new ArbabError("io", `cannot create a working directory under ${tmpRoot}: ${err.message}`, { cause: err });
   }
@@ -7930,7 +8135,7 @@ ${formatHold(hold)}
 }
 
 // src/commands/readiness.ts
-import { join as join37 } from "node:path";
+import { join as join38 } from "node:path";
 
 // src/readiness/notes.ts
 var FENCE_KINDS = [
@@ -8382,7 +8587,7 @@ async function runReadiness(argv2, ctx) {
     now: isoAt(ctx.clock),
     reviewCarryOver: carried && review !== null ? { from: review.headSha, base } : null,
     hostGates: project.config.hostGates,
-    hostChecks: readHostCheckRecord(join37(paths.dir, HOST_CHECKS_FILE), name2),
+    hostChecks: readHostCheckRecord(join38(paths.dir, HOST_CHECKS_FILE), name2),
     reviewRounds: reviewRounds2(paths.dir, name2)
   });
   const markdown = renderReadiness(report);
@@ -8425,7 +8630,7 @@ function adviceFor(state) {
 }
 
 // src/summary/integrations.ts
-import { existsSync as existsSync18 } from "node:fs";
+import { existsSync as existsSync19 } from "node:fs";
 var SHORT_SHA = 7;
 var short = (sha) => sha.slice(0, SHORT_SHA);
 function integrationLine(projectRoot, config, name2) {
@@ -8440,7 +8645,7 @@ function integrationLine(projectRoot, config, name2) {
   const verified = verify !== null && verify.headSha === head && verify.passed;
   const reviewed = review !== null && (review.headSha === head || readinessOnHead?.reviewCarriedOverFrom === review.headSha);
   const ready = readinessOnHead?.ready === true;
-  const landed = existsSync18(paths.landing);
+  const landed = existsSync19(paths.landing);
   const stage = landed ? "landed" : ready ? "ready" : reviewed ? "reviewed" : verified ? "verified" : "integrated";
   const waitsFor = [];
   if (!landed) {
@@ -8563,7 +8768,7 @@ function formatSummary(s, nowSec) {
 }
 
 // src/summary/lanes.ts
-import { existsSync as existsSync19 } from "node:fs";
+import { existsSync as existsSync20 } from "node:fs";
 var OWNER_CHARS = 8;
 var emptyCounts = () => ({
   byState: { running: 0, held: 0, preparing: 0, "waiting-reset": 0, queued: 0, orphaned: 0 },
@@ -8572,7 +8777,7 @@ var emptyCounts = () => ({
 function attemptSummary(runsRoot, lane, attempt) {
   if (attempt < 1) return null;
   const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-  return existsSync19(dir) ? readAttempt(dir).summary : null;
+  return existsSync20(dir) ? readAttempt(dir).summary : null;
 }
 function laneOverview(runsRoot, alive, nowMs) {
   const out = { total: 0, counts: emptyCounts(), active: [], attention: [], errors: [] };
@@ -8616,8 +8821,8 @@ function laneOverview(runsRoot, alive, nowMs) {
 
 // src/summary/plans.ts
 import { readdirSync as readdirSync12 } from "node:fs";
-import { join as join38 } from "node:path";
-var PLANS_DIR = join38(".arbab", "plans");
+import { join as join39 } from "node:path";
+var PLANS_DIR = join39(".arbab", "plans");
 function names(dir, keep) {
   try {
     return readdirSync12(dir, { withFileTypes: true }).filter(keep).map((e) => e.name).sort();
@@ -8636,12 +8841,12 @@ function phaseLine(runsRoot, phase, alive) {
   return { phase, status: end === "success" ? "done" : "failed", endState: end };
 }
 function planOverview(projectRoot, runsRoot, alive) {
-  const root = join38(projectRoot, PLANS_DIR);
+  const root = join39(projectRoot, PLANS_DIR);
   const plans = [];
   const errors = [];
   for (const plan of names(root, (e) => e.isDirectory() && isValidName(e.name))) {
     const phases = [];
-    for (const file of names(join38(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
+    for (const file of names(join39(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
       const phase = file.slice(0, -".json".length);
       if (!isValidName(phase)) continue;
       try {
@@ -8656,13 +8861,13 @@ function planOverview(projectRoot, runsRoot, alive) {
 }
 
 // src/summary/slots.ts
-import { readdirSync as readdirSync13, readFileSync as readFileSync7 } from "node:fs";
-import { join as join39 } from "node:path";
+import { readdirSync as readdirSync13, readFileSync as readFileSync8 } from "node:fs";
+import { join as join40 } from "node:path";
 var SLOT_FILE = /^(0|[1-9][0-9]*)\.json$/;
 function holder(path) {
   let v;
   try {
-    v = JSON.parse(readFileSync7(path, "utf8"));
+    v = JSON.parse(readFileSync8(path, "utf8"));
   } catch {
     return null;
   }
@@ -8674,7 +8879,7 @@ function holder(path) {
 function slotsInUse(home, alive) {
   let files;
   try {
-    files = readdirSync13(join39(home, "slots"));
+    files = readdirSync13(join40(home, "slots"));
   } catch {
     return [];
   }
@@ -8682,7 +8887,7 @@ function slotsInUse(home, alive) {
   for (const file of files) {
     const match = SLOT_FILE.exec(file);
     if (match === null) continue;
-    const h = holder(join39(home, "slots", file));
+    const h = holder(join40(home, "slots", file));
     if (h !== null && alive(h.pid)) out.push({ slot: Number(match[1]), ...h });
   }
   return out.sort((a, b) => a.slot - b.slot);
@@ -8722,7 +8927,7 @@ function projectSummary(input) {
 }
 
 // src/summary/report.ts
-import { existsSync as existsSync20, statSync as statSync6 } from "node:fs";
+import { existsSync as existsSync21, statSync as statSync6 } from "node:fs";
 var FILES_SHOWN = 10;
 function size(path) {
   try {
@@ -8742,7 +8947,7 @@ function laneFileRole(path) {
 }
 function readLaneReport(runsRoot, lane, n) {
   const paths = runPaths(runsRoot, lane);
-  if (!existsSync20(paths.laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+  if (!existsSync21(paths.laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   const attempts = listAttempts(runsRoot, lane);
   const latest = attempts.at(-1);
   if (latest === void 0) throw new ArbabError("usage", `lane ${lane} has no attempt yet`);
@@ -8902,7 +9107,7 @@ function formatLaneReport(r, live = null) {
 }
 
 // src/commands/status.ts
-import { existsSync as existsSync21 } from "node:fs";
+import { existsSync as existsSync22 } from "node:fs";
 function laneRole(runsRoot, lane) {
   const spec = readJson(runPaths(runsRoot, lane).laneFile);
   const role2 = typeof spec === "object" && spec !== null ? spec.role : void 0;
@@ -8940,7 +9145,7 @@ function laneStatus(project, lane, alive, nowMs) {
   let summary = null;
   if (record2.attempt >= 1) {
     const dir = runPaths(project.runsRoot, lane).attemptDir(record2.attempt);
-    if (existsSync21(dir)) {
+    if (existsSync22(dir)) {
       const attempt = readAttempt(dir);
       summary = attempt.summary;
       if (summary === null && effective.state === "running" && attempt.started !== null) {
@@ -8961,7 +9166,7 @@ async function runStatus(argv2, ctx) {
   const named = positionals.length > 0;
   for (const lane of positionals) {
     assertValidName(lane, "lane");
-    if (!existsSync21(runPaths(project.runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+    if (!existsSync22(runPaths(project.runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   }
   const nowMs = ctx.clock.now();
   const rows = [];
@@ -9023,21 +9228,21 @@ async function runReport(argv2, ctx) {
 }
 
 // src/commands/resume.ts
-import { existsSync as existsSync23, realpathSync as realpathSync13 } from "node:fs";
-import { join as join44 } from "node:path";
+import { existsSync as existsSync24, realpathSync as realpathSync15 } from "node:fs";
+import { join as join45 } from "node:path";
 
 // src/shepherd/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname as dirname9, join as join43 } from "node:path";
+import { dirname as dirname11, join as join44 } from "node:path";
 
 // src/shepherd/lifecycle.ts
-import { existsSync as existsSync22, mkdirSync as mkdirSync6, realpathSync as realpathSync12 } from "node:fs";
-import { dirname as dirname8, join as join42, resolve as resolve16 } from "node:path";
+import { existsSync as existsSync23, mkdirSync as mkdirSync6, realpathSync as realpathSync14 } from "node:fs";
+import { dirname as dirname10, join as join43, resolve as resolve17 } from "node:path";
 
 // src/shepherd/attempt.ts
 import { randomUUID } from "node:crypto";
-import { join as join40 } from "node:path";
+import { join as join41 } from "node:path";
 
 // src/report/schemas.ts
 var str2 = { type: "string" };
@@ -9206,8 +9411,8 @@ function child(path, key) {
 }
 
 // src/shepherd/prompt.ts
-import { realpathSync as realpathSync10 } from "node:fs";
-import { isAbsolute as isAbsolute11, relative as relative9 } from "node:path";
+import { realpathSync as realpathSync12 } from "node:fs";
+import { isAbsolute as isAbsolute12, relative as relative11 } from "node:path";
 
 // src/digest/index.ts
 var REPORT_TOOL2 = "StructuredOutput";
@@ -9347,17 +9552,17 @@ function readRequired2(path, what) {
 function resumePrompt(laneDir, mode) {
   if (mode.promptFile === void 0) return mode.prompt ?? CONTINUATION_PROMPT;
   const file = mode.promptFile;
-  if (!isAbsolute11(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
+  if (!isAbsolute12(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
   let real2;
   let base;
   try {
-    real2 = realpathSync10(file);
-    base = realpathSync10(laneDir);
+    real2 = realpathSync12(file);
+    base = realpathSync12(laneDir);
   } catch (err) {
     throw new ArbabError("io", `cannot resolve prompt file ${file}: ${err.message}`, { cause: err });
   }
-  const rel = relative9(base, real2);
-  if (rel === "" || rel.startsWith("..") || isAbsolute11(rel)) {
+  const rel = relative11(base, real2);
+  if (rel === "" || rel.startsWith("..") || isAbsolute12(rel)) {
     throw new ArbabError("usage", `prompt file ${file} is not inside the lane's run dir ${laneDir}`);
   }
   const text2 = readRequired2(real2, "prompt file");
@@ -9477,7 +9682,7 @@ function readRegistration(path) {
   return { kind: str3(v["kind"]), entrypoint: str3(v["entrypoint"]), name: str3(v["name"]) };
 }
 function worktreeUsedFile(runsRoot, owner) {
-  return join40(runPaths(runsRoot, owner).laneDir, "worktree-used");
+  return join41(runPaths(runsRoot, owner).laneDir, "worktree-used");
 }
 function writeOnce(path, text2) {
   if (!createExclusive(path, text2)) throw new ArbabError("io", `${path} already exists (attempt files are never overwritten)`);
@@ -9509,8 +9714,8 @@ function profileInput(ctx) {
     projectRoot: ctx.projectRoot,
     readableEnvFiles: readable,
     bashOutputMaxChars: config.fence.bashOutputMaxChars,
-    // Each listed template costs a git call; with none listed there is nothing to re-open.
-    envFileAllowReads: readable.length === 0 ? [] : envFileAllowReads({ worktree: ctx.worktree, readable, git: ctx.deps.git })
+    // Listed templates cost a git call; with none listed there is nothing to re-open.
+    envFileAllowReads: readable.length === 0 ? [] : envFileAllowReads({ worktree: ctx.worktree, branch: ctx.branch, gitCommonDir: ctx.gitCommonDir, readable, git: ctx.deps.git })
   };
 }
 function profileFor(ctx) {
@@ -9665,7 +9870,7 @@ async function runAttempt(ctx, request) {
   });
   try {
     writeOnce(files.started, json2(started));
-    const registrationFile = join40(deps.claudeHome, "sessions", `${pid}.json`);
+    const registrationFile = join41(deps.claudeHome, "sessions", `${pid}.json`);
     const ended = worker.exited.then(() => true);
     const nextTick = () => ctx.stop.aborted ? deps.sleep(deps.tickMs) : ctx.pause(deps.tickMs);
     while (!await Promise.race([ended, nextTick().then(() => false)])) {
@@ -9742,7 +9947,7 @@ async function runAttempt(ctx, request) {
     }
   }
   let effort2 = null;
-  const transcript = findTranscript(join40(deps.claudeHome, "projects"), digest.sessionId ?? sessionId);
+  const transcript = findTranscript(join41(deps.claudeHome, "projects"), digest.sessionId ?? sessionId);
   const transcriptText = transcript === null ? null : readOptional2(transcript);
   if (transcriptText !== null) {
     try {
@@ -9752,7 +9957,7 @@ async function runAttempt(ctx, request) {
     }
   }
   if (registration === null) {
-    registration = readRegistration(join40(deps.claudeHome, "sessions", `${pid}.json`));
+    registration = readRegistration(join41(deps.claudeHome, "sessions", `${pid}.json`));
     if (registration !== null) writeOnce(files.registration, json2(registration));
   }
   const summary = buildAttemptSummary({
@@ -9778,84 +9983,26 @@ async function runAttempt(ctx, request) {
 }
 
 // src/shepherd/inputs.ts
-import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync3, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync14, readFileSync as readFileSync8, realpathSync as realpathSync11, rmSync as rmSync10, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename as basename5, dirname as dirname7, isAbsolute as isAbsolute12, join as join41, relative as relative10, resolve as resolve15, sep as sep9 } from "node:path";
+import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync14, readFileSync as readFileSync9, realpathSync as realpathSync13, rmSync as rmSync10, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { basename as basename4, dirname as dirname9, isAbsolute as isAbsolute13, join as join42, relative as relative12, resolve as resolve16 } from "node:path";
 var MAX_INPUTS_BYTES = 50 * 1024 * 1024;
 var LIBRARY = "~/Library/**";
-function within(parent, child2) {
-  const rel = relative10(parent, child2);
-  return rel === "" || !rel.startsWith("..") && !isAbsolute12(rel);
+function within2(parent, child2) {
+  const rel = relative12(parent, child2);
+  return rel === "" || !rel.startsWith("..") && !isAbsolute13(rel);
 }
 function realOr(path) {
   try {
-    return realpathSync11(path);
+    return realpathSync13.native(path);
   } catch {
     return path;
   }
 }
-var GLOB_CHARS = /[*?[\]{}]/;
-var escapeRe = (text2) => text2.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-function globSource(glob) {
-  const whole = glob.endsWith("/**");
-  const body = whole ? glob.slice(0, -3) : glob;
-  let out = "";
-  for (let i = 0; i < body.length; i++) {
-    const c = body[i];
-    if (c === "*" && body[i + 1] === "*") {
-      i++;
-      if (body[i + 1] === "/") {
-        i++;
-        out += "(?:.*/)?";
-      } else out += ".*";
-    } else if (c === "*") out += "[^/]*";
-    else if (c === "?") out += "[^/]";
-    else out += escapeRe(c);
-  }
-  return whole ? `${out}(?:/.*)?` : out;
-}
-function patternRegexes(pattern, homes) {
-  const anchored = (prefix, glob) => new RegExp(`^${escapeRe(prefix)}${globSource(glob)}$`);
-  if (pattern.startsWith("~/")) return homes.map((h) => anchored(h.endsWith("/") ? h : `${h}/`, pattern.slice(2)));
-  if (pattern.startsWith("/")) return [anchored("/", pattern.replace(/^\/+/, ""))];
-  return [new RegExp(`(?:^|/)${globSource(pattern)}$`)];
-}
-function credentialRules(patterns, homes) {
-  return patterns.map((pattern) => {
-    if (pattern.startsWith("~/")) {
-      const rest = pattern.slice(2);
-      const dir = rest.endsWith("/**") ? rest.slice(0, -3) : null;
-      const plain = dir ?? rest;
-      if (plain !== "" && !GLOB_CHARS.test(plain)) {
-        const hit = { kind: dir !== null ? "dir" : "file", label: `~/${plain}` };
-        return (path) => homes.some((h) => within(join41(h, plain), path)) ? hit : null;
-      }
-    }
-    if (pattern.startsWith("**/")) {
-      const name2 = pattern.slice(3);
-      if (name2 !== "" && !name2.includes("/") && !name2.includes("**")) {
-        const re = new RegExp(`^${globSource(name2)}$`);
-        return (path) => {
-          const component = path.split(sep9).find((c) => re.test(c));
-          return component === void 0 ? null : { kind: "name", label: component };
-        };
-      }
-    }
-    const res = patternRegexes(pattern, homes);
-    return (path) => res.some((re) => re.test(path)) ? { kind: "pattern", label: pattern } : null;
-  });
-}
 function copyInputs(input) {
-  const home = resolve15(input.userHome);
-  const homes = [.../* @__PURE__ */ new Set([home, realOr(home)])];
-  const worktree = realOr(resolve15(input.worktree));
-  const rules = credentialRules([...BUILTIN_CREDENTIAL_PATHS, LIBRARY, ...input.credentialPaths], homes);
-  const credential = (path) => {
-    for (const rule of rules) {
-      const hit = rule(path);
-      if (hit !== null) return hit;
-    }
-    return null;
-  };
+  const home = resolve16(input.userHome);
+  const homes = homeSpellings(home);
+  const worktree = realOr(resolve16(input.worktree));
+  const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
   const names2 = /* @__PURE__ */ new Map();
   const planned = [];
   let total = 0;
@@ -9864,17 +10011,17 @@ function copyInputs(input) {
       throw new ArbabError("usage", `input ${raw} ${why}`);
     };
     let path;
-    if (raw === "~" || raw.startsWith("~/")) path = join41(home, raw.slice(2));
+    if (raw === "~" || raw.startsWith("~/")) path = join42(home, raw.slice(2));
     else if (raw.startsWith("~")) path = refuse2("names another user's home; write the full path");
-    else path = resolve15(input.projectRoot, raw);
-    const name2 = basename5(path);
+    else path = resolve16(input.projectRoot, raw);
+    const name2 = basename4(path);
     if (name2 === "") refuse2("has no name to copy it under");
     const clash = names2.get(name2);
     if (clash !== void 0) refuse2(`has the same name (${name2}) as input ${clash}`);
     names2.set(name2, raw);
     let stat;
     try {
-      stat = lstatSync3(path);
+      stat = lstatSync4(path);
     } catch {
       return refuse2(`does not exist (${path})`);
     }
@@ -9883,14 +10030,10 @@ function copyInputs(input) {
     const real2 = realOr(path);
     for (const p of [path, real2]) {
       const hit = credential(p);
-      if (hit === null) continue;
-      if (hit.kind === "dir") refuse2(`is under ${hit.label}, where credentials live`);
-      if (hit.kind === "file") refuse2(`is the credential file ${hit.label}`);
-      if (hit.kind === "name") refuse2(`is named like a credential file (${hit.label})`);
-      refuse2(`matches the credential path ${hit.label}`);
+      if (hit !== null) refuse2(credentialReason(hit));
     }
-    if (stat.isDirectory() && homes.some((h) => within(real2, h))) refuse2("holds the home directory, credentials included");
-    if (stat.isDirectory() && within(real2, worktree)) refuse2("holds the worktree it would be copied into");
+    if (stat.isDirectory() && homes.some((h) => within2(real2, h))) refuse2("holds the home directory, credentials included");
+    if (stat.isDirectory() && within2(real2, worktree)) refuse2("holds the worktree it would be copied into");
     const entries3 = [];
     const add = (bytes2) => {
       total += bytes2;
@@ -9902,13 +10045,13 @@ function copyInputs(input) {
     } else {
       entries3.push({ rel: "", dir: true });
       const walk = (rel) => {
-        for (const child2 of readdirSync14(join41(real2, rel)).sort()) {
-          const childRel = join41(rel, child2);
-          const full = join41(real2, childRel);
-          const s = lstatSync3(full);
+        for (const child2 of readdirSync14(join42(real2, rel)).sort()) {
+          const childRel = join42(rel, child2);
+          const full = join42(real2, childRel);
+          const s = lstatSync4(full);
           if (s.isSymbolicLink()) continue;
           if (!s.isDirectory() && !s.isFile()) continue;
-          const hit = credential(full) ?? credential(join41(path, childRel));
+          const hit = credential(full) ?? credential(join42(path, childRel));
           if (hit !== null) {
             if (hit.kind === "dir") refuse2(`holds ${hit.label}, where credentials live`);
             if (hit.kind === "file") refuse2(`holds ${hit.label}, a credential file`);
@@ -9939,16 +10082,16 @@ function copyInputs(input) {
     const refuse2 = (why) => {
       throw new ArbabError("usage", `input ${p.raw} ${why}`);
     };
-    const target = join41(dest, p.name);
+    const target = join42(dest, p.name);
     try {
       for (const e of p.entries) {
-        const to = join41(target, e.rel);
+        const to = join42(target, e.rel);
         if (e.dir) {
           mkdirSync5(to);
           continue;
         }
-        const from = join41(p.source, e.rel);
-        if (realOr(dirname7(from)) !== dirname7(from)) refuse2(`changed while it was copied (${e.rel || p.name} moved)`);
+        const from = join42(p.source, e.rel);
+        if (realOr(dirname9(from)) !== dirname9(from)) refuse2(`changed while it was copied (${e.rel || p.name} moved)`);
         let fd;
         try {
           fd = openSync5(from, constants2.O_RDONLY | constants2.O_NOFOLLOW);
@@ -9963,7 +10106,7 @@ function copyInputs(input) {
           if (copied > MAX_INPUTS_BYTES) refuse2("grew over the inputs' limit while it was copied");
           const out = openSync5(to, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, s.mode & 511);
           try {
-            writeFileSync3(out, readFileSync8(fd));
+            writeFileSync3(out, readFileSync9(fd));
           } finally {
             closeSync5(out);
           }
@@ -9979,11 +10122,11 @@ function copyInputs(input) {
   return planned.map((p) => p.name);
 }
 function clearInputs(worktree) {
-  const rel = join41(WORKER_TMP_DIR, "inputs");
-  const dest = join41(realDir(worktree, WORKER_TMP_DIR), "inputs");
+  const rel = join42(WORKER_TMP_DIR, "inputs");
+  const dest = join42(realDir(worktree, WORKER_TMP_DIR), "inputs");
   let stat = null;
   try {
-    stat = lstatSync3(dest);
+    stat = lstatSync4(dest);
   } catch (err) {
     if (err.code !== "ENOENT") throw new ArbabError("io", `cannot read ${dest}: ${err.message}`, { cause: err });
   }
@@ -10086,7 +10229,7 @@ function releaseAll(home, held, holder2) {
 }
 async function runShepherd(projectRoot, laneName2, mode, deps, stop) {
   assertValidName(laneName2, "lane");
-  const root = resolve16(projectRoot);
+  const root = resolve17(projectRoot);
   const config = loadConfig(root);
   const runsRoot = confine(root, config.runsRoot);
   const paths = runPaths(runsRoot, laneName2);
@@ -10165,7 +10308,7 @@ async function runShepherd(projectRoot, laneName2, mode, deps, stop) {
     const seed = mode.kind === "fresh" && mode.digestFrom !== void 0 ? digestHeadStart(runsRoot, laneName2, mode.digestFrom) : null;
     await awaitSlot();
     setState("preparing");
-    const userHome = deps.hostEnv["HOME"] ?? dirname8(deps.home);
+    const userHome = deps.hostEnv["HOME"] ?? dirname10(deps.home);
     const prepared = await prepare(root, config, lane, deps, holder2, held, userHome, async (why) => {
       checkStop();
       setState("preparing", { reason: why });
@@ -10245,7 +10388,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
   ensureArbabMarkers(root);
   const owner = lane.worktree ?? lane.name;
-  if (owner !== lane.name && !existsSync22(join42(confine(root, config.worktreeRoot), owner))) {
+  if (owner !== lane.name && !existsSync23(join43(confine(root, config.worktreeRoot), owner))) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist`);
   }
   const base = lane.base ?? config.baseBranch;
@@ -10263,7 +10406,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   };
   const worktreeRoot = confine(root, config.worktreeRoot);
   mkdirSync6(worktreeRoot, { recursive: true });
-  const worktree = join42(realpathSync12(worktreeRoot), owner);
+  const worktree = join43(realpathSync14(worktreeRoot), owner);
   held.leases = await acquireLeases({
     home: deps.home,
     requests: lane.resources ?? {},
@@ -10288,10 +10431,10 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   while (!acquireWriterLock(deps.home, key, holder2, deps.alive)) await wait("waiting for the writer lock");
   held.lockKey = key;
   let wt = createWorktree(worktreeInput);
-  if (realpathSync12(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
+  if (realpathSync14(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
   let merged = [];
   const runsRoot = confine(root, config.runsRoot);
-  const pristine = wt.created || !existsSync22(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
+  const pristine = wt.created || !existsSync23(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
   if (pristine && owner !== lane.name) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, where no attempt has run yet; launch ${owner} first`);
   }
@@ -10305,7 +10448,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
     });
     discardWorktree({ projectRoot: root, root: config.worktreeRoot, lane: owner, sources, gitCommonDir: wt.gitCommonDir, git: deps.git });
     wt = createWorktree(worktreeInput);
-    if (realpathSync12(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} moved while it was built again`);
+    if (realpathSync14(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} moved while it was built again`);
   }
   if (pristine) {
     const { merge } = planned();
@@ -10340,14 +10483,14 @@ function defaultDeps() {
   const pnpm = findOnPath("pnpm", pathEnv, pathExists);
   const explicit = process.env["ARBAB_CLAUDE"];
   return {
-    home: join43(home, ".arbab"),
-    claudeHome: join43(home, ".claude"),
+    home: join44(home, ".arbab"),
+    claudeHome: join44(home, ".claude"),
     clock: systemClock,
     sleep,
     random: Math.random,
     hostEnv: { ...process.env },
-    nodeDir: dirname9(process.execPath),
-    pnpmDir: pnpm === null ? void 0 : dirname9(pnpm),
+    nodeDir: dirname11(process.execPath),
+    pnpmDir: pnpm === null ? void 0 : dirname11(pnpm),
     git: nodeGit,
     runCommand: runArgv,
     spawnImpl: spawn2,
@@ -10372,12 +10515,12 @@ var MAX_PROMPT_BYTES = 64 * 1024;
 function readPrompt(project, file) {
   let path;
   try {
-    path = realpathSync13(confine(project.root, file));
+    path = realpathSync15(confine(project.root, file));
   } catch (err) {
     if (err instanceof ArbabError) throw err;
     throw new ArbabError("usage", `cannot read prompt ${file}: ${err.message}`, { cause: err });
   }
-  confine(realpathSync13(project.root), path);
+  confine(realpathSync15(project.root), path);
   const text2 = readText(path);
   if (text2 === null) throw new ArbabError("usage", `cannot read prompt ${file}: no such file`);
   if (text2.trim() === "") throw new ArbabError("usage", `prompt ${file} is empty`);
@@ -10389,7 +10532,7 @@ function readPrompt(project, file) {
 function writeResumePrompt(project, lane, text2) {
   const laneDir = runPaths(project.runsRoot, lane).laneDir;
   for (let n = (listAttempts(project.runsRoot, lane).at(-1) ?? 0) + 1; ; n++) {
-    const path = join44(laneDir, `resume-prompt-${n}.md`);
+    const path = join45(laneDir, `resume-prompt-${n}.md`);
     if (createExclusive(path, text2)) return path;
   }
 }
@@ -10437,7 +10580,7 @@ async function runResume(argv2, ctx) {
   }
   const project = openProject(ctx);
   const paths = runPaths(project.runsRoot, lane);
-  if (!existsSync23(paths.laneFile)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+  if (!existsSync24(paths.laneFile)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   if (values.digest === true) {
     const seeded = await resumeWithDigest(ctx, project, lane);
     if (values.json === true) {
@@ -10471,8 +10614,8 @@ async function runResume(argv2, ctx) {
 }
 
 // src/commands/review.ts
-import { realpathSync as realpathSync14 } from "node:fs";
-import { basename as basename6 } from "node:path";
+import { realpathSync as realpathSync16 } from "node:fs";
+import { dirname as dirname12 } from "node:path";
 var DEFAULT_TIMEOUT_MIN2 = 120;
 var SHA7 = /^[0-9a-f]{40,64}$/;
 function reviewLenses(option, configLenses) {
@@ -10485,37 +10628,38 @@ function reviewLenses(option, configLenses) {
   }
   return lenses2;
 }
-function lensFilePath(root, name2, file) {
+function lensFilePath(root, name2, file, credential) {
   const refuse2 = (why) => new ArbabError("usage", `--lens-file ${name2}=${file}: ${why}`);
-  const isEnv = (path2) => basename6(path2).startsWith(".env");
   let path;
   try {
     path = confine(root, file);
   } catch {
     throw refuse2("the file must be inside the project root");
   }
-  if (isEnv(path)) throw refuse2("a .env file is not a lens");
+  const hit = credential(path);
+  if (hit !== null) throw refuse2(`the file ${credentialReason(hit)}; a credential file is not a lens`);
   let real2;
   try {
-    real2 = realpathSync14(path);
+    real2 = realpathSync16(path);
   } catch (err) {
     if (err.code === "ENOENT") throw new ArbabError("usage", `the file of lens ${name2}, ${file}, does not exist`);
     throw new ArbabError("usage", `cannot read the file of lens ${name2}, ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    confine(realpathSync14(root), real2);
+    confine(realpathSync16(root), real2);
   } catch {
     throw refuse2("the file must be inside the project root, and a symlink in it may not lead out");
   }
-  if (isEnv(real2)) throw refuse2("a .env file is not a lens");
+  const realHit = credential(real2);
+  if (realHit !== null) throw refuse2(`the file resolves to ${real2}, which ${credentialReason(realHit)}; a credential file is not a lens`);
   return real2;
 }
-function readLensFiles(root, options) {
+function readLensFiles(root, options, credential) {
   const lenses2 = {};
   for (const option of options) {
     const { name: name2, file } = parseLensFileOption(option);
     if (Object.hasOwn(lenses2, name2)) throw new ArbabError("usage", `--lens-file names lens ${name2} twice`);
-    const path = lensFilePath(root, name2, file);
+    const path = lensFilePath(root, name2, file, credential);
     let text2;
     try {
       text2 = readText(path);
@@ -10589,7 +10733,8 @@ async function runReview(argv2, ctx) {
   const name2 = assertValidName(onePositional("review", positionals, "name"), "integration");
   const timeoutMs = parseTimeoutMin(values["timeout-min"] ?? String(DEFAULT_TIMEOUT_MIN2));
   const project = openProject(ctx);
-  const fileLenses = readLensFiles(project.root, values["lens-file"] ?? []);
+  const credential = credentialMatcher(project.config.credentialPaths, homeSpellings(dirname12(ctx.home)));
+  const fileLenses = readLensFiles(project.root, values["lens-file"] ?? [], credential);
   const runLenses = { ...project.config.review.lenses, ...fileLenses };
   const lenses2 = reviewLenses(values.lenses, runLenses);
   const unrun = Object.keys(fileLenses).filter((lens) => !lenses2.includes(lens));
@@ -10647,7 +10792,7 @@ async function runReview(argv2, ctx) {
 }
 
 // src/commands/shepherd.ts
-import { isAbsolute as isAbsolute13 } from "node:path";
+import { isAbsolute as isAbsolute14 } from "node:path";
 function parseMode(text2) {
   let value;
   try {
@@ -10666,7 +10811,7 @@ function parseMode(text2) {
   if (kind === "resume") {
     if (prompt !== void 0 && promptFile !== void 0) throw new ArbabError("usage", "shepherd mode takes prompt or promptFile, not both");
     if (promptFile !== void 0) {
-      if (typeof promptFile === "string" && isAbsolute13(promptFile)) return { kind, promptFile };
+      if (typeof promptFile === "string" && isAbsolute14(promptFile)) return { kind, promptFile };
       throw new ArbabError("usage", "shepherd mode promptFile must be an absolute path");
     }
     if (prompt === void 0) return { kind };
@@ -10680,7 +10825,7 @@ async function runShepherdProcess(argv2, ctx) {
   if (root === void 0 || lane === void 0 || modeText === void 0 || rest.length > 0) {
     throw new ArbabError("usage", "usage: arbab __shepherd <root> <lane> <mode-json>");
   }
-  if (!isAbsolute13(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
+  if (!isAbsolute14(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
   assertValidName(lane, "lane");
   const mode = parseMode(modeText);
   const controller = new AbortController();
@@ -10730,7 +10875,7 @@ async function runStop(argv2, ctx) {
 }
 
 // src/commands/summary.ts
-import { existsSync as existsSync24 } from "node:fs";
+import { existsSync as existsSync25 } from "node:fs";
 function machineConfig(ctx, errors) {
   try {
     return loadMachineConfig(ctx.home);
@@ -10766,7 +10911,7 @@ async function runSummary(argv2, ctx) {
   }
   const summaries = [];
   for (const entry of listProjects(ctx.home)) {
-    if (!existsSync24(entry.root)) continue;
+    if (!existsSync25(entry.root)) continue;
     let project;
     try {
       project = openRoot(entry.root);
@@ -10787,7 +10932,7 @@ ${formatSummary(s, nowSec)}`).join("\n\n") + "\n");
 
 // src/commands/ui.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { basename as basename8 } from "node:path";
+import { basename as basename6 } from "node:path";
 
 // src/ui/client/app/bundle.ts
 var UI_SCRIPT = '"use strict";(()=>{var ca=Object.defineProperty;var ua=(e,t,n)=>t in e?ca(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var xt=(e,t,n)=>ua(e,typeof t!="symbol"?t+"":t,n);var st={page:"/",script:"/app.js",style:"/app.css",events:"/events",snapshot:"/snapshot.json",icon:"/icon.svg"},So="token",vo={snapshot:"snapshot",problem:"problem"};var L={spawn:{x:-16,y:248},exit:{x:-16,y:258},camp:{x:22,y:204},arbab:{x:116,y:262},audience:{x:144,y:260},rations:{x:86,y:262},treasury:{x:62,y:264},well:{x:444,y:206},horizon:{x:496,y:196},sledge:{x:402,y:208}},Je={columns:5,rows:2,step:12,rowStep:16},q={centerX:268,baseY:208,maxWidth:228,maxHeight:104},me={w:12,h:18},Eo={w:16,h:26};function da(e){let t=4;for(;t*(t+1)/2<e;)t+=1;return t}function Mo(e){let t=da(Math.max(0,Math.floor(e))),{centerX:n,baseY:o,maxWidth:r,maxHeight:s}=q,i=Math.min(32,Math.floor(r/t));i-=i%2;let a=Math.min(i/2,Math.floor(s/t));i=Math.min(i,2*a);let l=[];for(let u=0;u<t;u+=1){let d=t-u,f=n-d*i/2,m=o-(u+1)*a;for(let y=0;y<d;y+=1)l.push({x:f+y*i,y:m,w:i,h:a,course:u})}return{base:t,blockW:i,blockH:a,slots:l,apex:{x:n,y:o-t*a}}}function Er(e){let t=Je.columns*Je.rows,n=(Math.floor(e)%t+t)%t,o=Math.floor(n/Je.columns),r=n%Je.columns;return{x:L.camp.x+r*Je.step+o*Je.step/2,y:L.camp.y+o*Je.rowStep}}var Co=[152,108,64];function Cr(e,t){let n=Co[Math.min(Co.length-1,Math.max(0,Math.floor(e)))]??Co[0],o=Math.min(22,Math.max(8,Math.round(8+.6*t)));return{x:n,y:128,height:o}}function An(e){return{x:e.x+e.w/2,y:e.y+e.h}}var fa=600*1e3,Po=q.baseY,Ze=Po+2,Mr=28,pa=18,Ln=16,Nn=.8,Ao=3,Ar=.15,ma=1.2,Lr=.4,ha=6,ga=.2,ba=2,ya=.6,xa=1,wa=300,Nr=300,ka=60,Sa=48,va=4,Ea=3,Ca=2,Ma=20,Aa=100,La=12,Na=6,Ta=5,Ra=18e3,Pa=1.5,Oa=2,Ba=3,Fa=6,Ia=4,Tr=.25,Da=.5,Ua=new Set(["walk","slump","carry-scroll","carry-stone","carry-ration"]);function Tn(e){switch(e.kind){case"verify":return"surveyor";case"review":return"scribe";case"skeptic":return"skeptic";case"preflight":return"waterboy"}switch(e.role){case"implementer":return"laborer";case"verifier":return"mason";case"reviewer":return"scribe";case"probe":return"waterboy";case"researcher":return"scout";default:return"waterboy"}}function To(e){return e.kind==="lane"&&(e.role==="implementer"||e.role==="verifier"&&e.worktreeOf===null)}function qe(e){if(e===null)return-1/0;let t=Date.parse(e);return Number.isFinite(t)?t:-1/0}function Ro(e,t){let n=null,o=-1/0;for(let r of e){let s=t(r);(n===null||s>=o)&&(n=r,o=s)}return n}function Pr(e){let t=qe(e.now),n=e.integrations.map((d,f)=>({integration:d,index:f,at:qe(d.landedAt)})).filter(d=>d.integration.landedAt!==null).sort((d,f)=>d.at===f.at?f.index-d.index:f.at>d.at?1:-1).map(d=>d.integration),o=new Set(n.filter(d=>Number.isFinite(t)&&t-qe(d.landedAt)<fa)),r=n.find(d=>o.has(d))??null,s=new Map(e.integrations.map(d=>[d.name,d])),i=e.lanes.filter(d=>{if(!To(d))return!1;if(d.integration===null)return!0;let f=s.get(d.integration);return f===void 0?!1:f.landedAt===null||o.has(f)}),a=r;if(a===null){let d=new Set(i.map(m=>m.name)),f=e.integrations.filter(m=>m.landedAt===null&&m.lanes.some(y=>d.has(y)));a=Ro(f,m=>qe(m.updatedAt))}let l=i.length===0&&r===null?n[0]??null:null,u=n.filter(d=>!o.has(d)&&d!==l).slice(0,3);return{lanes:i,capstone:a,capstoneLanded:r!==null,monument:l,far:u}}function Or(e){let t=Pr(e);if(t.capstone!==null)return t.capstone;if(t.monument!==null)return t.monument;let n=e.integrations.filter(o=>o.landedAt===null);return n.length>0?Ro(n,o=>qe(o.updatedAt)):Ro(e.integrations,o=>qe(o.landedAt))}function Oo(e){let t=Number.isFinite(e)?Math.max(0,e):0;return Math.min(.95,1-Math.exp(-t/40))}function $a(e){let t=e.costDeltaUsd??e.costUsd??0,n=Number.isFinite(t)?t:0;return n<1?1:n<5?2:3}function _a(e){return e.reportStatus==="partial"?1:e.reportStatus==="blocked"?0:e.endState==="success"?$a(e):0}function Br(e){switch(e.state){case"running":return"building";case"waiting-reset":return"stalled";case"orphaned":return"orphaned";case"finished":return e.reportStatus==="partial"||e.reportStatus==="blocked"?"stalled":e.endState==="success"?"set":"fallen";default:return"planned"}}function Fr(e){return Br(e)==="set"}function Ga(e){return typeof e.costUsd=="number"&&Number.isFinite(e.costUsd)?Math.max(0,e.costUsd):0}function Ha(e){return e<.5?2*e*e:1-(-2*e+2)**2/2}function Ae(e,t,n={}){return{kind:"go",to:e,pose:t,...n}}function Ee(e,t,n={}){return{kind:"hold",pose:e,time:t,...n}}function it(e,t){e.pose!==t&&(e.pose=t,e.poseTime=0)}function Lo(e){let t=q.maxWidth/2;return e.y<Po&&e.x>=q.centerX-t&&e.x<=q.centerX+t}function Wa(e,t){return e.x===t.x&&e.y===t.y}function Rr(e,t,n,o){return{id:e,lane:t,cast:n,x:o.x,y:o.y,facing:1,pose:"idle",poseTime:0,stroke:0,ration:0,icon:null,bubble:null,alpha:1,ghost:!1,highlight:!1}}function No(e){return{lane:null,x:e.x,y:e.y,w:e.w,h:e.h,look:"empty",fill:0,flash:0,highlight:!1}}function Bo(e){let t=e.reducedMotion,n=e.random,o=Rr("arbab",null,"arbab",L.arbab),r=Mo(0),s={sky:{phase:"day",sun:.5},pyramid:{base:r.base,blockW:r.blockW,blockH:r.blockH,blocks:r.slots.map(No),rubble:0,apex:{...r.apex},capstone:{state:"none",integration:null,...L.sledge,flag:"none",ready:!1,glow:0},monument:null},far:[],actors:[o],particles:[],coins:0,events:[],reducedMotion:t,time:0,shake:0},i=new Map,a=new Map,l=new Map,u=[],d=null,f=new Map,m=new Map,y=!1,E=0,g=null,w=0,x=0,k=null,S=!1,C=()=>Math.floor(n()*2147483647),O=(c,p)=>{s.events.push({kind:c,lane:p})},I=()=>({x:q.centerX,y:Ze}),P=()=>r.base*r.blockW/2,G=(c,p)=>{let b=q.centerX-P();return Math.round(b+(c+(p-c)*n())*2*P())};function Y(c){if(c.builder){let p=f.get(c.lane.name);return p?An(p):I()}switch(c.actor.cast){case"mason":{let p=c.lane.worktreeOf===null?void 0:f.get(c.lane.worktreeOf);if(!p)return I();let b=An(p);return{x:b.x+Ta,y:b.y}}case"surveyor":return{x:L.sledge.x-14,y:Ze};default:return null}}function Oe(){let c=r.slots.filter(b=>b.course<2),p=c[Math.min(c.length-1,Math.floor(n()*c.length))];return p?An(p):I()}function Be(c){switch(c.actor.cast){case"scribe":case"skeptic":return Oe();case"waterboy":return{...L.well};default:return{x:G(.5,1),y:Ze}}}let ve=c=>c.x<0||c.x>480;function Fe(c,p){if(p!=="work")return p;let b=Y(c)??I();return c.spot=b,b}function fe(c,p,b){let h=b==="slump"?pa:Mr,v=b==="carry-stone"?"climb-stone":"climb",M=[],B=Lo(c),_=Lo(p);return B&&_&&c.x===p.x?[{kind:"move",x:p.x,y:p.y,pose:p.y<c.y?v:"climb",speed:Ln}]:(B&&M.push({kind:"move",x:c.x,y:Ze,pose:"climb",speed:Ln}),_?(M.push({kind:"move",x:p.x,y:Ze,pose:b,speed:h}),M.push({kind:"move",x:p.x,y:p.y,pose:v,speed:Ln})):M.push({kind:"move",x:p.x,y:p.y,pose:b,speed:h}),M)}function Ie(c){if(c.seat!==null)return c.seat;let p=new Set;for(let h of i.values())h.seat!==null&&p.add(h.seat);let b=0;for(;p.has(b);)b+=1;return c.seat=b,b}function De(c){let p=u.indexOf(c);p>=0&&u.splice(p,1),d?.crew===c&&(d=null,o.bubble=null,c.actor.bubble=null)}function le(c){De(c),c.seat=null,i.get(c.lane.name)===c&&i.delete(c.lane.name),S=!0}function ne(c,p,b,h,v,M){if(t)return;let B={kind:c,x:p,y:b,vx:h,vy:v,life:M};s.particles.push(B),s.particles.length>Nr&&s.particles.splice(0,s.particles.length-Nr)}function nt(c){if(c.paid=!0,O("pay",c.lane.name),t)return;let p=3+Math.floor(n()*3);for(let b=0;b<p;b+=1){let h=L.treasury.x+(n()-.5)*6;ne("coin",h,L.treasury.y-8,(n()-.5)*24,-40-n()*15,.6)}}let pe=c=>{s.pyramid.rubble=Math.min(ka,s.pyramid.rubble+c)};function Ue(c){De(c);let p=c.lane,b=c.actor;switch(p.state!=="queued"&&p.state!=="held"&&(c.seat=null),c.queue=[],c.loop=!1,c.spot=null,c.begun=!1,c.elapsed=0,c.chatIn=null,c.chatLeft=0,c.descending=!1,b.alpha=1,b.stroke=0,b.bubble=null,p.state){case"queued":case"held":{let h=p.state==="held"?{icon:p.hold==="slot"?"dots":"hourglass"}:{};c.queue.push(Ae(Er(Ie(c)),"walk"),Ee("sit",1/0,h));break}case"preparing":case"running":c.briefed||c.queue.push({kind:"talk",event:"brief"}),Y(c)!==null?c.queue.push(Ae("work",c.builder?"carry-stone":"walk"),Ee("work",1/0,{faceCenter:!0})):c.loop=!0;break;case"waiting-reset":{let h=Y(c)!==null?"work":c.briefed&&!ve(b)?{x:b.x,y:b.y}:Be(c);c.queue.push(Ae(h,"walk"),Ee("sleep",1/0,{icon:"zzz",faceCenter:!0}));break}case"finished":{let h=_a(p);c.queue.push({kind:"talk",event:"report"},Ae({...L.rations},"walk"),Ee("idle",ya),Ae({...L.exit},h>0?"carry-ration":"slump",{ration:h}),{kind:"exit"});break}case"orphaned":ve(b)&&c.queue.push(Ae(Y(c)!==null?"work":Be(c),"walk")),c.queue.push(Ee("idle",1/0,{ghost:!0,icon:"question"}));break;default:c.queue.push(Ee("idle",1/0))}Ye(c,0)}function ht(c){switch(c.actor.cast){case"scribe":case"skeptic":return[Ae(Oe(),"walk"),Ee("work",3+3*n(),{faceCenter:!0})];case"waterboy":return[Ae({...L.well},"walk"),Ee("idle",1),Ae({x:G(0,1),y:Ze},"walk"),Ee("idle",1)];case"scout":{let p=6+4*n();return[Ae({...L.horizon},"walk"),Ee("idle",p,{alpha:0}),Ae({x:G(.5,1),y:Ze},"walk",{alpha:1}),Ee("idle",2)]}default:return[Ee("idle",1/0)]}}function $e(c){c.queue.shift(),c.begun=!1,c.elapsed=0}function Gt(c,p){let b=c.actor;if(b.bubble=null,b.stroke=0,c.chatLeft=0,p.kind==="go"){let h=Fe(c,p.to);return p.alpha!==void 0&&(b.alpha=p.alpha),p.ration!==void 0&&(b.ration=p.ration),p.ration!==void 0&&p.ration>0&&!c.paid&&nt(c),c.queue.splice(0,1,...fe(b,h,p.pose)),!0}return b.icon=p.kind==="hold"?p.icon??null:null,b.ghost=p.kind==="hold"&&p.ghost===!0,p.kind==="hold"&&(it(b,p.pose),p.alpha!==void 0&&(b.alpha=p.alpha),p.faceCenter&&(b.facing=b.x<=q.centerX?1:-1)),!1}function Ht(c,p,b,h,v){let M=p.x-c.x,B=p.y-c.y,_=Math.hypot(M,B);return _===0?v:(M!==0&&(c.facing=M>0?1:-1),it(c,b),t||h*v>=_?(c.x=p.x,c.y=p.y,t?v:Math.max(0,v-_/h)):(c.x+=M/_*h*v,c.y+=B/_*h*v,-1))}function Ye(c,p){let b=c.actor,h=p;for(let v=0;v<64;v+=1){if(i.get(c.lane.name)!==c)return;if(c.queue.length===0){if(!c.loop){it(b,"idle");return}c.queue=ht(c),c.begun=!1}let M=c.queue[0];if(M===void 0)return;if(!c.begun&&(c.begun=!0,c.elapsed=0,Gt(c,M))){c.begun=!1;continue}switch(M.kind){case"go":continue;case"move":if(h=Ht(b,M,M.pose,M.speed,h),h<0)return;$e(c);continue;case"hold":{let B=Math.min(h,M.time-c.elapsed);if(c.elapsed+=B,h-=B,M.pose==="work"&&xo(c,B),c.elapsed<M.time)return;$e(c);continue}case"talk":if(h=yo(c,M.event,h),h<0)return;$e(c);continue;case"exit":le(c);return}}}function yo(c,p,b){let h=c.actor,v=b;if(u.includes(c)||u.push(c),d?.crew!==c){let yt=u.indexOf(c);if(yt>Na)return h.pose!=="sit"&&it(h,"idle"),-1;if(Lo(h)&&(c.descending=!0),c.descending){if(v=Ht(h,{x:h.x,y:Ze},"climb",Ln,v),v<0)return-1;c.descending=!1}let Mn={x:L.audience.x+La*yt,y:L.audience.y};if(v=Ht(h,Mn,"walk",Mr,v),v<0)return-1;if(h.facing=-1,yt!==0||d!==null)return it(h,"idle"),-1;d={crew:c,t:0,turn:-1}}let M=d;M.t+=v;let B=Math.min(Ao-1,Math.floor(M.t/Nn));for(;M.turn<B;){M.turn+=1;let yt=M.turn===1,Mn={seed:C(),open:0};h.bubble=yt?Mn:null,o.bubble=yt?null:Mn}let _=M.turn===1?h:o;if(_.bubble&&(_.bubble.open=t?1:Math.min(1,(M.t-M.turn*Nn)/Ar)),it(h,M.turn===1?"talk":"idle"),h.facing=-1,M.t<Ao*Nn)return-1;let Qe=M.t-Ao*Nn;d=null,o.bubble=null,h.bubble=null;let vr=u.indexOf(c);return vr>=0&&u.splice(vr,1),p==="brief"&&(c.briefed=!0),O(p,c.lane.name),Qe}function xo(c,p){let b=c.actor,h=p;for(;h>0&&c.pending>0;){let v=b.stroke,M=(1-v)*Lr;h>=M?(b.stroke=1,h-=M):(b.stroke=v+h/Lr,h=0),v<.5&&b.stroke>=.5&&xn(c),b.stroke>=1&&(b.stroke=0,c.pending-=1)}b.cast==="skeptic"&&wn(c,p)}function xn(c){if(!c.builder)return;let p=c.lane.name,b=a.get(p);if(!b||!f.has(p))return;let h=l.get(p)??0,v=t?h:b.fill+Math.max(.02,(h-b.fill)/Math.max(1,c.pending));if(b.fill=Math.max(b.fill,Math.min(h,v)),b.flash=1,!t){let M=3+Math.floor(n()*3);for(let B=0;B<M;B+=1){let _=b.x+n()*b.w,Qe=b.y+n()*b.h;ne("dust",_,Qe,(n()-.5)*16,-(10+20*n()),.5)}}O("stone",p)}function wn(c,p){let b=c.actor;if(c.chatLeft>0){c.chatLeft-=p,b.bubble&&(b.bubble.open=t?1:Math.min(1,b.bubble.open+p/Ar)),c.chatLeft<=0&&(b.bubble=null,c.chatIn=4+4*n());return}c.chatIn===null&&(c.chatIn=4+4*n()),c.chatIn-=p,c.chatIn<=0&&(b.bubble={seed:C(),open:t?1:0},c.chatLeft=ma)}function Ve(c){let p=Math.round(c.fill*8);if(t)pe(p);else{for(let b=0;b<p;b+=1){let h=c.x+n()*c.w,v=c.y+n()*c.h;ne("stone",h,v,(n()*2-1)*40,0,5)}s.shake=Math.max(s.shake,Oa)}c.fill=0,O("fall",c.lane)}function Wt(c,p,b){let h=c.name,v=Br(c),M=Oo(c.toolCalls);l.set(h,M);let B=f.get(h),_=a.get(h),Qe=_===void 0;if(_===void 0&&(_={lane:h,x:0,y:0,w:0,h:0,look:v,fill:0,flash:0,highlight:!1},a.set(h,_)),B&&Object.assign(_,{x:B.x,y:B.y,w:B.w,h:B.h}),Qe||p===void 0){_.look=v,_.flash=0,v==="set"?_.fill=1:v==="planned"||v==="fallen"||!b&&v==="building"?_.fill=0:_.fill=M,b&&v==="fallen"&&pe(va);return}p.state==="finished"&&c.state!=="finished"&&(_.fill=0,_.flash=0),v!==_.look&&B&&(v==="set"?(_.fill=1,_.flash=1,O("set",h)):v==="fallen"&&Ve(_)),_.look=v,t&&v==="building"&&(_.fill=Math.max(_.fill,M))}function Yt(c){let p={actor:Rr(c.name,c.name,Tn(c),L.spawn),lane:c,builder:To(c),queue:[],begun:!1,elapsed:0,loop:!1,briefed:!1,pending:0,spot:null,seat:null,fading:!1,descending:!1,chatIn:null,chatLeft:0,dust:0,paid:!1};return i.set(c.name,p),S=!0,p}function gt(c){let p=c.actor;for(let b=0;b<64;b+=1){if(c.queue.length===0){if(!c.loop)break;c.queue=ht(c),c.begun=!1}let h=c.queue[0];if(h===void 0)break;if(h.kind==="go"){let v=Fe(c,h.to);h.alpha!==void 0&&(p.alpha=h.alpha),p.x=v.x,p.y=v.y,$e(c)}else if(h.kind==="move")p.x=h.x,p.y=h.y,$e(c);else break}Ye(c,0)}function kn(c,p,b){let h=c.name,v=i.get(h);if(v?.fading&&(le(v),v=void 0),To(c)?Wt(c,p,b):(a.delete(h),l.delete(h)),b){if(c.state==="finished")return;let M=Yt(c);M.briefed=c.state!=="queued"&&c.state!=="held",Ue(M),gt(M);return}if(v===void 0){if(c.state==="finished")return;v=Yt(c),Ue(v)}else v.lane=c,(p===void 0||p.state!==c.state||c.state==="held"&&p.hold!==c.hold)&&(p?.state==="finished"&&(v.briefed=!1,v.actor.ration=0),c.state!=="running"&&(v.pending=0),Ue(v));if(c.state==="running"){let M=p!==void 0&&p.attempt===c.attempt?p.toolCalls:0,B=c.toolCalls-M;B>0&&(v.pending=Math.min(ha,v.pending+B))}}function Sn(c){let p=i.get(c);p&&!p.fading&&(De(p),p.seat=null,p.fading=!0,p.queue=[],p.loop=!1,p.pending=0,p.spot=null,p.actor.stroke=0,p.actor.bubble=null),a.delete(c),l.delete(c)}function ot(c){let p=s.pyramid.capstone;p.integration=c.name,p.flag=c.verify==="passed"?"passed":c.verify==="failed"?"failed":"none",p.ready=c.ready===!0}function vn(){Object.assign(s.pyramid.capstone,{state:"hoisting",...L.sledge,glow:0}),E=0,bt()}function wo(c,p){let b=s.pyramid.capstone,h=c.capstone,v=b.state==="hoisting"||w>0;if(c.capstoneLanded&&h!==null&&v&&b.integration!==h.name){g=h;return}if(g=null,w=0,c.monument!==null){ot(c.monument),Object.assign(b,{state:"set",...s.pyramid.apex,ready:!0,glow:0});return}if(h===null){Object.assign(b,{state:"none",integration:null,...L.sledge,flag:"none",ready:!1,glow:0});return}let M=b.integration===h.name;if(ot(h),!c.capstoneLanded){Object.assign(b,{state:"waiting",...L.sledge,glow:0});return}if(!(M&&b.state==="hoisting")){if(M&&b.state==="set"){Object.assign(b,s.pyramid.apex);return}if(p){Object.assign(b,{state:"set",...s.pyramid.apex,glow:0});return}vn(),t&&rt()}}function rt(){let c=s.pyramid.capstone,p=s.pyramid.apex;Object.assign(c,{state:"set",...p,glow:1}),bt(),t||(s.shake=Math.max(s.shake,Ba));for(let b=0;b<Ma&&!t;b+=1){let h=p.x+(n()-.5)*8,v=p.y-n()*6;ne("sparkle",h,v,(n()-.5)*12,-n()*10,.8)}O("capstone",c.integration),x=Ca}function ko(c){let p=qe(c.now)/1e3,b=c.quota,h=B=>B!==null&&Number.isFinite(p)&&B.resetsAt>p?B:null,v=h(b.fiveHour),M=h(b.sevenDay);s.sky.phase=b.status==="rejected"&&(v!==null||M!==null)?"night":b.hold.hold?"dusk":"day",s.sky.sun=v!==null?Math.min(1,Math.max(0,1-(v.resetsAt-p)/Ra)):.5}function Xe(c,p){let b=c.lanes.reduce((v,M)=>v+Ga(M),0),h=Math.min(Sa,Math.round(6*Math.sqrt(b)));if(!p&&h>s.coins&&!t){let v=1+Math.floor(n()*3);for(let M=0;M<v;M+=1){let B=L.treasury.x+(n()-.5)*6;ne("coin",B,L.treasury.y-8,(n()-.5)*20,-40,.6)}}s.coins=h}function qt(c){let p=s.pyramid;p.base=r.base,p.blockW=r.blockW,p.blockH=r.blockH,p.apex={...r.apex};let b=c.monument;if(p.monument=b===null?null:b.name,b!==null){p.blocks=r.slots.map((h,v)=>({...No(h),lane:b.lanes[v]??null,look:"set",fill:1}));return}p.blocks=r.slots.map((h,v)=>{let M=c.lanes[v],B=M===void 0?void 0:a.get(M.name);return B===void 0?No(h):(Object.assign(B,{x:h.x,y:h.y,w:h.w,h:h.h}),B)}),p.capstone.state==="set"&&Object.assign(p.capstone,p.apex)}function bt(){let c=s.pyramid.capstone.state==="set";for(let p of s.pyramid.blocks)p.lane===null&&(p.look=c?"set":"empty",p.fill=c?1:0)}function En(c){for(let p of[...i.values()]){if(p.fading||u.includes(p))continue;let b=Y(p);(p.spot!==null&&b!==null&&!Wa(p.spot,b)||c&&p.loop&&(p.lane.state==="running"||p.lane.state==="preparing"))&&Ue(p)}}function Kt(){if(S){S=!1,s.actors.length=0,s.actors.push(o);for(let c of i.values())s.actors.push(c.actor);R()}}function R(){for(let c of s.actors)c.highlight=k!==null&&c.lane===k;for(let c of s.pyramid.blocks)c.highlight=k!==null&&c.lane===k}function D(){o.x=L.arbab.x,o.y=L.arbab.y,o.facing=1,it(o,x>0?"cheer":d!==null&&d.turn>=0&&d.turn!==1?"talk":"idle")}function $(c){let p=!y;y=!0;let b=Pr(c);ko(c);let h=r;r=Mo(b.monument===null?b.lanes.length:b.monument.lanes.length);let v=h.base!==r.base||h.blockW!==r.blockW||h.blockH!==r.blockH;f=new Map,b.lanes.forEach((B,_)=>{let Qe=r.slots[_];Qe&&f.set(B.name,Qe)}),s.pyramid.apex={...r.apex};let M=new Set(c.lanes.map(B=>B.name));for(let B of m.keys())M.has(B)||Sn(B);for(let B of c.lanes)kn(B,m.get(B.name),p);qt(b),En(v),wo(b,p),bt(),s.far=b.far.map((B,_)=>({integration:B.name,...Cr(_,B.lanes.length)})),Xe(c,p),m=new Map(c.lanes.map(B=>[B.name,B])),S=!0,Kt(),D()}function Q(c){let p=Math.min(Aa,Number.isFinite(c)?Math.max(0,c):0)/1e3;if(p<=0)return;s.time+=p,o.poseTime+=p,s.shake=Math.max(0,s.shake-Fa*p);let b=s.pyramid.capstone;b.glow=Math.max(0,b.glow-p/Ia);for(let h of a.values())h.flash=Math.max(0,h.flash-ba*p);for(let h of[...i.values()]){if(h.actor.poseTime+=p,h.fading){h.actor.alpha=Math.max(0,h.actor.alpha-p/xa),h.actor.alpha<=0&&le(h);continue}let{x:v,y:M}=h.actor;Ye(h,p),se(h,p,h.actor.x!==v||h.actor.y!==M)}for(let[h,v]of a){if(v.look!=="building")continue;let M=l.get(h)??0;t?v.fill=Math.max(v.fill,M):(i.get(h)?.pending??0)===0&&v.fill<M&&(v.fill=Math.min(M,v.fill+ga*p))}if(b.state==="hoisting"){E=Math.min(1,E+p/Ea);let h=Ha(E),v=s.pyramid.apex;b.x=L.sledge.x+(v.x-L.sledge.x)*h,b.y=L.sledge.y+(v.y-L.sledge.y)*h,E>=1&&(rt(),g!==null&&(w=Pa))}else w>0&&(w=Math.max(0,w-p),w===0&&g!==null&&(ot(g),g=null,vn()));ye(p),x=Math.max(0,x-p),D(),Kt()}function se(c,p,b){let h=c.actor;if(!(t||!b||!Ua.has(h.pose)))for(c.dust+=p;c.dust>=Tr;)c.dust-=Tr,ne("dust",h.x,h.y,-4+8*n(),-6+4*n(),Da)}function ye(c){let p=0;for(let b of s.particles){if(b.x+=b.vx*c,b.y+=b.vy*c,(b.kind==="stone"||b.kind==="coin")&&(b.vy+=wa*c),b.life-=c,b.kind==="stone"&&b.y>=Po){pe(1);continue}b.life<=0||(s.particles[p]=b,p+=1)}s.particles.length=p}function _e(c,p){let b=s.actors.map((h,v)=>({a:h,i:v})).filter(({a:h})=>h.lane!==null&&h.cast!=="arbab"&&h.alpha>=.1).sort((h,v)=>v.a.y===h.a.y?v.i-h.i:v.a.y-h.a.y);for(let{a:h}of b)if(c>=h.x-me.w/2&&c<=h.x+me.w/2&&p>=h.y-me.h&&p<=h.y)return h.lane;for(let h of s.pyramid.blocks)if(h.lane!==null&&c>=h.x&&c<h.x+h.w&&p>=h.y&&p<h.y+h.h)return h.lane;return null}function Cn(c){k=c,R()}return{world:s,apply:$,step:Q,pick:_e,highlight:Cn}}var Ya=new Set(["queued","held","preparing","running","waiting-reset"]),Ir=e=>Ya.has(e);function wt(e){let t=Math.floor(e/1e3),n=Math.floor(t/3600),o=Math.floor(t%3600/60),r=t%60,s=i=>String(i).padStart(2,"0");return n>0?`${n}h${s(o)}m`:o>0?`${o}m${s(r)}s`:`${r}s`}function Dr(e,t,n){let o=[];for(let[r,s]of[["5h",e],["7d",t]])s&&s.resetsAt>n&&o.push(`${r} ${Math.round(s.utilization*100)}%`);return o.length>0?o.join(" \\xB7 "):"\\u2014"}var zt="\\u2014";function qa(e,t,n){let o=Number.isFinite(n)&&n>0?n:1,r=Math.min(e/480,t/270);return!Number.isFinite(r)||r<=0?0:Math.floor(r*o+1e-9)/o}function $r(e,t,n){let o=qa(e,t,n);return o>=1?{fluid:!1,scale:o,width:480*o,height:270*o}:Number.isFinite(e)&&e>=480?{fluid:!1,scale:1,width:480,height:270}:{fluid:!0}}var Ka=40;function _r(e,t,n,o){let r=e-t-n-o-Ka;return Number.isFinite(r)?Math.max(0,r):0}function Gr(e){return/^#?(?:.*&)?token=([0-9a-fA-F]{8,128})(?:&.*)?$/.exec(e)?.[1]??null}function Rn(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function Hr(e){let t;try{t=JSON.parse(e)}catch{return{ok:!1,message:"The server sent a snapshot that is not JSON."}}return Rn(t)?t.protocol!==1?{ok:!1,message:`This page speaks protocol ${1} and the server speaks ${String(t.protocol)}: reload the page.`}:!Array.isArray(t.lanes)||!Array.isArray(t.integrations)||!Rn(t.quota)?{ok:!1,message:"The server sent a snapshot without lanes, integrations or quota."}:t.lanes.every(n=>Rn(n)&&typeof n.name=="string"&&typeof n.state=="string")?{ok:!0,snapshot:t}:{ok:!1,message:"The server sent a lane without a name or state."}:{ok:!1,message:"The server sent a snapshot that is not an object."}}function Wr(e){try{let t=JSON.parse(e);if(Rn(t)&&typeof t.message=="string"&&t.message!=="")return t.message}catch{}return"The server reported a problem."}function Fo(e){let t={running:0,preparing:0,waiting:0,asleep:0,orphaned:0,succeeded:0,failed:0};for(let n of e)switch(n.state){case"running":t.running++;break;case"preparing":t.preparing++;break;case"queued":case"held":t.waiting++;break;case"waiting-reset":t.asleep++;break;case"orphaned":t.orphaned++;break;case"finished":n.endState==="success"?t.succeeded++:t.failed++;break}return t}function za(e){let t=[];for(let[o,r]of[["running",e.running],["preparing",e.preparing],["waiting",e.waiting],["asleep",e.asleep],["orphaned",e.orphaned]])r>0&&t.push(`${r} ${o}`);let n=[];return e.succeeded>0&&n.push(`\\u2713 ${e.succeeded}`),e.failed>0&&n.push(`\\u2717 ${e.failed}`),n.length>0&&t.push(n.join(" ")),t.length>0?t.join(" \\xB7 "):"no lanes"}function Ke(e){return e===null||!Number.isFinite(e)?zt:`$${e.toFixed(2)}`}function Io(e){return e.reduce((t,n)=>t+(typeof n.costUsd=="number"&&Number.isFinite(n.costUsd)?n.costUsd:0),0)}function Yr(e){let t=Date.parse(e.now),n=Number.isNaN(t)?0:t/1e3,o=e.hiddenLanes>0?` \\xB7 ${e.hiddenLanes} older ${e.hiddenLanes===1?"lane":"lanes"} not shown`:"";return{project:e.project,version:`v${e.version}`,counts:za(Fo(e.lanes)),cost:Ke(Io(e.lanes)),quota:Dr(e.quota.fiveHour,e.quota.sevenDay,n),held:e.quota.hold.hold===!0,footer:`Read-only \\xB7 arbab ${e.version}${o}`}}function ja(e){return e.state==="finished"&&e.endState?`finished (${e.endState})`:e.state==="held"&&e.hold?`held (${e.hold})`:e.state}function kt(e,t){if(e.elapsedMs!==null)return e.elapsedMs;if(!Ir(e.state))return null;let n=Date.parse(e.since);return Number.isNaN(n)?null:Math.max(0,t-n)}function qr(e,t,n){let o=kt(e,t+n),r=[e.name,`${e.role} \\xB7 ${e.kind}`,ja(e),`attempt ${e.attempt}`,`elapsed ${o===null?zt:wt(o)}`,`tool calls ${e.toolCalls}`,`last tool ${e.lastTool??zt}`,`cost ${Ke(e.costUsd)}`,`${e.model??zt} \\xB7 ${e.effort??zt}`];return e.hold&&r.push(`held for ${e.hold==="quota"?"the quota":"a free slot"}`),e.reason&&r.push(e.reason),r}var jt={running:0,preparing:1,"waiting-reset":2,held:3,queued:4,orphaned:5,finished:6},Va=new Set(["preparing","running"]),Xa=new Set(["preparing","running","waiting-reset"]);function Do(e,t){return Va.has(e.state)&&!(t!==void 0&&Xa.has(t.state))}function Kr(e,t){if(!e)return[];let n=[],o=new Map(e.lanes.map(s=>[s.name,s]));for(let s of t.lanes){let i=o.get(s.name);Do(s,i)&&n.push(`${s.name} started`),s.state==="finished"&&i&&i.state!=="finished"&&n.push(`${s.name} finished: ${s.endState??"unknown"}`)}let r=new Set(e.integrations.filter(s=>s.landedAt!==null).map(s=>s.name));for(let s of t.integrations)s.landedAt!==null&&!r.has(s.name)&&e.integrations.some(i=>i.name===s.name)&&n.push(`${s.name} landed`);return n}var Qa=60;function St(e){let t=Math.max(0,Math.floor(e/1e3));if(t<60)return"just now";let n=Math.floor(t/60);if(n<60)return`${n}m ago`;let o=Math.floor(n/60);return o<48?`${o}h ago`:`${Math.floor(o/24)}d ago`}function Vt(e,t){if(e===null)return t;let n=Date.parse(e);return Number.isFinite(n)?n:t}function zr(e){return Vt(e.now,0)}function jr(e,t){let n=Vt(e.since,t),o=e.attempt>1?` (attempt ${e.attempt})`:"";return{id:`started:${e.name}:${e.attempt}:${n}`,at:n,kind:"started",text:`${e.name} started${o}`}}function Vr(e,t){let n=Vt(e.since,t),o=e.endState??"unknown",r=e.costUsd===null?"":` \\xB7 ${Ke(e.costUsd)}`;return{id:`finished:${e.name}:${e.attempt}:${n}`,at:n,kind:e.endState==="success"?"finished":"failed",text:`${e.name} finished: ${o}${r}`}}function Xr(e,t){let n=Vt(e.since,t);if(e.state==="held"){let r=e.hold==="slot"?"a free slot":"the quota";return{id:`held:${e.name}:${n}`,at:n,kind:e.hold==="slot"?"waiting":"held",text:`${e.name} held for ${r}`}}let o=e.state==="waiting-reset"?"asleep until the quota resets":"queued";return{id:`waiting:${e.name}:${e.state}:${n}`,at:n,kind:"waiting",text:`${e.name} ${o}`}}function Qr(e,t){return{id:`landed:${e.name}`,at:Vt(e.landedAt,t),kind:"landed",text:`${e.name} landed`}}function Ja(e,t){let n=e.verify==="passed";return{id:`verify:${e.name}:${e.headSha}:${e.verify}`,at:t,kind:n?"verify-passed":"verify-failed",text:`${e.name} verify ${n?"passed":"failed"}`}}function Uo(e,t,n=Qa){let o=new Set,r=[];for(let s of[...t,...e])o.has(s.id)||(o.add(s.id),r.push(s));return r.sort((s,i)=>i.at-s.at).slice(0,n)}function Jr(e){let t=zr(e),n=[];for(let o of e.lanes)o.state==="finished"?n.push(Vr(o,t)):o.state==="running"||o.state==="preparing"?n.push(jr(o,t)):(o.state==="queued"||o.state==="held"||o.state==="waiting-reset")&&n.push(Xr(o,t));for(let o of e.integrations)o.landedAt!==null&&n.push(Qr(o,t));return Uo([],n)}function Zr(e,t){let n=zr(t),o=[],r=new Map(e.lanes.map(i=>[i.name,i]));for(let i of t.lanes){let a=r.get(i.name);Do(i,a)&&o.push(jr(i,n)),i.state==="finished"&&a&&a.state!=="finished"&&o.push(Vr(i,n)),i.state==="held"&&i.hold==="quota"&&!(a&&a.state==="held"&&a.hold==="quota")&&o.push(Xr(i,n))}let s=new Map(e.integrations.map(i=>[i.name,i]));for(let i of t.integrations){let a=s.get(i.name);i.landedAt!==null&&(!a||a.landedAt===null)&&o.push(Qr(i,n)),i.verify!==null&&(!a||a.verify!==i.verify||a.headSha!==i.headSha)&&o.push(Ja(i,n))}return o}function es(e){switch(e){case"started":return"\\u2192";case"finished":case"verify-passed":return"\\u2713";case"failed":case"verify-failed":return"\\u2717";case"landed":return"\\u25C6";default:return"\\u23F3"}}var Za={none:"",waiting:"capstone waiting",hoisting:"capstone rising",set:"capstone set"};function $o(e){let t=e.pyramid,n=t.blocks.filter(r=>r.lane!==null),o=n.filter(r=>r.look==="set").length;return`${t.monument??""}|${o}/${n.length}|${t.capstone.state}|${t.capstone.integration??""}|${t.capstone.flag}`}function ts(e,t,n){let o=n.pyramid;if(o.monument!==null){let a=e.integrations.find(f=>f.name===o.monument),l=a?.landedAt?Date.parse(a.landedAt):Number.NaN,u=Number.isFinite(l)?` \\xB7 landed ${St(t-l)}`:"",d=a?a.lanes.length:o.blocks.filter(f=>f.lane!==null).length;return`monument \\xB7 ${o.monument} \\xB7 ${d} ${d===1?"block":"blocks"}${u}`.toUpperCase()}let r=o.blocks.filter(a=>a.lane!==null),s=o.capstone;if(r.length===0&&s.state==="none")return"THE SITE IS QUIET";let i=[];return s.state!=="none"&&s.integration!==null&&i.push(s.integration),i.push(`${r.filter(a=>a.look==="set").length}/${r.length} blocks set`),s.state!=="none"&&(i.push(Za[s.state]),i.push(`verify ${s.flag==="passed"?"\\u2713":s.flag==="failed"?"\\u2717":"\\xB7"}`)),i.join(" \\xB7 ").toUpperCase()}function T(e,t,n="",o=null){let r=e.createElement(t);return n!==""&&(r.className=n),o!==null&&(r.textContent=o),r}function Xt(e){return e&&typeof e.getContext=="function"?e:null}function ns(e){return Number.isFinite(e)?Math.max(1,Math.round(e)):1}function at(e,t,n,o,r="px"){let s=Xt(e.createElement("canvas"));return s?(s.className=r,s.setAttribute("aria-hidden","true"),Qt(s,t,n,o),s):null}function Qt(e,t,n,o){e.width=t*o,e.height=n*o,e.style.width=`${t}px`,e.style.height=`${n}px`}function _o(e,t){let n=[],o=new Map;for(let s of t){let i=e[s]??0,a=0,l=n.length;for(;a<l;){let u=a+l>>1;(e[n[u]??0]??0)<i?a=u+1:l=u}a>0&&o.set(s,n[a-1]??-1),n[a]=s}let r=[];for(let s=n[n.length-1];s!==void 0&&s>=0;s=o.get(s))r.push(s);return r}function el(e,t,n=null){let o=new Map(e.map((f,m)=>[f,m])),r=t.map(f=>o.get(f)??-1),s=t.map((f,m)=>m).filter(f=>(r[f]??-1)>=0),i=n===null?-1:t.indexOf(n),a=r[i]??-1,l;if(i<0||a<0)l=_o(r,s);else{let f=s.filter(y=>y<i&&(r[y]??0)<a),m=s.filter(y=>y>i&&(r[y]??0)>a);l=[..._o(r,f),i,..._o(r,m)]}let u=new Set(l),d=[];for(let f=t.length-1;f>=0;f--)u.has(f)||d.push({key:t[f]??"",before:t[f+1]??null});return d}function vt(e,t,n,o,r=null){let s=new Set(n),i=t.filter(a=>s.has(a)?!0:(o(a)?.remove(),!1));for(let{key:a,before:l}of el(i,n,r)){let u=o(a);u&&e.insertBefore(u,l===null?null:o(l)??null)}return[...n]}var Wo="#E8E6D8",Zt="#C9C6B4";var On=["#E9C886","#DDB66E","#C89A56","#B5843F"],ge={light:"#F1E2BC",face:"#DCC796",mortar:"#B9A06C",edge:"#8F7A50"},Bn="#8C7A5B",rs="#CDB27E",Ct={gap:"#6E5A3C",crack:"#4A3B26"},Mt={light:"#A7A39A",dark:"#85827A"},U={gleam:"#FFF6C9",light:"#FFD54A",mid:"#E0A800",shadow:"#A87400"},Et={base:"#B9784E",shadow:"#925A38"},Go={white:"#F4F0E2",shadow:"#D6CFBC"},xe="#3A2716",et={laborer:"#C9A46B",mason:"#3C6FB0",scribe:"#6E4C9E",skeptic:"#B23A3A",surveyor:"#3F8F5A",waterboy:"#E2B23A",scout:"#2F6B4F"},Fn="#2A4FA0",K=["#8B5A2B","#6B4220"],Ho={leaf:"#3E7D3A",leafDark:"#2D5E2B",trunk:"#7A5230"},Ge={cloth:"#E7D6B0",shade:"#C2A97A",stripe:"#B23A3A"},tl="#4F8FBF",nl="#C98A3E",os="#8E5B3E",At={fill:"#FFFDF5",glyph:"#5A4630"},Yo={green:"#3FAF5A",red:"#D04040"},In={face:"#F2C14E",shadow:"#C9962C"},qo="#FFFFFF",Lt={day:["#2E6CAF","#3D82C2","#5299CF","#6CAED9","#8DC2E0","#B1D3DF","#D3DDCB","#ECE1BA"],dusk:["#2A2350","#45306A","#6C3B70","#984870","#C25A66","#E0755A","#F1954E","#F6B860"],night:["#060A1C","#0A1027","#0F1733","#151E3E","#1B2648","#222E52","#2A375C","#334166"]},Dn={core:"#FFA640",rim:"#FFCB6B",halo:"#FFB85C"},Un={core:"#FFF7DC",rim:"#FFFCEF",halo:"#FFF3C4"},ss={day:["#FFFDF6","#F1ECDF","#CBD3DD"],dusk:["#FFD39A","#E8968A","#9C5A7C"],night:["#5A6688","#46507A","#343D63"]},J={bright:"#F5F3E8",mid:"#C9CCE0",dim:"#7E86AA"},is={day:"#4A3A3C",dusk:"#3A2236"},as=[{light:"#DCD3C6",face:"#C9BFB6",shade:"#B0A7A9"},{light:"#E5CBA2",face:"#D2B58C",shade:"#B39575"}],ls={light:"#E2BE7C",face:"#D4AA68",shade:"#BF9456"},be={light:"#7E9A4A",face:"#5F7D3A",shade:"#465F2E"},ie={sky:"#9CC9DD",light:"#6FA8CC",face:"#4F8FBF",deep:"#3D78A8",bank:"#A88654"},cs={day:"#E6F4FA",dusk:"#FFE0A8",night:"#A9B6D8"},en={light:"#9CAA52",face:"#6E8A3C",shade:"#4E6A2E",tip:"#C8B068"},V={light:"#EADCB8",face:"#D6C499",shade:"#B5A27C",dark:"#9A8868"},lt=["#CFAA6A","#D8B36F","#DFBC77","#E6C582","#E9C886","#E3BF7A"],tn={light:"#F1D9A2",face:"#ECD195",track:"#D9B878"},ze={light:"#CDB693",face:"#A8906C",shade:"#7E6A4E"},nn={light:"#A3A057",face:"#7C7E43",shade:"#5A5E34"},He={light:"#D9AE73",face:"#BE8E55",shade:"#97693C",dark:"#6E4A2A"},ct={white:"#FFF6D0",yellow:"#FFD24A",orange:"#F68B2C",red:"#D1452A",ember:"#8E2E1E"},Ko="#CFC8C0",zo={light:"#A8A094",shade:"#756E64"},ut={light:"#E0A859",face:"#B37A3A",shade:"#7E5226"},ce={cream:"#F2E4C2",creamShade:"#D7C29A",red:"#B8433A",redShade:"#8E2F2B"},$n={light:"#FBF7EC",shade:"#DCD4C2"},he={light:"#F3E6C2",face:"#E0CD9F",shade:"#C2AA78",edge:"#9C8558"},_n="#3E2A1C",us="#0A0E22",Gn="#FFB45A",ds={day:"#4A321E",dusk:"#2E1830",night:"#05071A"},dt={fill:"#2B1D14",rim:U.mid,text:U.gleam},jo={o:xe,k:Et.base,K:Et.shadow,"*":Et.base,"&":Et.shadow,t:Et.base,T:Et.shadow,w:Go.white,W:Go.shadow,h:et.laborer,H:Jt(et.laborer,.72),s:Go.shadow,n:K[0],N:K[1],l:ge.light,L:ge.face,m:ge.mortar,e:ge.edge,G:U.gleam,y:U.light,Y:U.mid,z:U.shadow,B:Fn,b:nl,j:os,J:Jt(os,.75),a:tl,v:Ho.leaf,V:Ho.leafDark,r:Ho.trunk,c:Ge.cloth,C:Ge.shade,q:Ge.stripe,U:On[3],f:At.fill},ol=Ct.crack;function fs(e){switch(e){case"arbab":return{};case"scribe":case"skeptic":return{h:ol,H:xe,s:et[e]};case"scout":{let t=et.scout;return{h:t,H:Jt(t,.72),t,T:Jt(t,.72)}}default:return{h:et[e],H:Jt(et[e],.72)}}}function Pn(e){if(!/^#[0-9a-fA-F]{6}$/.test(e))throw new Error(`not a #rrggbb color: ${e}`);let t=Number.parseInt(e.slice(1),16);return[t>>16&255,t>>8&255,t&255]}function Vo(e,t,n){let o=r=>Math.max(0,Math.min(255,Math.round(r))).toString(16).padStart(2,"0");return`#${o(e)}${o(t)}${o(n)}`.toUpperCase()}function Jt(e,t){let[n,o,r]=Pn(e);return Vo(n*t,o*t,r*t)}function W(e,t,n){let[o,r,s]=Pn(e),[i,a,l]=Pn(t);return Vo(o+(i-o)*n,r+(a-r)*n,s+(l-s)*n)}function ps(e){let[t,n,o]=Pn(e),r=.3*t+.59*n+.11*o;return Vo(r,r,r)}function Nt(e){return W(e,ps(e),.65)}function ms(e){return W(ps(e),Wo,.55)}var A={bg:"#120d0a","bg-2":"#1b140f",panel:"#241a12","panel-2":"#2e2116","panel-hi":"#3a2a1b","frame-dark":"#0b0705",frame:"#6b4a26","frame-hi":"#a87a3f","frame-lo":"#3a2716",text:"#f4ead2",muted:"#b89f74",faint:"#7d6a4d",gold:"#ffd54a","gold-2":"#e0a800",sand:"#e9c886",sky:"#5ba8d9","st-running":"#5ba8d9","st-preparing":"#8cc6e3","st-waiting":"#e0a800","st-asleep":"#8e7cc3","st-success":"#3faf5a","st-failed":"#d04040","st-orphaned":"#85827a","badge-failed":"#b23a3a"},Xo=Object.fromEntries(Object.entries(et).map(([e,t])=>[e,t.toLowerCase()])),Tt=A.bg;function Hn(e){return e==="failed"?{ground:A["badge-failed"],ink:A.text}:{ground:rl(e),ink:Tt}}function on(e){switch(e.state){case"running":return{tone:"running",label:"RUNNING"};case"preparing":return{tone:"preparing",label:"PREPARING"};case"queued":return{tone:"waiting",label:"QUEUED"};case"held":return{tone:"waiting",label:"HELD"};case"waiting-reset":return{tone:"asleep",label:"ASLEEP"};case"orphaned":return{tone:"orphaned",label:"ORPHANED"};case"finished":return e.endState==="success"?{tone:"success",label:"\\u2713 DONE"}:{tone:"failed",label:"\\u2717 FAILED"};default:return{tone:"orphaned",label:String(e.state).toUpperCase()}}}function rl(e){return A[`st-${e}`]}var hs={Y:A.gold,y:A["gold-2"],W:"#fff6c9",L:"#f1e2bc",l:"#dcc796",S:"#b5843f",s:"#8f6a33",i:"#c9c3b0",I:"#85827a",w:"#8b5a2b",g:A.sand,m:A.muted,b:A["st-running"],p:A["st-asleep"],e:A["st-success"],r:A["st-failed"],a:A["st-waiting"]},Qo=sl();function sl(){let e=[];for(let t=0;t<16;t++){let n=Math.floor(t/2),o="";for(let r=0;r<16;r++)r<7-n||r>8+n?o+=".":t===0&&r===7?o+="W":t<4?o+=r<=7?"Y":"y":t%2===1?o+=r<=7?"l":"s":o+=r<=7?"L":"S";e.push(o)}return e}var il={logo:Qo,hammer:["iiiiiii.","IiiiiiI.","...w....","...w....","...w....","...w....","...w....","...w...."],hourglass:["yyyyyyy",".mgggm.","..mgm..","...m...","..mgm..",".mgggm.","yyyyyyy"],zzz:["...pppp",".....p.","....p..","...pppp","ppp....",".p.....","ppp...."],check:[".......","......e",".....ee","e...ee.","ee.ee..",".eee...","..e...."],coin:["..YYY..",".YyyyY.","YyYYYyY","YyYyyyY","YyYYYyY",".YyyyY.","..YYY.."],cross:[".......","r.....r","rr...rr",".rr.rr.","..rrr..",".rr.rr.","rr...rr"],arrow:[".......","...b...","....b..","bbbbbb.","....b..","...b...","......."],diamond:[".......","...Y...","..YYy..",".YYyyy.","..Yyy..","...y...","......."],wait:["aaaaaaa",".aggga.","..aga..","...a...","..a.a..",".aggga.","aaaaaaa"]};function Jo(e,t,n,o,r){t.forEach((s,i)=>{let a=0;for(;a<s.length;){let l=hs[s[a]??"."];if(l===void 0){a++;continue}let u=a+1;for(;u<s.length&&hs[s[u]??"."]===l;)u++;e.fillStyle=l,e.fillRect(n+a*r,o+i*r,(u-a)*r,r),a=u}})}function al(e){return{w:Math.max(0,...e.map(t=>t.length)),h:e.length}}function Wn(e,t,n,o,r){let s=il[t],{w:i,h:a}=al(s),l=r??i*n,u=r??a*n,d=at(e,l,u,o,`px icon icon-${t}`);if(!d)return null;let f=d.getContext("2d");if(f){let m=n*o;Jo(f,s,Math.floor((l-i*n)/2)*o,Math.floor((u-a*n)/2)*o,m)}return d}var ll={" ":["...","...","...","...","...","...","..."],A:[".###.","#...#","#...#","#####","#...#","#...#","#...#"],B:["####.","#...#","#...#","####.","#...#","#...#","####."],C:[".###.","#...#","#....","#....","#....","#...#",".###."],D:["####.","#...#","#...#","#...#","#...#","#...#","####."],E:["#####","#....","#....","####.","#....","#....","#####"],F:["#####","#....","#....","####.","#....","#....","#...."],G:[".###.","#...#","#....","#.###","#...#","#...#",".###."],H:["#...#","#...#","#...#","#####","#...#","#...#","#...#"],I:["###",".#.",".#.",".#.",".#.",".#.","###"],J:["..###","....#","....#","....#","....#","#...#",".###."],K:["#...#","#..#.","#.#..","##...","#.#..","#..#.","#...#"],L:["#....","#....","#....","#....","#....","#....","#####"],M:["#...#","##.##","#.#.#","#.#.#","#...#","#...#","#...#"],N:["#...#","#...#","##..#","#.#.#","#..##","#...#","#...#"],O:[".###.","#...#","#...#","#...#","#...#","#...#",".###."],P:["####.","#...#","#...#","####.","#....","#....","#...."],Q:[".###.","#...#","#...#","#...#","#.#.#","#..#.",".##.#"],R:["####.","#...#","#...#","####.","#.#..","#..#.","#...#"],S:[".###.","#...#","#....",".###.","....#","#...#",".###."],T:["#####","..#..","..#..","..#..","..#..","..#..","..#.."],U:["#...#","#...#","#...#","#...#","#...#","#...#",".###."],V:["#...#","#...#","#...#","#...#","#...#",".#.#.","..#.."],W:["#...#","#...#","#...#","#.#.#","#.#.#","#.#.#",".#.#."],X:["#...#","#...#",".#.#.","..#..",".#.#.","#...#","#...#"],Y:["#...#","#...#",".#.#.","..#..","..#..","..#..","..#.."],Z:["#####","....#","...#.","..#..",".#...","#....","#####"],a:[".....",".....",".###.","....#",".####","#...#",".####"],b:["#....","#....","####.","#...#","#...#","#...#","####."],c:[".....",".....",".###.","#....","#....","#...#",".###."],d:["....#","....#",".####","#...#","#...#","#...#",".####"],e:[".....",".....",".###.","#...#","#####","#....",".###."],f:["..##",".#..","####",".#..",".#..",".#..",".#.."],g:[".....",".....",".####","#...#","#...#","#...#",".####","....#",".###."],h:["#....","#....","####.","#...#","#...#","#...#","#...#"],i:["#",".","#","#","#","#","#"],j:["..#","...","..#","..#","..#","..#","..#","..#","##."],k:["#...","#...","#..#","#.#.","##..","#.#.","#..#"],l:["#","#","#","#","#","#","#"],m:[".....",".....","##.#.","#.#.#","#.#.#","#.#.#","#...#"],n:[".....",".....","####.","#...#","#...#","#...#","#...#"],o:[".....",".....",".###.","#...#","#...#","#...#",".###."],p:[".....",".....","####.","#...#","#...#","#...#","####.","#....","#...."],q:[".....",".....",".####","#...#","#...#","#...#",".####","....#","....#"],r:["....","....","#.##","##..","#...","#...","#..."],s:[".....",".....",".####","#....",".###.","....#","####."],t:[".#..",".#..","####",".#..",".#..",".#..","..##"],u:[".....",".....","#...#","#...#","#...#","#...#",".####"],v:[".....",".....","#...#","#...#","#...#",".#.#.","..#.."],w:[".....",".....","#...#","#...#","#.#.#","#.#.#",".#.#."],x:[".....",".....","#...#",".#.#.","..#..",".#.#.","#...#"],y:[".....",".....","#...#","#...#","#...#","#...#",".####","....#",".###."],z:[".....",".....","#####","...#.","..#..",".#...","#####"],0:[".###.","#...#","#..##","#.#.#","##..#","#...#",".###."],1:["..#..",".##..","..#..","..#..","..#..","..#..",".###."],2:[".###.","#...#","....#","...#.","..#..",".#...","#####"],3:[".###.","#...#","....#","..##.","....#","#...#",".###."],4:["...#.","..##.",".#.#.","#..#.","#####","...#.","...#."],5:["#####","#....","####.","....#","....#","#...#",".###."],6:["..##.",".#...","#....","####.","#...#","#...#",".###."],7:["#####","....#","...#.","..#..",".#...",".#...",".#..."],8:[".###.","#...#","#...#",".###.","#...#","#...#",".###."],9:[".###.","#...#","#...#",".####","....#","...#.",".##.."],"!":["#","#","#","#","#",".","#"],\'"\':["#.#","#.#","...","...","...","...","..."],"#":[".#.#.",".#.#.","#####",".#.#.","#####",".#.#.",".#.#."],$:["..#..",".####","#.#..",".###.","..#.#","####.","..#.."],"%":["##...","##..#","...#.","..#..",".#...","#..##","...##"],"&":[".##..","#..#.","#..#.",".##..","#.#.#","#..#.",".##.#"],"\'":["#","#",".",".",".",".","."],"(":["..#",".#.","#..","#..","#..",".#.","..#"],")":["#..",".#.","..#","..#","..#",".#.","#.."],"*":[".....","..#..","#.#.#",".###.","#.#.#","..#..","....."],"+":[".....","..#..","..#..","#####","..#..","..#..","....."],",":["..","..","..","..","..","..",".#","#.",".."],"-":["...","...","...","###","...","...","..."],".":[".",".",".",".",".",".","#"],"/":["....#","....#","...#.","..#..",".#...","#....","#...."],":":[".",".","#",".",".",".","#"],";":["..","..",".#","..","..","..",".#","#.",".."],"<":["...#","..#.",".#..","#...",".#..","..#.","...#"],"=":[".....",".....","#####",".....","#####",".....","....."],">":["#...",".#..","..#.","...#","..#.",".#..","#..."],"?":[".###.","#...#","....#","...#.","..#..",".....","..#.."],"@":[".###.","#...#","#.###","#.#.#","#.###","#....",".####"],"[":["###","#..","#..","#..","#..","#..","###"],"\\\\":["#....","#....",".#...","..#..","...#.","....#","....#"],"]":["###","..#","..#","..#","..#","..#","###"],"^":["..#..",".#.#.","#...#",".....",".....",".....","....."],_:[".....",".....",".....",".....",".....",".....",".....",".....","#####"],"`":["#.",".#","..","..","..","..",".."],"{":["..##",".#..",".#..","#...",".#..",".#..","..##"],"|":["#","#","#","#","#","#","#"],"}":["##..","..#.","..#.","...#","..#.","..#.","##.."],"~":[".....",".....",".#...","#.#.#","...#.",".....","....."],"\\u2713":[".....","....#","...##","#.##.","###..",".#...","....."],"\\u2717":[".....","#...#","##.##",".###.","##.##","#...#","....."],"\\xB7":[".",".",".","#",".",".","."],"\\u2022":["....","....",".##.","####","####",".##.","...."],"\\u2192":[".....","..#..","...#.","#####","...#.","..#..","....."],"\\u2190":[".....","..#..",".#...","#####",".#...","..#..","....."],"\\u2191":["..#..",".###.","#.#.#","..#..","..#..","..#..","..#.."],"\\u2193":["..#..","..#..","..#..","..#..","#.#.#",".###.","..#.."],"\\u2026":[".....",".....",".....",".....",".....",".....","#.#.#"],"\\u2014":[".....",".....",".....","#####",".....",".....","....."],"\\u2013":["....","....","....","####","....","....","...."],"\\xD7":["...","...","#.#",".#.","#.#","...","..."],"\\xB0":[".#.","#.#",".#.","...","...","...","..."]},cl=["#####","#...#","#...#","#...#","#...#","#...#","#####"];function gs(e,t){if(t.length!==7&&t.length!==9)throw new Error(`glyph ${JSON.stringify(e)} has ${t.length} rows`);let n=t[0]?.length??0,o=[];return t.forEach((r,s)=>{if(r.length!==n||!/^[#.]*$/.test(r))throw new Error(`glyph ${JSON.stringify(e)} row ${s} is malformed`);for(let i=0;i<n;i++){if(r[i]!=="#")continue;let a=i+1;for(;r[a]==="#";)a++;o.push({x:i,y:s,w:a-i}),i=a}}),{w:n,runs:o}}var ul=new Map(Object.entries(ll).map(([e,t])=>[e,gs(e,t)])),dl=gs("missing",cl);function bs(e){return ul.get(e)??dl}function je(e){let t=0,n=0;for(let o of e)t+=bs(o).w,n++;return n===0?0:t+(n-1)*1}function Yn(e,t,n,o,r,s=1){if(!Number.isFinite(s)||s<=0)return 0;e.fillStyle=r;let i=0,a=!0;for(let l of t){a||(i+=1),a=!1;let u=bs(l);for(let d of u.runs)e.fillRect(n+(i+d.x)*s,o+d.y*s,d.w*s,s);i+=u.w}return i*s}var pl=1;function ml(e,t,n){let o=je(e)*t,r=11*t;return{width:o*n,height:r*n,cssWidth:o,cssHeight:r}}function z(e,t,n=""){let o=T(e,"span",t.className?`pxt ${t.className}`:"pxt"),r=at(e,0,0,t.dpr),s=T(e,"span","visually-hidden");r&&o.appendChild(r),o.appendChild(s);let i=null,a=t.color,l=t.scale,u={el:o,canvas:r,set(d,f=a,m=l){if(d===i&&f===a&&m===l)return;if(i=d,a=f,l=m,s.textContent=d,!r){s.className="";return}let y=ml(d,l,t.dpr);Qt(r,y.cssWidth,y.cssHeight,t.dpr);let E=r.getContext("2d");if(!E)return;E.clearRect(0,0,y.width,y.height);let g=l*t.dpr;Yn(E,d,0,pl*g,a,g)},text:()=>i??""};return u.set(n),u}var hl={started:A["st-running"],finished:A["st-success"],"verify-passed":A["st-success"],failed:A["st-failed"],"verify-failed":A["st-failed"],landed:A.gold,held:A["st-waiting"],waiting:A["st-waiting"]},gl={"\\u25C6":"diamond","\\u23F3":"wait"};function ys(e,t,n){let o=z(e,{scale:2,color:A.gold,dpr:n},"CHRONICLE");t.title.replaceChildren(o.el);let r=new Map,s=[],i=!1,a=u=>{let d=T(e,"li",i?`chronicle-line kind-${u.kind} enter`:`chronicle-line kind-${u.kind}`),f=es(u.kind),m=gl[f],y=m?Wn(e,m,1,n,9):z(e,{scale:1,color:hl[u.kind],dpr:n,className:"glyph"},f).el;y&&d.appendChild(y),m&&d.appendChild(T(e,"span","visually-hidden",u.kind==="landed"?"landed:":"waiting:")),d.appendChild(T(e,"span","text",u.text));let E=T(e,"time","ago");return E.setAttribute("datetime",new Date(u.at).toISOString()),d.appendChild(E),{li:d,time:E,at:u.at}},l={update(u,d){for(let y of u)!r.has(y.id)&&Number.isFinite(y.at)&&r.set(y.id,a(y));let f=u.filter(y=>r.has(y.id)).map(y=>y.id);s=vt(t.list,s,f,y=>r.get(y)?.li);let m=new Set(f);for(let y of[...r.keys()])m.has(y)||r.delete(y);t.empty.hidden=f.length>0,i=!0,l.refresh(d)},refresh(u){for(let d of r.values())d.time.textContent=St(u-d.at)}};return l}function ue(e,t){let n=e.length,o=Math.max(0,...e.map(i=>i.length)),r=[],s=n;for(let i=0;i<n;i++){let a=e[i]??"",l=0;for(;l<a.length;){let u=a[l]??".";if(u==="."){l++;continue}let d=t[u];if(d===void 0)throw new Error(`sprite character ${JSON.stringify(u)} has no color`);let f=l+1;for(;f<a.length&&t[a[f]??"."]===d;)f++;r.push({x:l,y:i,w:f-l,color:d}),s=Math.min(s,i),l=f}}return{w:o,h:n,top:s===n?0:s,runs:r,mirrored:r.map(i=>({...i,x:o-i.x-i.w}))}}function tt(e,t,n){let o=Array.from({length:t},()=>Array.from({length:e},()=>"."));for(let{grid:r,dx:s=0,dy:i=0}of n)r.forEach((a,l)=>{for(let u=0;u<a.length;u++){let d=a[u]??".";if(d==="."||d==="+")continue;let f=u+s,m=l+i,y=o[m];if(y===void 0||f<0||f>=e)throw new Error(`sprite pixel (${f}, ${m}) is outside ${e}\\xD7${t}`);y[f]=d}});return o.map(r=>r.join(""))}function xs(e,t){for(let n=0;n<e.length;n++){let o=(e[n]??"").indexOf(t);if(o>=0)return{x:o,y:n}}return null}function er(e,t,n){let o=xs(e,n),r=xs(t,"+");if(!o||!r)throw new Error(`no ${n} or + to hold an item by`);return{grid:t,dx:o.x-r.x,dy:o.y-r.y}}function we(e,t,n="*"){let o=[{grid:e}];return t&&o.push(er(e,t,n)),tt(e[0]?.length??0,e.length,o)}var Le=["....ooooo...","...ohhhhho..","..ohhhhhhho.","..oHhhhkkko.","..oHhhkkoko.","..oHhhkkkkko","..oHhokkKko.","..oHo.okko.."],ws=cn(Le,[[6,9,"o"]]),Zo=["............","....ooooo...","...ohhhhho..","..ohhhhhhho.","..oHhhhhkko.","..oHhhkkkko.","..oHhhkoKko.","..oHhokkkko."],rn=["....ooooo...","...ohhhhho..","..ohhhhhkko.","..oHhhkkoko.","..oHhhkkkkko","..oHhokkkko.","..oHhoKkko..","..oHo.oko..."];function cn(e,t){let n=[...e];for(let[o,r,s]of t){let i=n[o]??"";n[o]=i.slice(0,r)+s+i.slice(r+1)}return n}var oe={idle:["..otttttto..",".oTtttttTko.",".okTttttTko.",".okossssoko.",".o&o....o*o."],swingA:["..otttttto..",".oTtttttTko.","o&oTttttTko.","oo.ossssok*o","...........o"],swingB:["..otttttto..",".oTtttttTko.","okoTttttTo..","o&ossssso*o.",".o.....oo.o."],hold:["..otttttto..",".oTtttttTo..",".okTttttko*o",".okosssso.o.",".o&o........"],shoulder:["..o&ttttto..",".okTttttTko.",".oTTttttTko.","..ossssoko..","........o*o."],write:["..otttttto..",".oTtttttTo..",".ok&ttttt*o.",".okosssso.o.",".oo........."]},Rt={front:["..........o.",".........o*o",".........oko",".........oko","..ottttttoko",".oTtttttTko.",".okTttttto..",".okosssso...",".o&o........"],both:[".o........o.","o&o......o*o","oko......oko","oko......oko","okottttttoko",".okTttttTko.","..oTttttto..","..ossssso...","............"],half:["............","............","o&o......o*o","oko......oko","okottttttoko",".okTttttTko.","..oTttttto..","..ossssso...","............"],climbA:[".........o*o",".........oko",".........oko","........oko.","..ottttttko.",".o&tttttTo..",".okTttttto..","..ossssso...","............"],climbB:["............","............","..........o.",".........o*o","..ottttttoko",".o&tttttTko.",".okTttttto..","..ossssso...","............"]},vs=["...owwwWo...","..owwwwWWo..","..oowwwWoo.."],X={stand:["...oko.oko..","...oko.oko..","..ooo..oooo."],strideA:["..oKo..oko..",".oKo....oko.",".ooo....oooo"],pass:["....oKko....","....oKko....","....oooooo.."],strideB:["..oko..oKo..",".oko....oKo.",".ooo....oooo"],climbA:["..oko.oKo...","..oko..oo...","..ooo......."],climbB:["...oKo.oko..","....oo.oko..",".......ooo.."]},bl=[".owwwwwWkkko",".oooooooooo."],yl=["................","................","..........ooooo.",".oooooooooHhhhho","oKkkwwwWttoHkoko","okkkwwWWtttHkkko",".oooooooooooooo."],Ne={hammerDown:[".+.",".N.","nnn","NNN"],hammerUp:["nnn","NNN",".N.",".+."],plumb:["+","o","o","Y","z"],papyrus:["lL","+L","lL","LL"],penUp:["..o",".o.","+.."],penDown:["o+"],scroll:["mlllm","mLL+m"],loaf:[".oo.","obbo","ob+o",".oo."],basket:["..+.","obbo","onNo","oNno",".oo."],jug:[".+.","ojo","ojJo",".oo."]},ks=["oooooo","olllLo","olLLLo","oLLLeo","oooooo"],xl=[".oo.","ojjo","oJJo"];function jn(e,t,n){let o=[];for(let r=0;r<e;r++){let s=n?Math.floor(r/2)%2===0?"n":"y":r===0?"N":"n";o.push(r===t?`+${s}`:`.${s}`)}return o}function wl(e){switch(e){case"laborer":case"mason":return"hammer";case"scribe":case"skeptic":return"pen";case"surveyor":return"rod";default:return null}}function kl(e){switch(e){case"laborer":return Ne.hammerDown;case"mason":return Ne.plumb;case"scribe":case"skeptic":return Ne.papyrus;case"surveyor":return jn(15,10,!0);case"scout":return jn(16,11,!1);default:return null}}function ae(e,t,n,o=0,r=!1){let s={grid:t,dy:(r?4:8)+o},i={grid:e,dy:o};return tt(me.w,me.h,[{grid:n,dy:15},{grid:vs,dy:12+o},...r?[i,s]:[s,i]])}var sn=[X.strideA,X.pass,X.strideB,X.pass],an=[0,1,0,1],Sl=[oe.swingA,oe.idle,oe.swingB,oe.idle];function ln(e){return[0,1,2,3].map(e)}function vl(e){let t=kl(e),n=wl(e),o=[we(ae(Le,oe.idle,X.stand),t),we(ae(Le,oe.idle,X.stand,1),t)],r=ln(k=>we(ae(Le,Sl[k]??oe.idle,sn[k]??X.pass,an[k]),t)),s=(k,S,C)=>tt(me.w,me.h,[{grid:S,dy:15},{grid:vs,dy:12},{grid:k,dy:4},{grid:rn},...C?[{grid:ks,dx:0,dy:6}]:[]]),i=k=>[s(Rt.climbA,X.climbA,k),s(Rt.climbB,X.climbB,k)],a=[tt(me.w,me.h,[{grid:bl,dy:16},{grid:oe.idle,dy:12},{grid:Le,dy:4}])],l;if(n==="hammer")l=[we(ae(Le,oe.hold,X.stand,1),Ne.hammerDown),we(ae(rn,Rt.front,X.stand,0,!0),Ne.hammerUp)];else if(n==="pen"){let k=S=>cn(S,[[10,5,"l"],[10,6,"l"],[10,7,"L"],[11,5,"l"],[11,6,"L"],[11,7,"L"]]);l=[we(k(ae(Zo,oe.write,X.stand)),Ne.penDown),we(k(ae(Zo,oe.write,X.stand)),Ne.penUp)]}else n==="rod"?l=[we(ae(Le,oe.hold,X.stand),jn(10,3,!0)),we(ae(rn,oe.hold,X.stand),jn(14,9,!0))]:l=o;let d=[e==="skeptic"?we(ae(ws,Rt.front,X.stand,0,!0),["o","+"]):we(ae(ws,oe.hold,X.stand),null),we(ae(Le,oe.idle,X.stand),e==="skeptic"?null:t)],f=ln(k=>we(ae(Le,oe.hold,sn[k]??X.pass,an[k]),Ne.scroll)),m=ln(k=>tt(me.w,me.h,[{grid:ae(Le,oe.shoulder,sn[k]??X.pass,an[k])},{grid:ks,dx:0,dy:4+(an[k]??0)}])),y=k=>ln(S=>{let C=ae(Le,oe.hold,sn[S]??X.pass,an[S]),O=[{grid:C},er(C,k===3?Ne.basket:Ne.loaf,"*")];return k>1&&O.push(er(C,Ne.jug,"&")),tt(me.w,me.h,O)}),E=ln(k=>ae(Zo,oe.idle,sn[k]??X.pass,k%2)),g=[ae(rn,Rt.both,X.stand,0,!0),ae(rn,Rt.half,X.stand,1,!0)],w={idle:o,walk:r,climb:i(!1),"climb-stone":i(!0),sit:a,work:l,sleep:[[...yl]],talk:d,"carry-scroll":f,"carry-stone":m,"carry-ration":y(1),"carry-ration-2":y(2),"carry-ration-3":y(3),slump:E,cheer:g};if(e!=="waterboy")return w;let x={};for(let[k,S]of Object.entries(w))x[k]=S.map(C=>k==="sleep"?C:Cl(k==="sit"?C:El(C)));return x}function El(e){let t=".".repeat(e[0]?.length??0);return[t,t,...e.filter((n,o)=>o!==10&&o!==13)]}function Cl(e){let t=e.findIndex(r=>r.includes("h")),n=e[t]??"",o=Math.floor((n.indexOf("h")+n.lastIndexOf("h"))/2);return tt(e[0]?.length??0,e.length,[{grid:e},{grid:xl,dx:o-1,dy:t-3}])}var zn=[".....oooooo.....","....oyBYyBYo....","...oyBYyBYyyo...","...oBYyBYyyyyo..","..oyBYyBokkkkko.","..oBYyBYokkokko.","..oyBYyBokkkkkko","..oBYyBYokkKkko.","..oyBYyBookkkoo.","..oBYyBo.oYYo..."],Ss=[".....oooooo.....","....oyBYyBYo....","...oyBYyBYyyo...","...oBYyBYyykko..","..oyBYyBokkokko.","..oBYyBYokkkkkko","..oyBYyBokkkkko.","..oBYyBYoKkkkoo.","..oyBYyBookko...","..oBYyBo.oYYo..."],Ml=cn(zn,[[7,12,"o"]]),tr=["..oyBYoGyyyyyo..",".oGyyyGyyyGyyYo.",".oYzYYzYYzYYzYo.",".okowwwwwwwWokko",".okowwwwwwwWokko",".o&owwwwwwwWo*o.","..oowwwwwwWWoo..","...owyyyyyyYo...","...owwwwwwWWo...","...owwwwwwWWo...","...owwwwwwWWo...","..owwwwwwwWWWo..","..owwwwwwwWWWo..","..owwwwwwwWWWo..","..oooooooooooo..","...okko..okko..."],qn=cn(tr,[[3,1,"."],[3,2,"o"],[3,3,"w"],[4,1,"."],[4,2,"o"],[4,3,"w"],[5,1,"."],[5,2,"o"],[5,3,"w"]]);function Kn(e){let t=Array.from({length:13},()=>"...");t[e-1]=".o.",t[e]="o&o";for(let n=e+1;n<12;n++)t[n]="oko";return t[12]=".oo",t}var Al=[".y.","yGz",".z.",...Array.from({length:22},()=>".n.")];function Pt(e,t,n){let o=[{grid:Al,dx:13},{grid:t,dy:10},{grid:e}];return n&&o.push({grid:n}),tt(Eo.w,Eo.h,o)}function Ll(){let e=cn(tr,[[1,2,"y"],[1,6,"y"],[1,10,"y"],[1,4,"G"],[1,8,"G"]]);return{idle:[Pt(zn,tr,null),Pt(zn,e,null)],talk:[Pt(Ml,qn,Kn(6)),Pt(zn,qn,Kn(7))],cheer:[Pt(Ss,qn,Kn(1)),Pt(Ss,qn,Kn(4))]}}var Ce={tent:["............oo............","...........occo...........","..........occcCo..........",".........occccCCo.........","........occccqCCCo........",".......occccqqCCCCo.......","......occccqqoqCCCCo......",".....occccqqooqqCCCCo.....","....occccqqoooqqqCCCCo....","...occcccccoooooCCCCCCo...","..occcccccooooooCCCCCCCo..",".occccccccooooooCCCCCCCCo.","occccccccoooooooCCCCCCCCCo","oooooooooooooooooooooooooo"],palm:[".......vvv.........","....vvvvvvVv..vvv..","..vvvVVvvvvVvvvvvv.",".vvV...vVvvvvVV..vv","vvV...vvVrVvvv...Vv","vV...vV.JrJ.vVv...V","V...vV..rNJ..vV....","....V...rN....V....","........rN.........","........rN.........",".........rN........",".........rN........",".........rN........",".........rN........",".........rrN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rrN......","..........rrN......","..........rrN......",".........rrN.......",".........rrN.......",".........rrN.......",".........rrN.......",".........rrNN......","........UUUUUU....."],table:["........oo..............",".......ojjo.............","..oo..ojjjJo..ooo.......",".obbo.ojjJJo.obbbo.ommo.","obbbbo.oJJo.obbbbbmlqlm.","ooooooooooooooooooomLLLm","onnnnnnnnnnnnnnnnnnnnnNo","oNNNNNNNNNNNNNNNNNNNNNNo",".oNo................oNo.",".oNo................oNo.",".ooo................ooo."],chest:["..oooooooooo..",".onnnnnnnnnNo.","onnnnnnnnnnNNo","oyyyyyyyyyyYYo","onnnnnoyonnNNo","oNNNNNoYoNNNNo","onnnnnnonnnNNo","onnnnnnnnnnNNo","oyyyyyyyyyyYYo","oooooooooooooo"],well:["..oooooooooooooooo..","..onnnnnnnnnnnnnNo..","..ooooooooooooooo...","..oNo....o....oNo...","..oNo....o....oNo...","..oNo...ooo...oNo...","..oNo..onnNo..oNo...","..oNo..oNNNo..oNo...","..oNo...ooo...oNo...","..oNo.........oNo...",".ooooooooooooooooo..","olllLlllLlllLlllLeo.","oLLmLLLmLLLmLLLmLeo.","oaaaaaaaaaaaaaaaaeo.","ollLlllLlllLlllLLeo.","oLmLLLmLLLmLLLmLLeo.","oLLLmLLLmLLLmLLLeeo.",".oooooooooooooooooo."],sledge:["oooooooooooooooooooooo..","onnnnnnnnnnnnnnnnnnnNo..","oNNNNNNNNNNNNNNNNNNNNo.o",".oNo....oNo.....oNo..onN","ooooooooooooooooooooooNo","oNNNNNNNNNNNNNNNNNNNNNo."],capstone:["....yY....","...yyYz...","...yyYz...","..yyyYzz..","..yyyYzz..",".yyyyYzzz.","yyyyyYzzzz"],capstoneGleam:["....GY....","...GyYz...","...yGYz...","..GyyYzz..","..yGyYzz..",".GyyGYzzz.","yyyyyYzzzz"],glint:[".G.","GGG",".G."],rubble:[["llLo","LLeo","oooo"],[".llo","lLLe","oooo"],["lLo","eeo"]]},Vn={hourglass:["ooooo","oGyGo",".oyo.","..o..",".oGo.","oyyyo","ooooo"],dots:["ooo.ooo.ooo","ofo.ofo.ofo","ooo.ooo.ooo"],zzz:[".....oooooo",".....offffo",".....ooofoo",".....oofooo","ooooooffffo","offfooooooo","oofoo......","offfo......","ooooo......"],question:[".ooo.","offfo","oo.fo","..ofo","..oo.","..of.","..oo."]},Es=["ooooooo","oyyyyYo",".oyyYo.","..oYo..","...o..."],Xn=[["...","###","#.#",".#."],["##.",".##",".#.","#.#"],[".#.","##.",".#.",".#."],["...","#.#",".#.","..."],[".#.","#.#","###",".#."],["###","#.#","###","..."],["#..","#..","##.","#.#"],["###","#..","##.","..."],["##.","..#",".#.","#.."],["...",".#.","###","..."],["...","###","#.#","###"],["...","#.#","###","..."],["###",".#.",".#.","###"],["#.#","###","#.#","###"],["###","#.#","#.#","#.#"],["#.#",".#.","#.#","..."]];function Nl(e,t){let n=new Map;for(let[o,r]of Object.entries(e))n.set(o,r.map(s=>ue(s,t)));return n}function Tl(e,t){let n={...jo,...fs(e)};if(t)for(let o of Object.keys(n))n[o]=ms(n[o]??"#000000");return n}function Qn(){let e=new Map,t=(n,o)=>{let r=`${n}:${o?"ghost":"solid"}`,s=e.get(r);return s||(s=Nl(n==="arbab"?Ll():vl(n),Tl(n,o)),e.set(r,s)),s};return{frames(n,o,r,s){let i=t(n,s),a=o==="carry-ration"&&r>=2?`carry-ration-${Math.min(3,r)}`:o;return i.get(a)??i.get("idle")??[]}}}function Ot(e){return ue(e,jo)}var ft={w:36,h:54,scale:3},un={w:48,h:78,scale:3},Rl=6,Ts=(e,t)=>e.name<t.name?-1:e.name>t.name?1:0;function Pl(e){return e.filter(t=>t.state!=="finished").sort((t,n)=>(jt[t.state]??9)-(jt[n.state]??9)||Ts(t,n))}function Cs(e){let t=Date.parse(e);return Number.isFinite(t)?t:-1/0}function Ol(e,t=Rl){return e.filter(n=>n.state==="finished").sort((n,o)=>Cs(o.since)-Cs(n.since)||Ts(n,o)).slice(0,t)}function Ms(e){switch(e.state){case"running":return{pose:"work",ghost:!1};case"held":case"queued":return{pose:"sit",ghost:!1};case"waiting-reset":return{pose:"sleep",ghost:!1};case"orphaned":return{pose:"idle",ghost:!0};default:return{pose:"idle",ghost:!1}}}function Bl(e){return Fr(e)?1:Oo(e.toolCalls)}function Rs(e){let{scrollHeight:t=0,clientHeight:n=0,scrollTop:o=0}=e;return[t,n,o].every(Number.isFinite)&&t-n-o>1}function Fl(e){return`CREW \\xB7 ${e.filter(n=>n.state==="running"||n.state==="preparing").length} AT WORK`}function Ps(e,t,n,o,r,s){let i=e.getContext("2d");if(!i)return 0;i.clearRect(0,0,n*s,o*s);let a=Math.max(1,Math.min(r,Math.floor(n/Math.max(1,t.w)),Math.floor(o/Math.max(1,t.h))));return Os(i,t,Math.floor((n-t.w*a)/2),o-t.h*a,a,s),a}function Os(e,t,n,o,r,s){let i=r*s;for(let a of t.runs)e.fillStyle=a.color,e.fillRect((n+a.x*r)*s,(o+a.y*r)*s,a.w*i,i)}var nr=Ot(Vn.zzz);function Il(e,t,n,o){let r=Ps(e,t,ft.w,ft.h,ft.scale,o),s=e.getContext("2d");if(n==="sleep"&&s){let i=t.h-t.top;Os(s,nr,ft.w-nr.w*2-2,ft.h-i*r-nr.h*2-4,2,o)}return r}function As(e,t,n){let o=T(e,"span","tile");o.setAttribute("aria-hidden","true");let r=at(e,ft.w,ft.h,n,"px avatar");r&&o.appendChild(r);let s="";return{el:o,set(i,a,l){let u=`${i}:${a}:${l}`;if(u===s)return;s=u,o.className=`tile cast-${i}${l?" ghost":""}`;let d=t.frames(i,a,0,l)[0];r&&d&&Il(r,d,a,n)}}}function Dl(e,t,n){let o=T(e,"span","tile tile-arbab");o.setAttribute("aria-hidden","true");let r=at(e,un.w,un.h,n,"px avatar"),s=t.frames("arbab","idle",0,!1)[0];return r&&(o.appendChild(r),s&&Ps(r,s,un.w,un.h,un.scale,n)),o}function Ls(e){let t=Tn(e);return t==="arbab"?"laborer":t}function Ns(e,t){let{tone:n,label:o}=on(t);e.el.className=`pxt badge tone-${n}`,e.set(o,Hn(n).ink)}function or(e,t){let n=kt(e,t);return n===null?"\\u2014":wt(n)}function Bs(e,t,n,o,r){let s=z(e,{scale:2,color:A.gold,dpr:o},"CREW");t.title.replaceChildren(s.el);let i=z(e,{scale:1,color:A.muted,dpr:o},"RECENTLY FINISHED");t.recentTitle.replaceChildren(i.el);let a=T(e,"p","empty-lead","The site is quiet."),l=T(e,"p","empty-hint");l.appendChild(T(e,"span","","No lane is at work. Launch one with ")),l.appendChild(T(e,"code","","arbab launch")),l.appendChild(T(e,"span","",", or ")),l.appendChild(T(e,"code","","arbab plan next")),l.appendChild(T(e,"span","",": workers walk in from the village."));let u=T(e,"div","empty-words");u.appendChild(a),u.appendChild(l),t.empty.replaceChildren(Dl(e,n,o),u);let d=new Map,f=[],m=null,y=null,E="",g=(S,C)=>{let O=T(e,"li","crew-item"),I=T(e,"button","card frame-btn");I.setAttribute("type","button"),I.setAttribute("aria-pressed","false");let P=As(e,n,o),G=T(e,"span","card-body"),Y=T(e,"span","card-head"),Oe=T(e,"span","name"),Be=z(e,{scale:1,color:Tt,dpr:o,className:"badge"});Y.appendChild(Oe),Y.appendChild(Be.el);let ve=T(e,"span","meta"),Fe=T(e,"span","progress"),fe=T(e,"span","bar"),Ie=T(e,"span","bar-fill");fe.appendChild(Ie);let De=T(e,"span","calls");Fe.appendChild(fe),Fe.appendChild(De);let le=T(e,"span","card-foot"),ne=T(e,"span","stats"),nt=T(e,"span","elapsed");le.appendChild(ne),le.appendChild(nt);for(let pe of[Y,ve,Fe,le])G.appendChild(pe);return I.appendChild(P.el),I.appendChild(G),O.appendChild(I),I.addEventListener("focus",()=>{y=S,r.enter(S)}),I.addEventListener("mouseenter",()=>r.enter(S)),I.addEventListener("blur",()=>{y===S&&(y=null),r.leave(S)}),I.addEventListener("mouseleave",()=>r.leave(S)),I.addEventListener("click",()=>r.toggle(S)),{li:O,button:I,avatar:P,name:Oe,meta:ve,badge:Be,elapsed:nt,fill:Ie,calls:De,stats:ne,lane:C}},w=(S,C,O)=>{S.lane=C;let{pose:I,ghost:P}=Ms(C);S.avatar.set(Ls(C),I,P),S.name.textContent=C.name,S.meta.textContent=`${C.role} \\xB7 ${C.kind}`,Ns(S.badge,C),S.elapsed.textContent=or(C,O),S.fill.style.width=`${Math.round(Bl(C)*100)}%`,S.calls.textContent=`${C.toolCalls} ${C.toolCalls===1?"call":"calls"}`,S.stats.textContent=`${C.lastTool??"\\u2014"} \\xB7 ${Ke(C.costUsd)}`},x=(S,C)=>{let O=Ol(S.lanes),I=JSON.stringify(O.map(P=>[P.name,P.endState,P.costUsd,P.elapsedMs,P.since]));t.recentGroup.hidden=O.length===0,I!==E&&(E=I,t.recent.replaceChildren(...O.map(P=>{let G=T(e,"li","recent-item"),Y=As(e,n,o),{pose:Oe,ghost:Be}=Ms(P);Y.set(Ls(P),Oe,Be);let ve=z(e,{scale:1,color:Tt,dpr:o});return Ns(ve,P),G.appendChild(Y.el),G.appendChild(T(e,"span","name",P.name)),G.appendChild(ve.el),G.appendChild(T(e,"span","num",Ke(P.costUsd))),G.appendChild(T(e,"span","num",or(P,C))),G})))},k={update(S,C){s.set(Fl(S.lanes));let O=Pl(S.lanes);for(let G of O){let Y=d.get(G.name);Y||(Y=g(G.name,G),d.set(G.name,Y)),w(Y,G,C)}let I=O.map(G=>G.name);f=vt(t.list,f,I,G=>d.get(G)?.li,y);let P=new Set(I);for(let G of[...d.keys()])P.has(G)||d.delete(G);y!==null&&!P.has(y)&&(y=null),t.empty.hidden=O.length>0,x(S,C),m!==null&&!P.has(m)&&(m=null),k.setPinned(m)},tick(S){for(let C of d.values())C.elapsed.textContent=or(C.lane,S)},setPinned(S){m=S;for(let[C,O]of d)O.button.setAttribute("aria-pressed",String(C===S))},order:()=>f,button:S=>d.get(S)?.button};return k}var rr=96,Fs=4,Ul=.7;function $l(e,t){return e>=t?"hold":e>=Ul?"warn":"ok"}var _l={ok:A.sand,warn:A["gold-2"],hold:A["st-failed"]};function Gl(e){let t=Math.max(0,Math.floor(e)),n=i=>String(i).padStart(2,"0"),o=Math.floor(t/86400),r=Math.floor(t%86400/3600),s=Math.floor(t%3600/60);return o>0?`${o}d ${n(r)}h`:r>0?`${r}h ${n(s)}m`:s>0?`${s}m`:"<1m"}function sr(e,t,n,o){let r=Math.max(0,Math.min(rr-1,Math.round(n*rr))),s=`hold at ${Math.round(n*100)}%`;if(!t||!Number.isFinite(t.utilization)||t.resetsAt<=o)return{percent:"\\u2014",fill:0,tick:r,level:"ok",title:`${e} window: no current reading \\xB7 ${s}`};let i=Math.max(0,Math.min(1,t.utilization)),a=rr/Fs,l=Math.min(a,Math.ceil(i*a))*Fs,u=`${Math.round(t.utilization*100)}%`;return{percent:u,fill:l,tick:r,level:$l(t.utilization,n),title:`${e} window ${u} \\xB7 resets in ${Gl(t.resetsAt-o)} \\xB7 ${s}`}}function ir(e,t,n,o){let r=z(e,{scale:1,color:A.muted,dpr:o,className:"gauge-label"},n.toUpperCase()),s=T(e,"span","gauge-bar"),i=T(e,"span","gauge-fill"),a=T(e,"span","gauge-tick");s.appendChild(i),s.appendChild(a);let l=z(e,{scale:1,color:A.sand,dpr:o,className:"gauge-pct"});return t.replaceChildren(r.el,s,l.el),{update(u){t.setAttribute("title",u.title),t.setAttribute("data-level",u.level),i.style.width=`${u.fill}px`,a.style.left=`${u.tick}px`,l.set(u.percent,u.percent==="\\u2014"?A.muted:_l[u.level])}}}var Ds=600,Is=136;function Hl(e){let t=Fo(e.lanes);return{atWork:t.running+t.preparing,waiting:t.waiting,asleep:t.asleep,succeeded:t.succeeded,failed:t.failed,treasury:Io(e.lanes)}}function Wl(e){return 1-(1-e)**3}function Yl(e,t,n,o=Ds){if(!(n<o)||o<=0)return t;let r=Math.max(0,n/o);return e+(t-e)*Wl(r)}function ql(e,t=Ds){let n=[],o=[],r=0,s=i=>o.map((a,l)=>Yl(n[l]??0,a,i-r,t));return{set(i,a){if(i.length===o.length&&i.every((u,d)=>u===o[d]))return;let l=s(a);n=e?[...i]:i.map((u,d)=>l[d]??0),o=[...i],r=a},value:s}}function Kl(e){let t=je(e);return t*4<=Is?4:t*3<=Is?3:2}var dn=e=>Math.round(e??0),zl=[{key:"at-work",label:"AT WORK",icon:"hammer",values:e=>[e.atWork],format:e=>String(dn(e[0])),color:A.text},{key:"waiting",label:"WAITING",icon:"hourglass",values:e=>[e.waiting],format:e=>String(dn(e[0])),color:A.text},{key:"asleep",label:"ASLEEP",icon:"zzz",values:e=>[e.asleep],format:e=>String(dn(e[0])),color:A.text},{key:"finished",label:"FINISHED",icon:"check",values:e=>[e.succeeded,e.failed],format:e=>`\\u2713${dn(e[0])} \\u2717${dn(e[1])}`,color:A.text},{key:"treasury",label:"TREASURY",icon:"coin",values:e=>[e.treasury],format:e=>`$${(e[0]??0).toFixed(2)}`,color:A.gold}];function jl(e,t){let n=e.format(t);return{text:n,zero:!/[1-9]/.test(n)}}function Us(e,t,n){let o=zl.map(s=>{let i=T(e,"li","kpi frame");i.setAttribute("data-kpi",s.key);let a=Wn(e,s.icon,2,n.dpr,16),l=z(e,{scale:4,color:A.muted,dpr:n.dpr,className:"kpi-number"}),u=z(e,{scale:1,color:A.muted,dpr:n.dpr,className:"kpi-label"},s.label);return a&&i.appendChild(a),i.appendChild(l.el),i.appendChild(u.el),{spec:s,counter:ql(n.reducedMotion),number:l,li:i}});t.replaceChildren(...o.map(s=>s.li));let r=(s,i)=>{let{text:a,zero:l}=jl(s.spec,s.counter.value(i));s.li.setAttribute("data-zero",String(l)),s.number.set(a,l?A.muted:s.spec.color,Kl(a))};return{update(s,i){let a=Hl(s);for(let l of o)l.counter.set(l.spec.values(a),i),r(l,i)},tick(s){for(let i of o)r(i,s)}}}var Jn=[{key:"lane",label:"lane",numeric:!1},{key:"role",label:"role",numeric:!1},{key:"state",label:"state",numeric:!1},{key:"attempt",label:"attempt",numeric:!0},{key:"calls",label:"calls",numeric:!0},{key:"lastTool",label:"last tool",numeric:!1},{key:"elapsed",label:"elapsed",numeric:!0},{key:"cost",label:"cost",numeric:!0}],Vl={key:"state",dir:"ascending"};function Xl(e){let t=jt[e.state]??9;return e.state==="finished"&&e.endState!=="success"?t+1:t}function $s(e,t,n){switch(t){case"lane":return e.name;case"role":return e.role;case"state":return Xl(e);case"attempt":return e.attempt;case"calls":return e.toolCalls;case"lastTool":return e.lastTool;case"elapsed":return kt(e,n);case"cost":return e.costUsd!==null&&Number.isFinite(e.costUsd)?e.costUsd:null}}function _s(e,t){return e<t?-1:e>t?1:0}function Ql(e,t,n){let o=t.dir==="ascending"?1:-1;return[...e].sort((r,s)=>{let i=$s(r,t.key,n),a=$s(s,t.key,n);if(i===null||a===null){if(i!==a)return i===null?1:-1}else{let l=_s(i,a);if(l!==0)return o*l}return _s(r.name,s.name)})}function Jl(e,t){return e.key===t?{key:t,dir:e.dir==="ascending"?"descending":"ascending"}:{key:t,dir:"ascending"}}function Gs(e,t){let n=kt(e,t);return[e.name,e.role,on(e).label,String(e.attempt),String(e.toolCalls),e.lastTool??"\\u2014",n===null?"\\u2014":wt(n),Ke(e.costUsd)]}function Hs(e,t,n,o){let r=z(e,{scale:2,color:A.gold,dpr:n},"LEDGER");t.title.replaceChildren(r.el);let s=Vl,i=[],a=0,l=new Map,u=[],d=Jn.map(w=>{let x=T(e,"th",w.numeric?"num":"");x.setAttribute("scope","col");let k=T(e,"button","sort",w.label);return k.setAttribute("type","button"),k.addEventListener("click",()=>g.sortBy(w.key)),x.appendChild(k),{th:x,key:w.key}});t.head.replaceChildren(...d.map(w=>w.th));let f=()=>{for(let w of d)w.th.setAttribute("aria-sort",w.key===s.key?s.dir:"none")};f();let m=(w,x)=>{let k=T(e,"tr"),S=z(e,{scale:1,color:Tt,dpr:n,className:"badge"}),C=Jn.map((O,I)=>{let P=T(e,I===0?"th":"td",O.numeric?"num":"");return I===0&&P.setAttribute("scope","row"),O.key==="state"&&P.appendChild(S.el),k.appendChild(P),P});return k.addEventListener("mouseenter",()=>o.enter(w)),k.addEventListener("mouseleave",()=>o.leave(w)),k.addEventListener("click",()=>o.toggle(w)),{tr:k,cells:C,badge:S,lane:x}},y=(w,x)=>{let k=Gs(w.lane,x);Jn.forEach((S,C)=>{if(S.key==="state"){let{tone:I,label:P}=on(w.lane);w.badge.el.className=`pxt badge tone-${I}`,w.badge.set(P,Hn(I).ink);return}let O=w.cells[C];O&&(O.textContent=k[C]??"")})},E=()=>{let w=Ql(i,s,a).map(x=>x.name);u=vt(t.body,u,w,x=>l.get(x)?.tr)},g={update(w,x){i=w.lanes,a=x;let k=new Set(i.map(S=>S.name));for(let S of i){let C=l.get(S.name);C||(C=m(S.name,S),l.set(S.name,C)),C.lane=S,y(C,x)}E();for(let S of[...l.keys()])k.has(S)||l.delete(S)},tick(w){a=w;let x=Jn.findIndex(k=>k.key==="elapsed");for(let k of l.values()){let S=k.cells[x];S&&(S.textContent=Gs(k.lane,w)[x]??"")}},setPinned(w){for(let[x,k]of l)k.tr.className=x===w?"pinned":""},sort:()=>s,sortBy(w){s=Jl(s,w),f(),E()},order:()=>u};return g}var Zl={done:"\\u2713",failed:"\\u2717",pending:"\\xB7"};function Te(e,t,n){return{label:e,state:t,mark:Zl[t],detail:n}}var ec=(e,t)=>`${e} ${t}${e===1?"":"s"}`;function tc(e){return`${e.lenses} ${e.lenses===1?"lens":"lenses"} \\xB7 ${e.confirmed} confirmed \\xB7 ${e.unverified} unverified`}function nc(e,t){let n=e.verify,o=e.ready,r=qe(e.landedAt);return[Te("INTEGRATED","done",ec(e.lanes.length,"lane")),n==="passed"?Te("VERIFY","done","passed"):n==="failed"?Te("VERIFY","failed","failed"):Te("VERIFY","pending","not run"),e.review?Te("REVIEW","done",tc(e.review)):Te("REVIEW","pending","not run"),o===!0?Te("READY","done","ready"):o===!1?Te("READY","failed","not ready"):Te("READY","pending","not checked"),e.landedAt!==null?Te("LANDED","done",Number.isFinite(r)?St(t-r):"landed"):Te("LANDED","pending","not landed")]}var Ws={done:A.gold,failed:A["st-failed"],pending:A.faint};function Ys(e,t,n){let o=z(e,{scale:2,color:A.gold,dpr:n},"MONUMENT");t.title.replaceChildren(o.el);let r=T(e,"p","monument-head"),s=T(e,"span","name"),i=T(e,"code","sha");r.appendChild(s),r.appendChild(i);let a=T(e,"ol","stepper"),l=[0,1,2,3,4].map(()=>{let d=T(e,"li","step"),f=z(e,{scale:1,color:A.faint,dpr:n,className:"node"}),m=z(e,{scale:1,color:A.faint,dpr:n,className:"step-label"}),y=T(e,"span","detail");return d.appendChild(f.el),d.appendChild(m.el),d.appendChild(y),a.appendChild(d),{li:d,mark:f,label:m,detail:y}}),u=T(e,"p","empty","No integration yet.");return t.body.replaceChildren(r,a,u),{update(d,f){let m=Or(d);r.hidden=m===null,a.hidden=m===null,u.hidden=m!==null,m&&(s.textContent=m.name,i.textContent=m.headSha.slice(0,7),nc(m,f).forEach((y,E)=>{let g=l[E];g&&(g.li.setAttribute("data-state",y.state),g.mark.set(y.mark,Ws[y.state]),g.label.set(y.label,Ws[y.state]),g.detail.textContent=y.detail)}))}}}var Zn="This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.",qs="This page is one too many: arbab ui serves 16 at once. Close another of its tabs and reload.",Ks="arbab ui is not running.";function ar(e){return e===null?Ks:e.status===200?qs:Zn}function zs(e){switch(e){case"live":return{text:"LIVE",color:A["st-success"]};case"lost":return{text:"RECONNECTING",color:A["st-waiting"]};case"closed":return{text:"OFFLINE",color:A["st-failed"]};default:return{text:"CONNECTING",color:A.muted}}}var to={header:"top",logo:"logo",title:"title",project:"project",version:"version",gauge5h:"gauge-5h",gauge7d:"gauge-7d",held:"held",connection:"connection",sound:"sound",banner:"banner",kpis:"kpis",site:"site",siteTitle:"site-title",siteFullscreen:"site-fullscreen",stage:"stage",canvas:"scene",titleCard:"title-card",titleCardLogo:"title-card-logo",titleCardWord:"title-card-word",tooltip:"tooltip",notice:"notice",caption:"caption",crewPanel:"crew-panel",crewTitle:"crew-title",crewScroll:"crew-scroll",crew:"crew",crewEmpty:"crew-empty",recentGroup:"recent-group",recentTitle:"recent-title",recent:"recent",monumentTitle:"monument-title",monument:"monument",chronicleTitle:"chronicle-title",chronicle:"chronicle",chronicleEmpty:"chronicle-empty",ledgerTitle:"ledger-title",ledgerHead:"ledger-head",table:"lanes",footer:"footer",live:"live"},F=to,Kf=`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<meta name="robots" content="noindex">\n<meta name="color-scheme" content="dark">\n<title>arbab \\xB7 pyramid</title>\n<link rel="icon" href="${st.icon}" type="image/svg+xml">\n<link rel="stylesheet" href="${st.style}">\n<script src="${st.script}" defer><\\/script>\n</head>\n<body>\n<header id="${F.header}" class="topbar">\n<div class="brand">\n<canvas id="${F.logo}" class="px logo" width="32" height="32" aria-hidden="true"></canvas>\n<h1 id="${F.title}" class="wordmark">arbab</h1>\n<p class="project"><span id="${F.project}">connecting\\u2026</span> <span id="${F.version}" class="version"></span></p>\n</div>\n<div class="status">\n<div class="gauges">\n<div id="${F.gauge5h}" class="gauge" data-level="ok"></div>\n<div id="${F.gauge7d}" class="gauge" data-level="ok"></div>\n</div>\n<div class="controls">\n<span id="${F.held}" class="pill held" hidden>held</span>\n<span id="${F.connection}" class="pill connection" data-state="connecting">connecting</span>\n<button id="${F.sound}" type="button" aria-pressed="false">sound</button>\n</div>\n</div>\n</header>\n<p id="${F.banner}" class="banner" role="alert" hidden></p>\n<main class="hud">\n<section class="kpi-row" aria-labelledby="kpi-heading">\n<h2 id="kpi-heading" class="visually-hidden">Lanes at a glance</h2>\n<ul id="${F.kpis}" class="kpis"></ul>\n</section>\n<div class="grid">\n<section id="${F.site}" class="frame panel site" aria-labelledby="${F.siteTitle}">\n<div class="titlebar">\n<h2 id="${F.siteTitle}">The site</h2>\n<button id="${F.siteFullscreen}" type="button" class="small" aria-controls="${F.site}">full screen</button>\n</div>\n<div id="${F.stage}" class="stage">\n<canvas id="${F.canvas}" width="480" height="270" role="img" aria-label="The pyramid scene: each lane is a worker building a block, and arbab hands out the work. The crew, the chronicle and the ledger say the same in text."></canvas>\n<div id="${F.titleCard}" class="title-card" aria-hidden="true">\n<canvas id="${F.titleCardLogo}" class="px" width="64" height="64"></canvas>\n<div id="${F.titleCardWord}" class="title-card-word">ARBAB</div>\n<p class="awakens">the site awakens\\u2026</p>\n</div>\n<div id="${F.tooltip}" class="tooltip frame" role="tooltip" hidden></div>\n<div id="${F.notice}" class="notice" hidden></div>\n</div>\n<p id="${F.caption}" class="caption">THE SITE IS QUIET</p>\n</section>\n<aside class="side" aria-label="Crew and monument">\n<section id="${F.crewPanel}" class="frame panel crew-panel" aria-labelledby="${F.crewTitle}" data-more="false">\n<div class="titlebar"><h2 id="${F.crewTitle}">Crew</h2></div>\n<div id="${F.crewScroll}" class="crew-scroll">\n<ul id="${F.crew}" class="crew"></ul>\n<div id="${F.crewEmpty}" class="crew-empty"></div>\n<details id="${F.recentGroup}" class="recent-group" hidden>\n<summary id="${F.recentTitle}">Recently finished</summary>\n<ul id="${F.recent}" class="recent"></ul>\n</details>\n</div>\n</section>\n<section class="frame panel monument-panel" aria-labelledby="${F.monumentTitle}">\n<div class="titlebar"><h2 id="${F.monumentTitle}">Monument</h2></div>\n<div id="${F.monument}" class="monument"></div>\n</section>\n</aside>\n</div>\n<div class="below">\n<section class="frame panel" aria-labelledby="${F.chronicleTitle}">\n<div class="titlebar"><h2 id="${F.chronicleTitle}">Chronicle</h2></div>\n<ol id="${F.chronicle}" class="chronicle"></ol>\n<p id="${F.chronicleEmpty}" class="empty">Nothing has happened yet.</p>\n</section>\n<section class="frame panel" aria-labelledby="${F.ledgerTitle}">\n<div class="titlebar"><h2 id="${F.ledgerTitle}">Ledger</h2></div>\n<div class="table-wrap">\n<table aria-labelledby="${F.ledgerTitle}">\n<thead><tr id="${F.ledgerHead}"><th scope="col">lane</th><th scope="col">role</th><th scope="col">state</th><th scope="col">attempt</th><th scope="col">calls</th><th scope="col">last tool</th><th scope="col">elapsed</th><th scope="col">cost</th></tr></thead>\n<tbody id="${F.table}"></tbody>\n</table>\n</div>\n</section>\n</div>\n</main>\n<footer>\n<p id="${F.footer}">Read-only</p>\n</footer>\n<div id="${F.live}" class="visually-hidden" aria-live="polite"></div>\n</body>\n</html>\n`,js=(e,t="")=>e.map(([n,o])=>`  --${t}${n}: ${o};`).join(`\n`),eo=(e,t,n="var(--frame-hi)",o="var(--frame-lo)")=>`0 -${e}px 0 0 var(--frame-dark), 0 ${e}px 0 0 var(--frame-dark), -${e}px 0 0 0 var(--frame-dark), ${e}px 0 0 0 var(--frame-dark),\n    inset ${t}px ${t}px 0 0 ${n}, inset -${t}px -${t}px 0 0 ${o}`,zf=`:root {\n  color-scheme: dark;\n${js(Object.entries(A))}\n${js(Object.entries(Xo),"chip-")}\n  --s1: 4px;\n  --s2: 8px;\n  --s3: 12px;\n  --s4: 16px;\n  --s5: 20px;\n  --s6: 24px;\n  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;\n  font-size: 14px;\n  font-variant-numeric: tabular-nums;\n}\n* { box-sizing: border-box; }\nbody {\n  margin: 0; color: var(--text); line-height: 1.45;\n  background: radial-gradient(ellipse 120% 60% at 50% -10%, #2a1d12 0, var(--bg) 70%) fixed, var(--bg);\n}\np { margin: 0; }\ncode { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--sand); }\ncanvas.px { display: inline-block; vertical-align: middle; image-rendering: crisp-edges; image-rendering: pixelated; }\n.pxt { display: inline-flex; align-items: center; line-height: 0; }\n:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }\n.visually-hidden {\n  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;\n  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;\n}\n[hidden] { display: none !important; }\n\n/* Pixel frames: square, notched corners; never rounded. */\n.frame {\n  margin: var(--s1); background: var(--panel); border-radius: 0;\n  box-shadow: ${eo(4,2)};\n}\nbutton {\n  font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 0; border-radius: 0;\n  margin: 2px; padding: var(--s1) 10px; cursor: pointer; white-space: nowrap;\n  box-shadow: ${eo(2,2)};\n}\nbutton:hover { background: var(--panel-hi); }\nbutton:active, button[aria-pressed="true"] {\n  color: var(--gold); background: var(--panel);\n  box-shadow: ${eo(2,2,"var(--frame-lo)","var(--frame-hi)")};\n}\nbutton.small { font-size: 12px; padding: 2px var(--s2); }\n\n/* Top bar */\n.topbar {\n  position: sticky; top: 0; z-index: 10; height: 56px; display: flex; align-items: center; gap: var(--s4);\n  padding: 0 var(--s4); background: var(--bg-2); border-bottom: 2px solid var(--frame);\n  box-shadow: 0 2px 0 0 var(--frame-dark);\n}\n.brand { display: flex; align-items: center; gap: var(--s3); min-width: 0; }\n.logo { width: 32px; height: 32px; }\nh1 { margin: 0; font-size: 18px; line-height: 0; color: var(--gold); }\n.project { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n#${F.project} { color: var(--text); font-weight: 600; }\n.version { color: var(--muted); }\n.status, .gauges, .controls { display: flex; align-items: center; gap: var(--s3); min-width: 0; }\n.status { margin-left: auto; }\n.gauge { display: flex; align-items: center; gap: 6px; --level: var(--sand); }\n.gauge[data-level="warn"] { --level: var(--gold-2); }\n.gauge[data-level="hold"] { --level: var(--st-failed); }\n.gauge-bar {\n  position: relative; width: 96px; height: 10px; background: var(--frame-dark);\n  box-shadow: 0 0 0 1px var(--frame-lo);\n}\n.gauge-fill {\n  position: absolute; left: 0; top: 0; bottom: 0; width: 0;\n  background: repeating-linear-gradient(90deg, var(--level) 0 3px, transparent 3px 4px);\n}\n.gauge-tick { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--text); }\n.pill {\n  display: inline-flex; align-items: center; gap: 6px; padding: 3px var(--s2); margin: 2px; line-height: 0;\n  background: var(--panel); box-shadow: ${eo(2,1)}; font-size: 12px;\n}\n.pill.held { line-height: 1; color: var(--bg); background: var(--st-waiting); font-weight: 700; text-transform: uppercase; }\n.connection::before { content: ""; width: 6px; height: 6px; background: var(--muted); }\n.connection[data-state="live"]::before { background: var(--st-success); animation: pulse 2s steps(4) infinite; }\n.connection[data-state="lost"]::before { background: var(--st-waiting); }\n.connection[data-state="closed"]::before { background: var(--st-failed); }\n@keyframes pulse { 50% { opacity: 0.3; } }\n.banner { padding: var(--s2) var(--s4); background: var(--st-failed); color: #fff; font-weight: 600; }\n\n/* The dashboard. Its vertical spacing around the scene card is PAGE_GAPS in hud.ts: keep the two in step. */\n.hud { display: grid; gap: var(--s3); padding: var(--s3) var(--s4) var(--s4); max-width: 1880px; margin: 0 auto; }\n.grid, .side, .below { display: grid; gap: var(--s3); grid-template-columns: minmax(0, 1fr); align-items: start; }\n.hud > *, .grid > *, .side > *, .below > * { min-width: 0; }\n.side { align-content: start; }\n@media (min-width: 900px) {\n  .side { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n  .below { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }\n}\n@media (min-width: 1280px) {\n  .grid { grid-template-columns: minmax(0, 1fr) 360px; align-items: stretch; }\n  /* As tall as the scene card and no taller: size containment keeps the crew from stretching the row. The items\n     stretch, so the crew panel fills the first row instead of shrinking to its title around a zero-basis list. */\n  .side { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; align-items: stretch; contain: size; }\n  .crew-panel { display: flex; flex-direction: column; min-height: 0; }\n  .crew-panel > .titlebar { flex: none; }\n  .crew-panel .crew-scroll { flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; }\n}\n.panel { padding: var(--s3); min-width: 0; }\n.titlebar {\n  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);\n  min-height: 30px; margin-bottom: var(--s3); padding-bottom: var(--s2); border-bottom: 2px solid var(--frame-lo);\n}\nh2 { margin: 0; font-size: 14px; line-height: 0; color: var(--gold); }\n.empty { color: var(--muted); padding: var(--s2) 0; }\n\n/* KPI cards */\n.kpis { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }\n.kpi { display: grid; grid-template-columns: 16px minmax(0, 1fr); grid-template-areas: "icon label" "num num"; gap: var(--s2) var(--s2); align-items: center; padding: var(--s3) 14px; }\n.kpi .icon { grid-area: icon; width: 16px; height: 16px; }\n.kpi .kpi-label { grid-area: label; }\n.kpi .kpi-number { grid-area: num; min-height: 44px; }\n/* Wide: one row per card (icon, label, number), so the KPI row leaves the scene its height. */\n@media (min-width: 1280px) {\n  .kpi { grid-template-columns: 16px auto minmax(0, 1fr); grid-template-areas: "icon label num"; padding: var(--s2) 14px; }\n  .kpi .kpi-number { justify-self: end; }\n}\n\n/* The scene card: lean chrome, so 3\\xD7 fits a 1080-px screen (stageRoom in hud.ts measures it). */\n.site { padding: var(--s2); }\n.site .titlebar { min-height: 28px; margin-bottom: var(--s2); padding-bottom: 6px; }\n.stage {\n  position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden;\n  background-color: var(--frame-dark);\n  background-image:\n    repeating-linear-gradient(45deg, rgb(255 255 255 / 0.025) 0 2px, transparent 2px 8px),\n    repeating-linear-gradient(-45deg, rgb(0 0 0 / 0.25) 0 2px, transparent 2px 8px),\n    radial-gradient(ellipse at center, var(--bg-2) 0, var(--frame-dark) 80%);\n  box-shadow: inset 0 0 0 2px var(--frame-lo);\n}\n#${F.canvas} { display: block; flex: none; width: 480px; height: 270px; image-rendering: crisp-edges; image-rendering: pixelated; }\n/* Below 1\\xD7: the stage\'s width, the height by the art\'s aspect ratio. */\n#${F.canvas}.fluid { flex: 1 1 auto; max-width: 100%; aspect-ratio: 480 / 270; }\n.caption {\n  display: flex; justify-content: center; min-height: 27px; margin-top: 6px; padding: var(--s2);\n  line-height: 0; color: var(--sand); background: var(--bg-2); box-shadow: inset 0 0 0 2px var(--frame-lo);\n}\n.site:fullscreen { margin: 0; width: 100vw; height: 100vh; display: flex; flex-direction: column; background: var(--bg); box-shadow: none; }\n.site:fullscreen .stage { flex: 1; min-height: 0; }\n.title-card {\n  position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center;\n  gap: var(--s4); background: radial-gradient(ellipse at center, var(--panel) 0, var(--bg) 75%);\n  transition: opacity 0.6s steps(6), visibility 0s linear 0.6s;\n}\n.title-card.gone { opacity: 0; visibility: hidden; }\n.title-card-word { line-height: 0; color: var(--gold); font-size: 32px; }\n.awakens { color: var(--muted); font-style: italic; }\n.tooltip { position: absolute; z-index: 4; pointer-events: none; min-width: 190px; max-width: 320px; padding: 10px 12px; font-size: 13px; }\n.tooltip .tip-title { margin-bottom: 6px; line-height: 0; }\n.tooltip div + div { color: var(--muted); }\n.notice {\n  position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: var(--s4); text-align: center;\n  background: rgb(18 13 10 / 0.94); font-size: 15px;\n}\n\n/* Crew: the list scrolls inside its panel, with a fade at the bottom edge while there is more below. */\n.crew-panel { position: relative; }\n.crew-scroll { min-height: 0; max-height: 640px; overflow: auto; }\n.crew-panel[data-more="true"]::after {\n  content: ""; position: absolute; left: var(--s3); right: var(--s3); bottom: var(--s3); height: 36px; pointer-events: none;\n  background: linear-gradient(to bottom, transparent, var(--panel));\n}\n.crew { list-style: none; margin: 0; padding: 2px; display: grid; gap: var(--s3); }\n.card {\n  width: calc(100% - 4px); display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; align-items: start;\n  padding: var(--s2); text-align: left; white-space: normal; font-size: 14px; color: var(--text); background: var(--panel-2);\n}\n.card[aria-pressed="true"] { color: var(--text); }\n.card[aria-pressed="true"] .name { color: var(--gold); }\n.tile {\n  display: grid; place-items: end center; width: 44px; height: 62px; padding-bottom: var(--s1);\n  background: color-mix(in srgb, var(--chip, var(--frame)) 38%, var(--bg-2)); box-shadow: inset 0 0 0 2px var(--frame-dark);\n}\n.tile .avatar { width: 36px; height: 54px; }\n.tile-arbab { flex: none; width: 56px; height: 86px; background: var(--bg-2); }\n.tile-arbab .avatar { width: 48px; height: 78px; }\n.tile.ghost .avatar { opacity: 0.75; }\n${Object.keys(Xo).map(e=>`.cast-${e} { --chip: var(--chip-${e}); }`).join(`\n`)}\n.card-body { display: grid; gap: 3px; min-width: 0; }\n.card-head, .card-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-width: 0; }\n.name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n.meta, .stats, .calls, .elapsed, .num { color: var(--muted); font-size: 13px; }\n.stats { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n.elapsed, .calls { white-space: nowrap; }\n.progress { display: flex; align-items: center; gap: var(--s2); }\n.bar { position: relative; flex: 1; height: 8px; overflow: hidden; background: var(--frame-dark); box-shadow: 0 0 0 1px var(--frame-lo); }\n.bar-fill {\n  position: absolute; left: 0; top: 0; bottom: 0; width: 0;\n  background: repeating-linear-gradient(90deg, var(--gold) 0 4px, var(--gold-2) 4px 5px, var(--frame-dark) 5px 6px);\n}\n.badge { display: inline-flex; align-items: center; flex: none; padding: 2px var(--s1); background: var(--tone, var(--st-orphaned)); box-shadow: 0 0 0 1px var(--frame-dark); }\n${["running","preparing","waiting","asleep","success","orphaned"].map(e=>`.tone-${e} { --tone: var(--st-${e}); }`).join(`\n`)}\n.tone-failed { --tone: var(--badge-failed); }\n.crew-empty { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) 0; }\n.empty-lead { font-weight: 600; }\n.empty-hint { color: var(--muted); font-size: 13px; }\n.recent-group { margin-top: var(--s3); }\n.recent-group summary { cursor: pointer; padding: var(--s1) 0; line-height: 0; }\n.recent { list-style: none; margin: var(--s2) 0 0; padding: 0; display: grid; gap: var(--s1); }\n.recent-item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto auto auto; gap: var(--s2); align-items: center; }\n.recent-item .tile { height: 44px; overflow: hidden; }\n\n/* Monument */\n.monument-head { display: flex; align-items: baseline; gap: var(--s2); margin-bottom: 10px; }\n.stepper { list-style: none; margin: 0; padding: 0; }\n.step { position: relative; display: grid; grid-template-columns: 20px auto minmax(0, 1fr); gap: 10px; align-items: center; padding: 6px 0; }\n.step + .step::before { content: ""; position: absolute; left: 9px; top: -8px; width: 2px; height: 16px; background: var(--frame-lo); }\n.step[data-state="done"] + .step::before { background: var(--gold-2); }\n.node {\n  position: relative; z-index: 1; justify-content: center; width: 20px; height: 20px; background: var(--bg-2);\n  box-shadow: 0 0 0 2px var(--frame-dark), inset 0 0 0 2px var(--frame-lo);\n}\n.step[data-state="done"] .node { box-shadow: 0 0 0 2px var(--frame-dark), inset 0 0 0 2px var(--gold-2); }\n.step[data-state="failed"] .node { box-shadow: 0 0 0 2px var(--frame-dark), inset 0 0 0 2px var(--st-failed); }\n.detail { color: var(--muted); font-size: 13px; text-align: right; }\n\n/* Chronicle */\n.chronicle { list-style: none; margin: 0; padding: 0; max-height: 380px; overflow: auto; }\n.chronicle-line {\n  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: var(--s2); align-items: center;\n  padding: 5px var(--s1); border-bottom: 1px solid var(--frame-lo);\n}\n.chronicle-line .ago { color: var(--muted); font-size: 12px; white-space: nowrap; }\n.chronicle-line.enter { animation: slide-in 0.4s steps(5) both; }\n@keyframes slide-in { from { transform: translateX(-16px); opacity: 0; } to { transform: none; opacity: 1; } }\n\n/* Ledger */\n.table-wrap { max-height: 380px; overflow: auto; box-shadow: inset 0 0 0 1px var(--frame-lo); }\ntable { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }\nthead th { position: sticky; top: 0; z-index: 1; padding: 0; text-align: left; background: var(--panel-hi); border-bottom: 2px solid var(--frame-dark); }\nthead th.num { text-align: right; }\nbutton.sort {\n  width: 100%; margin: 0; padding: 6px var(--s2); text-align: inherit; font-size: 12px; font-weight: 600;\n  color: var(--muted); background: transparent; box-shadow: none; text-transform: uppercase; letter-spacing: 0.04em;\n}\nbutton.sort:hover { color: var(--text); }\nth[aria-sort="ascending"] .sort, th[aria-sort="descending"] .sort { color: var(--gold); }\nth[aria-sort="ascending"] .sort::after { content: " \\u25B2"; }\nth[aria-sort="descending"] .sort::after { content: " \\u25BC"; }\ntbody th, tbody td { padding: 5px var(--s2); text-align: left; font-weight: 400; white-space: nowrap; border-bottom: 1px solid var(--frame-lo); }\ntbody th { font-weight: 600; }\ntbody tr { cursor: pointer; }\ntbody tr:nth-child(even) { background: var(--panel-2); }\ntbody tr:hover, tbody tr.pinned { background: var(--panel-hi); }\ntbody tr.pinned th { color: var(--gold); }\ntbody .num { text-align: right; color: var(--text); }\n\nfooter { padding: 0 var(--s4) var(--s4); color: var(--muted); font-size: 13px; text-align: center; }\n\n@media (max-width: 899px) {\n  .topbar { height: auto; min-height: 56px; flex-wrap: wrap; padding: var(--s2) var(--s4); }\n  .status { flex-wrap: wrap; }\n}\n/* Narrow (a phone): nothing wider than the screen. The top bar stacks its rows: the logo, the gauges, the buttons. */\n@media (max-width: 599px) {\n  .topbar { flex-direction: column; align-items: stretch; gap: var(--s2); }\n  .status { margin-left: 0; flex-direction: column; align-items: flex-start; gap: var(--s2); }\n  .gauges, .controls { flex-wrap: wrap; }\n  .hud { padding: var(--s2); }\n  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n  .card-head, .card-foot { flex-wrap: wrap; }\n  .recent-item { grid-template-columns: 44px minmax(0, 1fr) auto; }\n}\n@media (prefers-reduced-motion: reduce) {\n  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }\n}\n`;function Xs(e){let t="",n=null,o=0,r=0,s=(i,a,l,u,d)=>{let f=n?n(d):d,m=Math.round(i)+o,y=Math.round(a)+r,E=m+Math.round(l),g=y+Math.round(u);m=Math.max(0,m),y=Math.max(0,y),E=Math.min(480,E),g=Math.min(270,g),!(E<=m||g<=y)&&(f!==t&&(e.fillStyle=f,t=f),e.fillRect(m,y,E-m,g-y))};return{rect:s,rects(i,a=0,l=0){for(let u of i)s(u.x+a,u.y+l,u.w,u.h,u.color)},sprite(i,a,l,u=!1){for(let d of u?i.mirrored:i.runs)s(a+d.x,l+d.y,d.w,1,d.color)},alpha(i){e.globalAlpha=Math.min(1,Math.max(0,Number.isFinite(i)?i:1))},tint(i){n=i},offset(i,a){o=Number.isFinite(i)?Math.round(i):0,r=Number.isFinite(a)?Math.round(a):0},text(i,a,l,u){let d=n?n(u):u;return t=d,Yn(e,i,Math.round(a)+o,Math.round(l)+r,d,1)}}}var oc={day:null,dusk:{color:"#B04A64",amount:.3},night:{color:"#16286A",amount:.58}},Vs=new Map;function Bt(e){let t=oc[e];if(!t)return null;let n=Vs.get(e);if(!n){let o=new Map;n=r=>{let s=o.get(r);return s===void 0&&(s=W(r,t.color,t.amount),o.set(r,s)),s},Vs.set(e,n)}return n}function Z(e){let t=e>>>0;return()=>{t=t+1831565813>>>0;let n=t;return n=Math.imul(n^n>>>15,n|1),n^=n+Math.imul(n^n>>>7,n|61),((n^n>>>14)>>>0)/4294967296}}var rc=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];function sc(e,t){return rc[t&3]?.[e&3]??0}function ee(e,t,n){return sc(e,t)<n*16}function te(e){return Number.isFinite(e)&&e>0?e:0}function no(e,t){return(e%t+t)%t}var de=class{constructor(t,n){xt(this,"width");xt(this,"height");xt(this,"cells");xt(this,"palette",[]);xt(this,"index",new Map);this.width=t,this.height=n,this.cells=new Int32Array(t*n).fill(-1)}set(t,n,o){let r=Math.round(t),s=Math.round(n);if(r<0||s<0||r>=this.width||s>=this.height)return;let i=this.index.get(o);i===void 0&&(i=this.palette.length,this.palette.push(o),this.index.set(o,i)),this.cells[s*this.width+r]=i}get(t,n){if(t<0||n<0||t>=this.width||n>=this.height)return null;let o=this.cells[n*this.width+t]??-1;return o<0?null:this.palette[o]??null}fill(t,n,o,r,s){for(let i=n;i<n+r;i++)for(let a=t;a<t+o;a++)this.set(a,i,s)}runs(t=null,n=0,o=0){let r=[],s=i=>{let a=this.palette[i]??"#000000";return t?t(a):a};for(let i=0;i<this.height;i++){let a=i*this.width,l=0;for(;l<this.width;){if((this.cells[a+l]??-1)<0){l++;continue}let u=l;for(;u<this.width&&(this.cells[a+u]??-1)>=0;)u++;let d=new Map;for(let E=l;E<u;E++){let g=this.cells[a+E]??-1;(E===l||this.cells[a+E-1]!==g)&&d.set(g,(d.get(g)??0)+1)}let f=-1,m=1;for(let[E,g]of d)g>m&&(m=g,f=E);f>=0&&r.push({x:l+n,y:i+o,w:u-l,h:1,color:s(f)});let y=l;for(;y<u;){let E=this.cells[a+y]??-1;if(E===f){y++;continue}let g=y+1;for(;g<u&&this.cells[a+g]===E;)g++;r.push({x:y+n,y:i+o,w:g-y,h:1,color:s(E)}),y=g}l=u}}return r}};function ke(e,t,n,o,r){for(let s=-o;s<=o;s++){let i=Math.floor(Math.sqrt((o+.5)**2-s*s));e.push({x:t-i,y:n+s,w:i*2+1,h:1,color:r})}}function Ft(e,t,n,o,r,s,i){for(let a=-r;a<=r;a++)for(let l=-r;l<=r;l++){let u=Math.sqrt(l*l+a*a);if(u<o-.5||u>r+.5)continue;let d=r===o?1:1-(u-o)/(r-o+1);ee(t+l,n+a,s*d)&&e.push({x:t+l,y:n+a,w:1,h:1,color:i})}}function Qs(e,t){let n=[];for(let o=-t;o<=t;o++){let r=t===0?0:o/(t+.5),s=Math.round(e*Math.sqrt(Math.max(0,1-r*r)));s<=0||(n.push({dx:-s,dy:o,w:s*2}),(o&1)===0&&n.push({dx:-s-1,dy:o,w:1},{dx:s,dy:o,w:1}))}return n}function so(e){let n=40+400*(Number.isFinite(e)?Math.min(1,Math.max(0,e)):.5);return{x:n,y:26+86/200**2*(n-240)**2}}var re={x:400,y:30};function ic(e){let t=Math.min(1,Math.max(0,(112-e)/86)),n=Math.round(t**.8*24)/24;return{core:W(Dn.core,Un.core,n),rim:W(Dn.rim,Un.rim,n),halo:W(Dn.halo,Un.halo,n)}}function ac(e){let t=[];for(let n=1;n<e;n++)t.push(Math.round(128*(n/e)**.78));return t}var Js=new Map,It=6;function lc(e,t,n,o,r){for(let s=o;s<r;s++){let i=n.findIndex(m=>s<m);i<0&&(i=t.length-1);let a=t[i]??"#000000",l=null,u=0,d=n[i],f=i>0?n[i-1]:void 0;d!==void 0&&d-s<=It/2?(l=t[i+1]??a,u=(It/2-(d-s)+.5)/It):f!==void 0&&s-f<It/2&&(l=t[i-1]??a,u=(It/2-(s-f)-.5)/It),l&&u>.5&&([a,l,u]=[l,a,1-u]);for(let m=0;m<480;m++)e.set(m,s,l&&ee(m,s,u)?l:a)}}function cc(e){let t=Js.get(e);if(t)return t;let n=Lt[e],o=new de(480,128);lc(o,n,ac(n.length),0,128),e==="night"&&uc(o);let r=o.runs();return Js.set(e,r),r}function uc(e){let t=Z(4242);for(let n=0;n<520;n++){let o=t(),r=Math.floor(o*480),s=(t()+t()+t()-1.5)*14,i=Math.round(8+o*70+s+6*Math.sin(o*7));if(i<0||i>=100)continue;let a=e.get(r,i);if(!a)continue;let l=Math.abs(s)<6;e.set(r,i,W(a,J.dim,l?.32:.18))}}var Zs=new Map;function dc(e){let t=`${e.core}${e.rim}`,n=Zs.get(t);if(!n){let o=[];ke(o,0,0,14,e.halo),Ft(o,0,0,15,19,.5,e.halo);let r=[];ke(r,0,0,11,e.halo),Ft(r,0,0,12,13,.5,e.rim);let s=[];ke(s,0,0,9,e.rim);let i=[];ke(i,0,0,7,e.rim),ke(i,0,0,6,e.core),i.push({x:-3,y:-4,w:4,h:1,color:e.rim},{x:-4,y:-3,w:3,h:2,color:e.rim}),n={inner:s,mid:r,outer:o,body:i},Zs.set(t,n)}return n}function fc(e,t){let n=so(t),o=Math.round(n.x),r=Math.round(n.y),s=dc(ic(n.y));e.alpha(.14),e.rects(s.outer,o,r),e.alpha(1),e.alpha(.22),e.rects(s.mid,o,r),e.alpha(1),e.alpha(.4),e.rects(s.inner,o,r),e.alpha(1),e.rects(s.body,o,r)}var pc=(()=>{let e=[];return ke(e,re.x,re.y,11,"#B9C3E6"),Ft(e,re.x,re.y,12,15,.5,"#B9C3E6"),e})(),mc=(()=>{let e=[];ke(e,re.x,re.y,7,Wo);for(let t=-6;t<=6;t++){let n=Math.floor(Math.sqrt(56.25-t*t));e.push({x:re.x+n-1,y:re.y+t,w:2,h:1,color:Zt})}return e.push({x:re.x+1,y:re.y-3,w:2,h:2,color:Zt},{x:re.x-3,y:re.y+1,w:3,h:2,color:Zt},{x:re.x+3,y:re.y+3,w:1,h:1,color:Zt},{x:re.x-4,y:re.y-4,w:2,h:1,color:"#F6F4EA"}),e})();function hc(e){e.alpha(.1),e.rects(pc),e.alpha(1),e.rects(mc)}var io=(()=>{let e=Z(1907),t=[];for(let n=0;n<90;n++){let o=Math.floor(e()*480),r=2+Math.floor(e()**1.3*98),s=e(),i=s<.45?0:s<.8?1:s<.95?2:3,l=e()<.3?1.6+e()*2.6:0,u=e()*Math.PI*2;Math.abs(o-re.x)<14&&Math.abs(r-re.y)<14||t.push({x:o,y:r,level:i,speed:l,phase:u})}return t})();function gc(e,t){let n=io[e];if(!n)return-1;if(n.speed===0)return n.level;let o=Math.sin(te(t)*n.speed+n.phase);return Math.max(-1,Math.min(3,n.level+(o>.55?1:o<-.55?-1:0)))}var op=io.length,bc=(()=>{let e=[];for(let t of io)t.speed===0&&ni(e,t.x,t.y,t.level);return e})();function ni(e,t,n,o){if(o<0)return;let r=o===0?J.dim:o===1?J.mid:J.bright;e.push({x:t,y:n,w:1,h:1,color:r}),o>=3&&e.push({x:t-1,y:n,w:1,h:1,color:J.mid},{x:t+1,y:n,w:1,h:1,color:J.mid},{x:t,y:n-1,w:1,h:1,color:J.mid},{x:t,y:n+1,w:1,h:1,color:J.mid})}function yc(e,t){e.rects(bc);let n=[];io.forEach((o,r)=>{o.speed!==0&&ni(n,o.x,o.y,gc(r,t))}),e.rects(n)}var oo={every:40,lasts:.6};function xc(e){let t=te(e),n=t%oo.every;if(n>=oo.lasts)return null;let o=Z(Math.floor(t/oo.every)*7919+13),r=o()<.5?-1:1,s=90+Math.floor(o()*260),i=8+Math.floor(o()*30),a=n/oo.lasts,l=84*a;return{x:Math.round(s+r*l),y:Math.round(i+l*.42),dir:r,progress:a}}var ei=["#FFFFFF",J.bright,J.bright,J.mid,J.mid,J.mid,J.dim,J.dim,J.dim,J.dim,J.dim,J.dim];function wc(e,t){let n=xc(t);if(!n)return;let o=Math.min(ei.length,3+Math.round(n.progress*22)),r=n.progress>.8?(1-n.progress)/.2:1;r<1&&e.alpha(r);for(let s=o-1;s>=0;s--){let i=n.x-n.dir*s,a=Math.round(n.y-s*.42);e.rect(i,a,1,1,ei[s]??J.dim)}e.rect(n.x,n.y+1,1,1,J.mid),r<1&&e.alpha(1)}var ro=[{speed:2,count:4,minW:24,maxW:34,y0:70,y1:90,alpha:.7},{speed:4,count:3,minW:32,maxW:46,y0:42,y1:62,alpha:.88},{speed:6,count:2,minW:44,maxW:56,y0:10,y1:30,alpha:1}],lr=600;function kc(e,t){let n=Z(t),o=4+Math.floor(e/18),r=Math.floor(o*.4+n()*1.2),s=[];for(let g=0;g<o;g++)s.push(Math.max(.35,1-Math.abs(g-r)*(.22+n()*.12))*(.85+n()*.3));let i=[],a=s[0]??1;s.forEach((g,w)=>{w>0&&(a+=.65*((s[w-1]??g)+g)),i.push(a)});let l=a+(s[o-1]??1),u=(e-1)/l,d=Math.max(6,Math.round(Math.max(...s)*u*1.5)),f=d-1,m=s.map((g,w)=>{let x=g*u;return{cx:(i[w]??0)*u,cy:f-x*.5,r:x}}),y=new Array(e*d).fill(-1),E=(g,w)=>m.some(x=>(g-x.cx)**2+(w-x.cy)**2<=x.r*x.r);for(let g=0;g<d;g++)for(let w=0;w<e;w++){let x=g===d-1?2:g===d-2?1:0;w<x||w>=e-x||E(w,g)&&(y[g*e+w]=1)}for(let g=0;g<e;g++){let w=-1;for(let x=0;x<d;x++)if((y[x*e+g]??-1)>=0){w=x;break}if(!(w<0))for(let x=w;x<d;x++){let k=x*e+g;if((y[k]??-1)<0)continue;let S=x-w,C=d-1-x,O=(y[k-1]??-1)<0||g===0;S<=1||S<=2&&O?y[k]=0:(C<=1||C===2&&(g+x)%2===0)&&(y[k]=2)}}return{w:e,h:d,tones:y}}var ao=(()=>{let e=Z(611),t=[];return ro.forEach((n,o)=>{for(let r=0;r<n.count;r++){let s=n.minW+Math.floor(e()*(n.maxW-n.minW+1)),i=n.y0+Math.floor(e()*(n.y1-n.y0)),a=r*lr/n.count+Math.floor(e()*60);t.push({layer:o,x0:a,y:i,shape:kc(s,100+o*10+r)})}}),t})();function Sc(e,t){let n=ao[e];if(!n)return 0;let o=ro[n.layer]?.speed??0;return Math.floor(no(n.x0+o*te(t),lr))-(lr-480)}var rp=ao.length,ti=new Map;function vc(e,t){let n=`${e}:${t}`,o=ti.get(n);if(!o){let r=ao[e];if(o=[],r){let{w:s,h:i,tones:a}=r.shape,l=new de(s,i),u=ss[t];for(let d=0;d<i;d++)for(let f=0;f<s;f++){let m=a[d*s+f]??-1;m>=0&&l.set(f,d,u[m]??u[1])}o=l.runs()}ti.set(n,o)}return o}function Ec(e,t,n){for(let o=0;o<ro.length;o++){let r=(ro[o]?.alpha??1)*(t==="night"?.5:1);r<1&&e.alpha(r),ao.forEach((s,i)=>{s.layer===o&&e.rects(vc(i,t),Sc(i,n),s.y)}),r<1&&e.alpha(1)}}var fn={every:45,speed:30},Cc=570/fn.speed;function Mc(e){let t=te(e),n=t%fn.every;if(n>=Cc)return[];let o=Math.floor(t/fn.every),r=Z(o*104729+7),s=3+Math.floor(r()*3),i=44+Math.floor(r()*28),a=o%2===0?1:-1,l=a===1?-12+fn.speed*n:492-fn.speed*n,u=[];for(let d=0;d<s;d++){let f=d===0?0:6*Math.ceil(d/2)+Math.floor(r()*3),m=d===0?0:(d%2===1?-1:1)*(3*Math.ceil(d/2)+Math.floor(r()*2)),y=Math.round(Math.sin(n*2.1+d*1.7)),E=Math.floor(n*6+d*.5)%2;u.push({x:Math.round(l-a*f),y:i+m+y,frame:E})}return u}function Ac(e,t,n){if(t==="night")return;let o=is[t];for(let r of Mc(n))r.frame===0?(e.rect(r.x-1,r.y,1,1,o),e.rect(r.x+1,r.y,1,1,o),e.rect(r.x,r.y+1,1,1,o)):(e.rect(r.x,r.y,1,1,o),e.rect(r.x-1,r.y+1,1,1,o),e.rect(r.x+1,r.y+1,1,1,o))}function oi(e,t,n){e.rects(cc(t.phase)),t.phase==="night"?(yc(e,n),wc(e,n),hc(e)):fc(e,t.sun),Ec(e,t.phase,n),Ac(e,t.phase,n)}function ui(e,t){if(!(e>0)||!Number.isFinite(e))return{dx:0,dy:0};let n=te(t);return{dx:Math.round(e*Math.sin(53*n))||0,dy:Math.round(e*Math.cos(47*n))||0}}function di(e,t){if(e.phase==="night")return 0;let n=so(e.sun),o=Math.min(1,Math.max(0,(112-n.y)/86)),r=1+Math.round(2*(1-o));return Math.sign(Math.round(t)-Math.round(n.x))*r}var ri=new Map;function Nc(e,t){let n=`${e}x${t}`,o=ri.get(n);return o||(o=Qs(e,t),ri.set(n,o)),o}function pn(e,t,n,o=1){if(n.length===0)return;let r=t.phase==="night",s=(r?.14:.25)*Math.min(1,Math.max(0,o));if(s<=0)return;let i=r?us:_n;e.alpha(s);for(let a of n){let l=Math.round(a.cx)+di(t,a.cx),u=Math.round(a.y);for(let d of Nc(Math.max(1,Math.round(a.rx)),Math.max(0,Math.round(a.ry))))e.rect(l+d.dx,u+d.dy,d.w,1,i)}e.alpha(1)}function Tc(e,t){let n=te(t),o=Math.sin(n*9.1+e.seed*1.7)*.6+Math.sin(n*23.3+e.seed*2.9)*.4;return{radius:e.radius+Math.round(o*1.5),alpha:.11+.025*o}}var si=new Map;function Rc(e){let t=si.get(e);if(!t){let n=[];Ft(n,0,0,Math.round(e*.66),e,.5,Gn);let o=[];ke(o,0,0,Math.round(e*.66),Gn);let r=[];ke(r,0,0,Math.round(e*.33),Gn),t={outer:n,mid:o,core:r},si.set(e,t)}return t}function fi(e,t,n){for(let o of t){let{radius:r,alpha:s}=Tc(o,n),i=Rc(r);e.alpha(s),e.rects(i.outer,o.x,o.y),e.rects(i.mid,o.x,o.y),e.rects(i.core,o.x,o.y),e.alpha(1)}}var Pc={day:.045,dusk:.06,night:.1},ii=[12,10,8,6,4,2];function Oc(e,t,n){e.push({x:0,y:0,w:480,h:t,color:n},{x:0,y:270-t,w:480,h:t,color:n},{x:0,y:t,w:t,h:270-2*t,color:n},{x:480-t,y:t,w:t,h:270-2*t,color:n})}var ai=new Map;function Bc(e){let t=ai.get(e);if(!t){let n=ds[e];t=[];for(let r of ii)Oc(t,r,n);let o=ii[0];for(let r=0;r<480;r++)ee(r,o,.5)&&t.push({x:r,y:o,w:1,h:1,color:n}),ee(r,270-o-1,.5)&&t.push({x:r,y:270-o-1,w:1,h:1,color:n});for(let r=o+1;r<270-o-1;r++)ee(o,r,.5)&&t.push({x:o,y:r,w:1,h:1,color:n}),ee(480-o-1,r,.5)&&t.push({x:480-o-1,y:r,w:1,h:1,color:n});ai.set(e,t)}return t}function pi(e,t){e.alpha(Pc[t]),e.rects(Bc(t)),e.alpha(1)}var Fc=6;function mi(e,t,n){let o=Number.isFinite(t.glow)?Math.min(1,t.glow):0;if(!(o>0)||t.state==="none")return;let r=Math.round(t.state==="set"?n.x:t.x),s=Math.round(t.state==="set"?n.y:t.y)-Fc,i=o*.5;e.alpha(i),e.rect(r-4,0,8,s,U.light),e.rect(r-2,0,4,s,U.gleam),e.rect(r-1,0,2,s,"#FFFFFF");for(let l=0;l<s;l++)ee(r-5,l,.5)&&e.rect(r-5,l,1,1,U.light),ee(r+4,l,.5)&&e.rect(r+4,l,1,1,U.light);for(let l of[-75,-50,-28,28,50,75]){let u=l*Math.PI/180,d=16+Math.abs(l)/4;for(let f=5;f<d;f++)f>d*.6&&f%2===1||e.rect(Math.round(r+Math.sin(u)*f),Math.round(s-Math.cos(u)*f*.7),1,1,f<9?U.gleam:U.light)}let a=[];ke(a,r,s,5,U.light),ke(a,r,s,3,U.gleam),e.rects(a),e.alpha(1)}function hi(e,t,n,o){let{base:r,blockW:s,blockH:i}=o;if(t.phase==="night"||!(r>0)||!(s>0)||!(i>0))return;let a=r*s/2,l=di(t,n.centerX),u=l>=0,d=4+4*Math.max(1,Math.abs(l)),f=Math.min(2*i,24);e.alpha(.25);for(let m=0;m<f;m++){let y=n.baseY-1-m,E=Math.round(d*(1-m/f));if(E<=0)continue;let g=a-Math.floor(m/i)*(s/2),w=u?n.centerX+g:n.centerX-g-E;e.rect(w,y,E,1,_n);let x=u?w+E:w-1;ee(x,y,.5)&&e.rect(x,y,1,1,_n)}e.alpha(1)}var Ic=13;function gi(e,t){if(je(e)<=t)return e;let n=[...e];for(;n.length>0&&je(`${n.join("")}\\u2026`)>t;)n.pop();return`${n.join("")}\\u2026`}function Dc(e,t,n,o){let r=gi(e,468),s=je(r)+8,i=Ic,a=Math.min(479-s,Math.max(1,Math.round(t-s/2)+o.dx))-o.dx,l=Math.min(269-i,Math.max(1,Math.round(n-i)+o.dy))-o.dy;return{text:r,x:a,y:l,w:s,h:i}}function bi(e,t,n,o,r){let s=Dc(t,n,o,r),{x:i,y:a,w:l,h:u}=s;e.rect(i+1,a,l-2,1,dt.rim),e.rect(i+1,a+u-1,l-2,1,dt.rim),e.rect(i,a+1,1,u-2,dt.rim),e.rect(i+l-1,a+1,1,u-2,dt.rim),e.rect(i+1,a+1,l-2,u-2,dt.fill),e.rect(i+1,a+u-2,l-2,1,"#1F140D"),e.text(s.text,i+4,a+2,dt.text)}var Re={light:"#9C8E84",face:"#7E7068",shade:"#5C5049",dark:"#463C37"},li=15;function cr(e,t,n){let o=gi(e.toUpperCase(),200),r=je(o)+12;return{text:o,x:Math.round(t-r/2),y:Math.round(n)-3-li,w:r,h:li}}function yi(e,t,n,o){let{text:r,x:s,y:i,w:a,h:l}=cr(t,n,o);e.rect(s-2,i+l,a+4,3,Re.shade),e.rect(s-2,i+l,a+4,1,Re.face),e.rect(s-2,i+l+2,a+4,1,Re.dark),e.rect(s,i,a,l,Re.face),e.rect(s,i,a,1,Re.light),e.rect(s,i,1,l,Re.light),e.rect(s+a-1,i+1,1,l-1,Re.shade),e.rect(s+2,i+2,a-4,1,Re.shade),e.rect(s+2,i+l-3,a-4,1,Re.light),e.rect(s+2,i+2,1,l-4,Re.shade),e.rect(s+a-3,i+3,1,l-5,Re.light),e.text(r,s+6,i+4,U.shadow),e.text(r,s+6,i+3,U.light)}var lo=128,We=136;function xi(e,t,n,o){let r=Z(e),s=[];for(let i=0;i<t;i++){let a=r()<.55;s.push({c:Math.floor((i+r()*.9)/t*560)-40,half:a?14+Math.floor(r()*26):3+Math.floor(r()*8),h:a?n+Math.floor(r()*(o-n+1)):n-2+Math.floor(r()*6)})}return s}function co(e){let t=Math.imul(e^2654435769,2246822507);return t^=t>>>13,t=Math.imul(t,3266489909),(t^t>>>16)>>>0}function wi(e,t,n){let o=[];for(let s=0;s<480;s++){let i=t(s);for(let a of e){let l=Math.abs(s-a.c)-a.half,u=a.h-(l<=0?Math.round((Math.abs(s-a.c)/Math.max(1,a.half))**3*1.5):0),d=l<=0?u:Math.max(a.h-2.6*l,a.h*.6-.5*l);i=Math.max(i,d)}o.push(i)}let r=Z(n);for(let s=0;s<14;s++){let i=Math.floor(r()*480),a=1+Math.floor(r()*3),l=1+Math.floor(r()*2);for(let u=-l;u<=l;u++){let d=i+u;d<0||d>=480||(o[d]=(o[d]??0)-Math.max(0,a-Math.abs(u)))}}return o.map((s,i)=>Math.round(s-(co(i*3+n)%7===0?1:0)))}function ur(e,t,n,o,r){for(let s=0;s<480;s++){let i=t[s]??0,a=o-i,l=(t[s+1]??i)-(t[s-1]??i),u=r&&co(s*11+5)%13===0?2+co(s)%6:0;for(let d=a;d<o;d++){let f=d-a,m=n.face;if(l>=2&&f<Math.max(2,i*.55)?m=n.light:l<=-2&&f<Math.max(2,i*.6)?m=n.shade:l<=-2&&f<i*.75?m=ee(s,d,.5)?n.shade:n.face:f===0&&(m=n.light),r&&f>=3){let y=o-d;y%4===0&&co(Math.floor((s+y*13)/17)*7+y)%4!==0&&(m=m===n.light?n.face:n.shade),f>1&&f<2+u&&(m=n.shade)}e.set(s,d,m)}}}function Uc(){let e=[];for(let t=0;t<480;t++)e.push(Math.max(3,Math.round(8+3*Math.sin(t/37+.5)+2*Math.sin(t/13+2))));return e}function $c(e){let[t,n]=as,o=wi(xi(31,11,21,31),s=>14+2*Math.sin(s/29),3);ur(e,o,t,128,!0);let r=wi(xi(57,9,12,19),s=>9+2*Math.sin(s/23+1),4);ur(e,r,n,128,!0),ur(e,Uc(),ls,128,!1)}var _c=428,Gc=[404,454];function Hc(e){let t=Z(97);for(let o=0;o<480;o++)e.set(o,125,ee(o,125,.5)?be.light:be.face),e.set(o,126,be.face),e.set(o,127,be.shade);let n=4;for(;n<480;){let o=1+Math.floor(t()*4);for(let r=0;r<o;r++){let s=n+r*4;if(t()<.3){let i=119-Math.floor(t()*2);for(let a=i+2;a<126;a++)e.set(s,a,be.shade);e.fill(s-2,i,5,1,be.face),e.set(s-3,i+1,be.shade),e.set(s+3,i+1,be.shade),e.fill(s-1,i-1,3,1,be.light)}else{let i=2+Math.floor(t()*2),a=125-i;for(let l=-i;l<=i;l++)for(let u=-i;u<=i;u++){if(u*u+l*l>i*i+1)continue;let d=u+l<-1,f=u+l>1;e.set(s+u,a+l,d?be.light:f?be.shade:be.face)}}}n+=o*4+10+Math.floor(t()*26)}Wc(e,_c,127);for(let o of Gc)Yc(e,o,127)}function Wc(e,t,n){let o=(r,s)=>{for(let d=0;d<17;d++){let f=n-d,m=Math.floor(d/6),y=r+m,E=s-m;for(let g=y;g<=E;g++){let w=V.face;g===y?w=V.light:g>=E-1&&(w=V.shade),e.set(g,f,w)}}let a=n-17,l=Math.floor(16/6);e.fill(r+l-1,a,s-r-2*l+3,1,V.light),e.fill(r+l,a+1,s-r-2*l+1,1,V.shade);for(let d=0;d<2;d++){let f=r+3+d*4;e.fill(f,n-11,1,5,V.shade),e.set(f+1,n-10,V.shade)}let u=r+1+Math.floor((s-r)/2);for(let d=a-6;d<=n;d++)e.set(u,d,V.dark);e.fill(u+1,a-6,2,1,"#B8433A"),e.set(u+1,a-5,"#8E2F2B")};o(t-15,t-4),o(t+4,t+15),e.fill(t-4,n-11,9,1,V.light),e.fill(t-4,n-10,9,1,V.face),e.fill(t-3,n-9,7,10,V.face),e.fill(t-2,n-8,5,9,V.dark),e.fill(t-2,n-8,5,1,V.shade)}function Yc(e,t,n){for(let r=0;r<18;r++){let s=n-r,i=r<9;e.set(t-1,s,V.light),e.set(t,s,V.face),i&&e.set(t+1,s,V.shade)}e.set(t-1,n-21+3,U.light),e.set(t,n-21+3,U.mid),e.set(t,n-21+2,U.light),e.fill(t-2,n,5,1,V.shade)}function qc(e,t,n){let o=Lt[n],r=W(ie.sky,o[o.length-1]??ie.sky,.6),s=W(ie.light,o[o.length-2]??ie.light,.45);[[W(be.shade,ie.face,.45),r,.25],[r,s,.25],[s,r,.25],[s,ie.face,.5],[ie.face,ie.light,.12],[ie.face,ie.deep,.25],[ie.deep,ie.face,.25],[ie.deep,ie.bank,.12]].forEach(([a,l,u],d)=>{let f=lo+d;for(let m=0;m<480;m++)e.set(m,f,ee(m,f,u)?l:a)});for(let a=0;a<480;a++)for(let l=1;l<=5;l++){let u=t.get(a,125-l);if(!u||!ee(a,lo+l,.55-l*.08))continue;let d=lo+l;e.set(a,d,W(e.get(a,d)??ie.face,u,.45))}}var Kc=(()=>{let e=Z(23);return Array.from({length:26},()=>({x:e()*480,y:lo+1+Math.floor(e()*6),w:1+Math.floor(e()*3),speed:3+e()*4,blink:1.2+e()*2.4,phase:e()*Math.PI*2}))})(),zc=488;function jc(e){let t=te(e),n=[];for(let o of Kc)Math.sin(t*o.blink+o.phase)<-.3||n.push({x:Math.floor(no(o.x+o.speed*t,zc))-4,y:o.y,w:o.w});return n}var Vc=["....y................","....nS...............","....nSS..............","....nsSS.............","....nsSSS............","....nssSSS...........",".....nsSSSS..........",".....nssSSSS.........",".....nssSSSSS........",".....nssSSSSSS.......",".....nssSSSSSSS......","...k.nssSSSSSSSn.....","...w.NnnnnnnnnnnN...n","n..w.....N.........nN","NnnnnnnnnnnnnnnnnnnN.",".NNNNNNNNNNNNNNNNNNN.","..oooooooooooooooo..."],Xc={S:$n.light,s:$n.shade,n:K[0],N:K[1],o:"#4A2E18",y:U.light,k:"#B9784E",w:"#F4F0E2"},fr=ue(Vc,Xc),dr={every:120,crossing:80};function Qc(e){let t=te(e)%dr.every;if(t>=dr.crossing)return null;let n=-fr.w-2,o=482,r=Math.round(n+(o-n)*t/dr.crossing),s=Math.sin(t*1.9)>.55?-1:0;return{x:r,y:We-1+s}}function Jc(e,t){let n=Qc(t);if(!n)return;let o=n.y-fr.h+1;e.sprite(fr,n.x,o);for(let r=6;r<15;r++)(r+n.x)%2===0&&e.rect(n.x+r,n.y+1,1,1,$n.shade)}var Zc=[[".ll.........","lffl........","o.ff..rqr...","..ff.lrqrl..","..fflffffffl","...ffffffffs","...sssssss..","...f.s..f.s.","...f.s..f.s.","...d.d..d.d."],[".ll.........","lffl........","o.ff..rqr...","..ff.lrqrl..","..fflffffffl","...ffffffffs","...sssssss..","....fs...fs.","....fs...fs.","....dd...dd."]],eu=[[".w..","wwk.",".wn.",".Bn.",".Bn.",".Wn.",".W.n","k.k."],[".w..","wwk.",".wn.",".Bn.",".Bn.",".Wn.",".Wn.",".kk."]],vi={l:He.light,f:He.face,s:He.shade,d:He.dark,o:He.dark,r:"#B8433A",q:"#F2E4C2",w:"#F4F0E2",W:"#D6CFBC",B:"#3C6FB0",k:"#925A38",n:K[0]},ki=Zc.map(e=>ue(e,vi)),tu=eu.map(e=>ue(e,vi)),uo={every:180,crossing:70,feet:124};function nu(e){let t=te(e)%uo.every;if(t>=uo.crossing)return[];let n=550,o=Math.round(486-n*t/uo.crossing),r=Math.floor(t*4);return[{kind:"walker",x:o,frame:r%2},{kind:"camel",x:o+6,frame:(r+1)%2},{kind:"camel",x:o+20,frame:r%2},{kind:"camel",x:o+34,frame:(r+1)%2}]}function ou(e,t){for(let n of nu(t)){let o=(n.kind==="walker"?tu:ki)[n.frame]??ki[0];o&&e.sprite(o,n.x,uo.feet-o.h)}}var ru=[[[-12,250],[40,252],[96,256],[L.audience.x,L.audience.y-1]],[[52,230],[84,240],[118,250],[L.audience.x,L.audience.y-1]],[[L.audience.x,L.audience.y-1],[176,246],[206,230],[236,216],[258,211]]];function su(e,t,n){let o=1/0;for(let r=0;r+1<n.length;r++){let[s,i]=n[r]??[0,0],[a,l]=n[r+1]??[0,0],u=a-s,d=l-i,f=u*u+d*d,m=f===0?0:Math.max(0,Math.min(1,((e-s)*u+(t-i)*d)/f)),y=Math.hypot(e-(s+m*u),t-(i+m*d));o=Math.min(o,y)}return o}function iu(e){let t=We,n=[t,146,166,196,232,262];for(let o=t;o<270;o++){let r=n.findIndex((d,f)=>o>=d&&o<(n[f+1]??270));r<0&&(r=0);let s=lt[r]??lt[0],i=n[r+1],a=n[r],l=null,u=0;i!==void 0&&i-o<=2?(l=lt[r+1]??s,u=i-o===1?3/8:1/8):a!==void 0&&r>0&&o-a<=1&&(l=lt[r-1]??s,u=o-a===0?3/8:1/8);for(let d=0;d<480;d++)e.set(d,o,l&&ee(d,o,u)?l:s)}for(let o=0;o<480;o++)e.set(o,t,ie.bank),ee(o,t+1,.5)&&e.set(o,t+1,ie.bank);lu(e),uu(e),du(e),fu(e),cu(e),pu(e),mu(e)}var au=[{cx:300,hw:120,h:16,bottom:272},{cx:470,hw:86,h:26,bottom:272},{cx:214,hw:56,h:7,bottom:238},{cx:372,hw:50,h:6,bottom:224}];function lu(e){for(let t of au){let n=t.bottom-t.h;for(let o=Math.max(0,t.cx-t.hw);o<Math.min(480,t.cx+t.hw);o++){let r=(o-t.cx)/t.hw,s=Math.round(t.bottom-t.h*(1-r*r)**.8);for(let i=s;i<Math.min(270,t.bottom);i++){let a=e.get(o,i);if(!a)continue;let l=t.cx+(i-n)*.9,u=o<l,d=Math.abs(o-l)<2,f=W(a,"#FFF4D6",.26),m=W(a,"#8A5E2E",.17),y;i===s?y=u?W(a,"#FFF4D6",.5):W(a,"#8A5E2E",.26):d?y=ee(o,i,.5)?f:m:i-s<2?y=ee(o,i,.5)?u?f:m:a:y=u?f:m,e.set(o,i,y)}}}}function cu(e){let t=[{x:6,y:266,w:10,h:6},{x:16,y:268,w:6,h:4},{x:228,y:266,w:9,h:5},{x:238,y:267,w:5,h:3},{x:404,y:240,w:8,h:5},{x:336,y:228,w:6,h:4},{x:182,y:186,w:7,h:4}];for(let n of t){let o=e.get(n.x+n.w,n.y);o&&e.fill(n.x+2,n.y,n.w,1,W(o,"#6B4A28",.35));for(let r=0;r<n.h;r++){let s=n.y-n.h+r,i=r===0?2:r===1?1:0;for(let a=n.x+i;a<n.x+n.w-i;a++){let l=(a-n.x)/n.w+r/n.h,u=l<.5?ze.light:l<1.15?ze.face:ze.shade;(r===n.h-1||a===n.x+n.w-i-1)&&(u=ze.shade),e.set(a,s,u)}}}}function uu(e){let t=Z(77);for(let n=0;n<150;n++){let o=t()**.8,r=Math.floor(We+6+o*(270-We-8)),s=Math.floor(t()*480),i=3+Math.floor(o*12+t()*4),a=Math.max(1,Math.round(i/9));for(let l=0;l<i;l++){let u=s+l,d=-Math.round(Math.sin(Math.PI*l/Math.max(1,i-1))*a),f=e.get(u,r+d);if(!f)continue;e.set(u,r+d,W(f,"#FFF4DA",.32));let m=e.get(u,r+d+1);m&&e.set(u,r+d+1,W(m,"#8A5E2E",.22))}}}function du(e){for(let t=We;t<270;t++){let n=2+(t-200)/40;if(!(n<1.5))for(let o=0;o<480;o++){let r=1/0;for(let a of ru)r=Math.min(r,su(o,t,a));if(r>n+1)continue;let s=r<n-.5;if(!s&&!ee(o,t,.5))continue;let i=s?tn.face:tn.light;s&&((o*13+t*7)%17===0||(o*5+t*11)%23===0)?i=tn.track:s&&ee(o,t,.2)&&(i=tn.light),e.set(o,t,i)}}}function fu(e){let t=Z(301);for(let n=0;n<56;n++){let o=t(),r=Math.floor(We+8+o*(270-We-12)),s=Math.floor(t()*480),i=o>.6&&t()<.5?3:o>.25?2:1,a=e.get(s+i,r+1);if(a&&e.fill(s+1,r+1,i,1,W(a,"#6B4A28",.3)),i===1){e.set(s,r,ze.face);continue}e.fill(s,r,i,i-1,ze.face),e.fill(s,r,i-1,1,ze.light),e.fill(s,r+i-1,i,1,ze.shade)}}function pu(e){let t=Z(503);for(let n=0;n<22;n++){let o=n<12,r=Math.floor(t()*480),s=o?We+4+Math.floor(t()*14):150+Math.floor(t()*110),i=3+Math.floor(t()*4),a=e.get(r,s+1);a&&e.fill(r,s+1,i,1,W(a,"#6B4A28",.25));for(let l=0;l<i;l++){let u=1+Math.round(Math.sin(Math.PI*(l+.5)/i)*(1+(i>4?1:0)));for(let d=0;d<u;d++){let f=d===u-1?l<i/2?nn.light:nn.face:(l+d)%2===0?nn.face:nn.shade;e.set(r+l,s-d,f)}}}}function mu(e){let t=Z(211),n=0;for(;n<480;){let o=2+Math.floor(t()*4);for(let r=0;r<o;r++){let s=n+r,i=2+Math.floor(t()*4);for(let a=0;a<i;a++){let l=We+1-a;e.set(s,l,a===i-1&&t()<.4?en.tip:r%2===0?en.face:a>i/2?en.light:en.shade)}}n+=o+2+Math.floor(t()*9)}}var Si=new Map;function Ei(e){let t=Si.get(e);if(!t){let n=Bt(e),o=new de(480,270);$c(o);let r=new de(480,270);Hc(r);let s=new de(480,270);qc(s,r,e);let i=new de(480,270);iu(i),t={far:o.runs(n),bank:r.runs(n),water:s.runs(n),plain:i.runs(n)},Si.set(e,t)}return t}function Ci(e,t,n){let o=Ei(t);e.rects(o.far),e.tint(Bt(t)),ou(e,n),e.tint(null),e.rects(o.bank)}function Mi(e,t,n){let o=Ei(t);e.rects(o.water);let r=cs[t];for(let s of jc(n))e.rect(s.x,s.y,s.w,1,r);e.tint(Bt(t)),Jc(e,n),e.tint(null),e.rects(o.plain),t==="day"&&gu(e,n)}function hu(e){return Math.floor(te(e)*5)%8}function gu(e,t){let n=hu(t);e.alpha(.22);for(let o=0;o<3;o++){let r=We+3+o*2,s=o%2===0?n:7-n;for(let i=-8+s;i<480;i+=8)e.rect(i,r,3,1,"#FFF6E0")}e.alpha(1)}var Ut="#4A3020";function bn(e){let t=e.runs().map(n=>({x:n.x,y:n.y,w:n.w,color:n.color}));return{w:e.width,h:e.height,top:0,runs:t,mirrored:t.map(n=>({...n,x:e.width-n.x-n.w}))}}function pt(e,t,n){return{left:t-Math.floor(e.w/2),top:n-e.h}}function Ai(e,t,n){let o=e+8,r=t+5,s=new de(o,r),i=Math.floor(o/2),a=5,l=r-1,u=Math.floor(e/2);for(let m of[-1,1]){let y=i+m*3,E=i+m*(u+3);for(let g=a+3;g<=l;g++){let w=(g-a-3)/(l-a-3);s.set(Math.round(y+(E-y)*w),g,"#8A6A44")}s.set(E,l,Ut)}for(let m=1;m<a;m++)s.set(i,m,K[1]);let d=n%2===0?Ge.stripe:Fn;s.fill(i+1,1,3,1,d),s.fill(i+1,2,2,1,d);for(let m=a;m<=l;m++){let y=m-a,E=Math.round(u*y/(l-a));for(let g=-E;g<=E;g++){let w=i+g,x=g<0?g>-E+1||y<3?Ge.cloth:"#F3E6C8":Ge.shade;g<0&&g>=-Math.max(1,Math.floor(E/3))&&(x=W(Ge.cloth,Ge.shade,.35)),(l-m===3||l-m===4)&&(x=g<0?Ge.stripe:"#8E2F2B"),Math.abs(g)===E&&(x=Ut),s.set(w,m,x)}}let f=a+Math.floor((l-a)*.42);for(let m=f;m<l;m++){let y=Math.floor((m-f)*3/(l-f))+1;for(let E=-y;E<=y;E++)s.set(i+E,m,m===f?Ut:"#3E2A1C");s.set(i-y-1,m,"#F6EBD2")}return s.fill(i-u,l,2*u+1,1,Ut),bn(s)}var Di=[{x:24,bottom:L.camp.y-24,sprite:Ai(28,15,0)},{x:63,bottom:L.camp.y-26,sprite:Ai(24,13,1)}],Se={x:86,y:197},bu=[["...r...","..ro...","..roy..",".royyr.",".oyWyo.","royWyor",".ryyyr."],["....r..","...or..","..ryo..",".roWyr.",".oyWyo.","royyWor",".ryyyr."],["..r....","..oy...",".royo..",".ryWyr.","royWyo.","royWyor",".ryyyr."]],yu=[["..r..",".roy.",".oWo.","ryWyr",".ryr."],["...r.","..or.",".ryo.","royWr",".ryr."],[".r...",".oy..",".oWr.","ryWyo",".ryr."]],Ui={W:ct.white,y:ct.yellow,o:ct.orange,r:ct.red},Li=bu.map(e=>ue(e,Ui)),Ni=yu.map(e=>ue(e,Ui));function $i(e,t){return(Math.floor(te(e)*8)+t)%3}var Ti=ue(["..ennnNe..",".gnNnnNNg.","GgsgGgsgGg",".gGgsgGg.."],{n:K[0],N:K[1],e:ct.ember,g:zo.shade,G:zo.light,s:"#5A4636"}),pr=4;function xu(e){let t=te(e),n=[];for(let o=0;o<5;o++){let r=(t+o*(pr/5))%pr/pr;n.push({x:Math.round(Se.x+Math.sin(r*5+o)*1.5+r*9),y:Math.round(Se.y-11-r*30),r:r<.25?1:r<.6?2:3,alpha:.7*(1-r)**1.2})}return n}var Ri=new Map;function wu(e){let t=Ri.get(e);if(!t){t=[];for(let n=-e;n<=e;n++){let o=Math.round(Math.sqrt(Math.max(0,(e+.4)**2-n*n)));t.push({x:-o,y:n,w:2*o+1,h:1,color:n<0?W(Ko,"#FFFFFF",.2):Ko})}Ri.set(e,t)}return t}function ku(e,t,n){let o=pt(Ti,Se.x,Se.y);e.sprite(Ti,o.left,o.top);for(let i of xu(t))e.alpha(i.alpha),e.rects(wu(i.r),i.x,i.y),e.alpha(1);e.tint(null);let r=Li[$i(t,0)]??Li[0];r&&e.sprite(r,Se.x-3,Se.y-3-r.h);let s=Math.floor(te(t)*3)%5;e.rect(Se.x-2+s,Se.y-11-s%3,1,1,ct.yellow),e.tint(n)}var mr=["..oo....................",".olloo..................","olllffo.................","offeffo.................","ommfffo.................",".oofffo.................","...offfo.......ooooo....","...offfo.....oolllllo...","....offfo...ollllllllo..","....offffo.ollqqqqqllfo.","....offfffollqrrrrrqfffo","....offffffffqqqqqqqffso","...ooffffffffffffffsssso","..offssooooooooooossssso","..oooooo..........oooooo"],hr={o:"#5A3A20",l:He.light,f:He.face,s:He.shade,e:"#2E1E12",m:"#E2C090",q:ce.cream,r:ce.red},Pi=(e,t)=>{let n=[...e];for(let[o,r,s]of t){let i=n[o]??"";n[o]=i.slice(0,r)+s+i.slice(r+1)}return n},Su={rest:ue(mr,hr),blink:ue(Pi(mr,[[3,3,"s"]]),hr),chew:ue(Pi(mr,[[4,1,"f"],[4,2,"f"],[5,1,"m"],[5,2,"m"],[6,1,"o"],[6,2,"o"]]),hr)},hn={x:112,y:178};function vu(e){let t=te(e);if(t%3.7<.15)return"blink";let n=t%9;return n<3&&Math.floor(n*4)%2===1?"chew":"rest"}function Eu(){let e=new de(46,22),t=(n,o,r,s)=>{e.fill(n,o,r,2,he.light),e.fill(n,o+2,r,s-2,he.face),e.fill(n+r-2,o+2,1,s-3,he.shade),e.fill(n,o+s-2,r-1,1,he.shade),e.fill(n,o+s-1,r,1,he.edge),e.fill(n+r-1,o,1,s,he.edge),e.fill(n,o+2,1,s-3,W(he.light,he.face,.4));for(let i=2;i<r-3;i+=3)e.set(n+i,o+3+i%2,he.shade)};for(let n=0;n<32;n++){let o=9+Math.round(3*Math.sin(n/5))-(n>22?n-22:0)-(n<3?3-n:0);for(let r=15-o;r<15;r++){let s=(r+Math.floor(n/6))%4===0,i=r===15-o?he.face:s?he.edge:n%6===5?he.edge:he.shade;e.set(n,r,i)}}t(2,14,10,7),t(12,14,10,7),t(22,14,10,7),t(7,8,10,6),t(17,8,10,6),t(12,3,9,5),e.fill(33,19,13,1,K[0]),e.fill(33,20,13,1,K[1]),e.set(45,18,K[0]),t(35,13,9,6);for(let n=44;n<46;n++)e.set(n,16,"#8A6A44");for(let[n,o]of[[0,21],[31,21],[4,20],[27,21]])e.set(n,o,he.light);return bn(e)}var Oi=Eu(),gn={x:128,y:204},Dt={light:"#79A84C",face:"#4C8A3C",shade:"#2F612C",dark:"#234A22"},mn={light:"#A47447",face:"#7A5230",shade:"#563A22"};function Pe(e,t,n,o=1){let r=Z(n),s=[{a:168,len:12},{a:148,len:13},{a:118,len:9},{a:88,len:7},{a:60,len:10},{a:30,len:13},{a:10,len:12},{a:200,len:9},{a:-22,len:9}].map(l=>({a:l.a+(r()-.5)*12,len:Math.max(3,Math.round((l.len+Math.floor(r()*3))*o))})),i=34,a=e+10;return[0,1].map(l=>{let u=new de(i,a),d={x:Math.floor(i/2),y:a-1},f={x:d.x+t,y:a-1-e};for(let E=d.y;E>=f.y;E--){let g=(d.y-E)/e,w=Math.round(d.x+t*g*g+(l===1?Math.round(g*g*1.2):0)),x=(d.y-E)%3===0;u.set(w,E,x?mn.face:mn.light),u.set(w+1,E,x?mn.shade:mn.face),E>d.y-3&&u.set(w+2,E,mn.shade)}let m=f.x+(l===1?1:0),y=f.y;for(let E of s){let g=E.a*Math.PI/180;for(let w=1;w<=E.len;w++){let x=w/E.len,k=l===1?Math.round(x*x*1.4):0,S=Math.round(m+Math.cos(g)*w)+k,C=Math.round(y-Math.sin(g)*w+x*x*E.len*.55);u.set(S,C,x<.4?Dt.face:Dt.light),w>2&&u.set(S,C+1,x>.7?Dt.shade:Dt.face),w>3&&w%2===0&&u.set(S,C+2,Dt.dark)}}return u.fill(m-1,y-1,3,2,Dt.shade),u.set(m-1,y+1,"#B8642E"),u.set(m+1,y+2,"#8E4A22"),u.set(m,y+1,"#B8642E"),bn(u)})}var po=[{x:7,bottom:194,frames:Pe(30,2,1),phase:0},{x:470,bottom:202,frames:Pe(32,-3,2),phase:.7},{x:182,bottom:156,frames:Pe(22,1,3),phase:1.3},{x:424,bottom:258,frames:Pe(36,3,4),phase:1.9},{x:456,bottom:266,frames:Pe(40,-2,5),phase:.4},{x:6,bottom:142,frames:Pe(16,1,6,.6),phase:.2},{x:19,bottom:140,frames:Pe(12,-1,7,.5),phase:1.1},{x:31,bottom:143,frames:Pe(18,2,8,.62),phase:2},{x:447,bottom:141,frames:Pe(14,-1,9,.55),phase:.9},{x:460,bottom:143,frames:Pe(19,-2,10,.65),phase:1.6},{x:474,bottom:140,frames:Pe(12,1,11,.5),phase:.5}],Bi=2.4;function Cu(e,t){let n=po[e];return n?Math.floor((te(t)+n.phase)%Bi/(Bi/2)):0}var kp=po.length,Me={left:97,right:135,top:257,bottom:266},fo=[98,134];function Mu(){let e=Me.right-Me.left+1,t=new de(e,Me.bottom-Me.top+1),n="#A86E38";for(let o=0;o<5;o++)for(let r=0;r<e;r++){let s=(r+o%2*5)%10===0;t.set(r,o,s?K[1]:o===0?n:o%2===0?K[0]:W(K[0],n,.4))}t.fill(9,0,21,5,ce.red),t.fill(9,0,21,1,U.mid),t.fill(9,4,21,1,U.shadow);for(let o=11;o<28;o+=3)t.set(o,2,U.light);t.fill(0,5,e,1,U.mid),t.fill(0,6,e,3,K[1]);for(let o=2;o<e;o+=4)t.fill(o,6,1,3,"#553418");for(let o of[0,Math.floor(e/2),e-2])t.fill(o,6,2,4,"#553418");return t.fill(0,9,e,1,"#3E2614"),bn(t)}var gr=219,Au=231;function Lu(){let e=fo[0]-2,n=fo[1]+2-e+1,o=Au-gr+1,r=new de(n,o),s=Math.floor(n/2),i=a=>Math.floor((a+1)/4)%2===0;for(let a=0;a<4;a++){let l=Math.round(s*(.6+.4*(a/3)));for(let u=s-l;u<=s+l;u++){let d=u<s,f=i(u)?d?ce.red:ce.redShade:d?ce.cream:ce.creamShade;(Math.abs(u-s)===l||a===0)&&(f=Ut),r.set(u,a,f)}}r.fill(s-1,0,3,1,U.light);for(let a=4;a<10;a++)for(let l=0;l<n;l++){let u=a>=8,d=i(l)?u?ce.redShade:ce.red:u?ce.creamShade:ce.cream;a===4&&(d=U.mid),a===5&&(d=U.shadow),(l===0||l===n-1)&&(d=Ut),r.set(l,a,d)}for(let a=1;a<n-1;a++){let l=(a+1)%4;l>=1&&r.set(a,10,i(a)?ce.redShade:ce.creamShade),l===2&&r.set(a,11,i(a)?ce.redShade:ce.creamShade),l===2&&r.set(a,12,U.mid)}return bn(r)}var Nu=[["yyyyy..","yBBBBy.","yBGBBBy","yBBBBy.","yyyyy.."],["yyyy...","yBBBy..","yBGBBy.","yBBBBBy","yyyyyy."],["yyyyyy.","yBBBBBy","yBGBBy.","yBBBy..","yyyy..."]],Fi=Nu.map(e=>ue(e,{y:U.mid,B:Fn,G:U.gleam}));function Tu(e,t){return(Math.floor(te(e)*5)+t)%3}var Ru=Mu(),Pu=Lu();function Ou(e,t){e.sprite(Ru,Me.left,Me.top);let n=gr-6;fo.forEach((o,r)=>{e.rect(o-1,n,1,Me.top+6-n,"#7E522A"),e.rect(o,n,1,Me.top+6-n,"#5A3618"),e.rect(o-1,n-2,2,2,U.light);let s=Fi[Tu(t,r)]??Fi[0];s&&e.sprite(s,o+1,n)}),e.sprite(Pu,fo[0]-2,gr)}var Bu=ue(["oyyyyyyo","obbbbbbo",".oBBBBo.","..oBBo..","...oo...","..o..o..",".o....o.","o......o"],{o:"#4A2E18",y:ut.light,b:ut.face,B:ut.shade}),_i=ue(["oyyyo","obbbo",".oBo.","..n..","..n..","..N..","..n..","..n..","..N..","..n..","..n..","..N..","..n..",".nNn."],{o:"#4A2E18",y:ut.light,b:ut.face,B:ut.shade,n:K[0],N:K[1]}),yr=[{x:103,y:259,seed:1},{x:129,y:259,seed:2}],xr=[{x:422,y:214,seed:2}],Fu=128,Iu=26;function Gi(e){let t=e.base>0&&e.blockW>0?e.base*e.blockW:Fu,n=Math.min(q.maxWidth,t)/2,o=q.baseY+6;return[{x:Math.round(q.centerX-n-7),y:o,seed:0},{x:Math.min(Math.round(q.centerX+n+7),L.sledge.x-26),y:o,seed:1}]}function Hi(e){return{y:e.y,draw:(t,n,o)=>br(t,_i,e.x,e.y,e.seed,n,o)}}function Wi(e){return{x:e.x,y:e.y-16,radius:Iu,seed:e.seed+3}}function Yi(e){return{cx:e.x,y:e.y,rx:3,ry:1}}function br(e,t,n,o,r,s,i){let a=pt(t,n,o);e.sprite(t,a.left,a.top),e.tint(null);let l=Ni[$i(s,r)]??Ni[0];l&&e.sprite(l,n-2,a.top-l.h+1),e.tint(i)}var Ii=Ot(Ce.well),qi=[{x:Se.x,y:Se.y-4,radius:26,seed:0},...yr.map(e=>({x:e.x,y:e.y-12,radius:20,seed:e.seed})),...xr.map(e=>({x:e.x,y:e.y-16,radius:20,seed:e.seed+3}))],Ki=[...Di.map(e=>({cx:e.x,y:e.bottom,rx:Math.floor(e.sprite.w/2)-3,ry:2})),...po.map(e=>({cx:e.x+1,y:e.bottom,rx:e.bottom<150?3:6,ry:1})),{cx:Se.x,y:Se.y,rx:6,ry:1},{cx:hn.x,y:hn.y,rx:12,ry:2},{cx:gn.x,y:gn.y,rx:23,ry:2},{cx:L.well.x,y:L.well.y-2,rx:11,ry:2},{cx:Math.round((Me.left+Me.right)/2)+1,y:Me.bottom,rx:21,ry:2},...yr.map(e=>({cx:e.x,y:e.y,rx:4,ry:1})),...xr.map(e=>({cx:e.x,y:e.y,rx:3,ry:1}))];function zi(){let e=[];for(let o of Di){let r=pt(o.sprite,o.x,o.bottom);e.push({y:o.bottom,draw:s=>s.sprite(o.sprite,r.left,r.top)})}po.forEach((o,r)=>{e.push({y:o.bottom,draw:(s,i)=>{let a=o.frames[Cu(r,i)]??o.frames[0];if(!a)return;let l=pt(a,o.x,o.bottom+1);s.sprite(a,l.left,l.top)}})}),e.push({y:hn.y,draw:(o,r)=>{let s=Su[vu(r)],i=pt(s,hn.x,hn.y);o.sprite(s,i.left,i.top)}}),e.push({y:Se.y,draw:ku});let t=pt(Oi,gn.x,gn.y);e.push({y:gn.y,draw:o=>o.sprite(Oi,t.left,t.top)});let n=pt(Ii,L.well.x,L.well.y-2);e.push({y:L.well.y-2,draw:o=>o.sprite(Ii,n.left,n.top)}),e.push({y:Me.top+1,draw:(o,r)=>Ou(o,r)});for(let o of yr)e.push({y:o.y,draw:(r,s,i)=>br(r,Bu,o.x,o.y,o.seed,s,i)});for(let o of xr)e.push({y:o.y,draw:(r,s,i)=>br(r,_i,o.x,o.y,o.seed,s,i)});return e}var $t=q.baseY+2,Du=Qn(),ji=new Map;function _t(e){let t=ji.get(e);return t||(t=Ot(e),ji.set(e,t)),t}function Uu(e,t,n){return e.runs.map(o=>({x:t+o.x,y:n+o.y,w:o.w,h:1,color:o.color}))}function wr(e,t,n){let o=_t(e);return Uu(o,t-Math.floor(o.w/2),n-o.h)}var kr=L.rations.y+3,Sr=L.sledge.y+6,bo=(e,t)=>({y:e,draw:n=>n.rects(t)}),$u=[bo(Sr,wr(Ce.sledge,L.sledge.x+1,Sr)),bo(L.treasury.y,wr(Ce.chest,L.treasury.x,L.treasury.y)),bo(kr,wr(Ce.table,L.rations.x,kr))],_u=[{cx:L.sledge.x+1,y:Sr,rx:12,ry:1},{cx:L.treasury.x,y:L.treasury.y,rx:8,ry:1},{cx:L.rations.x,y:kr,rx:11,ry:1},{cx:L.treasury.x-22,y:L.treasury.y+1,rx:12,ry:1}],mt={x:q.centerX,y:q.baseY+22},Zi=zi(),Gu=Zi.filter(e=>e.y<q.baseY).sort((e,t)=>e.y-t.y),Hu=Zi.filter(e=>e.y>=q.baseY);function Wu(e,t){let n=[...Hu,...$u,bo(L.treasury.y+1,qu(e.coins)),...t.map(Hi)],o=e.pyramid.monument;return o&&n.push({y:mt.y,draw:r=>yi(r,o,mt.x,mt.y)}),n.sort((r,s)=>r.y-s.y)}function Yu(e,t){let n=[...Ki,..._u,...t.map(Yi)],o=e.pyramid.monument;if(o){let r=cr(o,mt.x,mt.y);n.push({cx:mt.x,y:mt.y,rx:Math.ceil(r.w/2)+2,ry:1})}return n}var yn=6,Vi=new Map;function qu(e){let t=Math.max(0,Math.min(48,Math.floor(Number.isFinite(e)?e:0))),n=Vi.get(t);if(n)return n;let o=new Array(yn).fill(0);for(let s=0;s<t;s++){let i=0,a=1/0;for(let l=0;l<yn;l++){let u=(o[l]??0)+Math.abs(l-(yn-1)/2)*1.8;u<a&&(a=u,i=l)}o[i]=(o[i]??0)+1}n=[];let r=L.treasury.y+1;for(let s=0;s<yn;s++){let i=o[s]??0;if(i===0)continue;let a=L.treasury.x-10-(yn-s)*4;n.push({x:a-1,y:r-i,w:1,h:i,color:xe});for(let l=0;l<i;l++)n.push({x:a,y:r-1-l,w:3,h:1,color:l%2===0?In.shadow:In.face});n.push({x:a,y:r-i-1,w:3,h:1,color:In.face},{x:a+1,y:r-i-1,w:1,h:1,color:U.gleam})}return Vi.set(t,n),n}var Xi=new Map;function Ku(e,t){let n=`${e}x${t}`,o=Xi.get(n);if(o)return o;let r=e>=16,s=r?8:4,i=r?4:2;o=[];let a=Math.max(1,Math.ceil(t/i));for(let l=0;l<a;l++){let u=t-l*i,d=Math.max(0,u-i);for(let f=l%2===1?-s/2:0;f<e;f+=s){let m=Math.max(0,f),y=Math.min(e,f+s);y>m&&o.push({dx:m,dy:d,w:y-m,h:u-d})}}return Xi.set(n,o),o}var Qi=ge,zu={light:Nt(ge.light),face:Nt(ge.face),mortar:Nt(ge.mortar),edge:Nt(ge.edge)},ju={light:W(Mt.light,"#FFFFFF",.25),face:Mt.light,mortar:Mt.dark,edge:Mt.dark};function Vu(e,t,n,o,r){e.rect(t+o.dx,n+o.dy,o.w,o.h,r.mortar);let s=Math.max(1,o.w-1),i=Math.max(1,o.h-1);e.rect(t+o.dx,n+o.dy,s,i,r.face),o.h>=3&&(e.rect(t+o.dx,n+o.dy,s,1,r.light),e.rect(t+o.dx,n+o.dy,1,i,r.light))}function ea(e,t,n){e.rect(t.x,t.y,t.w,1,n),e.rect(t.x,t.y+t.h-1,t.w,1,n),e.rect(t.x,t.y,1,t.h,n),e.rect(t.x+t.w-1,t.y,1,t.h,n)}function mo(e,t,n){for(let o=0;o<t.w;o+=2)e.rect(t.x+o,t.y,1,1,n),e.rect(t.x+o,t.y+t.h-1,1,1,n);for(let o=2;o<t.h-1;o+=2)e.rect(t.x,t.y+o,1,1,n),e.rect(t.x+t.w-1,t.y+o,1,1,n)}function ho(e,t,n,o){let r=Ku(t.w,t.h),s=Number.isFinite(n)?Math.min(1,Math.max(0,n)):0,i=Math.round(s*r.length);for(let a=0;a<i;a++){let l=r[a];l&&Vu(e,t.x,t.y,l,o)}}function Xu(e,t){switch(t.look){case"empty":ea(e,t,rs);break;case"planned":mo(e,t,Bn);break;case"building":mo(e,t,Bn),ho(e,t,t.fill,Qi);break;case"stalled":mo(e,t,Nt(Bn)),ho(e,t,t.fill,zu);break;case"orphaned":mo(e,t,Mt.dark),ho(e,t,Math.max(t.fill,.15),ju);break;case"set":ho(e,t,1,Qi),e.rect(t.x,t.y,t.w,1,ge.light),e.rect(t.x+t.w-1,t.y+1,1,t.h-1,ge.edge);break;case"fallen":{e.rect(t.x,t.y,t.w,t.h,Ct.gap),e.rect(t.x,t.y,t.w,1,Ct.crack);let n=Z(t.x*31+t.y*17),o=t.x+Math.floor(t.w/2);for(let r=t.y+1;r<t.y+t.h;r++)o=Math.min(t.x+t.w-2,Math.max(t.x+1,o+Math.floor(n()*3)-1)),e.rect(o,r,1,1,Ct.crack),r%3===0&&e.rect(o+1,r,1,1,Ct.crack);break}}}function Qu(e,t,n){let o=Number.isFinite(e)?Math.min(1,Math.max(0,e)):0;return Math.round((1-o)*(t+n+4))-2}function Ju(e,t){let n=Qu(t.flash,t.w,t.h);e.alpha(.75);for(let o=0;o<t.h;o++){let r=t.x+n-o;for(let[s,i,a]of[[0,3,qo],[-3,1,U.gleam]]){let l=Math.max(t.x,r+s),u=Math.min(t.x+t.w,r+s+i);u>l&&e.rect(l,t.y+o,u-l,1,a)}}e.alpha(1)}function Zu(e,t){let n=t.base>0?t.base*t.blockW:q.maxWidth/2,o=Math.imul(e+1,2654435761)>>>0,r=Math.max(0,n-4);return{x:q.centerX-r/2+o%1e3/1e3*r,y:q.baseY+1+(o>>>12)%7}}function ed(e,t){for(let r of t.blocks)Xu(e,r);for(let r of t.blocks)r.flash>0&&(e.alpha(Math.min(1,r.flash)*.6),e.rect(r.x,r.y,r.w,r.h,qo),e.alpha(1),r.look==="set"&&Ju(e,r));for(let r of t.blocks)r.highlight&&ea(e,r,U.light);let n=Math.max(0,Math.min(200,Math.floor(t.rubble)));for(let r=0;r<n;r++){let s=Zu(r,t),i=Ce.rubble[r%Ce.rubble.length]??Ce.rubble[0],a=_t(i);e.sprite(a,Math.round(s.x)-Math.floor(a.w/2),Math.round(s.y)-a.h+1)}let o=t.capstone;if(o.state!=="none"){if(o.state==="waiting"&&o.flag!=="none"){let r=L.sledge.x+15,s=L.sledge.y+5;e.rect(r,s-18,1,18,K[1]),e.rect(r,s-19,1,1,U.light);let i=o.flag==="passed"?Yo.green:Yo.red;for(let a=0;a<4;a++)e.rect(r+1,s-18+a,6-a*1.5,1,i);e.rect(r+1,s-15,1,1,xe)}ta(e,o)}}function ta(e,t){let n=_t(t.ready?Ce.capstoneGleam:Ce.capstone),o=Math.round(t.x)-Math.floor(n.w/2),r=Math.round(t.y)-n.h;e.sprite(n,o,r),t.ready&&e.sprite(_t(Ce.glint),o-3,r-2)}function td(e,t,n,o){let r=Math.max(4,Math.min(40,Math.round(o))),s=Math.round(t),i=Math.round(n);for(let a=0;a<r;a++){let l=r-(a-a%2),u=i-1-a,d=a>=r-3,f=a%2===1;e.rect(s-l,u,l,1,d?U.light:f?V.face:V.light),e.rect(s,u,l,1,d?U.mid:f?V.dark:V.shade)}e.rect(s-r-1,i-1,2*r+2,1,V.dark)}var nd=new Set(["walk","carry-scroll","carry-stone","carry-ration"]),od=new Set(["laborer","mason","scribe","skeptic","surveyor"]);function rd(e,t){if(t<=1)return 0;if(e.pose==="work"&&od.has(e.cast))return e.stroke<.5?1:0;let n=nd.has(e.pose)?8:4,o=Number.isFinite(e.poseTime)?Math.max(0,e.poseTime):0;return Math.floor(o*n)%t}function sd(e){let t=Du.frames(e.cast,e.pose,e.ration,e.ghost);return t[rd(e,t.length)]??null}function id(e,t){let n=t.blockH;if(!(n>0)||!Number.isFinite(e))return e-8;let o=Math.max(1,Math.ceil((q.baseY-(e-6))/n));return o<=t.base?q.baseY-o*n:e-8}function ad(e,t,n,o){let r=id(n,o);if(!(r>=$t)){e.rect(t-4,r,1,$t-r,K[1]),e.rect(t+3,r,1,$t-r,K[1]);for(let s=$t-2;s>=r;s-=3)e.rect(t-3,s,6,1,K[0])}}function ld(e,t,n){e.rect(t-7,n+2,1,$t-n-2,K[1]),e.rect(t+6,n+2,1,$t-n-2,K[1]),e.rect(t-9,n,18,1,K[0]),e.rect(t-9,n+1,18,1,K[1])}function Ji(e,t){return Math.round(e.y)-t.h+t.top}function cd(e,t,n,o){let r=Z(t.seed),s=3+Math.floor(r()*5),i=s>4?2:1,a=Math.ceil(s/i),l=a*4-1+6,u=i*5-1+6,d=Number.isFinite(t.open)?Math.min(1,Math.max(0,t.open)):1;if(d<=0)return o;let f=Math.max(4,Math.round(l*d)),m=Math.max(4,Math.round(u*d)),y=d>=.5?3:1,g=Math.max(m+1,o-1-y)-m,w=Math.min(479-f,Math.max(1,n-Math.floor(f/2)-2));e.rect(w+1,g,f-2,1,xe),e.rect(w+1,g+m-1,f-2,1,xe),e.rect(w,g+1,1,m-2,xe),e.rect(w+f-1,g+1,1,m-2,xe),e.rect(w+1,g+1,f-2,m-2,At.fill);let x=Math.min(w+f-4,Math.max(w+2,n-1));if(e.rect(x,g+m-1,2,1,At.fill),y>=3&&(e.rect(x-1,g+m-1,1,2,xe),e.rect(x,g+m,1,1,At.fill),e.rect(x+1,g+m,1,1,xe),e.rect(x+2,g+m-1,1,1,xe),e.rect(x,g+m+1,1,1,xe)),d<1)return g;for(let k=0;k<s;k++){let S=Xn[Math.floor(r()*Xn.length)]??Xn[0]??[],C=Math.floor(k/a),O=w+3+k%a*4,I=g+3+C*5;S.forEach((P,G)=>{for(let Y=0;Y<P.length;Y++)P[Y]==="#"&&e.rect(O+Y,I+G,1,1,At.glyph)})}return g}function na(e){return Math.min(1,Math.max(0,Number.isFinite(e.alpha)?e.alpha:1))*(e.ghost?.5:1)}function oa(e){return e.pose==="work"&&Math.round(e.y)<q.baseY}function ud(e){let t=[],n=[];for(let o of e.actors){if(o.pose==="climb"||o.pose==="climb-stone"||oa(o)||!Number.isFinite(o.x)||!Number.isFinite(o.y))continue;let r=na(o);if(r<=0)continue;let s=o.cast==="arbab"?7:o.pose==="sleep"?8:5,i={cx:Math.round(o.x),y:Math.round(o.y),rx:s,ry:1};r>=1?t.push(i):n.push({spot:i,alpha:r})}return{solid:t,faded:n}}function dd(e,t,n,o,r){let s=t.actors.map((u,d)=>({actor:u,i:d}));s.sort((u,d)=>u.actor.y-d.actor.y||u.i-d.i);let i=Wu(t,n),a=0,l=[];for(let{actor:u}of s){for(;a<i.length&&(i[a]?.y??0)<=u.y;a++)i[a]?.draw(e,r,o);let d=sd(u);if(!d)continue;let f=Math.round(u.x),m=Math.round(u.y);(u.pose==="climb"||u.pose==="climb-stone")&&ad(e,f,m,t.pyramid);let y=na(u);oa(u)&&(ld(e,f,m),e.tint(null),pn(e,t.sky,[{cx:f,y:m,rx:4,ry:0}],y),e.tint(o)),!(y<=0)&&(y<1&&e.alpha(y),e.sprite(d,f-Math.floor(d.w/2),m-d.h,u.facing===-1),y<1&&e.alpha(1),l.push({actor:u,sprite:d}))}for(;a<i.length;a++)i[a]?.draw(e,r,o);return l}function fd(e,t,n,o){let r=new Map;for(let{actor:s,sprite:i}of n){let a=Math.round(s.x),l=Ji(s,i);if(s.icon){let u=_t(Vn[s.icon]);l-=u.h+2,e.sprite(u,a-Math.floor(u.w/2),l)}if(s.highlight){let u=_t(Es);(t.reducedMotion||Math.floor(Math.max(0,s.poseTime)*4)%2===0)&&e.sprite(u,a-Math.floor(u.w/2),l-u.h-1),l-=u.h+1}r.set(s,l)}for(let{actor:s,sprite:i}of n){if(!s.bubble)continue;let a=cd(e,s.bubble,Math.round(s.x),Ji(s,i));r.set(s,Math.min(r.get(s)??a,a))}for(let{actor:s}of n)s.highlight&&bi(e,s.lane??s.id,Math.round(s.x),(r.get(s)??Math.round(s.y))-2,o)}var go="#FBF0D6",pd=.3;function md(e,t){let{x:n,y:o}=t;switch(t.kind){case"dust":t.life>pd?(e.rect(n,o-1,2,1,go),e.rect(n,o,1,1,go),e.rect(n+1,o,1,1,On[2])):(e.alpha(.8),e.rect(n-1,o,3,1,go),e.rect(n,o-1,1,1,go),e.rect(n+1,o+1,1,1,On[2]),e.alpha(1));break;case"stone":e.rect(n,o,2,2,ge.face),e.rect(n,o,1,1,ge.light);break;case"sparkle":e.rect(n,o,1,1,Math.floor(t.life*10)%2===0?U.gleam:U.light);break;case"coin":e.rect(n,o,2,2,U.light);break}}function ra(e,t){e.imageSmoothingEnabled=!1,e.globalAlpha=1;let n=Xs(e),o=t.sky.phase,r=te(t.time),s=Bt(o),i=ui(t.shake,r);(i.dx!==0||i.dy!==0)&&(n.rect(0,0,480,128,Lt[o][0]??"#000000"),n.tint(s),n.rect(0,128,480,142,lt[4]),n.tint(null)),n.offset(i.dx,i.dy),oi(n,t.sky,r),Ci(n,o,r),n.tint(s);for(let f of t.far.slice(0,3))td(n,f.x,f.y,f.height);n.tint(null),Mi(n,o,r);let a=Gi(t.pyramid);pn(n,t.sky,Yu(t,a)),t.pyramid.blocks.some(f=>f.look!=="empty"&&f.look!=="planned")&&hi(n,t.sky,q,t.pyramid),n.tint(s);for(let f of Gu)f.draw(n,r,s);ed(n,t.pyramid),n.tint(null);let l=ud(t);pn(n,t.sky,l.solid);for(let f of l.faded)pn(n,t.sky,[f.spot],f.alpha);n.tint(s);let u=dd(n,t,a,s,r);for(let f of t.particles)md(n,f);n.tint(null),o==="night"&&fi(n,[...qi,...a.map(Wi)],r);let d=t.pyramid.capstone;mi(n,d,t.pyramid.apex),d.state!=="none"&&d.glow>0&&ta(n,d),fd(n,t,u,i),n.offset(0,0),pi(n,o),e.globalAlpha=1}var sa="arbab-ui-sound";var hd=[{at:0,freq:3150},{at:.065,freq:3420},{at:.14,freq:2980}];function gd(e){try{return e()?.getItem(sa)==="on"}catch{return!1}}function bd(e,t){try{e()?.setItem(sa,t?"on":"off")}catch{}}function ia(e){let t=gd(e.storage),n=null,o=null,r=null,s=[],i=[],a=(g,w)=>{let x=e.now();for(;g.length>0&&x-(g[0]??0)>=1e3;)g.shift();return g.length>=w?!1:(g.push(x),!0)},l=()=>{if(!(n||!e.AudioContext))try{n=new e.AudioContext;let g=n.createGain();g.gain.value=.25,g.connect(n.destination),o=g;let w=Math.floor(n.sampleRate*.2);r=n.createBuffer(1,w,n.sampleRate);let x=r.getChannelData(0),k=12345;for(let S=0;S<x.length;S++)k=Math.imul(k,1103515245)+12345>>>0,x[S]=k/4294967296*2-1}catch{n=null,o=null}},u=()=>{n&&n.state==="suspended"&&n.resume().catch(()=>{})},d=(g,w,x,k,S)=>{let C=g.createOscillator();C.type="sine",C.frequency.setValueAtTime(k,x),C.frequency.exponentialRampToValueAtTime(k*.4,x+.16);let O=g.createGain();if(O.gain.setValueAtTime(S,x),O.gain.exponentialRampToValueAtTime(.001,x+.22),C.connect(O),O.connect(w),C.start(x),C.stop(x+.25),r){let I=g.createBufferSource();I.buffer=r;let P=g.createBiquadFilter();P.type="lowpass",P.frequency.setValueAtTime(1800,x);let G=g.createGain();G.gain.setValueAtTime(S*.35,x),G.gain.exponentialRampToValueAtTime(.001,x+.06),I.connect(P),P.connect(G),G.connect(w),I.start(x),I.stop(x+.08)}},f=(g,w,x,k,S=.4)=>{let C=g.createBiquadFilter();C.type="lowpass",C.frequency.setValueAtTime(900,x);let O=g.createGain();O.gain.setValueAtTime(1e-4,x),O.gain.linearRampToValueAtTime(.35,x+.05),O.gain.setValueAtTime(.3,x+S-.1),O.gain.exponentialRampToValueAtTime(.001,x+S),C.connect(O),O.connect(w);for(let I of[-7,7]){let P=g.createOscillator();P.type="sawtooth",P.frequency.setValueAtTime(k,x),P.detune.setValueAtTime(I,x),P.connect(C),P.start(x),P.stop(x+S+.02)}},m=(g,w,x)=>{f(g,w,x,196,.35),f(g,w,x+.3,294,.5)},y=(g,w,x,k,S,C,O)=>{let I=g.createOscillator();I.type=k,I.frequency.setValueAtTime(S,x);let P=g.createGain();P.gain.setValueAtTime(C,x),P.gain.exponentialRampToValueAtTime(.001,x+O),I.connect(P),P.connect(w),I.start(x),I.stop(x+O+.01)},E=(g,w,x)=>{let k=g.createOscillator();k.type="sine",k.frequency.setValueAtTime(160,x),k.frequency.exponentialRampToValueAtTime(120,x+.06);let S=g.createGain();S.gain.setValueAtTime(.15,x),S.gain.exponentialRampToValueAtTime(.001,x+.06),k.connect(S),S.connect(w),k.start(x),k.stop(x+.07);for(let C of hd)y(g,w,x+C.at,"triangle",C.freq,.1,.12),y(g,w,x+C.at,"sine",C.freq*1.3,.04,.09)};return{get enabled(){return t},toggle(){return t=!t,bd(e.storage,t),t&&(l(),u()),t},unlock(){t&&(l(),u())},play(g){if(!t||!n||!o)return;let w=n,x=o,k=w.currentTime+.01;switch(g){case"brief":case"report":f(w,x,k,220);break;case"stone":if(!a(s,3))return;d(w,x,k,140,.5);break;case"pay":if(!a(i,2))return;E(w,x,k);break;case"set":m(w,x,k);break;case"fall":d(w,x,k,60,.8);break;case"capstone":m(w,x,k);for(let S=0;S<10;S++)d(w,x,k+.9+S*.06,120,.2+S*.05);break}}}}var yd="This page needs its session token. Use the tab `arbab ui` opened, or run `arbab ui --no-open` to print a URL that carries it.",xd=2,wd=3e4,kd=600;function Sd(e){let t={};for(let[n,o]of Object.entries(to)){let r=e.getElementById(o);if(!r)return null;t[n]=r}return t}function aa(e,t,n){if(!e)return;Qt(e,16*t,16*t,n);let o=e.getContext("2d");o&&Jo(o,Qo,0,0,t*n)}function vd(e){let t=e.document,n=Sd(t),o=Xt(t.getElementById(to.canvas));if(!n||!o)return null;let{stage:r,tooltip:s,notice:i,banner:a,connection:l,live:u,site:d}=n,f=ns(e.devicePixelRatio),m=R=>{i.textContent=R,i.hidden=!1},y=z(t,{scale:1,color:A.muted,dpr:f});l.replaceChildren(y.el);let E=R=>{l.setAttribute("data-state",R);let{text:D,color:$}=zs(R);y.set(D,$)};E("connecting");let g=Gr(e.location.hash);if(!g)return m(yd),n.project.textContent="no session token",E("closed"),null;let w=o.getContext("2d");if(!w)return m("This browser cannot draw the scene; the ledger below still works."),null;o.width=480,o.height=270;let x=!1;try{x=e.matchMedia("(prefers-reduced-motion: reduce)").matches}catch{x=!1}let k=Bo({reducedMotion:x,random:Math.random}),S=Qn();aa(Xt(n.logo),2,f),aa(Xt(n.titleCardLogo),4,f),n.title.replaceChildren(z(t,{scale:3,color:A.gold,dpr:f},"ARBAB").el),n.titleCardWord.replaceChildren(z(t,{scale:6,color:A.gold,dpr:f},"ARBAB").el),n.siteTitle.replaceChildren(z(t,{scale:2,color:A.gold,dpr:f},"THE SITE").el);let C=z(t,{scale:1,color:A.sand,dpr:f},"THE SITE IS QUIET");n.caption.replaceChildren(C.el);let O="",I=(R,D)=>{O=$o(k.world),C.set(ts(R,D,k.world))},P=[ir(t,n.gauge5h,"5h",f),ir(t,n.gauge7d,"7d",f)],G=Us(t,n.kpis,{dpr:f,reducedMotion:x}),Y=ia({AudioContext:e.AudioContext,storage:e.storage,now:e.now}),Oe=()=>{n.sound.setAttribute("aria-pressed",String(Y.enabled)),n.sound.textContent=Y.enabled?"sound on":"sound off"};Oe(),n.sound.addEventListener("click",()=>{Y.toggle(),Oe()});let Be=()=>t.fullscreenElement!==void 0&&t.fullscreenElement!==null&&t.fullscreenElement===d;n.siteFullscreen.hidden=typeof d.requestFullscreen!="function",n.siteFullscreen.addEventListener("click",()=>{try{let R=Be()&&typeof t.exitFullscreen=="function"?t.exitFullscreen():d.requestFullscreen?.();R instanceof Promise&&R.catch(()=>{})}catch{}});let ve=()=>n.crewPanel.setAttribute("data-more",String(Rs(n.crewScroll)));n.crewScroll.addEventListener("scroll",ve);let Fe=()=>{let R=r.getBoundingClientRect(),D=Be()?R.height:_r(e.window.innerHeight,n.header.getBoundingClientRect().height,n.kpis.getBoundingClientRect().height,d.getBoundingClientRect().height-R.height),$=$r(R.width,D,e.devicePixelRatio);o.className=$.fluid?"fluid":"",o.style.width=$.fluid?"100%":`${$.width}px`,o.style.height=$.fluid?"auto":`${$.height}px`,ve()};Fe(),e.window.addEventListener("resize",Fe),t.addEventListener("fullscreenchange",Fe);let fe=null,Ie=new Map,De=0,le=null,ne=null,nt="crew",pe=null,Ue=null,ht=[],$e=()=>e.now()+De,Gt=R=>{a.textContent=R,a.hidden=!1},Ht=()=>{a.hidden=!0,a.textContent=""},Ye=()=>k.highlight(le??ne??pe),yo=()=>{let R=o.getBoundingClientRect(),D=r.getBoundingClientRect();return{x:R.left-D.left,y:R.top-D.top}},xo=R=>{let D=yo(),$=o.getBoundingClientRect().width,Q=$>0?$/480:1,se=k.world.actors.find(_e=>_e.lane===R);if(se)return{x:D.x+se.x*Q,y:D.y+(se.y-20)*Q};let ye=k.world.pyramid.blocks.find(_e=>_e.lane===R);return ye?{x:D.x+(ye.x+ye.w)*Q,y:D.y+ye.y*Q}:{x:D.x+8,y:D.y+8}},xn=z(t,{scale:1,color:A.gold,dpr:f}),wn=T(t,"div","tip-title");wn.appendChild(xn.el);let Ve=()=>{let R=le??ne??pe,D=R===null?void 0:Ie.get(R);if(!R||!D){s.hidden=!0;return}let[$=R,...Q]=qr(D,e.now(),De);xn.set($),s.replaceChildren(wn,...Q.map(_e=>T(t,"div","",_e)));let se=le!==null&&Ue?Ue:xo(R),ye=r.getBoundingClientRect().width;s.style.left=`${Math.max(0,Math.min(ye-220,se.x+12))}px`,s.style.top=`${Math.max(0,se.y+12)}px`,s.hidden=!1},Wt=R=>{pe=R,gt.setPinned(R),ot.setPinned(R),Ye(),Ve()},Yt=R=>({enter(D){ne=D,nt=R,Ye(),Ve()},leave(D){ne===D&&(ne=null),Ye(),Ve()},toggle(D){Wt(pe===D?null:D)}}),gt=Bs(t,{title:n.crewTitle,list:n.crew,empty:n.crewEmpty,recentGroup:n.recentGroup,recentTitle:n.recentTitle,recent:n.recent},S,f,Yt("crew")),kn=Ys(t,{title:n.monumentTitle,body:n.monument},f),Sn=ys(t,{title:n.chronicleTitle,list:n.chronicle,empty:n.chronicleEmpty},f),ot=Hs(t,{title:n.ledgerTitle,head:n.ledgerHead,body:n.table},f,Yt("ledger")),vn=()=>{ne!==null&&!(nt==="crew"?gt.order().includes(ne):Ie.has(ne))&&(ne=null),le!==null&&!Ie.has(le)&&(le=null)};t.addEventListener("pointerdown",()=>Y.unlock()),t.addEventListener("keydown",R=>{Y.unlock(),R.key==="Escape"&&pe!==null&&Wt(null)}),o.addEventListener("pointermove",R=>{let D=o.getBoundingClientRect();if(D.width<=0||D.height<=0)return;let $=R.clientX??0,Q=R.clientY??0;le=k.pick(($-D.left)*480/D.width,(Q-D.top)*270/D.height);let se=r.getBoundingClientRect();Ue={x:$-se.left,y:Q-se.top},Ye(),Ve()}),o.addEventListener("pointerleave",()=>{le=null,Ue=null,Ye(),Ve()});let wo=R=>{let D=Hr(R);if(!D.ok){Gt(D.message);return}let $=D.snapshot;Ht(),E("live");let Q=Date.parse($.now);De=Number.isNaN(Q)?0:Q-e.now();let se=$e();try{k.apply($)}catch{Gt("The scene could not show this snapshot; the ledger is up to date.")}if(fe===null){n.titleCard.className="title-card gone";let c=()=>{n.titleCard.hidden=!0};x?c():e.setTimeout(c,kd)}let ye=Yr($);n.project.textContent=ye.project,n.version.textContent=ye.version,n.held.hidden=!ye.held,n.footer.textContent=ye.footer;let _e=se/1e3;P[0].update(sr("5h",$.quota.fiveHour,$.quota.holdAbove.fiveHour,_e)),P[1].update(sr("7d",$.quota.sevenDay,$.quota.holdAbove.sevenDay,_e)),G.update($,e.now()),I($,se),Ie=new Map($.lanes.map(c=>[c.name,c])),pe!==null&&!Ie.has(pe)&&(pe=null),gt.update($,se),ve(),ot.update($,se),vn(),kn.update($,se),ht=Uo(ht,fe===null?Jr($):Zr(fe,$)),Sn.update(ht,se);let Cn=Kr(fe,$);Cn.length>0&&(u.textContent=Cn.join(". ")),fe=$,Wt(pe)},rt=!1,ko=()=>{let R=e.fetch;if(!R){m(Zn);return}let D;try{D=R(`${st.snapshot}?${So}=${encodeURIComponent(g)}`)}catch{D=Promise.reject(new Error("fetch threw"))}D.then($=>{rt||m(ar($))},()=>{rt||m(ar(null))})},Xe=new e.EventSource(`${st.events}?${So}=${encodeURIComponent(g)}`);Xe.addEventListener("open",()=>E("live")),Xe.addEventListener(vo.snapshot,R=>wo(R.data)),Xe.addEventListener(vo.problem,R=>Gt(Wr(R.data))),Xe.addEventListener("error",()=>{Xe.readyState===xd?(E("closed"),ko()):E("lost")});let qt=null,bt=0,En=0,Kt=R=>{if(rt)return;let D=qt===null?16:Math.max(0,R-qt);qt=R,k.step(D),ra(w,k.world),fe&&$o(k.world)!==O&&I(fe,$e());let $=k.world.events;for(let Q of $)Y.play(Q.kind);if($.length=0,G.tick(e.now()),R-bt>=1e3){bt=R;let Q=$e();gt.tick(Q),ot.tick(Q),s.hidden||Ve()}if(R-En>=wd){En=R;let Q=$e();Sn.refresh(Q),fe&&(kn.update(fe,Q),I(fe,Q))}e.requestAnimationFrame(Kt)};return e.requestAnimationFrame(Kt),{stop(){rt=!0,Xe.close()}}}function Ed(){let e=globalThis,t=e.document,n=e.window;if(typeof t!="object"||t===null||typeof n!="object"||n===null||typeof e.EventSource!="function"||typeof e.requestAnimationFrame!="function")return null;let o=e.requestAnimationFrame,r=typeof e.matchMedia=="function"?e.matchMedia:null,s=typeof e.AudioContext=="function"?e.AudioContext:typeof e.webkitAudioContext=="function"?e.webkitAudioContext:null,i=typeof e.fetch=="function"?e.fetch:null;return{document:t,window:n,location:e.location,EventSource:e.EventSource,fetch:i?a=>i.call(n,a):null,AudioContext:s,storage:()=>{try{return e.localStorage??null}catch{return null}},matchMedia:a=>r?r.call(n,a):{matches:!1},requestAnimationFrame:a=>o.call(n,a),setTimeout:(a,l)=>e.setTimeout.call(n,a,l),devicePixelRatio:typeof e.devicePixelRatio=="number"?e.devicePixelRatio:1,now:()=>Date.now()}}var la=Ed();la&&vd(la);})();\n';
@@ -11594,7 +11739,7 @@ Content-Length: 0\r
 \r
 `);
   });
-  return new Promise((resolve18, reject) => {
+  return new Promise((resolve19, reject) => {
     server.once("error", (err) => {
       reject(new ArbabError("runtime", `cannot listen on 127.0.0.1:${options.port}: ${err.message}`, { cause: err }));
     });
@@ -11607,7 +11752,7 @@ Content-Length: 0\r
       }
       port = address.port;
       let closing = null;
-      resolve18({
+      resolve19({
         url: `http://127.0.0.1:${port}/#${UI_TOKEN_PARAM}=${options.token}`,
         port,
         close: () => {
@@ -11627,7 +11772,7 @@ Content-Length: 0\r
 
 // src/ui/server/snapshot.ts
 import { statSync as statSync7 } from "node:fs";
-import { basename as basename7, isAbsolute as isAbsolute14, join as join45, relative as relative11, sep as sep10 } from "node:path";
+import { basename as basename5, isAbsolute as isAbsolute15, join as join46, relative as relative13, sep as sep10 } from "node:path";
 var MAX_LANES = 300;
 var LANDED_KEPT = 5;
 var REASON_MAX = 200;
@@ -11645,8 +11790,8 @@ var parsedMs = (v) => {
 var stateKey = (r) => JSON.stringify([r.state, r.attempt, r.since, r.shepherdPid, r.endState ?? null, r.reason ?? null]);
 function briefUnderPreflight(root, brief) {
   if (typeof brief !== "string" || brief === "") return false;
-  const rel = relative11(join45(root, PREFLIGHT_DIR), isAbsolute14(brief) ? brief : join45(root, brief));
-  return rel !== "" && !isAbsolute14(rel) && rel.split(sep10)[0] !== "..";
+  const rel = relative13(join46(root, PREFLIGHT_DIR), isAbsolute15(brief) ? brief : join46(root, brief));
+  return rel !== "" && !isAbsolute15(rel) && rel.split(sep10)[0] !== "..";
 }
 function laneKind(name2, generatedBy, preflightBrief) {
   if (generatedBy !== null) {
@@ -11866,7 +12011,7 @@ function createSnapshotBuilder(source) {
       return {
         protocol: UI_PROTOCOL,
         version: source.version,
-        project: basename7(source.root),
+        project: basename5(source.root),
         now: new Date(nowMs).toISOString(),
         lanes: kept.map((k) => k.lane),
         hiddenLanes: hidden,
@@ -12043,7 +12188,7 @@ async function runUi(argv2, ctx) {
     } else {
       const opened = values["no-open"] !== true && await ctx.openUrl(server.url);
       const where = opened ? `http://127.0.0.1:${server.port}/ (opened in your browser)` : server.url;
-      ctx.stdout(`arbab ui: ${basename8(project.root)} at ${where}
+      ctx.stdout(`arbab ui: ${basename6(project.root)} at ${where}
 read-only; Ctrl-C stops it
 `);
       if (!opened && values["no-open"] !== true) ctx.stderr("open the URL above in a browser\n");
@@ -12122,7 +12267,7 @@ var USAGE = {
   integrate: block2(
     [
       "integrate <name> (--lanes a,b,\u2026 | --plan <plan.json>) [--json]",
-      "integrate <name> --adopt <ref> [--base <ref>] [--json]",
+      "integrate <name> --adopt <ref> [--base <branch>] [--json]",
       "integrate <name> --refresh [--json]",
       "integrate <name> --deps-installed <sha> [--json]"
     ],
@@ -12130,7 +12275,7 @@ var USAGE = {
       ["--lanes a,b,\u2026", "merge these lane branches into integrate/<name>, in order"],
       ["--plan <plan.json>", "merge the plan's lane branches by waves"],
       ["--adopt <ref>", "make a new integration whose branch starts at <ref>'s commit, nothing merged"],
-      ["--base <ref>", "with --adopt: its base, which config baseBranch must contain (default baseBranch)"],
+      ["--base <branch>", "with --adopt: the branch it lands into, which config baseBranch must contain (default baseBranch)"],
       ["--refresh", "record the head again after a hand commit or a base merge; merges and installs nothing"],
       ["--deps-installed <sha>", "record that you reviewed and installed changed dependencies at <sha>"],
       JSON_OPT
@@ -12144,7 +12289,7 @@ var USAGE = {
     ["review <name> [--lenses a,b] [--lens-file <name>=<file>]\u2026 [--since <sha>] [--timeout-min <n>] [--json]"],
     [
       ["--lenses a,b", "only these lenses; the others' findings from the same head stay"],
-      ["--lens-file <name>=<file>", "add lens <name>, or replace its text, from <file> (in the project, not .env*) for this run; repeatable"],
+      ["--lens-file <name>=<file>", "add lens <name>, or replace its text, from <file> (in the project, no credential file) for this run; repeatable"],
       ["--since <sha>", "diff from <sha>, an ancestor of the head, instead of the base (a fix round)"],
       timeout("120"),
       JSON_OPT
@@ -12162,7 +12307,7 @@ var USAGE = {
     ["land <name> [--squash] [--message <file>] [--keep-worktrees] [--json]"],
     [
       ["--squash", "one commit instead of a merge (default config landing.squash)"],
-      ["--message <file>", 'the commit message, from a file in the project, not .env* (default "Land <name>")'],
+      ["--message <file>", 'the commit message, from a file in the project, no credential file (default "Land <name>")'],
       ["--keep-worktrees", "skip removing the landed worktrees and branches"],
       JSON_OPT
     ]
@@ -12184,7 +12329,7 @@ var USAGE = {
 
 // src/commands/verify.ts
 import { createHash as createHash5 } from "node:crypto";
-import { join as join46 } from "node:path";
+import { join as join47 } from "node:path";
 var DEFAULT_TIMEOUT_MIN3 = 90;
 var REFS_DIR = ".arbab/refs";
 var REF_SLUG_MAX = 22;
@@ -12241,12 +12386,12 @@ async function runVerify(argv2, ctx) {
     const branch = ref2 ?? "";
     const head = refHead(ctx, project, branch);
     const prefix = refId(branch);
-    const dir = confine(project.root, join46(REFS_DIR, prefix));
+    const dir = confine(project.root, join47(REFS_DIR, prefix));
     target = {
       label: `ref:${branch}`,
       prefix,
-      lanesDir: join46(dir, "lanes"),
-      recordPath: join46(dir, "verify.json"),
+      lanesDir: join47(dir, "lanes"),
+      recordPath: join47(dir, "verify.json"),
       // The branch head is landed code, so the install runs on it: nothing is merged on top.
       start: { base: head },
       owner: { integration: prefix, branch: `refs/heads/${branch}`, head },
@@ -12305,7 +12450,7 @@ async function verifyTarget(ctx, project, target, timeoutMs, json3) {
 }
 var MAX_LISTED = 5;
 function worktreeChanges(ctx, project, lane) {
-  const worktree = join46(project.worktreeRoot, lane);
+  const worktree = join47(project.worktreeRoot, lane);
   const gitCommonDir2 = resolveGitCommonDir(ctx.git, project.root);
   if (gitCommonDir2 === void 0) return `the git directory of ${project.root} could not be resolved, so ${worktree} was not checked`;
   const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: gitCommonDir2 });
@@ -12325,7 +12470,7 @@ function worktreeChanges(ctx, project, lane) {
 import { execFile, execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
 import { closeSync as closeSync7, openSync as openSync7 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join47 } from "node:path";
+import { join as join48 } from "node:path";
 var NOTIFY_TIMEOUT_MS = 5e3;
 var nodeNotifyExec = (file, args, opts, done) => {
   execFile(file, args, { timeout: opts.timeout, windowsHide: true }, (err) => done(err));
@@ -12343,11 +12488,11 @@ function makeNotify(platform, execFileImpl = nodeNotifyExec) {
     } else {
       return Promise.resolve(false);
     }
-    return new Promise((resolve18) => {
+    return new Promise((resolve19) => {
       try {
-        execFileImpl(argv2[0], argv2[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve18(err === null || err === void 0));
+        execFileImpl(argv2[0], argv2[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve19(err === null || err === void 0));
       } catch {
-        resolve18(false);
+        resolve19(false);
       }
     });
   };
@@ -12355,10 +12500,10 @@ function makeNotify(platform, execFileImpl = nodeNotifyExec) {
 function makeReadStdin(stdin) {
   return () => {
     if (stdin.isTTY === true) return Promise.resolve("");
-    return new Promise((resolve18, reject) => {
+    return new Promise((resolve19, reject) => {
       const chunks = [];
       stdin.on("data", (chunk) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
-      stdin.once("end", () => resolve18(Buffer.concat(chunks).toString("utf8")));
+      stdin.once("end", () => resolve19(Buffer.concat(chunks).toString("utf8")));
       stdin.once("error", (err) => reject(new ArbabError("io", `cannot read stdin: ${err.message}`, { cause: err })));
     });
   };
@@ -12368,12 +12513,12 @@ function makeOpenUrl(platform, spawnFn = spawn3) {
   const opener = platform === "darwin" ? "open" : platform === "linux" ? "xdg-open" : null;
   return (url) => {
     if (opener === null) return Promise.resolve(false);
-    return new Promise((resolve18) => {
-      const timer = setTimeout(() => resolve18(true), OPENER_WAIT_MS);
+    return new Promise((resolve19) => {
+      const timer = setTimeout(() => resolve19(true), OPENER_WAIT_MS);
       timer.unref();
       const settle = (opened) => {
         clearTimeout(timer);
-        resolve18(opened);
+        resolve19(opened);
       };
       let child2;
       try {
@@ -12395,7 +12540,7 @@ function makeSpawnShepherd(execPath, scriptPath2, env2) {
   return (root, lane, mode) => {
     const laneDir = runPaths(confine(root, loadConfig(root).runsRoot), lane).laneDir;
     ensureDir(laneDir);
-    const log = openSync7(join47(laneDir, "shepherd.log"), "a");
+    const log = openSync7(join48(laneDir, "shepherd.log"), "a");
     try {
       const child2 = spawn3(execPath, shepherdArgv(scriptPath2, root, lane, mode), {
         cwd: root,
@@ -12437,8 +12582,8 @@ function defaultContext(opts) {
     stdout: (text2) => process.stdout.write(text2),
     stderr: (text2) => process.stderr.write(text2),
     hostEnv: { ...process.env },
-    home: join47(home, ".arbab"),
-    claudeHome: join47(home, ".claude"),
+    home: join48(home, ".arbab"),
+    claudeHome: join48(home, ".claude"),
     clock: systemClock,
     sleep,
     alive: isAlive,
@@ -12519,9 +12664,9 @@ var HELP = `usage: arbab [-C <dir>] <command> [options]
                                           branches stay), and landed integrations' worktrees and branches
   integrate <name> (--lanes a,b,\u2026 | --plan <plan.json>) [--json]
                                           merge lane branches into integrate/<name>, in order or by plan waves
-  integrate <name> --adopt <ref> [--base <ref>] [--json]
-                                          make an integration of an existing branch; the base must be contained in
-                                          config baseBranch
+  integrate <name> --adopt <ref> [--base <branch>] [--json]
+                                          make an integration of an existing branch; the base must be a branch
+                                          that config baseBranch contains
   integrate <name> --refresh [--json]     record the integration's head again after a hand commit or a base merge;
                                           merges and installs nothing
   integrate <name> --deps-installed <sha> [--json]
@@ -12555,7 +12700,7 @@ function globalDir(argv2, cwd) {
   const dir = argv2[1];
   if (dir === void 0 || dir === "") throw new ArbabError("usage", "-C needs a directory");
   if (dir === "-C" || argv2[2] === "-C") throw new ArbabError("usage", "-C given twice");
-  const abs = resolve17(cwd, dir);
+  const abs = resolve18(cwd, dir);
   const stat = statSync8(abs, { throwIfNoEntry: false });
   if (stat === void 0) throw new ArbabError("usage", `-C ${JSON.stringify(dir)}: no such directory ${abs}`);
   if (!stat.isDirectory()) throw new ArbabError("usage", `-C ${JSON.stringify(dir)}: not a directory: ${abs}`);
@@ -12606,7 +12751,7 @@ ${HELP}`);
 function readVersion2() {
   if (true) return "0.1.0";
   try {
-    const pkg = JSON.parse(readFileSync9(new URL("../package.json", import.meta.url), "utf8"));
+    const pkg = JSON.parse(readFileSync10(new URL("../package.json", import.meta.url), "utf8"));
     return typeof pkg.version === "string" ? pkg.version : "0.0.0";
   } catch {
     return "0.0.0";

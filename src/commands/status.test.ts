@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readAttempt, runPaths } from "../registry";
+import { readAttempt, readState, runPaths, writeState } from "../registry";
 import type { StatusRow } from "../types";
 import { openProject } from "./project";
 import { laneStatus, liveSummary, runStatus } from "./status";
@@ -9,6 +9,14 @@ import { NOW_MS, SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } fro
 
 let p: TestProject;
 afterEach(() => p?.dispose());
+
+const OWNER = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+/** Rewrites the lane's shepherd.json with an owner, as a §21 shepherd writes it. */
+function own(t: TestProject, lane: string, owner: string | null): void {
+  const file = runPaths(t.runsRoot, lane).shepherdFile;
+  writeFileSync(file, JSON.stringify({ pid: SHEPHERD_PID, startedAt: "2026-10-09T11:00:00.000Z", owner }));
+}
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
 const stream = [
@@ -107,7 +115,25 @@ describe("runStatus", () => {
     expect(Object.keys(out)).toEqual(["lanes", "quota"]);
     expect(out.lanes.map((r) => [r.lane, r.state, r.endState])).toEqual([["demo", "finished", "success"]]);
     expect(Object.keys(out.lanes[0]!).sort()).toEqual(
-      ["attempt", "costDeltaUsd", "costUsd", "effort", "elapsedMs", "endState", "failedTotal", "fiveHour", "lane", "lastTool", "sevenDay", "state", "toolCalls", "turns"].sort(),
+      [
+        "attempt",
+        "costDeltaUsd",
+        "costUsd",
+        "effort",
+        "elapsedMs",
+        "endState",
+        "failedTotal",
+        "fiveHour",
+        "lane",
+        "lastTool",
+        "owner",
+        "reason",
+        "sevenDay",
+        "state",
+        "tokens",
+        "toolCalls",
+        "turns",
+      ].sort(),
     );
     expect(out.quota.hold).toMatchObject({ hold: true, until: resetsAt });
   });
@@ -123,6 +149,80 @@ describe("runStatus", () => {
     mkdirSync(join(p.runsRoot, "demo"), { recursive: true });
     expect(await runStatus(["demo"], p.ctx)).toBe(0);
     expect(p.stderr()).toContain("demo: no state yet");
+  });
+
+  it("gives each row its owner, the state's reason and the summary's tokens", async () => {
+    p = makeProject();
+    const tokens = { input: 1200, cacheCreation: 5000, cacheRead: 900_000, output: 35_000 };
+    writeLaneRun(p.runsRoot, "demo", { state: "finished", endState: "killed:wall", summary: { state: "killed:wall", costUsd: null, tokens } });
+    writeState(p.runsRoot, { ...readState(p.runsRoot, "demo")!, reason: "wall clock 60 min" });
+    own(p, "demo", OWNER);
+    expect(await runStatus(["--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as { lanes: StatusRow[] };
+    expect(out.lanes[0]).toMatchObject({ owner: OWNER, reason: "wall clock 60 min", tokens, costUsd: null });
+    p.out.length = 0;
+    expect(await runStatus([], p.ctx)).toBe(0);
+    const [header, row] = p.stdout().split("\n");
+    expect(header).toMatch(/\s+cost\s+quota\s+why$/);
+    expect(row).toMatch(/^demo\s+finished \(killed:wall\).*\s41\.2k tok\s+—\s+wall clock 60 min$/);
+  });
+
+  it("--active leaves finished lanes out and keeps orphaned ones", async () => {
+    p = makeProject();
+    p.alive.add(SHEPHERD_PID);
+    writeLaneRun(p.runsRoot, "busy", { state: "running", started: {}, stream });
+    writeLaneRun(p.runsRoot, "done", { state: "finished", endState: "success", summary: { state: "success" } });
+    writeLaneRun(p.runsRoot, "lost", { state: "running", shepherdPid: 31337 });
+    writeLaneRun(p.runsRoot, "waiting", { state: "held" });
+    expect(await runStatus(["--active", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as { lanes: StatusRow[] };
+    expect(out.lanes.map((r) => [r.lane, r.state])).toEqual([
+      ["busy", "running"],
+      ["lost", "orphaned"],
+      ["waiting", "held"],
+    ]);
+    p.out.length = 0;
+    expect(await runStatus(["--active", "done"], p.ctx)).toBe(0);
+    expect(p.stdout()).toMatch(/^no lanes\n/);
+  });
+
+  it("--mine keeps this session's runs and the ownerless ones", async () => {
+    p = makeProject();
+    for (const lane of ["mine", "theirs", "old", "outside"]) writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success" });
+    own(p, "mine", OWNER);
+    own(p, "theirs", "99999999-8888-7777-6666-555555555555");
+    own(p, "outside", null);
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    expect(await runStatus(["--mine", "--json"], p.ctx)).toBe(0);
+    const lanes = (JSON.parse(p.stdout()) as { lanes: StatusRow[] }).lanes;
+    expect(lanes.map((r) => [r.lane, r.owner])).toEqual([
+      ["mine", OWNER],
+      ["old", null],
+      ["outside", null],
+    ]);
+    // Named lanes are filtered the same way.
+    p.out.length = 0;
+    expect(await runStatus(["--mine", "--json", "theirs"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { lanes: StatusRow[] }).lanes).toEqual([]);
+    // Outside Claude Code there is no session: every run is ours.
+    p.out.length = 0;
+    p.ctx.hostEnv = {};
+    expect(await runStatus(["--mine", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { lanes: StatusRow[] }).lanes).toHaveLength(4);
+  });
+
+  it("--mine and --active combine", async () => {
+    p = makeProject();
+    p.alive.add(SHEPHERD_PID);
+    writeLaneRun(p.runsRoot, "mine-busy", { state: "running" });
+    writeLaneRun(p.runsRoot, "mine-done", { state: "finished", endState: "success" });
+    writeLaneRun(p.runsRoot, "theirs-busy", { state: "running" });
+    own(p, "mine-busy", OWNER);
+    own(p, "mine-done", OWNER);
+    own(p, "theirs-busy", "someone-else");
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: OWNER };
+    expect(await runStatus(["--mine", "--active", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { lanes: StatusRow[] }).lanes.map((r) => r.lane)).toEqual(["mine-busy"]);
   });
 
   it("rejects unknown lanes, invalid names and unknown flags", async () => {

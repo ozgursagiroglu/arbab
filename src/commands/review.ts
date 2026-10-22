@@ -7,7 +7,8 @@
 // named like a built-in or config lens replaces that lens's text. Then one skeptic lane per lens with MEDIUM or HIGH
 // findings, <name>-skeptic-<lens>, tries to refute them; its verdicts apply to its own lens's findings only. Refuses,
 // like verify, while a dependency manifest changed and no human confirmed the install. A re-run waits for, or adopts,
-// lanes still running or finished on the same head after an earlier review stopped waiting.
+// lanes still running or finished on the same head after an earlier review stopped waiting. While it waits,
+// ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Writes .arbab/integrations/<name>/review.json (ReviewRecord) and the same record as reviews/<round>.json. With
 // --lenses, the previous review.json's other lenses (entries, skeptics, findings) are kept when it is of the same head.
 // Text: one line per lane, `<lens>  review|skeptic  <lane>  <end state>[  <n> paths]`, then the findings by verdict:
@@ -16,7 +17,8 @@
 // Exit 0 when every lane of this run succeeded, 1 when one did not (review.json is written either way), 3 when the
 // reviewers did not finish in time (nothing written) or the skeptics did not (review.json keeps their findings
 // unverified).
-import { isAbsolute } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename } from "node:path";
 import {
   applyVerdicts,
   assertReviewLaneNames,
@@ -69,15 +71,45 @@ export function reviewLenses(option: string | undefined, configLenses: Record<st
 }
 
 /**
- * The --lens-file lenses by name, each text read from its file: an absolute path, or one relative to the project root
- * (and confined to it). Nothing is written to the config.
+ * Where a lens file is: inside the project root by its path and by its real path, so neither an absolute path nor a
+ * symlink pulls a file from elsewhere (a credential file) into a reviewer's brief; never a .env file.
+ */
+function lensFilePath(root: string, name: string, file: string): string {
+  const refuse = (why: string): ArbabError => new ArbabError("usage", `--lens-file ${name}=${file}: ${why}`);
+  const isEnv = (path: string): boolean => basename(path).startsWith(".env");
+  let path: string;
+  try {
+    path = confine(root, file);
+  } catch {
+    throw refuse("the file must be inside the project root");
+  }
+  if (isEnv(path)) throw refuse("a .env file is not a lens");
+  let real: string;
+  try {
+    real = realpathSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new ArbabError("usage", `the file of lens ${name}, ${file}, does not exist`);
+    throw new ArbabError("usage", `cannot read the file of lens ${name}, ${file}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    confine(realpathSync(root), real);
+  } catch {
+    throw refuse("the file must be inside the project root, and a symlink in it may not lead out");
+  }
+  if (isEnv(real)) throw refuse("a .env file is not a lens");
+  return real;
+}
+
+/**
+ * The --lens-file lenses by name, each text read from its file, a path inside the project root (lensFilePath).
+ * Nothing is written to the config.
  */
 export function readLensFiles(root: string, options: readonly string[]): Record<string, string> {
   const lenses: Record<string, string> = {};
   for (const option of options) {
     const { name, file } = parseLensFileOption(option);
     if (Object.hasOwn(lenses, name)) throw new ArbabError("usage", `--lens-file names lens ${name} twice`);
-    const path = isAbsolute(file) ? file : confine(root, file);
+    const path = lensFilePath(root, name, file);
     let text: string | null;
     try {
       text = readText(path);

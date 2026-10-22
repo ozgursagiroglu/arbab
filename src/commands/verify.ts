@@ -7,17 +7,18 @@
 // stream's tool results for those exact command lines, never from the model's report.
 // Refuses while a dependency manifest changed and no human confirmed the install.
 // A re-run waits for, or adopts, a verify lane still running or finished on the same head after an earlier verify
-// stopped waiting (DESIGN.md §21).
+// stopped waiting (DESIGN.md §21). While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Writes .arbab/integrations/<name>/verify.json (VerifyRecord, with a `reason` when it failed for something other than
 // an exit code: the lane ran on another commit than the head, or its worktree has changes or fails verification after
 // the run).
-// --ref <branch>: the check after landing (§21). The same lane, ref-<slug>-verify, starts on the branch's head with no
-// integration; the record, named ref:<branch>, goes to .arbab/refs/<slug>/verify.json.
+// --ref <branch>: the check after landing (§21). The same lane, <id>-verify, starts on the branch's head with no
+// integration; the record, named ref:<branch>, goes to .arbab/refs/<id>/verify.json. <id> is ref-<slug>-<hash> (refId).
 // Text: one line per command, `exit <n>  <kind>  <command>` or `missing  <kind>  <command>`, then
 // `verify <name>: passed|failed at <head> (lane <lane> <end state>)[: <reason>]`.
 // --json: {"timedOut": boolean, "endState": string | null, "verify": VerifyRecord | null}
 // Exit 0 when every command exited 0 and nothing gave a reason, 1 otherwise (and on usage errors, including no
 // configured gates), 3 when the lane did not finish in time.
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { reviewLaneFiles, type LaneStart } from "../review";
 import { verifyWorktreeGit, worktreeStatus } from "../run";
@@ -47,16 +48,26 @@ const DEFAULT_TIMEOUT_MIN = 90;
 
 /** Where `verify --ref` keeps its lanes and records, under the project root. */
 export const REFS_DIR = ".arbab/refs";
-const REF_SLUG_MAX = 30;
+const REF_SLUG_MAX = 22;
+const REF_HASH_HEX = 6;
 
 export function formatGateResult(result: GateResult): string {
   const code = result.exitCode === null ? "missing" : `exit ${result.exitCode}`;
   return `${code.padEnd(8)}  ${result.kind.padEnd(5)}  ${result.command}`;
 }
 
-/** A branch name as a lane-name part: lowercased, every character outside [a-z0-9] turned into `-`, at most 30. */
+/** A branch name as a lane-name part: lowercased, every character outside [a-z0-9] turned into `-`, at most 22. */
 export function refSlug(branch: string): string {
   return branch.toLowerCase().replace(/[^a-z0-9]/g, "-").slice(0, REF_SLUG_MAX);
+}
+
+/**
+ * `ref-<slug>-<6 hex of sha1(branch)>`: the lane prefix and record directory of `verify --ref <branch>`. The slug drops
+ * case, characters and length, so two branches can share one (Release/Next and release-next); the hash keeps them apart.
+ */
+export function refId(branch: string): string {
+  const hash = createHash("sha1").update(branch).digest("hex").slice(0, REF_HASH_HEX);
+  return `ref-${refSlug(branch)}-${hash}`;
 }
 
 /** The commit refs/heads/<branch> points at, exactly that branch (no revision syntax); a usage error when none. */
@@ -117,9 +128,8 @@ export async function runVerify(argv: string[], ctx: CommandContext): Promise<nu
   } else {
     const branch = ref ?? "";
     const head = refHead(ctx, project, branch);
-    const slug = refSlug(branch);
-    const prefix = `ref-${slug}`;
-    const dir = confine(project.root, join(REFS_DIR, slug));
+    const prefix = refId(branch);
+    const dir = confine(project.root, join(REFS_DIR, prefix));
     target = {
       label: `ref:${branch}`,
       prefix,

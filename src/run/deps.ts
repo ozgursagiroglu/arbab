@@ -24,17 +24,38 @@ export const DEPENDENCY_MANIFESTS: readonly string[] = [
   ".yarnrc.yml",
   ".pnpmfile.cjs",
   ".pnpmfile.mjs",
+  // bun's install config: registries, scopes.
+  "bunfig.toml",
+  // yarn PnP's loader, which yarn loads into the scripts it runs.
+  ".pnp.cjs",
+  ".pnp.loader.mjs",
 ];
 
 const MANIFEST_NAMES = new Set(DEPENDENCY_MANIFESTS.map((name) => name.toLowerCase()));
 
 /**
- * Whether a repository path names a dependency manifest, at any depth. Case-insensitive: on a case-insensitive file
- * system `Package.json` is the file npm opens.
+ * Patches applied to dependencies before their build scripts run (pnpm patchedDependencies, yarn patches,
+ * patch-package's patches/*.patch).
+ */
+const PATCH_SUFFIX = ".patch";
+
+/** yarn berry runs the release `yarnPath` names and loads its plugins on every install. */
+const YARN_DIRECTORIES: readonly string[] = ["releases", "plugins", "patches"];
+
+/**
+ * Whether a repository path names a dependency manifest, at any depth: a name in DEPENDENCY_MANIFESTS, a `*.patch`
+ * file, or a file under `.yarn/releases/`, `.yarn/plugins/` or `.yarn/patches/`. Case-insensitive: on a
+ * case-insensitive file system `Package.json` is the file npm opens.
  */
 export function isDependencyManifest(path: string): boolean {
-  const base = path.split("/").at(-1) ?? "";
-  return MANIFEST_NAMES.has(base.toLowerCase());
+  const segments = path.toLowerCase().split("/");
+  const base = segments.at(-1) ?? "";
+  if (MANIFEST_NAMES.has(base) || base.endsWith(PATCH_SUFFIX)) return true;
+  // Directories only: the last segment is the file itself.
+  for (let i = 0; i + 2 < segments.length; i++) {
+    if (segments[i] === ".yarn" && YARN_DIRECTORIES.includes(segments[i + 1] ?? "")) return true;
+  }
+  return false;
 }
 
 /** The package.json fields a package manager reads when it installs. */
@@ -60,10 +81,25 @@ const INSTALL_FIELDS: readonly string[] = [
   "cpu",
   "libc",
   "trustedDependencies",
+  // It can make the package manager fetch and use another runtime.
+  "devEngines",
 ];
 
-/** The scripts an install runs. */
-const INSTALL_SCRIPTS: readonly string[] = ["preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare", "prepublish"];
+/**
+ * The scripts an install runs. npm 7 and later run `dependencies` after an install changes node_modules; pnpm runs
+ * `pnpm:devPreinstall` from the root package.json before installing.
+ */
+const INSTALL_SCRIPTS: readonly string[] = [
+  "preinstall",
+  "install",
+  "postinstall",
+  "preprepare",
+  "prepare",
+  "postprepare",
+  "prepublish",
+  "dependencies",
+  "pnpm:devPreinstall",
+];
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 

@@ -969,14 +969,15 @@ describe("adoptIntegration", () => {
   });
 
   it("refuses a --base main does not contain, before creating anything", () => {
-    const sha = feature({ "f.txt": "f\n" });
+    feature({ "f.txt": "f\n" });
     git(["branch", "arbab/lane-x", "feature"]);
     git(["branch", "integrate/other", "feature"]);
     const p = integrationPaths(project.root, config(), "m3");
-    for (const base of ["arbab/lane-x", "integrate/other", "feature", sha]) {
+    for (const base of ["arbab/lane-x", "integrate/other", "feature"]) {
       const a = adopt("feature", { base });
       const err = caught(a.result);
       expect(err, base).toMatchObject({ code: "usage", message: expect.stringMatching(new RegExp(`^--base ${base} is not contained in main: arbab installs dependencies only on a commit of main`)) });
+      expect(err.message, base).toMatch(/Adopt against main, or a branch it contains$/);
       expect(a.calls.some((args) => args.includes("add") || args.includes("prune")), base).toBe(false);
       expect(a.deps).toEqual([]);
     }
@@ -984,6 +985,34 @@ describe("adoptIntegration", () => {
     expect(existsSync(p.worktree)).toBe(false);
     expect(existsSync(p.integration)).toBe(false);
     expect(existsSync(p.dir)).toBe(false);
+  });
+
+  it("refuses a --base that is not a branch, even a commit main contains, before creating anything", () => {
+    const main = git(["rev-parse", "main"]).trim();
+    feature({ "f.txt": "f\n" });
+    git(["tag", "v1", "main"]);
+    const p = integrationPaths(project.root, config(), "m3");
+    for (const base of [main, main.slice(0, 12), "v1", "main~0", "refs/heads/main"]) {
+      const a = adopt("feature", { base });
+      expect(caught(a.result), base).toMatchObject({
+        code: "usage",
+        message: `--base ${base} is not a branch: land merges the integration into its base, so the base must be a branch`,
+      });
+      expect(a.calls.some((args) => args.includes("add") || args.includes("prune")), base).toBe(false);
+      expect(a.deps).toEqual([]);
+    }
+    expect(git(["branch", "--list", "integrate/m3"])).toBe("");
+    expect(existsSync(p.worktree)).toBe(false);
+    expect(existsSync(p.integration)).toBe(false);
+    expect(existsSync(p.dir)).toBe(false);
+  });
+
+  it("refuses a baseBranch that is not a branch", () => {
+    feature({ "f.txt": "f\n" });
+    const main = git(["rev-parse", "main"]).trim();
+    const a = adopt("feature", { cfg: config({ baseBranch: main }) });
+    expect(caught(a.result)).toMatchObject({ code: "usage", message: expect.stringMatching(new RegExp(`^baseBranch ${main} is not a branch: land merges`)) });
+    expect(a.calls.some((args) => args.includes("add"))).toBe(false);
   });
 
   it("refuses a fork point the trust check does not trust, before creating anything", () => {

@@ -1,6 +1,6 @@
 // arbab integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
 // arbab integrate <name> --deps-installed <sha> [--json]
-// arbab integrate <name> --adopt <ref> [--base <ref>] [--json]
+// arbab integrate <name> --adopt <ref> [--base <branch>] [--json]
 // arbab integrate <name> --refresh [--json]
 //
 // Merges the lanes' branches into integrate/<name>, in the worktree .arbab/worktrees/integrate-<name> (DESIGN.md
@@ -13,7 +13,8 @@
 // integrate printed; it refuses unless the record and the branch are both still at <sha>.
 // --adopt <ref> makes a new integration whose branch is <ref>'s commit, with nothing merged, based on --base or
 // config.baseBranch (DESIGN.md §21); refused for an existing or landed name, a ref that names no commit, a --base
-// config.baseBranch does not contain (the install runs at the fork point), and with --lanes or --plan. Text: `adopted
+// that is not a branch (land merges into it) or that config.baseBranch does not contain (the install runs at the fork
+// point), and with --lanes or --plan. Text: `adopted
 // <ref> as <branch> (base <base> at <sha>)`, then the lines above.
 // --refresh records an existing, unlanded integration's head again after a hand commit or a base merge in its
 // worktree: it merges nothing and runs no dependencies; refused without a record or worktree, for a landed

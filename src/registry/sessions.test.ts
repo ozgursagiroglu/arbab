@@ -213,7 +213,7 @@ describe("sessionId and sessionText", () => {
   it("ends a land warning with what to do after the landing", () => {
     expect(sessionText(activity(OTHER, { lanes: ["a"] }), "land")).toBe(
       "Session bbbbbbbb runs lane a in this project, whose base this landing moves. " +
-        "This landing goes ahead: tell them what landed. " +
+        "This landing went ahead: tell them what landed. " +
         "Claude Code's ListAgents lists sessions by name and SendMessage reaches them.",
     );
   });

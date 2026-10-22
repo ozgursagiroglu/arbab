@@ -761,8 +761,9 @@ export interface ReadinessReport {
    */
   reviewCarriedOverFrom?: string;
   /**
-   * Other sessions this landing affects, also listed under risks (id `session:<owner>`). Empty means none; absent
-   * when the machine registry could not be read (a `session:unknown` risk says so) and before 0.2.1. `land --json`'s
+   * Other sessions this landing affects, also listed under risks (id `session:<first 8 characters of the owner>`, or
+   * `session:outside` for processes started outside Claude Code). Empty means none; absent when the machine registry
+   * could not be read (one `session:unknown` risk says so instead) and before 0.2.1. `land --json`'s
    * field of the same name means the same: empty for none, absent when it cannot tell.
    */
   otherSessions?: SessionActivity[];

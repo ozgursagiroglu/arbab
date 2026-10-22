@@ -112,7 +112,7 @@ export function sessionId(activity: SessionActivity): string {
 const counted = (n: number, word: string): string => `${n === 1 ? "a" : n} ${word}${n === 1 ? "" : "s"}`;
 const named = (names: readonly string[], word: string): string => `${word}${names.length === 1 ? "" : "s"} ${names.join(", ")}`;
 
-/** One activity as text; the ending differs because readiness comes before a landing and `land` warns while it merges. */
+/** One activity as text; the ending differs because readiness comes before a landing and `land` warns once it merged. */
 export function sessionText(activity: SessionActivity, when: "readiness" | "land"): string {
   const outside = activity.owner === null;
   const who = outside ? "Processes started outside Claude Code" : `Session ${activity.owner?.slice(0, 8) ?? ""}`;
@@ -130,7 +130,7 @@ export function sessionText(activity: SessionActivity, when: "readiness" | "land
   }
   const ending =
     when === "land"
-      ? "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them."
+      ? "This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them."
       : "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.";
   return `${who} ${clauses.join(", and ")}. ${ending}`;
 }

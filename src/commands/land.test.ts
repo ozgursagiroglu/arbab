@@ -101,6 +101,10 @@ describe("changedPaths and sessionsAffected", () => {
     p.ok(["config", "diff.relative", "true"]);
     expect(p.ok(["diff", "--name-only", "HEAD~1", "HEAD"], app)).toBe("dist/arbab.mjs\n");
     expect(changedPaths(p.git, app, ["HEAD~1", "HEAD"])).toEqual(changed);
+    // git before 2.28 rejects --no-relative, as this fake does; changedPaths does not pass it.
+    const oldGit: typeof p.git = (args, cwd) =>
+      args.includes("--no-relative") ? { code: 129, stdout: "", stderr: "error: invalid option: --no-relative" } : p.git(args, cwd);
+    expect(changedPaths(oldGit, app, ["HEAD~1", "HEAD"])).toEqual(changed);
     registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: T, runner: join(app, "dist", "arbab.mjs") });
     p.alive.add(7004);
     expect(sessionsAffected(p.ctx, app, changed)).toEqual([
@@ -332,9 +336,9 @@ describe("runLand", () => {
     expect(p.ok(["log", "-1", "--format=%P", "main"])).toContain(head);
     expect(p.stderr()).toBe(
       "warning: Session bbbbbbbb runs lane theirs and a waiter in this project, whose base this landing moves. " +
-        "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n" +
+        "This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n" +
         "warning: Processes started outside Claude Code run this project's a.txt in /work/elsewhere, which this landing " +
-        "replaces. This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n",
+        "replaces. This landing went ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n",
     );
     expect(p.stdout()).toMatch(/^landed rel: /);
   });
@@ -650,6 +654,9 @@ describe("runLand", () => {
 
   it("fails with a git error and aborts when the merge fails", async () => {
     ({ t: p } = await ready());
+    // A failed landing says nothing about the other sessions it would have affected.
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    p.alive.add(7002);
     const real = p.ctx.git;
     const calls: string[][] = [];
     // The base is in the head, so a real merge cannot conflict; git failing it stands in.
@@ -665,6 +672,7 @@ describe("runLand", () => {
     expect(calls).toContainEqual([...untrustedTree(), "merge", "--abort"]);
     expect(calls.find((args) => args.includes("--no-ff"))?.slice(0, untrustedTree().length + 1)).toEqual([...untrustedTree(), "merge"]);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+    expect(p.stderr()).toBe("");
   });
 });
 
@@ -831,6 +839,9 @@ describe("runLand --squash and --message", () => {
 
   it("resets the squash and fails with a git error when the commit fails", async () => {
     ({ t: p } = await ready());
+    // Nor does it say it cannot tell which sessions it affects: a file where the shepherds' directory belongs.
+    mkdirSync(p.home, { recursive: true });
+    writeFileSync(join(p.home, "shepherds"), "");
     const main = p.ok(["rev-parse", "main"]).trim();
     const real = p.ctx.git;
     const calls: string[][] = [];
@@ -849,6 +860,7 @@ describe("runLand --squash and --message", () => {
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(p.ok(["status", "--porcelain"])).toBe("");
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
+    expect(p.stderr()).toBe("");
   });
 });
 

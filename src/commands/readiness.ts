@@ -3,18 +3,23 @@
 // The FR-21 readiness report of an integration (DESIGN.md §12, §17): verified, skipped (each needing a waiver by its
 // id) and risks, from integration.json, verify.json, review.json and the latest report.json of each merged lane and of
 // each lane that worked in a merged lane's worktree. The tier defaults to config landing.tier.
+// A review made before a clean merge of the base still counts (DESIGN.md §21); config hostGates count once
+// host-checks.json passed on the head. --waive needs a terminal: waivers are the human's.
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
-import { computeReadiness, renderReadiness, type ReadinessInput } from "../readiness";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
+import { computeReadiness, renderReadiness, reviewCarriesOver, type ReadinessInput, type ReviewRound } from "../readiness";
 import { listLanes, runPaths } from "../registry";
 import { lensNames } from "../review";
-import { TIERS, type Tier } from "../types";
+import { HOST_CHECKS_FILE, REVIEW_HISTORY_DIR, TIERS, type Tier } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson, writeJsonAtomic, writeTextAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
 import { isoAt } from "../util/proc";
 import type { CommandContext } from "./context";
+import { readHostCheckRecord } from "./host-check";
 import { splitList } from "./integrate";
 import { latestReport, openIntegration } from "./integration";
 import { onePositional, openProject, parse, printJson } from "./project";
@@ -49,6 +54,35 @@ export function laneReports(runsRoot: string, merged: readonly string[]): Readin
   return out;
 }
 
+const ROUND_FILE = /^([1-9]\d{0,5})\.json$/;
+
+/**
+ * Each readable reviews/<round>.json, by round. The history only informs the report, so a file that does not parse or
+ * is not a review of this integration is left out rather than failing it.
+ */
+export function reviewRounds(dir: string, name: string): ReviewRound[] {
+  let files: string[];
+  try {
+    files = readdirSync(dir);
+  } catch {
+    // No review yet, or one from before §21.
+    return [];
+  }
+  const rounds: ReviewRound[] = [];
+  for (const file of files) {
+    const match = ROUND_FILE.exec(file);
+    if (match === null) continue;
+    let record: ReturnType<typeof readReviewRecord>;
+    try {
+      record = readReviewRecord(join(dir, file), name);
+    } catch {
+      continue;
+    }
+    if (record !== null) rounds.push({ round: Number(match[1]), findings: record.findings });
+  }
+  return rounds.sort((a, b) => a.round - b.round);
+}
+
 export async function runReadiness(argv: string[], ctx: CommandContext): Promise<number> {
   const { values, positionals } = parse("readiness", {
     args: argv,
@@ -56,21 +90,36 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     allowPositionals: true,
   });
   const name = assertValidName(onePositional("readiness", positionals, "name"), "integration");
+  // Waivers are the human's: an orchestrator once waived review six times on its own. Its shell has no terminal.
+  if (values.waive !== undefined && !ctx.interactive) {
+    throw new ArbabError(
+      "usage",
+      "--waive is the human's decision: run it yourself in a terminal, after reading what each skipped item leaves unchecked",
+    );
+  }
   const project = openProject(ctx);
   const tier = parseTier(values.tier, project.config.landing.tier);
   const { paths, record } = openIntegration(project, name);
+  const review = readReviewRecord(paths.review, name);
+  const base = project.config.baseBranch;
+  const carried =
+    review !== null && review.headSha !== record.headSha && reviewCarriesOver(ctx.git, project.root, review.headSha, record.headSha, base);
 
   const report = computeReadiness({
     name,
     tier,
     integration: record,
     verify: readVerifyRecord(paths.verify, name),
-    review: readReviewRecord(paths.review, name),
+    review,
     laneReports: laneReports(project.runsRoot, [...new Set(record.merged.map((m) => m.lane))]),
     configLenses: lensNames(project.config.review.lenses),
     smokeConfigured: project.config.verify.smoke !== null,
     waivers: values.waive === undefined ? [] : splitList(values.waive),
     now: isoAt(ctx.clock),
+    reviewCarryOver: carried && review !== null ? { from: review.headSha, base } : null,
+    hostGates: project.config.hostGates,
+    hostChecks: readHostCheckRecord(join(paths.dir, HOST_CHECKS_FILE), name),
+    reviewRounds: reviewRounds(join(paths.dir, REVIEW_HISTORY_DIR), name),
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { IntegrationRecord, ReviewFinding, ReviewRecord, Tier, VerifyRecord } from "../types";
-import { computeReadiness, renderReadiness } from "./index";
+import type { HostCheckRecord, IntegrationRecord, ReviewFinding, ReviewRecord, Tier, VerifyRecord } from "../types";
+import { computeReadiness, renderReadiness, roundsLine } from "./index";
 import type { ReadinessInput } from "./index";
 
 const HEAD = "a".repeat(40);
@@ -312,7 +312,7 @@ describe("computeReadiness: verified", () => {
 });
 
 describe("computeReadiness: risks", () => {
-  it("every confirmed finding and each unverified MEDIUM+ one, not refuted ones", () => {
+  it("every confirmed finding, then each unverified MEDIUM+ one, not refuted ones", () => {
     const findings = [
       finding({ id: "correctness-1" }),
       finding({ id: "security-1", lens: "security", severity: "MEDIUM", verdict: "unverified", line: undefined }),
@@ -323,8 +323,57 @@ describe("computeReadiness: risks", () => {
     ];
     expect(computeReadiness(input({ review: review({ findings }) })).risks).toEqual([
       { id: "finding:correctness-1", text: "correctness-1: Off by one (src/x.ts:3) — HIGH, confirmed" },
-      { id: "finding:security-1", text: "security-1: Off by one (src/x.ts) — MEDIUM, unverified" },
       { id: "finding:correctness-3", text: "correctness-3: Off by one (src/x.ts:3) — LOW, confirmed" },
+      { id: "finding:security-1", text: "security-1: Off by one (src/x.ts) — MEDIUM, unverified" },
+    ]);
+  });
+
+  it("orders risks by weight: findings, manifests, host gates, stale and waived items, lane notes", () => {
+    const merged = [{ lane: "lane-a", branch: "arbab/lane-a", sha: "d".repeat(40), manifests: ["package.json"] }];
+    const report = computeReadiness(
+      input({
+        integration: integration({ merged, manifests: ["package.json"], depsConfirmed: true }),
+        verify: verify({ headSha: OLD }),
+        review: review({
+          findings: [
+            finding({ id: "security-1", lens: "security", severity: "MEDIUM", verdict: "unverified" }),
+            finding({ id: "correctness-2", severity: "LOW", verdict: "unverified", title: "Typo" }),
+            finding({ id: "correctness-1" }),
+          ],
+        }),
+        laneReports: [{ lane: "lane-a", report: { open_questions: ["Q"], not_verified: [] } }],
+        hostGates: [["docker", "build", "."]],
+        waivers: ["nope"],
+      }),
+    );
+    expect(report.risks.map((item) => item.id)).toEqual([
+      "finding:correctness-1",
+      "finding:security-1",
+      "findings:low-unverified",
+      "manifest:package.json",
+      "host-gates",
+      "stale:verify",
+      "waiver:nope",
+      "open_questions:lane-a:1",
+    ]);
+  });
+
+  it("identical risk texts collapse to the first", () => {
+    const merged = ["lane-a", "lane-b"].map((lane) => ({ lane, branch: `arbab/${lane}`, sha: "d".repeat(40), manifests: [] }));
+    const report = computeReadiness(
+      input({
+        integration: integration({ merged }),
+        laneReports: [
+          { lane: "lane-a", report: { open_questions: ["Q", "Q"], not_verified: [] } },
+          { lane: "lane-b", report: "broken" },
+          { lane: "x", report: "broken", worktree: "lane-b" },
+        ],
+      }),
+    );
+    expect(report.risks).toEqual([
+      { id: "open_questions:lane-a:1", text: "lane-a (open question): Q" },
+      { id: "report:lane-b", text: "lane-b: the report is missing or not an object" },
+      { id: "report:x", text: "x: the report is missing or not an object" },
     ]);
   });
 
@@ -437,6 +486,169 @@ describe("computeReadiness: risks", () => {
   });
 });
 
+describe("computeReadiness: a review carried over a clean base merge", () => {
+  it("counts the review of the earlier head, says so, and never carries verify over", () => {
+    const report = computeReadiness(
+      input({
+        verify: verify({ headSha: OLD }),
+        review: review({ headSha: OLD, findings: [finding()] }),
+        reviewCarryOver: { from: OLD, base: "main" },
+      }),
+    );
+    expect(report.reviewCarriedOverFrom).toBe(OLD);
+    expect(report.verified).toContainEqual({
+      id: "review-carried-over",
+      text: "review carried over from bbbbbbb: the head adds only a clean merge of main",
+    });
+    expect(report.verified.map((item) => item.id)).toContain("review:correctness");
+    expect(report.skipped.map((item) => item.id)).toEqual(["verify"]);
+    expect(report.risks.map((item) => item.id)).toEqual(["finding:correctness-1", "stale:verify"]);
+    expect(report.ready).toBe(false);
+  });
+
+  it("is ignored for another reviewed head, and absent when the review is of the head", () => {
+    const other = computeReadiness(input({ review: review({ headSha: OLD }), reviewCarryOver: { from: "e".repeat(40), base: "main" } }));
+    expect(other.reviewCarriedOverFrom).toBeUndefined();
+    expect(other.risks.map((item) => item.id)).toContain("stale:review");
+    const same = computeReadiness(input({ reviewCarryOver: { from: HEAD, base: "main" } }));
+    expect(same).not.toHaveProperty("reviewCarriedOverFrom");
+    expect(same.verified.map((item) => item.id)).not.toContain("review-carried-over");
+  });
+});
+
+describe("computeReadiness: host gates", () => {
+  const gates = [["docker", "build", "."], ["pnpm", "e2e"]];
+  const checks = (over: Partial<HostCheckRecord> = {}): HostCheckRecord => ({
+    name: "m3",
+    headSha: HEAD,
+    results: gates.map((argv) => ({ kind: "gate", argv, command: argv.join(" "), exitCode: 0 })),
+    passed: true,
+    interactive: true,
+    finishedAt: NOW,
+    ...over,
+  });
+
+  it("nothing without configured gates", () => {
+    const report = computeReadiness(input({ hostChecks: checks() }));
+    expect(report.verified.map((item) => item.id)).not.toContain("host:docker build .");
+    expect(report.skipped).toEqual([]);
+  });
+
+  it("each gate is verified once host-checks.json passed on the head", () => {
+    const report = computeReadiness(input({ hostGates: gates, hostChecks: checks() }));
+    expect(report.verified.filter((item) => item.id.startsWith("host:"))).toEqual([
+      { id: "host:docker build .", text: "host gate: exit 0" },
+      { id: "host:pnpm e2e", text: "host gate: exit 0" },
+    ]);
+    expect(report.skipped).toEqual([]);
+    expect(report.ready).toBe(true);
+  });
+
+  it("one skipped item `host` while they have not run, ran on another head, failed or miss a gate", () => {
+    const host = (hostChecks: HostCheckRecord | null) =>
+      computeReadiness(input({ hostGates: gates, hostChecks })).skipped.find((item) => item.id === "host")?.text;
+    expect(host(null)).toBe("the host gates have not run; run arbab host-check m3 in a terminal");
+    expect(host(checks({ headSha: OLD }))).toBe(`the host gates ran on ${OLD}, not on the head ${HEAD}; run arbab host-check m3 in a terminal`);
+    const failed = checks({
+      passed: false,
+      results: [{ kind: "gate", argv: ["docker", "build", "."], command: "docker build .", exitCode: 2 }],
+    });
+    expect(host(failed)).toBe("the host gates did not pass on the head: docker build . (exit 2), pnpm e2e (not run)");
+    expect(host(checks({ passed: false }))).toBe("the host gates did not pass on the head");
+    const report = computeReadiness(input({ hostGates: gates, hostChecks: null }));
+    expect(report.skipped.map((item) => item.id)).toEqual(["host"]);
+    expect(report.risks.map((item) => item.id)).toEqual(["host-gates"]);
+    expect(report.verified.map((item) => item.id)).not.toContain("host:pnpm e2e");
+    expect(report.ready).toBe(false);
+  });
+
+  it("the human may waive host", () => {
+    const report = computeReadiness(input({ hostGates: gates, hostChecks: null, waivers: ["host"] }));
+    expect(report.skipped).toEqual([{ id: "host", text: expect.any(String), waived: true }]);
+    expect(report.ready).toBe(true);
+  });
+});
+
+describe("computeReadiness: lane notes people can read", () => {
+  const merged = ["lane-a", "lane-b", "lane-c"].map((lane) => ({ lane, branch: `arbab/${lane}`, sha: "d".repeat(40), manifests: [] }));
+  const report = computeReadiness(
+    input({
+      integration: integration({ merged }),
+      laneReports: [
+        {
+          lane: "lane-a",
+          report: {
+            open_questions: ["Should the cache be shared?"],
+            not_verified: ["pnpm build: the sandbox blocks writes to plugin/", "Ran 12 tests on Linux only", "Postgres: no database here"],
+          },
+        },
+        {
+          lane: "lane-b",
+          report: {
+            open_questions: [],
+            not_verified: ["pnpm install hit EPERM on ~/.npmrc", "ran 40 tests on linux only", "Playwright needs a browser"],
+          },
+        },
+        {
+          lane: "lane-c",
+          report: {
+            open_questions: ["Is 2 retries enough?"],
+            not_verified: ["Docker cannot run inside the fence", "Network access is not permitted", "Integration tests: no database"],
+          },
+        },
+      ],
+    }),
+  );
+
+  it("groups fence notes by kind and repeated notes across lanes, in first-seen order", () => {
+    expect(report.risks).toEqual([
+      { id: "open_questions:lane-a:1", text: "lane-a (open question): Should the cache be shared?" },
+      {
+        id: "fence:sandbox",
+        text:
+          "Not run inside the fence (3 notes): lane-a: pnpm build: the sandbox blocks writes to plugin/; " +
+          "lane-b: pnpm install hit EPERM on ~/.npmrc; lane-c: Docker cannot run inside the fence",
+      },
+      { id: "notes:not_verified:lane-a:2", text: "2 lanes: Ran 12 tests on Linux only" },
+      {
+        id: "fence:database",
+        text: "Not run inside the fence (2 notes): lane-a: Postgres: no database here; lane-c: Integration tests: no database",
+      },
+      { id: "fence:browser", text: "Not run inside the fence (1 note): lane-b: Playwright needs a browser" },
+      { id: "open_questions:lane-c:1", text: "lane-c (open question): Is 2 retries enough?" },
+      { id: "fence:network", text: "Not run inside the fence (1 note): lane-c: Network access is not permitted" },
+    ]);
+  });
+
+  it("renders the risks in the same order", () => {
+    const risks = renderReadiness(report).split("## Risks\n\n")[1]?.split("\n\nReady to land")[0];
+    expect(risks).toBe(report.risks.map((item) => `- ${item.text}`).join("\n"));
+  });
+});
+
+describe("roundsLine", () => {
+  it("each round's standing findings by severity, in round order", () => {
+    const f = (severity: ReviewFinding["severity"], verdict: ReviewFinding["verdict"] = "confirmed") => finding({ severity, verdict });
+    const rounds = [
+      { round: 3, findings: [f("HIGH", "refuted")] },
+      { round: 1, findings: [f("LOW"), f("MEDIUM"), f("LOW", "unverified"), f("MEDIUM", "unverified"), f("LOW"), f("LOW")] },
+      { round: 2, findings: [f("LOW")] },
+    ];
+    expect(roundsLine(rounds)).toBe("review rounds: 1: 2 MEDIUM, 4 LOW · 2: 1 LOW · 3: none");
+    expect(roundsLine([])).toBeNull();
+  });
+
+  it("is a verified line when there is a history, even with a stale review", () => {
+    const report = computeReadiness(input({ review: review({ headSha: OLD }), reviewRounds: [{ round: 1, findings: [] }] }));
+    expect(report.verified).toEqual([
+      { id: "verify:pnpm test", text: "gate: exit 0" },
+      { id: "verify:pnpm smoke", text: "smoke: exit 0" },
+      { id: "review-rounds", text: "review rounds: 1: none" },
+    ]);
+    expect(computeReadiness(input()).verified.map((item) => item.id)).not.toContain("review-rounds");
+  });
+});
+
 describe("renderReadiness", () => {
   it("renders a fixed report exactly", () => {
     const merged = [{ lane: "lane-a", branch: "arbab/lane-a", sha: "d".repeat(40), manifests: ["package.json"] }];
@@ -477,9 +689,9 @@ describe("renderReadiness", () => {
         "## Risks",
         "",
         "- correctness-1: Off by one (src/x.ts:3) — HIGH, confirmed",
-        "- lane-a (open question): two lines",
         "- package.json changed by lane-a",
         "- waiver nope matches no skipped item",
+        "- lane-a (open question): two lines",
         "",
         "Ready to land: no",
         "",

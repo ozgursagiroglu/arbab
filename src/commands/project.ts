@@ -30,11 +30,19 @@ function hasWorktreesPair(path: string): boolean {
 }
 
 /**
- * The worktree roots the configs at `dir` name, absolute. Only `worktreeRoot` is read, never the whole config: a
- * broken file, or a root outside `dir` or at it, adds nothing.
+ * The worktree roots the configs at `dir` name, absolute: as written and, when the root exists, its real path, so a
+ * `worktreeRoot` that is a link to elsewhere in the project (`wt` → `.arbab/pool`) covers lanes reached either way.
+ * Only `worktreeRoot` is read, never the whole config: a broken file, or a root outside `dir` or at it (by either
+ * spelling), adds nothing.
  */
 function configuredWorktreeRoots(dir: string, io: Required<LaneWorktreeIo>): string[] {
   const roots: string[] = [];
+  let realDir: string | null = null;
+  try {
+    realDir = io.realpath(dir);
+  } catch {
+    // Without the directory's real path, no real root can be shown to lie inside it.
+  }
   for (const file of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
     let parsed: unknown;
     try {
@@ -51,7 +59,15 @@ function configuredWorktreeRoots(dir: string, io: Required<LaneWorktreeIo>): str
     } catch {
       continue;
     }
-    if (full !== resolve(dir)) roots.push(full);
+    if (full === resolve(dir)) continue;
+    roots.push(full);
+    let real: string;
+    try {
+      real = io.realpath(full);
+    } catch {
+      continue;
+    }
+    if (realDir !== null && atOrUnder(realDir, real) && fold(real) !== fold(realDir)) roots.push(real);
   }
   return roots;
 }
@@ -65,7 +81,8 @@ function underConfiguredRoot(path: string, io: Required<LaneWorktreeIo>): boolea
 
 /**
  * Whether a path lies in a lane worktree, in its spelling on disk or as written: it has a `.arbab/worktrees` pair of
- * components, or an ancestor's arbab.config.json or .arbab/config.json sets a `worktreeRoot` the path is at or under.
+ * components, or an ancestor's arbab.config.json or .arbab/config.json sets a `worktreeRoot` the path is at or under,
+ * as written or by the root's real path.
  */
 export function inLaneWorktree(path: string, io: LaneWorktreeIo = {}): boolean {
   const full: Required<LaneWorktreeIo> = {

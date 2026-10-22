@@ -107,9 +107,12 @@ it builds `.arbab-tmp/` and each directory under it one component at a time, rep
 link itself, never its target) with a fresh directory, and creates `npmrc` and every input copy with exclusive,
 no-follow opens. A lane worktree is never a project, wherever `worktreeRoot` puts it: before it loads any config,
 arbab refuses a project root that lies in a `.arbab/worktrees` directory, or at or under the `worktreeRoot` that an
-ancestor's `arbab.config.json` or `.arbab/config.json` sets inside that ancestor (only that field is read). Both the
-path as written and its spelling on disk are checked, and every comparison ignores case, so `.Arbab/Worktrees` on a
-case-insensitive file system is caught too. The hook's `-C` check uses the same test (§21).
+ancestor's `arbab.config.json` or `.arbab/config.json` sets inside that ancestor (only that field is read). That
+`worktreeRoot` counts as written and, when it exists, by its real path when that lies inside the ancestor's real
+path, so with `wt` a link to `.arbab/pool` a lane is refused as `<project>/wt/<lane>` and as
+`<project>/.arbab/pool/<lane>`. Both the path as written and its spelling on disk are checked, and every comparison
+ignores case, so `.Arbab/Worktrees` on a case-insensitive file system is caught too. The hook's `-C` check uses the
+same test (§21).
 
 Repository build output (git-ignored): `dist/arbab.mjs` (the bundle) and `plugin/` (what a marketplace installs, §17).
 
@@ -710,7 +713,7 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     is written to the config. The file must lie inside the project by its path and by its real path, and neither
     may be a credential file by the fence's whole list plus config `credentialPaths` (`.env*`, `*.pem`, `*.key`,
     `id_rsa*`, …), matched without case (`.ENV` is refused too; §21), so a lens cannot carry a credential file into
-    a reviewer's brief;
+    a reviewer's brief; the name rules look only below the project root (§21, Fence);
   - `--since <sha>` diffs from that commit, an ancestor of the head other than the head, instead of the base (a fix
     round), and records it as `since`;
   - a re-run on the same head waits for, or adopts, reviewer and skeptic lanes still running or finished after an
@@ -1020,8 +1023,11 @@ Decided while building it (plan `ui2`):
 - `integrate` does not check that a lane's run ended in success; the orchestrator decides from `status`.
 - Worktrees outside the project tree (§21: not done). `worktreeRoot` and `runsRoot` stay inside the project, also by
   their real paths: config refuses one that leads out through a symbolic link, because a lane worktree outside the
-  project has no ancestor holding the project's config, so nothing would recognise it as a lane worktree (§3). The
-  failures seen (ESLint's cascade, tools that scan `.arbab/`) are covered by the root marker and by doctor.
+  project has no ancestor holding the project's config, so nothing would recognise it as a lane worktree (§3). Neither
+  may be the project root nor overlap `.arbab/integrations`, checked as written and again by real path (the real
+  project root, and the real path of `.arbab/integrations`, or where it would be), so a link to the root or into the
+  records is refused with the same message. The failures seen (ESLint's cascade, tools that scan `.arbab/`) are
+  covered by the root marker and by doctor.
 - `land --squash` has no opposite: with config `landing.squash` set, a single landing cannot ask for a merge commit.
 - Readiness drops a damaged `reviews/<round>.json` from its round counts without saying so, while
   `readReviewHistory` refuses the whole history for it.
@@ -1051,8 +1057,8 @@ The decisions below answer what that use showed.
   started in a parent folder of several repositories calls the runner bare. The runner loads `<dir>`'s config, which
   names commands it runs, so the hook approves `-C <dir>` only when `<dir>` is absolute and its real path is the root
   of a project registered in `~/.arbab/projects/` (one that launched a lane), not in a lane worktree (a
-  `.arbab/worktrees` directory or the `worktreeRoot` an ancestor's config sets, ignoring case, by the path as written
-  and its spelling on disk, §3), and not in or under `/tmp`, `/private/tmp` or the hook's `TMPDIR`, whether named
+  `.arbab/worktrees` directory or the `worktreeRoot` an ancestor's config sets, as written or by its real path,
+  ignoring case, by the path as written and its spelling on disk, §3), and not in or under `/tmp`, `/private/tmp` or the hook's `TMPDIR`, whether named
   directly or through a link. The runner itself refuses a project root inside a lane worktree, by the same test, from
   `-C` or the working directory, before loading any config there (§3).
 - `status --active` (lanes not finished) and per-command help (`arbab <command> --help`) remove the other reasons to
@@ -1107,8 +1113,14 @@ The decisions below answer what that use showed.
   as checks on paths and ignores case on every platform (`~/.AWS/credentials` is `~/.aws/credentials` on macOS). It
   guards lane `inputs` (with config `credentialPaths` and `~/Library`), `review --lens-file` and `land --message`
   (with config `credentialPaths`), each by the path as given and by its real path; and the files whose text goes into
-  prompts (a lane's `brief` and `schema`, a plan phase's `brief`, config `instructions`), by the list's file-name
-  rules (`.env*`, `*.pem`, `*.key`, …), again by both spellings. A refusal names the rule that matched.
+  prompts (a lane's `brief` and `schema`, a plan phase's `brief` and `schema`, a plan's `defaults.schema`, config
+  `instructions`), by the list plus config `credentialPaths` with no home directory, so `~/` entries match nothing
+  there, again by both spellings. `credentialPaths` is read before `instructions`, so the config's own instructions
+  are checked against it. The name rules (`**/.env*`, `**/*.pem`, `**/*.key`, …) test every component of an input's
+  path, but for a file inside the project (lens file, `--message`, brief, schema, instructions) only the components
+  below the project root: the path as given below the root as given, the real path below the root's real path. A
+  project kept under `~/.envs/app` or `~/keys.key/app` therefore still works, and `.env` inside it is still refused;
+  every other rule sees the whole path. A refusal names the rule that matched.
 
 ### Shepherd
 
@@ -1174,7 +1186,8 @@ The decisions below answer what that use showed.
 - `review --lens-file <name>=<file>` adds a lens, or replaces a lens's text, from a file for one run, with no config
   edit; `--since <sha>` diffs from an ancestor of the head instead of the base, for a fix round. The lens file must
   lie inside the project, by its path and its real path, and neither may be a credential file by the fence's list
-  and config `credentialPaths`, ignoring case (the credential matcher, Fence above).
+  and config `credentialPaths`, ignoring case, the name rules looking only below the project root (the credential
+  matcher, Fence above).
 - A re-run of `verify` or `review` on the same head adopts its generated lanes' results when they finished after a
   timeout, and waits for them when they still run. `verify`, `review` and `preflight` register as waiters while they
   wait, so the Stop hook does not hold the turn they wait in.

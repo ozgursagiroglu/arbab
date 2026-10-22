@@ -100,24 +100,26 @@ export function assertCleanBase(git: GitRunner, root: string, base: string, head
  * the project (after resolving symlinks too) and be no path `credential` hits by either spelling, so a landing cannot
  * carry credentials into a commit.
  */
-export function readMessage(root: string, file: string, credential: (path: string) => CredentialHit | null): string {
+export function readMessage(root: string, file: string, credential: (path: string, root?: string) => CredentialHit | null): string {
   let path: string;
   try {
     path = confine(root, file);
   } catch {
     throw refuse(`the --message file ${file} is outside the project ${resolve(root)}`);
   }
-  const hit = credential(path);
+  // Name rules look below the project root: a project kept under `~/.envs/` is no credential file.
+  const hit = credential(path, root);
   if (hit !== null) throw refuse(`the --message file ${path} ${credentialReason(hit)}`);
   let text: string;
   try {
     const real = realpathSync(path);
+    const realRoot = realpathSync(root);
     try {
-      confine(realpathSync(root), real);
+      confine(realRoot, real);
     } catch {
       throw refuse(`the --message file ${path} resolves outside the project`);
     }
-    const realHit = credential(real);
+    const realHit = credential(real, realRoot);
     if (realHit !== null) throw refuse(`the --message file ${path} resolves to ${real}, which ${credentialReason(realHit)}`);
     text = readFileSync(real, "utf8");
   } catch (err) {

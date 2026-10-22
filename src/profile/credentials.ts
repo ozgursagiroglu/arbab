@@ -12,7 +12,8 @@ export interface CredentialHit {
   label: string;
 }
 
-type CredentialRule = (path: string) => CredentialHit | null;
+/** `root`: when given and `path` lies inside it, name rules look only at the components below it. */
+type CredentialRule = (path: string, root?: string) => CredentialHit | null;
 
 const GLOB_CHARS = /[*?[\]{}]/;
 
@@ -22,6 +23,16 @@ const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\/]/g, 
 function within(parent: string, child: string): boolean {
   const rel = relative(parent.toLowerCase(), child.toLowerCase());
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The components of `path` below `root` when it lies inside it, else all of them: a project kept under a directory
+ * named like a credential (`~/.envs/app`) is not itself a credential file, but what is inside it still may be.
+ */
+function componentsBelow(path: string, root: string | undefined): string[] {
+  if (root === undefined || !within(root, path)) return path.split(sep);
+  const depth = resolve(root).split(sep).filter((c) => c !== "").length;
+  return resolve(path).split(sep).filter((c) => c !== "").slice(depth);
 }
 
 /** A Read/Edit rule glob as a regex source: `*` and `?` stay within a component, `**` crosses them. */
@@ -70,8 +81,8 @@ function credentialRules(patterns: readonly string[], homes: readonly string[]):
       const name = pattern.slice(3);
       if (name !== "" && !name.includes("/") && !name.includes("**")) {
         const re = new RegExp(`^${globSource(name)}$`, "i");
-        return (path) => {
-          const component = path.split(sep).find((c) => re.test(c));
+        return (path, root) => {
+          const component = componentsBelow(path, root).find((c) => re.test(c));
           return component === undefined ? null : { kind: "name", label: component };
         };
       }
@@ -102,13 +113,17 @@ export function credentialReason(hit: CredentialHit): string {
 /**
  * Checks absolute paths against the fence's credential list (BUILTIN_CREDENTIAL_PATHS) plus `extra`
  * (config.credentialPaths and the like). `homes`: the user's home directory spellings (lexical and real);
- * with none, `~/` patterns match nothing.
+ * with none, `~/` patterns match nothing. Given `root` (a project root, in the spelling `path` has), the `**\/<name>`
+ * rules test only the components of `path` below it; every other rule, and a path outside `root`, is unchanged.
  */
-export function credentialMatcher(extra: readonly string[], homes: readonly string[]): (path: string) => CredentialHit | null {
+export function credentialMatcher(
+  extra: readonly string[],
+  homes: readonly string[],
+): (path: string, root?: string) => CredentialHit | null {
   const rules = credentialRules([...BUILTIN_CREDENTIAL_PATHS, ...extra], homes);
-  return (path) => {
+  return (path, root) => {
     for (const rule of rules) {
-      const hit = rule(path);
+      const hit = rule(path, root);
       if (hit !== null) return hit;
     }
     return null;

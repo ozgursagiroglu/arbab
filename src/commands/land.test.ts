@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { credentialMatcher } from "../profile";
@@ -168,6 +169,26 @@ describe("readMessage", () => {
     expect(() => readMessage(p.root, "vault/msg.txt", credentialMatcher(["~/repo/vault/**"], [home]))).toThrow(/msg\.txt is under ~\/repo\/vault, where credentials live$/);
     expect(() => readMessage(p.root, "vault/msg.txt", credentialMatcher(["~/repo/*/msg.txt"], [home]))).toThrow(/msg\.txt matches the credential path ~\/repo\/\*\/msg\.txt$/);
     expect(readMessage(p.root, "vault/msg.txt", credentialMatcher(["~/repo/vault/**"], []))).toBe("Ship it\n");
+  });
+
+  it("reads a file in a project under a directory named like a credential, and still refuses one inside it", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "arbab-"));
+    try {
+      for (const parent of [".envs", "x.key"]) {
+        const root = join(tmp, parent, "app");
+        mkdirSync(root, { recursive: true });
+        writeFileSync(join(root, "msg.txt"), "Ship it\n");
+        writeFileSync(join(root, ".env"), "TOKEN=x\n");
+        expect(readMessage(root, "msg.txt", plain), parent).toBe("Ship it\n");
+        expect(readMessage(root, join(root, "msg.txt"), plain), parent).toBe("Ship it\n");
+        expect(() => readMessage(root, ".env", plain), parent).toThrow(/is named like a credential file \(\.env\)$/);
+        // Reached through a link, the real path is checked below the project's real path.
+        symlinkSync(root, join(tmp, `${parent}-link`));
+        expect(readMessage(join(tmp, `${parent}-link`), "msg.txt", plain), parent).toBe("Ship it\n");
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

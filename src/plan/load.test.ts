@@ -90,6 +90,17 @@ describe("loadPlan", () => {
     expect(plan.phases[0]?.role).toBe("implementer");
   });
 
+  it("refuses a phase brief or schema, or a defaults schema, that a credentialPaths entry hits", () => {
+    const extra = ["lanes/b.md", "**/*.json"];
+    const err = (plan: unknown): string => errorOf(() => loadPlan(dir, writePlan(plan), extra)).message;
+    expect(err({ ...base, phases: [phaseA, { ...phaseB, brief: "lanes/b.md" }] })).toMatch(/^phases\[1\]\.brief: lanes\/b\.md matches the credential path lanes\/b\.md/);
+    expect(err(withPhase({ schema: "lanes/schema.json" }))).toMatch(/^phases\[0\]\.schema: lanes\/schema\.json is named like a credential file \(schema\.json\)/);
+    expect(err({ ...base, defaults: { schema: "lanes/schema.json" } })).toMatch(/^defaults\.schema: /);
+    // One that matches nothing passes, and without the list the same files pass.
+    expect(loadPlan(dir, writePlan(base), extra).phases).toHaveLength(1);
+    expect(loadPlan(dir, writePlan(withPhase({ brief: "lanes/b.md", schema: "lanes/schema.json" }))).phases).toHaveLength(1);
+  });
+
   it("accepts an absolute plan path", () => {
     writePlan(base);
     expect(loadPlan(dir, join(dir, "plans", "p.json")).name).toBe("m2");

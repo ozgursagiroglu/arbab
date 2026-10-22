@@ -183,6 +183,17 @@ describe("isRunnerCall -C", () => {
     expect(isRunnerCall(call(`-C ${repo} status`), withLane)).toBe(true);
   });
 
+  it("refuses a lane worktree under a worktreeRoot linked to elsewhere in the project, by either path", () => {
+    writeFileSync(join(repo, "arbab.config.json"), JSON.stringify({ worktreeRoot: "wt" }));
+    const pool = join(repo, ".arbab", "pool");
+    mkdirSync(join(pool, "a"), { recursive: true });
+    symlinkSync(pool, join(repo, "wt"));
+    const lanes = [join(pool, "a"), join(repo, "wt", "a")];
+    const withLane = { ...opts, projectRoots: () => [repo, ...lanes] };
+    for (const lane of lanes) expect(isRunnerCall(call(`-C ${lane} status`), withLane), lane).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} status`), withLane)).toBe(true);
+  });
+
   it("refuses a registered root in or under a temp dir, named directly or through its real path", () => {
     expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [dir] })).toBe(false);
     expect(isRunnerCall(call(`-C ${repo} status`), { ...opts, tempDirs: [repo] })).toBe(false);

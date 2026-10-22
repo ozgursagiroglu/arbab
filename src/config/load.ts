@@ -111,17 +111,18 @@ export function loadConfig(projectRoot: string): ProjectConfig {
   if (obj.baseBranch !== undefined) config.baseBranch = ref(obj.baseBranch, "baseBranch");
   if (obj.worktreeRoot !== undefined) config.worktreeRoot = arbabRoot(projectRoot, obj.worktreeRoot, "worktreeRoot");
   if (obj.runsRoot !== undefined) config.runsRoot = arbabRoot(projectRoot, obj.runsRoot, "runsRoot");
+  // Before instructions, which are checked against them.
+  if (obj.credentialPaths !== undefined) config.credentialPaths = stringArray(obj.credentialPaths, "credentialPaths");
   if (obj.instructions !== undefined) {
     // Inlined into every prompt, so a symlink to a credential file must not get through.
     config.instructions = stringArray(obj.instructions, "instructions").map((p, i) =>
-      existingFile(projectRoot, p, `instructions[${i}]`),
+      existingFile(projectRoot, p, `instructions[${i}]`, config.credentialPaths),
     );
   }
   if (obj.dependencies !== undefined) config.dependencies = dependencies(obj.dependencies);
   if (obj.commands !== undefined) config.commands = commands(obj.commands);
   if (obj.env !== undefined) config.env = env(obj.env);
   if (obj.passEnv !== undefined) config.passEnv = passEnv(obj.passEnv);
-  if (obj.credentialPaths !== undefined) config.credentialPaths = stringArray(obj.credentialPaths, "credentialPaths");
   if (obj.resources !== undefined) config.resources = resources(obj.resources);
   if (obj.semaphores !== undefined) config.semaphores = semaphores(obj.semaphores);
   if (obj.gates !== undefined) config.gates = argvList(obj.gates, "gates");
@@ -209,20 +210,32 @@ function tier(v: unknown): Tier {
 function arbabRoot(projectRoot: string, v: unknown, field: string): string {
   const s = nonEmptyString(v, field);
   const path = confined(projectRoot, s, field);
-  if (path === confined(projectRoot, ".", field)) fail(field, "must not be the project root");
-  // Integration records vouch for install points (depsConfirmedAt): no worker's worktree or run dir may overlap them.
+  const root = confined(projectRoot, ".", field);
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
-  const inside = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`);
-  if (inside(path, records) || inside(records, path)) fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  // Checked as written and again on the real paths, so a link to the root or into the records changes nothing.
+  checkArbabRoot(path, root, records, field);
   // A lane worktree outside the project has no ancestor holding the project's config (inLaneWorktree), so a link
   // inside the project must not lead out. A missing tail is fine: arbab creates it later as plain directories.
   const real = realExisting(path);
-  const rel = real === null ? ".." : relative(realpathSync(projectRoot), real);
+  const realRoot = realpathSync(projectRoot);
+  const rel = real === null ? ".." : relative(realRoot, real);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  if (real !== null) checkArbabRoot(real, realRoot, realExisting(records), field);
   return s;
 }
 
-// The real path of the deepest existing entry on the way to `path`; null when that entry is a dangling link.
+/** `path` is not the project root and does not overlap the integration records (when `records` is given). */
+function checkArbabRoot(path: string, root: string, records: string | null, field: string): void {
+  if (path === root) fail(field, "must not be the project root");
+  // Integration records vouch for install points (depsConfirmedAt): no worker's worktree or run dir may overlap them.
+  const inside = (a: string, b: string): boolean => a === b || a.startsWith(`${b}${sep}`);
+  if (records !== null && (inside(path, records) || inside(records, path))) {
+    fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  }
+}
+
+// The real path of the deepest existing entry on the way to `path`, with the missing tail appended as written; null
+// when that entry is a dangling link.
 function realExisting(path: string): string | null {
   for (let p = path; ; p = dirname(p)) {
     let present = true;
@@ -233,7 +246,8 @@ function realExisting(path: string): string | null {
     }
     if (present) {
       try {
-        return realpathSync(p);
+        const tail = relative(p, path);
+        return tail === "" ? realpathSync(p) : join(realpathSync(p), tail);
       } catch {
         return null;
       }

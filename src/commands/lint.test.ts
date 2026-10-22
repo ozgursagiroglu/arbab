@@ -5,7 +5,7 @@ import { compileProfile } from "../profile";
 import { ArbabError } from "../util/errors";
 import { formatIssue, hasErrors, issueSummary, lintLane, lintLaneSpec, profileInputFor, resolveGitCommonDir, runLint } from "./lint";
 import { openProject } from "./project";
-import { makeProject, type TestProject } from "./testkit";
+import { DEFAULT_CONFIG, makeProject, type TestProject } from "./testkit";
 
 // The real compiler, spied on so tests can see the ProfileInput each lint compiled.
 vi.mock("../profile", async (importOriginal) => {
@@ -109,6 +109,11 @@ describe("lintLane", () => {
     });
     const issues = lintLane(openProject(p.ctx), "lanes/s.json", resolveGitCommonDir(p.git, p.root)).issues;
     expect(issues).toEqual([expect.objectContaining({ severity: "error", code: "schema-json" })]);
+  });
+
+  it("refuses a brief a config credentialPaths entry hits", () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, credentialPaths: ["lanes/demo.md"] } });
+    expect(() => lintLane(openProject(p.ctx), "lanes/demo.json")).toThrow(/^brief: lanes\/demo\.md matches the credential path lanes\/demo\.md/);
   });
 
   it("throws on an invalid lane file", () => {

@@ -177,6 +177,11 @@ function within(parent, child2) {
   const rel = relative(parent.toLowerCase(), child2.toLowerCase());
   return rel === "" || !rel.startsWith("..") && !isAbsolute(rel);
 }
+function componentsBelow(path, root) {
+  if (root === void 0 || !within(root, path)) return path.split(sep);
+  const depth = resolve(root).split(sep).filter((c) => c !== "").length;
+  return resolve(path).split(sep).filter((c) => c !== "").slice(depth);
+}
 function globSource(glob) {
   const whole = glob.endsWith("/**");
   const body = whole ? glob.slice(0, -3) : glob;
@@ -216,8 +221,8 @@ function credentialRules(patterns, homes) {
       const name2 = pattern.slice(3);
       if (name2 !== "" && !name2.includes("/") && !name2.includes("**")) {
         const re = new RegExp(`^${globSource(name2)}$`, "i");
-        return (path) => {
-          const component = path.split(sep).find((c) => re.test(c));
+        return (path, root) => {
+          const component = componentsBelow(path, root).find((c) => re.test(c));
           return component === void 0 ? null : { kind: "name", label: component };
         };
       }
@@ -242,9 +247,9 @@ function credentialReason(hit) {
 }
 function credentialMatcher(extra, homes) {
   const rules = credentialRules([...BUILTIN_CREDENTIAL_PATHS, ...extra], homes);
-  return (path) => {
+  return (path, root) => {
     for (const rule of rules) {
-      const hit = rule(path);
+      const hit = rule(path, root);
       if (hit !== null) return hit;
     }
     return null;
@@ -413,11 +418,11 @@ function confined(root, v, field) {
     return fail(field, `${s} is outside the project`);
   }
 }
-var credentialNames = credentialMatcher([], []);
-function existingFile(projectRoot, v, field) {
+function existingFile(projectRoot, v, field, credentialPaths = []) {
   const s = nonEmptyString(v, field);
+  const credential = credentialMatcher(credentialPaths, []);
   const full = confined(projectRoot, s, field);
-  const hit = credentialNames(full);
+  const hit = credential(full, projectRoot);
   if (hit !== null) fail(field, `${s} ${credentialReason(hit)}; its text would go into a worker's prompt`);
   let real2;
   try {
@@ -427,9 +432,10 @@ function existingFile(projectRoot, v, field) {
     if (err instanceof ArbabError) throw err;
     return fail(field, `${s} does not exist`);
   }
-  const rel = relative3(realpathSync2(projectRoot), real2);
+  const realRoot = realpathSync2(projectRoot);
+  const rel = relative3(realRoot, real2);
   if (rel === ".." || rel.startsWith(`..${sep2}`) || isAbsolute3(rel)) fail(field, `${s} resolves outside the project`);
-  const realHit = credentialNames(real2);
+  const realHit = credential(real2, realRoot);
   if (realHit !== null) fail(field, `${s} resolves to ${real2}, which ${credentialReason(realHit)}; its text would go into a worker's prompt`);
   return s;
 }
@@ -528,7 +534,7 @@ function toolList(v, field) {
     return item;
   });
 }
-function phaseLaneFields(projectRoot, obj, prefix = "") {
+function phaseLaneFields(projectRoot, obj, prefix = "", credentialPaths = []) {
   const f = (key) => prefix === "" ? key : `${prefix}.${key}`;
   const out = {};
   if (obj.role !== void 0) out.role = role(obj.role, f("role"));
@@ -543,7 +549,7 @@ function phaseLaneFields(projectRoot, obj, prefix = "") {
     out.fence = obj.fence;
   }
   if (obj.allow !== void 0) out.allow = stringArray(obj.allow, f("allow"));
-  if (obj.schema !== void 0) out.schema = existingFile(projectRoot, obj.schema, f("schema"));
+  if (obj.schema !== void 0) out.schema = existingFile(projectRoot, obj.schema, f("schema"), credentialPaths);
   if (obj.resources !== void 0) {
     const res = record(obj.resources, f("resources"));
     out.resources = {};
@@ -571,7 +577,7 @@ function inputList(v, field) {
     return item;
   });
 }
-function loadLane(projectRoot, lanePath) {
+function loadLane(projectRoot, lanePath, credentialPaths = []) {
   const file = resolve3(projectRoot, lanePath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `lane file ${lanePath} does not exist`);
@@ -580,11 +586,11 @@ function loadLane(projectRoot, lanePath) {
   const lane = {
     name: worktreeName(obj.name, "name"),
     role: role(obj.role, "role"),
-    brief: existingFile(projectRoot, obj.brief, "brief")
+    brief: existingFile(projectRoot, obj.brief, "brief", credentialPaths)
   };
   if (obj.base !== void 0) lane.base = ref(obj.base, "base");
   if (obj.tools !== void 0) lane.tools = toolList(obj.tools, "tools");
-  Object.assign(lane, phaseLaneFields(projectRoot, obj));
+  Object.assign(lane, phaseLaneFields(projectRoot, obj, "", credentialPaths));
   if (obj.coordination !== void 0) {
     if (typeof obj.coordination !== "string") fail("coordination", "must be a string");
     lane.coordination = obj.coordination;
@@ -3533,16 +3539,16 @@ function loadConfig(projectRoot) {
   if (obj.baseBranch !== void 0) config.baseBranch = ref(obj.baseBranch, "baseBranch");
   if (obj.worktreeRoot !== void 0) config.worktreeRoot = arbabRoot(projectRoot, obj.worktreeRoot, "worktreeRoot");
   if (obj.runsRoot !== void 0) config.runsRoot = arbabRoot(projectRoot, obj.runsRoot, "runsRoot");
+  if (obj.credentialPaths !== void 0) config.credentialPaths = stringArray(obj.credentialPaths, "credentialPaths");
   if (obj.instructions !== void 0) {
     config.instructions = stringArray(obj.instructions, "instructions").map(
-      (p, i) => existingFile(projectRoot, p, `instructions[${i}]`)
+      (p, i) => existingFile(projectRoot, p, `instructions[${i}]`, config.credentialPaths)
     );
   }
   if (obj.dependencies !== void 0) config.dependencies = dependencies(obj.dependencies);
   if (obj.commands !== void 0) config.commands = commands(obj.commands);
   if (obj.env !== void 0) config.env = env(obj.env);
   if (obj.passEnv !== void 0) config.passEnv = passEnv(obj.passEnv);
-  if (obj.credentialPaths !== void 0) config.credentialPaths = stringArray(obj.credentialPaths, "credentialPaths");
   if (obj.resources !== void 0) config.resources = resources(obj.resources);
   if (obj.semaphores !== void 0) config.semaphores = semaphores(obj.semaphores);
   if (obj.gates !== void 0) config.gates = argvList(obj.gates, "gates");
@@ -3621,14 +3627,22 @@ function tier(v) {
 function arbabRoot(projectRoot, v, field) {
   const s = nonEmptyString(v, field);
   const path = confined(projectRoot, s, field);
-  if (path === confined(projectRoot, ".", field)) fail(field, "must not be the project root");
+  const root = confined(projectRoot, ".", field);
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
-  const inside = (a, b) => a === b || a.startsWith(`${b}${sep5}`);
-  if (inside(path, records) || inside(records, path)) fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  checkArbabRoot(path, root, records, field);
   const real2 = realExisting(path);
-  const rel = real2 === null ? ".." : relative6(realpathSync5(projectRoot), real2);
+  const realRoot = realpathSync5(projectRoot);
+  const rel = real2 === null ? ".." : relative6(realRoot, real2);
   if (rel === ".." || rel.startsWith(`..${sep5}`) || isAbsolute5(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  if (real2 !== null) checkArbabRoot(real2, realRoot, realExisting(records), field);
   return s;
+}
+function checkArbabRoot(path, root, records, field) {
+  if (path === root) fail(field, "must not be the project root");
+  const inside = (a, b) => a === b || a.startsWith(`${b}${sep5}`);
+  if (records !== null && (inside(path, records) || inside(records, path))) {
+    fail(field, `must not overlap ${INTEGRATIONS_DIR}, where integration records live`);
+  }
 }
 function realExisting(path) {
   for (let p = path; ; p = dirname4(p)) {
@@ -3640,7 +3654,8 @@ function realExisting(path) {
     }
     if (present) {
       try {
-        return realpathSync5(p);
+        const tail = relative6(p, path);
+        return tail === "" ? realpathSync5(p) : join16(realpathSync5(p), tail);
       } catch {
         return null;
       }
@@ -4235,6 +4250,11 @@ function hasWorktreesPair(path) {
 }
 function configuredWorktreeRoots(dir, io) {
   const roots = [];
+  let realDir2 = null;
+  try {
+    realDir2 = io.realpath(dir);
+  } catch {
+  }
   for (const file of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
     let parsed2;
     try {
@@ -4251,7 +4271,15 @@ function configuredWorktreeRoots(dir, io) {
     } catch {
       continue;
     }
-    if (full !== resolve11(dir)) roots.push(full);
+    if (full === resolve11(dir)) continue;
+    roots.push(full);
+    let real2;
+    try {
+      real2 = io.realpath(full);
+    } catch {
+      continue;
+    }
+    if (realDir2 !== null && atOrUnder(realDir2, real2) && fold(real2) !== fold(realDir2)) roots.push(real2);
   }
   return roots;
 }
@@ -4354,7 +4382,7 @@ function readRequired(path, what) {
   return text2;
 }
 function lintLane(project, lanePath, gitCommonDir2) {
-  return lintLaneSpec(project, loadLane(project.root, lanePath), gitCommonDir2);
+  return lintLaneSpec(project, loadLane(project.root, lanePath, project.config.credentialPaths), gitCommonDir2);
 }
 function lintLaneSpec(project, lane, gitCommonDir2) {
   const input = profileInputFor(project, lane, gitCommonDir2);
@@ -6792,7 +6820,7 @@ function coordination(plan, siblings) {
 import { isAbsolute as isAbsolute10, resolve as resolve14 } from "node:path";
 var PLAN_KEYS = ["name", "base", "defaults", "phases"];
 var PHASE_KEYS = ["name", "brief", "scope", "dependsOn", ...PHASE_LANE_KEYS];
-function loadPlan(projectRoot, planPath) {
+function loadPlan(projectRoot, planPath, credentialPaths = []) {
   const file = resolve14(projectRoot, planPath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `plan file ${planPath} does not exist`);
@@ -6803,23 +6831,23 @@ function loadPlan(projectRoot, planPath) {
   if (obj.defaults !== void 0) {
     const defaults = record(obj.defaults, "defaults");
     knownKeys(defaults, PHASE_LANE_KEYS, "defaults");
-    plan.defaults = { role: "implementer", ...phaseLaneFields(projectRoot, defaults, "defaults") };
+    plan.defaults = { role: "implementer", ...phaseLaneFields(projectRoot, defaults, "defaults", credentialPaths) };
   }
   if (!Array.isArray(obj.phases) || obj.phases.length === 0) fail("phases", "must be a non-empty array of phases");
   const defaultRole = plan.defaults?.role ?? "implementer";
-  plan.phases = obj.phases.map((p, i) => loadPhase(projectRoot, p, `phases[${i}]`, defaultRole));
+  plan.phases = obj.phases.map((p, i) => loadPhase(projectRoot, p, `phases[${i}]`, defaultRole, credentialPaths));
   return plan;
 }
-function loadPhase(projectRoot, v, field, defaultRole) {
+function loadPhase(projectRoot, v, field, defaultRole, credentialPaths) {
   const obj = record(v, field);
   knownKeys(obj, PHASE_KEYS, field);
   const phase = {
     // A phase becomes a lane of the same name.
     name: worktreeName(obj.name, `${field}.name`),
-    brief: existingFile(projectRoot, obj.brief, `${field}.brief`),
+    brief: existingFile(projectRoot, obj.brief, `${field}.brief`, credentialPaths),
     scope: scope(obj.scope, `${field}.scope`),
     role: defaultRole,
-    ...phaseLaneFields(projectRoot, obj, field)
+    ...phaseLaneFields(projectRoot, obj, field, credentialPaths)
   };
   if (obj.dependsOn !== void 0) phase.dependsOn = nameArray(obj.dependsOn, `${field}.dependsOn`);
   return phase;
@@ -6910,7 +6938,7 @@ function integrationLanes2(project, opts, planLanes = planIntegrationLanes) {
   if (opts.lanes !== void 0) {
     lanes = splitList(opts.lanes);
   } else if (opts.plan !== void 0) {
-    lanes = planLanes(loadPlan(project.root, opts.plan));
+    lanes = planLanes(loadPlan(project.root, opts.plan, project.config.credentialPaths));
   } else {
     throw new ArbabError("usage", "usage: arbab integrate <name> (--lanes a,b,\u2026 | --plan <plan.json> | --deps-installed <sha> | --adopt <ref> | --refresh)");
   }
@@ -7495,17 +7523,18 @@ function readMessage(root, file, credential) {
   } catch {
     throw refuse(`the --message file ${file} is outside the project ${resolve15(root)}`);
   }
-  const hit = credential(path);
+  const hit = credential(path, root);
   if (hit !== null) throw refuse(`the --message file ${path} ${credentialReason(hit)}`);
   let text2;
   try {
     const real2 = realpathSync11(path);
+    const realRoot = realpathSync11(root);
     try {
-      confine(realpathSync11(root), real2);
+      confine(realRoot, real2);
     } catch {
       throw refuse(`the --message file ${path} resolves outside the project`);
     }
-    const realHit = credential(real2);
+    const realHit = credential(real2, realRoot);
     if (realHit !== null) throw refuse(`the --message file ${path} resolves to ${real2}, which ${credentialReason(realHit)}`);
     text2 = readFileSync7(real2, "utf8");
   } catch (err) {
@@ -7652,7 +7681,7 @@ import { join as join35 } from "node:path";
 var phaseNames = (plan) => [...new Set(plan.phases.map((p) => p.name))];
 var plansDir = (project, plan) => join35(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
 function checkPlanFile(ctx, project, planPath) {
-  const plan = loadPlan(project.root, planPath);
+  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
   const issues = checkPlan(plan);
   let waves = null;
   try {
@@ -7816,7 +7845,7 @@ async function runPlanStatus(argv2, ctx) {
   const { values, positionals } = parse("plan status", { args: argv2, options: { json: { type: "boolean" } }, allowPositionals: true });
   const planPath = onePositional("plan status", positionals, "plan.json");
   const project = openProject(ctx);
-  const plan = loadPlan(project.root, planPath);
+  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
   const rows = planStatus(plan, phaseStates(project, plan, ctx.alive));
   if (values.json === true) printJson(ctx, { plan: plan.name, phases: rows });
   else ctx.stdout(formatPlanStatus(rows) + "\n");
@@ -10301,7 +10330,7 @@ async function runShepherd(projectRoot, laneName2, mode, deps, stop) {
     registerShepherd(deps.home, { pid, lane: laneName2, project: root, owner, startedAt });
     registerProject(deps.home, root, startedAt);
     setState("queued");
-    const lane = loadLane(root, paths.laneFile);
+    const lane = loadLane(root, paths.laneFile, config.credentialPaths);
     if (lane.name !== laneName2) throw new ArbabError("usage", `${paths.laneFile} names lane ${lane.name}, not ${laneName2}`);
     const role2 = effectiveRole(config, lane);
     const resumeText = mode.kind === "resume" ? resumePrompt(paths.laneDir, mode) : null;
@@ -10636,21 +10665,23 @@ function lensFilePath(root, name2, file, credential) {
   } catch {
     throw refuse2("the file must be inside the project root");
   }
-  const hit = credential(path);
+  const hit = credential(path, root);
   if (hit !== null) throw refuse2(`the file ${credentialReason(hit)}; a credential file is not a lens`);
   let real2;
+  let realRoot;
   try {
     real2 = realpathSync16(path);
+    realRoot = realpathSync16(root);
   } catch (err) {
     if (err.code === "ENOENT") throw new ArbabError("usage", `the file of lens ${name2}, ${file}, does not exist`);
     throw new ArbabError("usage", `cannot read the file of lens ${name2}, ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    confine(realpathSync16(root), real2);
+    confine(realRoot, real2);
   } catch {
     throw refuse2("the file must be inside the project root, and a symlink in it may not lead out");
   }
-  const realHit = credential(real2);
+  const realHit = credential(real2, realRoot);
   if (realHit !== null) throw refuse2(`the file resolves to ${real2}, which ${credentialReason(realHit)}; a credential file is not a lens`);
   return real2;
 }

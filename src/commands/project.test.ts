@@ -101,6 +101,28 @@ describe("inLaneWorktree", () => {
     expect(inLaneWorktree("/work/l", linked)).toBe(true);
   });
 
+  it("follows a worktreeRoot that is a link to elsewhere in the project, but not one leading out of it or to it", () => {
+    const config = { "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "wt" }) };
+    const io = fakeIo(config, { "/work/repo": "/work/repo", "/work/repo/wt": "/work/repo/.arbab/pool" });
+    expect(inLaneWorktree("/work/repo/.arbab/pool/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.ARBAB/POOL/a/src", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/wt/a", io)).toBe(true);
+    expect(inLaneWorktree("/work/repo/.arbab/pool-old/a", io)).toBe(false);
+    expect(inLaneWorktree("/work/repo", io)).toBe(false);
+    // A project reached through a link: the real root is checked against the project's real path.
+    const linkedProject = fakeIo(
+      { ...config, "/real/repo/arbab.config.json": config["/work/repo/arbab.config.json"] },
+      { "/work/repo": "/real/repo", "/work/repo/wt": "/real/repo/.arbab/pool", "/real/repo": "/real/repo", "/real/repo/wt": "/real/repo/.arbab/pool" },
+    );
+    expect(inLaneWorktree("/real/repo/.arbab/pool/a", linkedProject)).toBe(true);
+    for (const target of ["/work/repo", "/work", "/elsewhere/pool"]) {
+      const out = fakeIo(config, { "/work/repo": "/work/repo", "/work/repo/wt": target });
+      expect(inLaneWorktree("/work/repo/src", out), target).toBe(false);
+      expect(inLaneWorktree("/work/repo", out), target).toBe(false);
+      expect(inLaneWorktree("/work/repo/wt/a", out), target).toBe(true);
+    }
+  });
+
   it("reads .arbab/config.json too, and both when both exist", () => {
     const io = fakeIo({
       "/work/repo/arbab.config.json": JSON.stringify({ worktreeRoot: "one" }),
@@ -206,6 +228,22 @@ describe("findProjectRoot in a lane worktree", () => {
     expect(p.stderr()).toMatch(/lane worktree/);
     expect(findProjectRoot(p.root, p.git)).toBe(p.root);
     expect(openProject(p.ctx).worktreeRoot).toBe(join(p.root, "wt"));
+  });
+
+  it("refuses a worktree under a worktreeRoot linked to elsewhere in the project, by either path", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, worktreeRoot: "wt" } });
+    mkdirSync(join(p.root, ".arbab", "pool"), { recursive: true });
+    symlinkSync(join(p.root, ".arbab", "pool"), join(p.root, "wt"));
+    p.ok(["worktree", "add", "-q", "-b", "arbab/demo", join(p.root, "wt", "demo"), "main"]);
+    const real = join(p.root, ".arbab", "pool", "demo");
+    writeFileSync(join(real, "arbab.config.json"), JSON.stringify({ commands: { implementer: ["sh evil.sh"] } }));
+    for (const lane of [real, join(p.root, "wt", "demo")]) {
+      expect(() => findProjectRoot(lane, p.git), lane).toThrow(/lane worktree/);
+      p.err.length = 0;
+      expect(await dispatch(["-C", lane, "status"], p.ctx), lane).toBe(1);
+      expect(p.stderr()).toMatch(/lane worktree/);
+    }
+    expect(findProjectRoot(p.root, p.git)).toBe(p.root);
   });
 
   it("refuses a worktree under the worktreeRoot .arbab/config.json sets, and still opens the project", () => {

@@ -55,9 +55,8 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
       ...input.env,
       ...FIXED_ENV,
       // Keeps git and package managers off the denied ~/.config and ~/.npmrc, which otherwise fail with EPERM.
+      // XDG_DATA_HOME and XDG_CACHE_HOME stay unset: corepack's cache and pnpm's Linux store live under them.
       XDG_CONFIG_HOME: tmp.xdgConfig,
-      XDG_DATA_HOME: tmp.xdgData,
-      XDG_CACHE_HOME: tmp.xdgCache,
       YARN_CACHE_FOLDER: tmp.yarnCache,
       NPM_CONFIG_USERCONFIG: tmp.npmrc,
     },

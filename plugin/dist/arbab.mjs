@@ -1265,8 +1265,6 @@ function workerTmpPaths(worktree) {
   return {
     root,
     xdgConfig: join6(root, "xdg-config"),
-    xdgData: join6(root, "xdg-data"),
-    xdgCache: join6(root, "xdg-cache"),
     yarnCache: join6(root, "yarn-cache"),
     npmrc: join6(root, "npmrc"),
     inputs: join6(root, "inputs")
@@ -1274,7 +1272,7 @@ function workerTmpPaths(worktree) {
 }
 function ensureWorkerTmp(worktree) {
   const paths = workerTmpPaths(worktree);
-  for (const dir of [paths.xdgConfig, paths.xdgData, paths.xdgCache, paths.yarnCache, paths.inputs]) ensureDir(dir);
+  for (const dir of [paths.xdgConfig, paths.yarnCache, paths.inputs]) ensureDir(dir);
   createExclusive(paths.npmrc, "");
   return paths;
 }
@@ -2767,8 +2765,6 @@ var FIXED_ENV = {
 };
 var WORKER_TMP_ENV = [
   "XDG_CONFIG_HOME",
-  "XDG_DATA_HOME",
-  "XDG_CACHE_HOME",
   "YARN_CACHE_FOLDER",
   "NPM_CONFIG_USERCONFIG"
 ];
@@ -3647,9 +3643,8 @@ function compileProfile(input) {
       ...input.env,
       ...FIXED_ENV,
       // Keeps git and package managers off the denied ~/.config and ~/.npmrc, which otherwise fail with EPERM.
+      // XDG_DATA_HOME and XDG_CACHE_HOME stay unset: corepack's cache and pnpm's Linux store live under them.
       XDG_CONFIG_HOME: tmp.xdgConfig,
-      XDG_DATA_HOME: tmp.xdgData,
-      XDG_CACHE_HOME: tmp.xdgCache,
       YARN_CACHE_FOLDER: tmp.yarnCache,
       NPM_CONFIG_USERCONFIG: tmp.npmrc
     },

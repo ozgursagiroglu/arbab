@@ -141,8 +141,6 @@ export const FIXED_ENV: Readonly<Record<string, string>> = {
 /** Settings env names arbab points into the worktree's .arbab-tmp/ (src/run/workertmp.ts); config values lose. */
 export const WORKER_TMP_ENV: readonly string[] = [
   "XDG_CONFIG_HOME",
-  "XDG_DATA_HOME",
-  "XDG_CACHE_HOME",
   "YARN_CACHE_FOLDER",
   "NPM_CONFIG_USERCONFIG",
 ];

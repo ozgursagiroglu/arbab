@@ -320,7 +320,10 @@ describe("runWait", () => {
       writeState(p.runsRoot, { lane: "demo", state: "finished", attempt: 1, since: "x", shepherdPid: 500, endState: "success" });
     };
     expect(await runWait([], p.ctx)).toBe(0);
-    expect(seen).toEqual([[{ pid: CLI_PID, project: p.root, owner: OWNER, startedAt: new Date(NOW_MS).toISOString() }]]);
+    // The runner file is not on disk, so it cannot be resolved and is recorded as given.
+    expect(seen).toEqual([
+      [{ pid: CLI_PID, project: p.root, owner: OWNER, startedAt: new Date(NOW_MS).toISOString(), runner: p.ctx.scriptPath }],
+    ]);
     expect(existsSync(waiterFile(p))).toBe(false);
   });
 

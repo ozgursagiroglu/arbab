@@ -358,6 +358,32 @@ describe("computeReadiness: risks", () => {
     ]);
   });
 
+  it("lists other sessions first, as risks: never skipped items, never in the way of ready", () => {
+    const otherSessions = [
+      { owner: "bbbbbbbb-1111-2222", lanes: ["theirs"], waiters: 1, runnerProjects: [], runnersChanged: [] },
+      { owner: null, lanes: [], waiters: 0, runnerProjects: ["/work/x"], runnersChanged: ["dist/arbab.mjs"] },
+    ];
+    const report = computeReadiness(input({ otherSessions, review: review({ findings: [finding({ id: "correctness-1" })] }) }));
+    expect(report.risks.map((item) => item.id)).toEqual(["session:bbbbbbbb", "session:outside", "finding:correctness-1"]);
+    expect(report.risks[0]?.text).toBe(
+      "Session bbbbbbbb runs lane theirs and a waiter in this project, whose base this landing moves. " +
+        "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.",
+    );
+    expect(report.risks[1]?.text).toMatch(/^Processes started outside Claude Code run this project's dist\/arbab\.mjs in \/work\/x,/);
+    expect(report.skipped).toEqual([]);
+    expect(report.ready).toBe(true);
+    expect(report.otherSessions).toEqual(otherSessions);
+    // Under Risks, after the skipped section.
+    const md = renderReadiness(report);
+    expect(md.indexOf("- Session bbbbbbbb runs lane theirs")).toBeGreaterThan(md.indexOf("## Risks"));
+    expect(md).toContain("- Processes started outside Claude Code run this project's dist/arbab.mjs in /work/x");
+  });
+
+  it("records an empty otherSessions when given none, and leaves it out of a report computed without", () => {
+    expect(computeReadiness(input({ otherSessions: [] })).otherSessions).toEqual([]);
+    expect("otherSessions" in computeReadiness(input())).toBe(false);
+  });
+
   it("identical risk texts collapse to the first", () => {
     const merged = ["lane-a", "lane-b"].map((lane) => ({ lane, branch: `arbab/${lane}`, sha: "d".repeat(40), manifests: [] }));
     const report = computeReadiness(

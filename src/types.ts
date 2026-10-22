@@ -582,14 +582,32 @@ export interface ShepherdEntry {
   project: string;
   owner: string | null;
   startedAt: string;
+  /** Absolute real path of the runner file the process runs. Absent before 0.2.1. */
+  runner?: string;
 }
 
-/** ~/.arbab/waiters/<pid>.json, present while that `arbab wait` runs. */
+/** ~/.arbab/waiters/<pid>.json, present while that `arbab wait` (or verify, review, preflight) runs. */
 export interface WaiterEntry {
   pid: number;
   project: string;
   owner: string | null;
   startedAt: string;
+  /** Absolute real path of the runner file the process runs. Absent before 0.2.1. */
+  runner?: string;
+}
+
+/** What another session runs that a landing in this project affects (otherSessions, src/registry/sessions.ts). */
+export interface SessionActivity {
+  /** CLAUDE_CODE_SESSION_ID of the other session; null for processes started outside Claude Code. */
+  owner: string | null;
+  /** Its running lanes in this project, sorted. */
+  lanes: string[];
+  /** How many of its waiters (wait, verify, review, preflight) wait in this project. */
+  waiters: number;
+  /** The other projects whose processes run a runner file this landing changes, sorted. */
+  runnerProjects: string[];
+  /** Those runner files, project-relative, sorted. */
+  runnersChanged: string[];
 }
 
 /** ~/.arbab/projects/<sha1(root)>.json: a project that launched a lane on this machine (for `summary --all`). */
@@ -742,6 +760,8 @@ export interface ReadinessReport {
    * review is carried over; DESIGN.md §21). Absent otherwise.
    */
   reviewCarriedOverFrom?: string;
+  /** Other sessions this landing affects, also listed under risks (id `session:<owner>`). Absent before 0.2.1. */
+  otherSessions?: SessionActivity[];
 }
 
 /** landing.json */

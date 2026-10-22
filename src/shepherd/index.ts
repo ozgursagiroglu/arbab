@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { findOnPath, pathExists, realpath, runVersion } from "../binary";
+import { runnerPath } from "../registry";
 import { isPortFree, nodeGit, readPs, runArgv } from "../run";
 import type { ArgvRunner, GitRunner, PortProbe, SpawnImpl } from "../run";
 import { isAlive, sendSignal, sleep, systemClock } from "../util/proc";
@@ -49,6 +50,11 @@ export interface ShepherdDeps {
   run: (path: string, args: string[]) => string;
   exists: (p: string) => boolean;
   realpath: (p: string) => string;
+  /**
+   * The absolute real path of the runner file this shepherd runs, recorded in its machine-wide entry. Optional only
+   * because test/fake-claude/harness.ts builds deps without it; defaultDeps always sets it.
+   */
+  runner?: string;
   tickMs: number;
   holdPollMs: number;
   slotPollMs: number;
@@ -82,6 +88,7 @@ export function defaultDeps(): ShepherdDeps {
     run: runVersion,
     exists: pathExists,
     realpath,
+    runner: runnerPath(process.argv[1] ?? ""),
     tickMs: 10_000,
     holdPollMs: 60_000,
     slotPollMs: 15_000,

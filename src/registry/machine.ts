@@ -54,13 +54,18 @@ const isOwner = (v: unknown): v is string | null => v === null || typeof v === "
 function asShepherd(v: unknown): ShepherdEntry | null {
   if (!isObject(v) || !isPid(v.pid) || typeof v.lane !== "string" || typeof v.project !== "string") return null;
   if (!isOwner(v.owner) || typeof v.startedAt !== "string") return null;
-  return { pid: v.pid, lane: v.lane, project: v.project, owner: v.owner, startedAt: v.startedAt };
+  const entry: ShepherdEntry = { pid: v.pid, lane: v.lane, project: v.project, owner: v.owner, startedAt: v.startedAt };
+  // A runner of the wrong type is unknown, not fatal: the entry reads as one written before 0.2.1.
+  if (typeof v.runner === "string") entry.runner = v.runner;
+  return entry;
 }
 
 function asWaiter(v: unknown): WaiterEntry | null {
   if (!isObject(v) || !isPid(v.pid) || typeof v.project !== "string") return null;
   if (!isOwner(v.owner) || typeof v.startedAt !== "string") return null;
-  return { pid: v.pid, project: v.project, owner: v.owner, startedAt: v.startedAt };
+  const entry: WaiterEntry = { pid: v.pid, project: v.project, owner: v.owner, startedAt: v.startedAt };
+  if (typeof v.runner === "string") entry.runner = v.runner;
+  return entry;
 }
 
 function asProject(v: unknown): ProjectEntry | null {

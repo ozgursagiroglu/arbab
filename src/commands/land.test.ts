@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { credentialMatcher } from "../profile";
+import { registerShepherd, registerWaiter } from "../registry";
 import { untrustedTree } from "../run";
-import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord } from "../types";
+import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord, SessionActivity } from "../types";
 import { writeJsonAtomic } from "../util/fs";
 import type { WorktreeCleanup } from "./cleanup";
 import { markGenerated } from "./generated";
@@ -21,6 +22,8 @@ const readRecord = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")
 const hasBranch = (t: TestProject, branch: string): boolean => t.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], t.root).code === 0;
 const T = "2026-10-09T12:00:00.000Z";
 const LIVE = 101;
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
+const OTHER_SESSION = "bbbbbbbb-1111-2222-3333-444444444444";
 
 /** A finished lane's worktree on arbab/<lane>: the existing branch, or a new one at `from`. */
 function laneWorktree(t: TestProject, lane: string, from?: string): string {
@@ -263,6 +266,57 @@ describe("runLand", () => {
     expect(out.remote).toBe("origin");
     expect(out.push).toEqual(["git", "push", "origin", "main"]);
     expect(out.landing.pushed).toBe(false);
+  });
+
+  it("warns on stderr about other sessions the landing affects, and still lands", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    registerShepherd(p.home, { pid: 7001, lane: "mine", project: p.root, owner: SESSION, startedAt: T });
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    registerWaiter(p.home, { pid: 7003, project: p.root, owner: OTHER_SESSION, startedAt: T });
+    // Another project's waiter runs a file of this project that the merge writes.
+    registerWaiter(p.home, { pid: 7004, project: "/work/elsewhere", owner: null, startedAt: T, runner: join(p.root, "a.txt") });
+    for (const pid of [7001, 7002, 7003, 7004]) p.alive.add(pid);
+
+    expect(await runLand(["rel"], p.ctx)).toBe(0);
+    expect(existsSync(join(dir(p), "landing.json"))).toBe(true);
+    expect(p.ok(["log", "-1", "--format=%P", "main"])).toContain(head);
+    expect(p.stderr()).toBe(
+      "warning: Session bbbbbbbb runs lane theirs and a waiter in this project, whose base this landing moves. " +
+        "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n" +
+        "warning: Processes started outside Claude Code run this project's a.txt in /work/elsewhere, which this landing " +
+        "replaces. Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n",
+    );
+    expect(p.stdout()).toMatch(/^landed rel: /);
+  });
+
+  it("carries the other sessions in --json, and an empty list when there are none", async () => {
+    ({ t: p } = await ready());
+    p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    p.alive.add(7002);
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { otherSessions: SessionActivity[] }).otherSessions).toEqual([
+      { owner: OTHER_SESSION, lanes: ["theirs"], waiters: 0, runnerProjects: [], runnersChanged: [] },
+    ]);
+    expect(p.stderr()).toMatch(/^warning: Session bbbbbbbb runs lane theirs in this project/);
+
+    p.dispose();
+    ({ t: p } = await ready());
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { otherSessions: SessionActivity[] }).otherSessions).toEqual([]);
+    expect(p.stderr()).toBe("");
+  });
+
+  it("says nothing about other sessions when it refuses", async () => {
+    ({ t: p } = await ready());
+    registerShepherd(p.home, { pid: 7002, lane: "theirs", project: p.root, owner: OTHER_SESSION, startedAt: T });
+    p.alive.add(7002);
+    p.write("dirty.txt", "x");
+    p.ok(["add", "dirty.txt"]);
+    await expect(runLand(["rel"], p.ctx)).rejects.toThrow(/uncommitted changes/);
+    expect(p.stderr()).toBe("");
   });
 
   it("removes the merged and generated lanes' worktrees, the generated lanes' and the integration's branches, and keeps the records", async () => {

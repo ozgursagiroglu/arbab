@@ -5,6 +5,8 @@
 // each lane that worked in a merged lane's worktree. The tier defaults to config landing.tier.
 // A review made before a clean merge of the base still counts (DESIGN.md §21); config hostGates count once
 // host-checks.json passed on the head. --waive needs a terminal: waivers are the human's.
+// Other sessions the landing would affect (otherSessions, against the paths the integration changes) are risks
+// `session:<owner>`, never skipped items.
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
@@ -21,6 +23,7 @@ import type { CommandContext } from "./context";
 import { readHostCheckRecord } from "./host-check";
 import { splitList } from "./integrate";
 import { latestReport, openIntegration } from "./integration";
+import { changedPaths, sessionsAffected } from "./land";
 import { onePositional, openProject, parse, printJson } from "./project";
 import { readReviewRecord, readVerifyRecord } from "./records";
 
@@ -75,6 +78,18 @@ export function reviewRounds(integrationDir: string, name: string): ReviewRound[
   });
 }
 
+/**
+ * The paths the integration changes against its base (from their merge base, so commits the base gained since do not
+ * count); none when git cannot tell, so only the other sessions' lanes and waiters in this project are named.
+ */
+export function integrationChanges(ctx: CommandContext, root: string, base: string, head: string): string[] {
+  try {
+    return changedPaths(ctx.git, root, [`${base}...${head}`]);
+  } catch {
+    return [];
+  }
+}
+
 export async function runReadiness(argv: string[], ctx: CommandContext): Promise<number> {
   const { values, positionals } = parse("readiness", {
     args: argv,
@@ -113,6 +128,7 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     hostGates: project.config.hostGates,
     hostChecks: readHostCheckRecord(join(paths.dir, HOST_CHECKS_FILE), name),
     reviewRounds: reviewRounds(paths.dir, name),
+    otherSessions: sessionsAffected(ctx, project.root, integrationChanges(ctx, project.root, base, record.headSha)),
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);

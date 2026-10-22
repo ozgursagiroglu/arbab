@@ -77,6 +77,11 @@ export function toolBelt(profile: CompiledProfile, leases: Lease[], bashMaxTimeo
       "- Quote paths that contain [ ] ( ), such as app/[slug]/page.tsx: unquoted, the shell or the permission check " +
         "refuses them.",
     );
+    // The Read tool's `**/.env*` deny still covers them; only the sandbox's allowRead re-opens them (DESIGN.md §21).
+    const templates = profile.settings.sandbox.filesystem?.allowRead ?? [];
+    if (templates.length > 0) {
+      lines.push(`- Tracked env templates ${templates.map(code).join(", ")} are readable by shell commands only.`);
+    }
   }
 
   const fileTools = profile.tools.filter((t) => FILE_TOOLS.includes(t));

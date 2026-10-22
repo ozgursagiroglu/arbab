@@ -56,6 +56,21 @@ describe("toolBelt", () => {
     expect(STRICT.settings.bashOutputMaxChars).toBeUndefined();
     expect(toolBelt(STRICT, [], 15)).toContain("- Bash output longer than 100000 characters");
   });
+  it("names the env templates re-opened for shell commands, only when there are some", () => {
+    const allowRead = ["/work/lane/.env.example", "/work/lane/apps/web/.env.sample"];
+    const withTemplates = (base: typeof STRICT) => ({
+      ...base,
+      settings: { ...base.settings, sandbox: { ...base.settings.sandbox, filesystem: { denyWrite: [], allowRead } } },
+    });
+    const line = "- Tracked env templates `/work/lane/.env.example`, `/work/lane/apps/web/.env.sample` are readable by " +
+      "shell commands only.";
+    expect(toolBelt(withTemplates(STRICT), [], 15)).toContain(line);
+    expect(toolBelt(withTemplates(SANDBOX_AUTO), [], 15)).toContain(line);
+    expect(toolBelt(STRICT, [], 15)).not.toContain("env templates");
+    const empty = { ...STRICT, settings: { ...STRICT.settings, sandbox: { ...STRICT.settings.sandbox, filesystem: { denyWrite: [], allowRead: [] } } } };
+    expect(toolBelt(empty, [], 15)).not.toContain("env templates");
+    expect(toolBelt(withTemplates(RESEARCHER), [], 15)).not.toContain("env templates");
+  });
   it("omits leases when there are none", () => {
     expect(toolBelt(STRICT, [], 15)).not.toContain("ARBAB_");
   });

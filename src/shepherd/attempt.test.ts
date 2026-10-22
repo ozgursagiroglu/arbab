@@ -8,12 +8,12 @@ import type { GitRunner } from "../run";
 import { ArbabError } from "../util/errors";
 import { elideSchema, laneSchema, previousSession, profileInput, readRegistration, startedFields, worktreeUsedFile } from "./attempt";
 
-// The real envFileDenies is another lane's; here only whether and how the attempt calls it matters.
-const envFileCalls = vi.hoisted(() => [] as Array<{ projectRoot: string; worktree: string; readable: string[] }>);
+// envFileAllowReads has its own tests; here only whether and how the attempt calls it matters.
+const envFileCalls = vi.hoisted(() => [] as Array<{ worktree: string; readable: string[] }>);
 vi.mock("../profile/envfiles", () => ({
-  envFileDenies: (input: { projectRoot: string; worktree: string; readable: string[] }) => {
-    envFileCalls.push({ projectRoot: input.projectRoot, worktree: input.worktree, readable: input.readable });
-    return ["/repo/.env", "/repo/.env.local"];
+  envFileAllowReads: (input: { worktree: string; readable: string[] }) => {
+    envFileCalls.push({ worktree: input.worktree, readable: input.readable });
+    return [`${input.worktree}/.env.example`];
   },
 }));
 
@@ -71,20 +71,22 @@ describe("profileInput", () => {
   it("passes the fence options and does not look for env files when none are readable", () => {
     envFileCalls.length = 0;
     const input = profileInput(ctx({ readableEnvFiles: [], bashOutputMaxChars: 100000 }));
-    expect(input).toMatchObject({ readableEnvFiles: [], bashOutputMaxChars: 100000, envFileDenies: [] });
+    expect(input).toMatchObject({ readableEnvFiles: [], bashOutputMaxChars: 100000, envFileAllowReads: [] });
+    expect(input).not.toHaveProperty("envFileDenies");
     expect(envFileCalls).toEqual([]);
   });
 
-  it("asks envFileDenies for the files to deny when templates are readable", () => {
+  it("asks envFileAllowReads for the templates to re-open when some are readable", () => {
     envFileCalls.length = 0;
     const input = profileInput(ctx({ readableEnvFiles: [".env.example"], bashOutputMaxChars: 4000 }));
     expect(input).toMatchObject({
       readableEnvFiles: [".env.example"],
       bashOutputMaxChars: 4000,
-      envFileDenies: ["/repo/.env", "/repo/.env.local"],
+      envFileAllowReads: ["/repo/.arbab/worktrees/m1-a/.env.example"],
       worktree: "/repo/.arbab/worktrees/m1-a",
     });
-    expect(envFileCalls).toEqual([{ projectRoot: "/repo", worktree: "/repo/.arbab/worktrees/m1-a", readable: [".env.example"] }]);
+    expect(input).not.toHaveProperty("envFileDenies");
+    expect(envFileCalls).toEqual([{ worktree: "/repo/.arbab/worktrees/m1-a", readable: [".env.example"] }]);
   });
 });
 

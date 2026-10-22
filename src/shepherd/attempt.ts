@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { resolveBinary } from "../binary";
-import { buildClaudeArgs, compileProfile, envFileDenies, lintProfile, workerEnv } from "../profile";
+import { buildClaudeArgs, compileProfile, envFileAllowReads, lintProfile, workerEnv } from "../profile";
 import { updateQuota } from "../quota";
 import { attemptFiles, createAttempt, listAttempts, readAttempt, runPaths } from "../registry";
 import { DEFAULT_SCHEMAS, validate } from "../report";
@@ -184,7 +184,7 @@ export function previousSession(runsRoot: string, lane: string): PreviousSession
 
 /** The fence's input for an attempt: the lane's role and config, the worktree, and the env-file options. */
 export function profileInput(
-  ctx: Pick<AttemptContext, "projectRoot" | "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "gitCommonDir"> & {
+  ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "gitCommonDir"> & {
     deps: Pick<AttemptContext["deps"], "git">;
   },
 ): ProfileInput {
@@ -203,11 +203,8 @@ export function profileInput(
     gitCommonDir: ctx.gitCommonDir,
     readableEnvFiles: readable,
     bashOutputMaxChars: config.fence.bashOutputMaxChars,
-    // Only a lifted blanket deny needs the env files named one by one, and finding them walks two trees.
-    envFileDenies:
-      readable.length === 0
-        ? []
-        : envFileDenies({ projectRoot: ctx.projectRoot, worktree: ctx.worktree, readable, git: ctx.deps.git }),
+    // Each listed template costs a git call; with none listed there is nothing to re-open.
+    envFileAllowReads: readable.length === 0 ? [] : envFileAllowReads({ worktree: ctx.worktree, readable, git: ctx.deps.git }),
   };
 }
 

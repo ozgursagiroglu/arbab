@@ -1,4 +1,4 @@
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { workerTmpPaths } from "../run/workertmp";
 import type { ClaudeSettings, CompiledProfile, ProfileInput, Role } from "../types";
 import { ArbabError } from "../util/errors";
@@ -26,10 +26,13 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
   // Sandboxed Bash is auto-allowed in sandbox-auto; a Bash allow rule there could only approve an unsandboxed retry.
   if (input.fence === "sandbox-auto") allow = allow.filter((rule) => !rule.startsWith("Bash("));
 
-  // Without the env files found on disk the blanket deny stays: lifting it blind would expose them.
-  const liftEnv = (input.readableEnvFiles ?? []).length > 0 && input.envFileDenies !== undefined;
+  const allowRead = envAllowReads(input.worktree, input.envFileAllowReads ?? []);
+  const filesystem = gitDir === undefined && allowRead.length === 0
+    ? undefined
+    : { denyWrite: gitDir === undefined ? [] : [gitDir], ...(allowRead.length === 0 ? {} : { allowRead }) };
   const deny = dedupe([
-    ...credentialDenies(input.credentialPaths, liftEnv ? (input.envFileDenies ?? []) : null),
+    // The `**/.env*` deny stays whatever readableEnvFiles says; allowRead re-opens the tracked templates only.
+    ...credentialDenies(input.credentialPaths),
     // `//` makes the path absolute; a single `/` would be relative to the settings file.
     ...(gitDir === undefined ? [] : [`Edit(/${gitDir}/**)`, `Write(/${gitDir}/**)`]),
     BACKGROUND_DENY,
@@ -48,8 +51,9 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
       autoAllowBashIfSandboxed: input.fence === "sandbox-auto",
       allowUnsandboxedCommands: false,
       network: { allowLocalBinding: input.loopback },
-      // Otherwise a sandboxed command can write refs and objects of the shared repository (measured, M1 review).
-      ...(gitDir === undefined ? {} : { filesystem: { denyWrite: [gitDir] } }),
+      // denyWrite: otherwise a sandboxed command can write refs and objects of the shared repository (measured, M1
+      // review). allowRead: the tracked env templates, readable by shell commands only (DESIGN.md §21).
+      ...(filesystem === undefined ? {} : { filesystem }),
     },
     env: {
       ...input.env,
@@ -74,6 +78,19 @@ function sharedGitDir(dir: string): string {
   const normal = resolve(dir);
   if (normal === "/") throw new ArbabError("usage", "gitCommonDir must not be the filesystem root");
   return normal;
+}
+
+/** The env templates to re-open, normalised; each must be an absolute path inside the worktree. */
+function envAllowReads(worktree: string, paths: string[]): string[] {
+  return dedupe(paths.map((path) => {
+    if (!isAbsolute(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    const normal = resolve(path);
+    const rel = relative(resolve(worktree), normal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
+    }
+    return normal;
+  }));
 }
 
 function readAllow(): string[] {

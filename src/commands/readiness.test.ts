@@ -1,10 +1,10 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { IntegrationRecord, ReadinessReport } from "../types";
+import type { HostCheckRecord, IntegrationRecord, ReadinessReport, ReviewRecord } from "../types";
 import { writeJsonAtomic } from "../util/fs";
 import { runIntegrate } from "./integrate";
-import { laneReports, parseTier, runReadiness } from "./readiness";
+import { laneReports, parseTier, reviewRounds, runReadiness } from "./readiness";
 import { DEFAULT_CONFIG, branchWith, makeProject, passedVerify, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
@@ -19,6 +19,28 @@ async function integrated(config: Record<string, unknown> = {}): Promise<{ t: Te
   expect(await runIntegrate(["rel", "--lanes", "a"], t.ctx)).toBe(0);
   t.out.length = 0;
   return { t, head: readRecord<IntegrationRecord>(join(dir(t), "integration.json")).headSha };
+}
+
+/** A review.json of "rel" at `head` whose one lens counts. */
+function reviewOf(head: string): ReviewRecord {
+  return {
+    name: "rel",
+    headSha: head,
+    lenses: [{ lens: "correctness", lane: "rel-review-correctness", endState: "success", coverage: "every file", pathsChecked: 2 }],
+    skeptics: [],
+    findings: [],
+    finishedAt: "2026-10-09T12:00:00.000Z",
+  };
+}
+
+/** Merges `ref` into the integration worktree with a merge commit and records the new head, as integrate would. */
+function mergeIntoIntegration(t: TestProject, ref: string): string {
+  const path = join(dir(t), "integration.json");
+  const record = readRecord<IntegrationRecord>(path);
+  t.ok(["merge", "-q", "--no-ff", "--no-edit", ref], record.worktree);
+  const head = t.ok(["rev-parse", "HEAD"], record.worktree).trim();
+  writeJsonAtomic(path, { ...record, headSha: head });
+  return head;
 }
 
 describe("parseTier", () => {
@@ -128,6 +150,121 @@ describe("runReadiness", () => {
     expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).skipped).toEqual([
       { id: "verify", text: "verify did not pass on the head: the lane left changes behind", waived: false },
     ]);
+  });
+
+  it("refuses --waive without a terminal: waivers are the human's", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated({ landing: { tier: "medium" } }));
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    p.ctx.interactive = false;
+    await expect(runReadiness(["rel", "--waive", "review"], p.ctx)).rejects.toMatchObject({
+      code: "usage",
+      message: expect.stringMatching(/run it yourself in a terminal/),
+    });
+    expect(existsSync(join(dir(p), "readiness.json"))).toBe(false);
+    // Without --waive an agent still reads the report.
+    expect(await runReadiness(["rel"], p.ctx)).toBe(1);
+    p.ctx.interactive = true;
+    expect(await runReadiness(["rel", "--waive", "review"], p.ctx)).toBe(0);
+  });
+
+  it("carries a review over a clean merge of the base, and not verify", async () => {
+    let reviewed: string;
+    ({ t: p, head: reviewed } = await integrated({ landing: { tier: "medium" } }));
+    writeJsonAtomic(join(dir(p), "review.json"), reviewOf(reviewed));
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(reviewed));
+    p.write("base.txt", "base\n");
+    p.ok(["add", "--", "base.txt"]);
+    p.ok(["commit", "-q", "-m", "base moves"]);
+    const head = mergeIntoIntegration(p, "main");
+
+    expect(await runReadiness(["rel", "--json"], p.ctx)).toBe(1);
+    const stale = JSON.parse(p.stdout()) as ReadinessReport;
+    expect(stale.reviewCarriedOverFrom).toBe(reviewed);
+    expect(stale.skipped.map((s) => s.id)).toEqual(["verify"]);
+    expect(stale.verified).toContainEqual({
+      id: "review-carried-over",
+      text: `review carried over from ${reviewed.slice(0, 7)}: the head adds only a clean merge of main`,
+    });
+
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    expect(await runReadiness(["rel"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json"))).toMatchObject({ ready: true, reviewCarriedOverFrom: reviewed });
+  });
+
+  it("does not carry a review over a merge of another branch", async () => {
+    let reviewed: string;
+    ({ t: p, head: reviewed } = await integrated({ landing: { tier: "medium" } }));
+    writeJsonAtomic(join(dir(p), "review.json"), reviewOf(reviewed));
+    branchWith(p, "feature", "f.txt", "f\n");
+    const head = mergeIntoIntegration(p, "feature");
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    expect(await runReadiness(["rel"], p.ctx)).toBe(1);
+    const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+    expect(report).not.toHaveProperty("reviewCarriedOverFrom");
+    expect(report.skipped.map((s) => s.id)).toEqual(["review"]);
+    expect(report.risks.map((r) => r.id)).toContain("stale:review");
+  });
+
+  it("lists the host gates until host-checks.json passed on the head; host may be waived", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated({ hostGates: [["docker", "build", "."]] }));
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(1);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).skipped.map((s) => s.id)).toEqual(["host"]);
+    expect(await runReadiness(["rel", "--tier", "low", "--waive", "host"], p.ctx)).toBe(0);
+
+    const record: HostCheckRecord = {
+      name: "rel",
+      headSha: head,
+      results: [{ kind: "gate", argv: ["docker", "build", "."], command: "docker build .", exitCode: 0 }],
+      passed: true,
+      interactive: true,
+      finishedAt: "2026-10-09T12:00:00.000Z",
+    };
+    writeJsonAtomic(join(dir(p), "host-checks.json"), record);
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).verified).toContainEqual({
+      id: "host:docker build .",
+      text: "host gate: exit 0",
+    });
+    writeFileSync(join(dir(p), "host-checks.json"), JSON.stringify({ ...record, interactive: false }));
+    await expect(runReadiness(["rel", "--tier", "low"], p.ctx)).rejects.toMatchObject({ code: "io" });
+  });
+
+  it("shows the review rounds from reviews/<round>.json", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    const finding = (id: string, severity: string, verdict = "confirmed") => ({
+      id,
+      lens: "correctness",
+      title: "t",
+      severity,
+      file: "a.txt",
+      failureScenario: "s",
+      evidence: "e",
+      verdict,
+    });
+    writeJsonAtomic(join(dir(p), "reviews", "1.json"), {
+      ...reviewOf("0".repeat(40)),
+      round: 1,
+      findings: [finding("c-1", "MEDIUM"), finding("c-2", "MEDIUM"), finding("c-3", "LOW", "unverified"), finding("c-4", "HIGH", "refuted")],
+    });
+    writeJsonAtomic(join(dir(p), "reviews", "2.json"), { ...reviewOf("0".repeat(40)), round: 2, findings: [finding("c-1", "LOW")] });
+    writeJsonAtomic(join(dir(p), "reviews", "10.json"), { ...reviewOf(head), round: 10 });
+    // Not a round, or not a review of this integration: left out.
+    writeFileSync(join(dir(p), "reviews", "3.json"), "{not json");
+    writeJsonAtomic(join(dir(p), "reviews", "4.json"), { ...reviewOf(head), name: "other" });
+    writeJsonAtomic(join(dir(p), "reviews", "notes.json"), reviewOf(head));
+    expect(reviewRounds(join(dir(p), "reviews"), "rel").map((r) => r.round)).toEqual([1, 2, 10]);
+    expect(reviewRounds(join(dir(p), "missing"), "rel")).toEqual([]);
+
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).verified).toContainEqual({
+      id: "review-rounds",
+      text: "review rounds: 1: 2 MEDIUM, 1 LOW · 2: 1 LOW · 10: none",
+    });
   });
 
   it("refuses a damaged verify.json, an unknown tier and a missing integration", async () => {

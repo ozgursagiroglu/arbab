@@ -8,12 +8,11 @@
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
-import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import { computeReadiness, renderReadiness, reviewCarriesOver, type ReadinessInput, type ReviewRound } from "../readiness";
 import { listLanes, runPaths } from "../registry";
-import { lensNames } from "../review";
-import { HOST_CHECKS_FILE, REVIEW_HISTORY_DIR, TIERS, type Tier } from "../types";
+import { lensNames, reviewRoundPath, reviewRounds as roundsOnDisk } from "../review";
+import { HOST_CHECKS_FILE, TIERS, type Tier } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson, writeJsonAtomic, writeTextAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -54,33 +53,26 @@ export function laneReports(runsRoot: string, merged: readonly string[]): Readin
   return out;
 }
 
-const ROUND_FILE = /^([1-9]\d{0,5})\.json$/;
-
 /**
- * Each readable reviews/<round>.json, by round. The history only informs the report, so a file that does not parse or
- * is not a review of this integration is left out rather than failing it.
+ * Each readable <integrationDir>/reviews/<round>.json, by round. The history only informs the report, so a file that
+ * does not parse or is not a review of this integration is left out rather than failing it, which is why this does
+ * not use readReviewHistory: it refuses the whole history for one damaged round.
  */
-export function reviewRounds(dir: string, name: string): ReviewRound[] {
-  let files: string[];
+export function reviewRounds(integrationDir: string, name: string): ReviewRound[] {
+  let rounds: number[];
   try {
-    files = readdirSync(dir);
+    rounds = roundsOnDisk(integrationDir);
   } catch {
-    // No review yet, or one from before §21.
     return [];
   }
-  const rounds: ReviewRound[] = [];
-  for (const file of files) {
-    const match = ROUND_FILE.exec(file);
-    if (match === null) continue;
-    let record: ReturnType<typeof readReviewRecord>;
+  return rounds.flatMap((round) => {
     try {
-      record = readReviewRecord(join(dir, file), name);
+      const record = readReviewRecord(reviewRoundPath(integrationDir, round), name);
+      return record === null ? [] : [{ round, findings: record.findings }];
     } catch {
-      continue;
+      return [];
     }
-    if (record !== null) rounds.push({ round: Number(match[1]), findings: record.findings });
-  }
-  return rounds.sort((a, b) => a.round - b.round);
+  });
 }
 
 export async function runReadiness(argv: string[], ctx: CommandContext): Promise<number> {
@@ -119,7 +111,7 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     reviewCarryOver: carried && review !== null ? { from: review.headSha, base } : null,
     hostGates: project.config.hostGates,
     hostChecks: readHostCheckRecord(join(paths.dir, HOST_CHECKS_FILE), name),
-    reviewRounds: reviewRounds(join(paths.dir, REVIEW_HISTORY_DIR), name),
+    reviewRounds: reviewRounds(paths.dir, name),
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);

@@ -272,8 +272,7 @@ export async function runAttempt(ctx: AttemptContext, request: AttemptRequest): 
   const profile = profileFor(ctx);
   const schema = laneSchema(ctx.projectRoot, lane);
   const sessionId = previous?.sessionId ?? randomUUID();
-  // `inputs` becomes BriefContext.inputs once buildBrief's input carries it (src/shepherd/prompt.ts, another lane).
-  const briefInput: BriefInput & { inputs?: string[] } = {
+  const briefInput: BriefInput = {
     projectRoot: ctx.projectRoot,
     runsRoot,
     config: ctx.config,

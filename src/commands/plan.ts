@@ -6,12 +6,14 @@
 //          "waves": string[][] | null}
 // Phases are linted only when the dependency graph resolves (waves is null otherwise). Exit 1 on any error.
 //
-// arbab plan next <plan.json> [--json]
+// arbab plan next <plan.json> [--retry <phase>] [--json]
 //
 // Checks the plan (refuses on errors, launching nothing), then launches every phase that never ran and whose
 // dependencies all succeeded (finished with success, and the latest attempt's exit.json has a checkpoint commit or
 // recorded no changes), through the same path as `arbab launch`. Each launched phase's compiled lane spec is written
 // to .arbab/plans/<plan>/<phase>.json first. An orphaned dependency, or one whose checkpoint failed, fails upstream.
+// --retry first relaunches that phase (a fresh session in its worktree, on its checkpoint commits), listed first among
+// the launched; it refuses (exit 1, nothing launched) a phase not in the plan, never run, active or that succeeded.
 // Text: `launched <phase>  run <run dir>  shepherd <pid>`, `blocked <phase>  waiting for <deps>`,
 // `failed-upstream <phase>  <dep> ended <end state>[; <reason>]`, `error <phase>  <message>`; `nothing launched` when
 // nothing was.
@@ -26,7 +28,7 @@
 // Text: one row per phase: phase, wave, state, end state, dependencies. --json: {"plan": string, "phases":
 // PlanStatusRow[]} (state and endState null for a phase never launched; state is the effective state).
 import { join } from "node:path";
-import { checkPlan, compilePhase, loadPlan, nextPhases, planStatus, planWaves } from "../plan";
+import { checkPlan, compilePhase, loadPlan, nextPhases, planStatus, planWaves, retryRefusal } from "../plan";
 import type { NextPhases, PhaseState, PhaseStates, PlanStatusRow } from "../plan";
 import { attemptFiles, effectiveState, listAttempts, readState, runPaths } from "../registry";
 import { arbabIgnoreEntries, ensureArbabMarkers, ensureIgnored } from "../run";
@@ -135,9 +137,11 @@ export interface PlanNext {
 
 /**
  * `plan next`: refuses a plan with errors (they go to stderr), then launches each launchable phase. A failed launch
- * does not stop the others; it is listed under errors.
+ * does not stop the others; it is listed under errors. `retry` first relaunches that phase, which must have ended in
+ * anything but success or been orphaned, as `arbab launch` relaunches its lane file: a fresh session in its worktree,
+ * on top of its checkpoint commits. Its dependents then wait for it instead of failing upstream.
  */
-export async function planNext(ctx: CommandContext, project: Project, planPath: string): Promise<PlanNext> {
+export async function planNext(ctx: CommandContext, project: Project, planPath: string, opts: { retry?: string } = {}): Promise<PlanNext> {
   const check = checkPlanFile(ctx, project, planPath);
   const plan = check.plan;
   if (planHasErrors(check)) {
@@ -145,26 +149,42 @@ export async function planNext(ctx: CommandContext, project: Project, planPath: 
     for (const p of check.phases) for (const issue of p.issues) ctx.stderr(`${p.phase}: ${formatIssue(issue)}\n`);
     throw new ArbabError("lint", `${planSummary(check)}; nothing launched`);
   }
-  const next = nextPhases(plan, phaseStates(project, plan, ctx.alive));
-  const out: PlanNext = { plan: plan.name, launched: [], blocked: next.blocked, failed: next.failed, errors: [], warnings: [], code: 0 };
-  if (next.launch.length === 0) return out;
+  const states = phaseStates(project, plan, ctx.alive);
+  if (opts.retry !== undefined) {
+    const refusal = retryRefusal(plan, states, opts.retry);
+    if (refusal !== null) throw new ArbabError("usage", `cannot retry: ${refusal}; nothing launched`);
+  }
+  const out: PlanNext = { plan: plan.name, launched: [], blocked: [], failed: [], errors: [], warnings: [], code: 0 };
 
-  // The generated lane files live under .arbab/plans/, which arbab's own entries cover.
-  ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
-  ensureArbabMarkers(project.root);
-  for (const phase of next.launch) {
+  let prepared = false;
+  const launch = async (phase: string, onlyNew: boolean): Promise<boolean> => {
+    if (!prepared) {
+      // The generated lane files live under .arbab/plans/, which arbab's own entries cover.
+      ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
+      ensureArbabMarkers(project.root);
+      prepared = true;
+    }
     const lane = check.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
     const laneFile = join(plansDir(project, plan.name), `${phase}.json`);
     try {
       writeJsonAtomic(laneFile, lane);
-      const launched = await launchLane(ctx, project, laneFile, { onlyNew: true });
+      const launched = await launchLane(ctx, project, laneFile, { onlyNew });
       out.launched.push({ phase, laneFile, runDir: launched.runDir, shepherdPid: launched.shepherdPid });
       for (const issue of launched.warnings) out.warnings.push({ phase, issue });
+      return true;
     } catch (err) {
       out.errors.push({ phase, message: err instanceof Error ? err.message : String(err) });
       out.code = Math.max(out.code, exitCodeFor(err));
+      return false;
     }
-  }
+  };
+
+  // The relaunched phase counts as queued, so its dependents are blocked on it rather than failed upstream.
+  if (opts.retry !== undefined && (await launch(opts.retry, false))) states[opts.retry] = { state: "queued", endState: null, exit: null };
+  const next = nextPhases(plan, states);
+  out.blocked = next.blocked;
+  out.failed = next.failed;
+  for (const phase of next.launch) await launch(phase, true);
   return out;
 }
 
@@ -208,9 +228,13 @@ async function runCheck(argv: string[], ctx: CommandContext): Promise<number> {
 }
 
 async function runNext(argv: string[], ctx: CommandContext): Promise<number> {
-  const { values, positionals } = parse("plan next", { args: argv, options: { json: { type: "boolean" } }, allowPositionals: true });
+  const { values, positionals } = parse("plan next", {
+    args: argv,
+    options: { json: { type: "boolean" }, retry: { type: "string" } },
+    allowPositionals: true,
+  });
   const planPath = onePositional("plan next", positionals, "plan.json");
-  const next = await planNext(ctx, openProject(ctx), planPath);
+  const next = await planNext(ctx, openProject(ctx), planPath, values.retry === undefined ? {} : { retry: values.retry });
   if (values.json === true) {
     printJson(ctx, {
       plan: next.plan,
@@ -254,6 +278,6 @@ const SUBCOMMANDS: Readonly<Record<string, (argv: string[], ctx: CommandContext)
 export async function runPlan(argv: string[], ctx: CommandContext): Promise<number> {
   const [sub, ...rest] = argv;
   const command = sub !== undefined && Object.hasOwn(SUBCOMMANDS, sub) ? SUBCOMMANDS[sub] : undefined;
-  if (command === undefined) throw new ArbabError("usage", "usage: arbab plan check|next|status <plan.json> [--json]");
+  if (command === undefined) throw new ArbabError("usage", "usage: arbab plan check|next|status <plan.json> [--json] (next also takes --retry <phase>)");
   return command(rest, ctx);
 }

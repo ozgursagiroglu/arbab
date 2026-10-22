@@ -112,8 +112,8 @@ export function sessionId(activity: SessionActivity): string {
 const counted = (n: number, word: string): string => `${n === 1 ? "a" : n} ${word}${n === 1 ? "" : "s"}`;
 const named = (names: readonly string[], word: string): string => `${word}${names.length === 1 ? "" : "s"} ${names.join(", ")}`;
 
-/** One sentence per activity, the same in readiness.md and in land's warnings. */
-export function sessionText(activity: SessionActivity): string {
+/** One activity as text; the ending differs because readiness comes before a landing and `land` warns while it merges. */
+export function sessionText(activity: SessionActivity, when: "readiness" | "land"): string {
   const outside = activity.owner === null;
   const who = outside ? "Processes started outside Claude Code" : `Session ${activity.owner?.slice(0, 8) ?? ""}`;
   const verb = outside ? "run" : "runs";
@@ -128,8 +128,9 @@ export function sessionText(activity: SessionActivity): string {
         `which this landing replaces`,
     );
   }
-  return (
-    `${who} ${clauses.join(", and ")}. ` +
-    "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them."
-  );
+  const ending =
+    when === "land"
+      ? "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them."
+      : "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.";
+  return `${who} ${clauses.join(", and ")}. ${ending}`;
 }

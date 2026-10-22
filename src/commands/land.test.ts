@@ -332,9 +332,9 @@ describe("runLand", () => {
     expect(p.ok(["log", "-1", "--format=%P", "main"])).toContain(head);
     expect(p.stderr()).toBe(
       "warning: Session bbbbbbbb runs lane theirs and a waiter in this project, whose base this landing moves. " +
-        "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n" +
+        "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n" +
         "warning: Processes started outside Claude Code run this project's a.txt in /work/elsewhere, which this landing " +
-        "replaces. Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n",
+        "replaces. This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them.\n",
     );
     expect(p.stdout()).toMatch(/^landed rel: /);
   });

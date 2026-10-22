@@ -2437,7 +2437,7 @@ function sessionId(activity) {
 }
 var counted = (n, word) => `${n === 1 ? "a" : n} ${word}${n === 1 ? "" : "s"}`;
 var named = (names2, word) => `${word}${names2.length === 1 ? "" : "s"} ${names2.join(", ")}`;
-function sessionText(activity) {
+function sessionText(activity, when) {
   const outside = activity.owner === null;
   const who = outside ? "Processes started outside Claude Code" : `Session ${activity.owner?.slice(0, 8) ?? ""}`;
   const verb = outside ? "run" : "runs";
@@ -2451,7 +2451,8 @@ function sessionText(activity) {
       `${verb} this project's ${activity.runnersChanged.join(", ")} in ${activity.runnerProjects.join(", ")}, which this landing replaces`
     );
   }
-  return `${who} ${clauses.join(", and ")}. Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.`;
+  const ending = when === "land" ? "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name and SendMessage reaches them." : "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches them.";
+  return `${who} ${clauses.join(", and ")}. ${ending}`;
 }
 
 // src/registry/status.ts
@@ -7724,7 +7725,7 @@ async function runLand(argv2, ctx) {
   let sessions;
   try {
     sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
-    for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity)}
+    for (const activity of sessions) ctx.stderr(`warning: ${sessionText(activity, "land")}
 `);
   } catch (err) {
     ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${err.message}
@@ -8626,7 +8627,7 @@ function computeReadiness(input) {
   }
   const waived = new Set(waivers);
   const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
-  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity) }));
+  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity, "readiness") }));
   if (input.sessionsUnknown !== void 0) {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }

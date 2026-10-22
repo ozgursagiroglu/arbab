@@ -1131,8 +1131,10 @@ The decisions below answer what that use showed.
     (empty for none, as in readiness). It never blocks: when the registries cannot be read it warns that it cannot
     tell, leaves `otherSessions` out of `--json`, and lands. Nobody can be told "before landing" from these lines;
     they are a last record, which also names sessions that appeared since readiness.
-  - So the order is: tell the sessions readiness names, then land. The sentence's "Tell them before landing" is
-    for readiness.md; in land's warnings it comes too late.
+  - So the order is: tell the sessions readiness names, then land. The sentence ends differently in each place.
+    Readiness: "Tell them before landing: Claude Code's ListAgents lists sessions by name and SendMessage reaches
+    them." `land`: "This landing goes ahead: tell them what landed. Claude Code's ListAgents lists sessions by name
+    and SendMessage reaches them." (`sessionText(activity, "readiness" | "land")`.)
   - Both diffs pass `--no-relative`, so a `diff.relative` in the owner's git config cannot make the changed paths
     relative to the project root instead of git's top level.
   - The sentence names the lanes, waiters, projects and runner files: those are how the orchestrator recognises the

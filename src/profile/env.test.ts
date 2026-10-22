@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ArbabError } from "../util/errors";
+import { isReservedEnv } from "../util/env-policy";
 import { workerEnv } from "./env";
+import { FIXED_ENV, WORKER_TMP_ENV } from "./presets";
 
 const HOST: Record<string, string | undefined> = {
   HOME: "/home/worker",
@@ -39,12 +41,19 @@ describe("workerEnv", () => {
       PATH: "/opt/node/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
       TERM: "dumb",
       DISABLE_AUTOUPDATER: "1",
+      CLAUDE_CODE_SHELL: "/bin/bash",
     });
   });
 
   it("skips host keys that are not set", () => {
     const env = workerEnv({ HOME: "/home/worker" }, { passEnv: ["UNSET", "MISSING"], extra: {}, nodeDir: "/n" });
-    expect(Object.keys(env).sort()).toEqual(["DISABLE_AUTOUPDATER", "HOME", "PATH", "TERM"]);
+    expect(Object.keys(env).sort()).toEqual(["CLAUDE_CODE_SHELL", "DISABLE_AUTOUPDATER", "HOME", "PATH", "TERM"]);
+  });
+
+  it("sets the worker's shell to bash whatever the host's SHELL, and no config can change it", () => {
+    expect(workerEnv({ ...HOST, CLAUDE_CODE_SHELL: "/bin/zsh" }, { passEnv: [], extra: {}, nodeDir: "/n" }).CLAUDE_CODE_SHELL).toBe("/bin/bash");
+    expect(codeOf(() => workerEnv(HOST, { passEnv: ["CLAUDE_CODE_SHELL"], extra: {}, nodeDir: "/n" }))).toBe("config");
+    expect(codeOf(() => workerEnv(HOST, { passEnv: [], extra: { CLAUDE_CODE_SHELL: "/bin/sh" }, nodeDir: "/n" }))).toBe("config");
   });
 
   it("puts pnpm after node and drops duplicate PATH entries", () => {
@@ -85,6 +94,11 @@ describe("workerEnv", () => {
   it("passes ANTHROPIC_API_KEY through for API-key users", () => {
     const env = workerEnv({ ...HOST, ANTHROPIC_API_KEY: "k" }, { passEnv: ["ANTHROPIC_API_KEY"], extra: {}, nodeDir: "/n" });
     expect(env.ANTHROPIC_API_KEY).toBe("k");
+  });
+
+  it("leaves arbab's own settings env names to the env policy's config filter", () => {
+    // Config may name them (lint warns and compile overrides); the policy must not refuse them outright.
+    for (const name of [...WORKER_TMP_ENV, ...Object.keys(FIXED_ENV)]) expect(isReservedEnv(name)).toBe(false);
   });
 
   it("refuses names that are not variable names", () => {

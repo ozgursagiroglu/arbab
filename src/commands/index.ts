@@ -58,7 +58,8 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
 
 export const HELP = `usage: arbab [-C <dir>] <command> [options]
 
-  -C <dir>                                find the project from <dir> instead of the working directory
+  -C <dir>                                find the project from <dir> instead of the working directory (never a
+                                          lane worktree)
 
   doctor [--json]                         node, git, claude binary, sandbox, config, ignored roots, ~/.arbab, the
                                           plugin hook, gates, env templates, scanners, disk, machine cap
@@ -89,7 +90,10 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
   integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
                                           merge lane branches into integrate/<name>, in order or by plan waves
   integrate <name> --adopt <ref> [--base <ref>] [--json]
-                                          make an integration of an existing branch
+                                          make an integration of an existing branch; the base must be contained in
+                                          config baseBranch
+  integrate <name> --refresh [--json]     record the integration's head again after a hand commit or a base merge;
+                                          merges and installs nothing
   integrate <name> --deps-installed <sha> [--json]
                                           record that you reviewed and installed changed dependencies at the head
                                           <sha> that integrate printed

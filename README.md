@@ -116,9 +116,9 @@ claude plugin install arbab@arbab
 ```
 
 The install copies only `plugin/`: the skill, its hooks and a single-file runner (the `arbab ui` page included),
-with zero runtime dependencies. The plugin's hooks approve the skill's bare runner calls, so they do not wait for
-your click, and keep the session from ending its turn while its lanes run unwatched. To update, refresh the marketplace with `claude plugin marketplace update arbab`, then
-run `claude plugin update arbab@arbab`.
+with zero runtime dependencies. The plugin's hooks approve the skill's bare runner calls, all but `land`, so they do
+not wait for your click, and keep the session from ending its turn while its lanes run unwatched. To update, refresh
+the marketplace with `claude plugin marketplace update arbab`, then run `claude plugin update arbab@arbab`.
 
 Then:
 
@@ -143,8 +143,9 @@ Then:
    - `gates` are what `verify` runs; `verify.smoke` runs after them.
    - `hostGates` are checks the fence cannot run (Docker, a browser, a database). You run them with
      `arbab host-check <name>` in your terminal.
-   - `fence.readableEnvFiles` lists tracked env templates (`.env.example`) workers may read;
-     `fence.bashOutputMaxChars` (default 100000): longer Bash output is saved where workers cannot read it.
+   - `fence.readableEnvFiles` lists tracked env templates (`.env.example`) that workers' shell commands may read (the
+     Read tool still may not; every other `.env*` file stays denied); `fence.bashOutputMaxChars` (default 100000):
+     longer Bash output is saved where workers cannot read it.
    - `landing.tier` (`low`, `medium` or `high`, default `medium`) and `landing.squash` (one commit per landing).
    - Also: `preflight.steps`, `dependencies`, `env`, `passEnv`, `credentialPaths`, `resources`, `semaphores`,
      `quota.holdAbove`, `review.lenses`, `roles`, `minClaudeVersion`, `worktreeRoot`, `runsRoot`.
@@ -170,7 +171,8 @@ Some steps are always yours:
   terminal, so an agent cannot give it for you.
 - **Waivers and host checks.** `arbab readiness <name> --waive <id>` and `arbab host-check <name>` need a terminal
   too.
-- **Landing.** `land` is the orchestrator's command, but the skill asks you first. It never pushes.
+- **Landing.** `land` is the orchestrator's command, but the skill asks you first, and the plugin's hook never
+  approves it. It never pushes.
 
 ## A real run
 
@@ -216,7 +218,7 @@ ui2-art#1 success 45m37s turns=115 calls=248 failed=12 cost=$15.46 report=~/arba
 **5. Look at every lane.** `arbab status`, given the milestone's lanes, prints one row per lane, then the quota.
 
 ```text
-lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
+lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota            why
 ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
 ui2-scene            finished (success)  1        11m02s   31     51     Bash       high    2       $2.58   5h 35% · 7d 62%
 ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
@@ -325,7 +327,8 @@ Every worker gets:
 - **No background shells.**
 - **No writes to the repository's shared `.git`.** Git writes are denied, and the runner commits.
 - **A scrubbed environment, with credential paths denied.** The environment is built from scratch, and paths such as
-  `~/.ssh`, `~/.aws` and `**/.env*` cannot be read or edited.
+  `~/.ssh`, `~/.aws` and `**/.env*` cannot be read or edited. A lane's `inputs`, files from outside the
+  repository, are copied into its worktree afresh on every run, never through a link the worker left there.
 - **A budget and a clock.** Every attempt has a dollar cap, a wall-clock limit and an idle limit.
 
 On your machine:
@@ -333,7 +336,9 @@ On your machine:
 - **Tests run in the fence.** `verify` runs the gates in a sandboxed lane without file-editing tools, and the tree must
   be clean after the run.
 - **Installs happen only on trusted commits.** The dependency command runs on the host, so it only runs on a commit
-  from your base branch or one you confirmed. Worker code is merged after the install.
+  your base branch contains or an integration head you confirmed. Worker code is merged after the install.
+  `integrate --adopt` installs at the fork point of the adopted branch and its base, so it refuses a `--base` your
+  base branch does not contain.
 - **Host git never runs worker code.** No hooks, no `core.fsmonitor`, no submodule recursion. Checkpoints never commit
   nested repositories.
 - **Refusals are counted, never retried in secret.** A call the fence refuses shows up in `status`, not as a hidden
@@ -363,11 +368,12 @@ and its review lanes found two paths by which worker code could have run on the 
 
 ## Know what your workers are doing
 
-`arbab status` prints one row per lane: its state, attempt, time, work, effort, failures, cost and the quota it saw.
-This is part of the `ui2` build of arbab's own page:
+`arbab status` prints one row per lane: its state, attempt, time, work, effort, failures, cost, the quota it saw and
+why it is in its state. This is part of the `ui2` build of arbab's own page (finished lanes have no reason, so their
+`why` is empty):
 
 ```text
-lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
+lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota            why
 ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
 ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
 ui2-wire             finished (success)  1        24m59s   124    262    Bash       high    11      $10.30  5h 82% · 7d 70%
@@ -382,9 +388,11 @@ quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)
 - **effort**: how hard the model thought, measured from the session transcript, not just the level requested.
 - **failed**: tool calls that failed, refusals by the fence included. Each attempt's `summary.json` splits them by
   cause: the permission mode, a deny rule, the scope, the sandbox, a real error, and others.
-- **cost**: the session's cost so far, and the share of it that each attempt added.
+- **cost**: the session's cost so far, and the share of it that each attempt added. When there is no cost (a killed
+  attempt, say), the tokens it used instead: input, cache creation and output, as `41.2k tok`.
 - **quota**: the five-hour (5h) and seven-day (7d) windows as the lane last saw them. The last line is the account's
   newest snapshot, with each window's reset time.
+- **why**: the reason for the lane's state, such as `no free slot` for a held lane, cut to 40 characters.
 
 ### Costs and the quota
 
@@ -431,24 +439,32 @@ clink as a finished worker takes its pay.
 | `quota [--reset \| --refresh]` | Shows the account snapshot and the hold decision. After you switch accounts, `--refresh` reads the new account's windows with one haiku call; `--reset` only deletes the snapshot. |
 | `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than` adds clean worktrees unchanged for longer. `--mine`: only this session's runs. |
 | `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
-| `integrate <name> --adopt <ref> [--base <ref>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. |
+| `integrate <name> --adopt <ref> [--base <ref>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. The base must be contained in your base branch: the install runs at the fork point. |
+| `integrate <name> --refresh` | Records the integration's head again after a hand commit or a merge of the base in its worktree. Merges and installs nothing. |
 | `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. Terminal only. |
 | `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
 | `verify --ref <branch>` | The same on a branch head with no integration: the check after landing. |
-| `review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. `--lens-file` adds or replaces a lens for one run; `--since` diffs from an ancestor of the head instead of the base, for a fix round. |
+| `review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. `--lens-file` adds or replaces a lens for one run, from a file inside the project that is not `.env*`; `--since` diffs from an ancestor of the head instead of the base, for a fix round. |
 | `readiness <name> [--tier low\|medium\|high] [--waive id,…]` | Writes the readiness report: verified, skipped, risks. Exit 1 unless ready. `--waive` needs a terminal. |
 | `host-check <name>` | Runs config `hostGates` on the integration head, on the host. Terminal only. |
-| `land <name> [--squash] [--message <file>] [--keep-worktrees]` | Merges a ready integration into the base, or as one commit with `--squash` (config `landing.squash`). Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
+| `land <name> [--squash] [--message <file>] [--keep-worktrees]` | Merges a ready integration into the base, or as one commit with `--squash` (config `landing.squash`). The `--message` file must be inside the project and not `.env*`. Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
 | `ui [--port N] [--hours N] [--no-open]` | Serves the live pyramid scene on 127.0.0.1, read-only, until stopped. |
 | `help [<command>]`, `--help` | Prints the command list, or one command's options (as does `arbab <command> --help`). |
 | `version`, `--version` | Prints the arbab version. |
 
 Every command except `help`, `version` and `host-check` also takes `--json`, which prints JSON instead of text. A
-leading `-C <dir>` finds the project from `<dir>` instead of the working directory.
+leading `-C <dir>` finds the project from `<dir>` instead of the working directory. arbab refuses a lane worktree as
+a project, from `-C` or the working directory.
 
-The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`, bare: the plugin's PreToolUse hook
-approves exactly that form, and a call wrapped in `cd`, `&&` or a pipe waits for your approval. From a clone, run
-`node dist/arbab.mjs <command>` after `pnpm build`.
+The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`, bare. The plugin's PreToolUse hook
+approves that form, with these limits:
+
+- It never approves `land`, which the skill asks you about first anyway, nor `help` and `version`.
+- It approves `-C <dir>` only when `<dir>` is the absolute path of a project that has launched a lane on this
+  machine, outside lane worktrees and temporary directories.
+- A call wrapped in `cd`, `&&` or a pipe waits for your approval.
+
+From a clone, run `node dist/arbab.mjs <command>` after `pnpm build`.
 
 ## What arbab is not
 

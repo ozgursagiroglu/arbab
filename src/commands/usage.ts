@@ -72,26 +72,28 @@ export const USAGE: Readonly<Record<string, string>> = {
     [
       "integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]",
       "integrate <name> --adopt <ref> [--base <ref>] [--json]",
+      "integrate <name> --refresh [--json]",
       "integrate <name> --deps-installed <sha> [--json]",
     ],
     [
       ["--lanes a,b,…", "merge these lane branches into integrate/<name>, in order"],
       ["--plan <plan.json>", "merge the plan's lane branches by waves"],
       ["--adopt <ref>", "make a new integration whose branch starts at <ref>'s commit, nothing merged"],
-      ["--base <ref>", "with --adopt: its base (default config baseBranch)"],
+      ["--base <ref>", "with --adopt: its base, which config baseBranch must contain (default baseBranch)"],
+      ["--refresh", "record the head again after a hand commit or a base merge; merges and installs nothing"],
       ["--deps-installed <sha>", "record that you reviewed and installed changed dependencies at <sha>"],
       JSON_OPT,
     ],
   ),
   verify: block(
     ["verify <name> [--timeout-min <n>] [--json]", "verify --ref <branch> [--timeout-min <n>] [--json]"],
-    [["--ref <branch>", "run the gates on a branch head with no integration"], timeout("90"), JSON_OPT],
+    [["--ref <branch>", "run the gates on a branch head with no integration (lane ref-<slug>-<hash>-verify)"], timeout("90"), JSON_OPT],
   ),
   review: block(
     ["review <name> [--lenses a,b] [--lens-file <name>=<file>]… [--since <sha>] [--timeout-min <n>] [--json]"],
     [
       ["--lenses a,b", "only these lenses; the others' findings from the same head stay"],
-      ["--lens-file <name>=<file>", "add lens <name>, or replace its text, from <file> for this run; repeatable"],
+      ["--lens-file <name>=<file>", "add lens <name>, or replace its text, from <file> (in the project, not .env*) for this run; repeatable"],
       ["--since <sha>", "diff from <sha>, an ancestor of the head, instead of the base (a fix round)"],
       timeout("120"),
       JSON_OPT,
@@ -109,7 +111,7 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["land <name> [--squash] [--message <file>] [--keep-worktrees] [--json]"],
     [
       ["--squash", "one commit instead of a merge (default config landing.squash)"],
-      ["--message <file>", "the commit message, from a file (default \"Land <name>\")"],
+      ["--message <file>", "the commit message, from a file in the project, not .env* (default \"Land <name>\")"],
       ["--keep-worktrees", "skip removing the landed worktrees and branches"],
       JSON_OPT,
     ],

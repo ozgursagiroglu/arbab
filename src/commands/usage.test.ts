@@ -34,6 +34,7 @@ describe("USAGE", () => {
     expect(USAGE.quota).toContain("quota [--reset | --refresh] [--json]");
     expect(USAGE.plan).toContain("plan next <plan.json> [--retry <phase>]");
     expect(USAGE.integrate).toContain("integrate <name> --adopt <ref> [--base <ref>]");
+    expect(USAGE.integrate).toContain("integrate <name> --refresh [--json]");
     expect(USAGE.verify).toContain("verify --ref <branch>");
     expect(USAGE.review).toContain("review <name> [--lenses a,b] [--lens-file <name>=<file>]… [--since <sha>]");
     expect(USAGE.land).toContain("land <name> [--squash] [--message <file>]");

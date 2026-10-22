@@ -233,8 +233,11 @@ describe("compileProfile, fence strict", () => {
       "**/.env.staging*",
       "**/.env.test*",
       "**/.envrc",
+      "**/.env/**",
+      "**/.env.*/**",
       "//work/repo/.env",
       "//work/repo/apps/web/.env.local",
+      "//work/repo/tools/.env/**",
     ].flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
 
     it("keeps the blanket .env* deny when no template is readable", () => {
@@ -245,11 +248,11 @@ describe("compileProfile, fence strict", () => {
       }
     });
 
-    it("replaces the blanket deny with secret patterns and absolute rules for the files found", () => {
+    it("replaces the blanket deny with secret patterns and absolute rules for the files and directories found", () => {
       const deny = compileProfile(
         input("implementer", {
           readableEnvFiles: [".env.example"],
-          envFileDenies: ["/work/repo/.env", "/work/repo/apps/web/.env.local"],
+          envFileDenies: ["/work/repo/.env", "/work/repo/apps/web/.env.local", "/work/repo/tools/.env/**"],
         }),
       ).settings.permissions.deny;
       expect(deny).not.toContain("Read(**/.env*)");

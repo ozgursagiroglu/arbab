@@ -104,7 +104,37 @@ describe("envFileDenies", () => {
     symlinkSync(join(outside, ".env"), join(worktree, ".env.example"));
     track(worktree, ".env.example");
     symlinkSync(outside, join(worktree, "linked"));
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([join(worktree, ".env.example")]);
+    symlinkSync(outside, join(worktree, ".env.dir"));
+    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([
+      join(worktree, ".env.dir"),
+      `${join(worktree, ".env.dir")}/**`,
+      join(worktree, ".env.example"),
+      `${join(worktree, ".env.example")}/**`,
+    ]);
+  });
+
+  it("denies a .env or .env.<x> directory whole, without walking into it", () => {
+    touch(worktree, ".env/bin/activate");
+    touch(worktree, ".env/.env.example");
+    touch(worktree, "services/api/.env.d/secrets.json");
+    touch(root, ".env.prod/.env");
+    const calls: string[][] = [];
+    const spy: GitRunner = (args, cwd) => {
+      calls.push(args);
+      return git(args, cwd);
+    };
+    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env/.env.example", ".env.example"], git: spy })).toEqual([
+      `${join(root, ".env.prod")}/**`,
+      `${join(worktree, ".env")}/**`,
+      `${join(worktree, "services/api/.env.d")}/**`,
+    ].sort());
+    expect(calls).toEqual([]);
+  });
+
+  it("finds a .env directory at the walk's depth limit", () => {
+    touch(worktree, "a/b/c/d/e/f/.env/x");
+    touch(worktree, "a/b/c/d/e/f/g/.env/x");
+    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([`${join(worktree, "a/b/c/d/e/f/.env")}/**`]);
   });
 
   it("asks git about the listed path literally, in the tree it was found in", () => {

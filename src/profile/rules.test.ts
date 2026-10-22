@@ -63,14 +63,14 @@ describe("credentialDenies", () => {
   });
 
   it("swaps the blanket env deny for the secret patterns and absolute rules, in its place", () => {
-    const rules = credentialDenies(["~/.vault/**"], ["/repo/.env.example.local", "/repo/a/../.env"]);
+    const rules = credentialDenies(["~/.vault/**"], ["/repo/.env.example.local", "/repo/a/../.env", "/repo/b/./.env.d/**"]);
     expect(rules).not.toContain("Read(**/.env*)");
     const at = rules.indexOf("Read(**/.env)");
     expect(rules[at - 1]).toBe("Edit(~/Library/Cookies/**)");
-    expect(rules.slice(at, at + 20)).toEqual(
-      [...ENV_SECRET_PATTERNS, "//repo/.env.example.local", "//repo/.env"].flatMap((p) => [`Read(${p})`, `Edit(${p})`]),
-    );
-    expect(rules[at + 20]).toBe("Read(**/*.pem)");
+    const expected = [...ENV_SECRET_PATTERNS, "//repo/.env.example.local", "//repo/.env", "//repo/b/.env.d/**"]
+      .flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
+    expect(rules.slice(at, at + expected.length)).toEqual(expected);
+    expect(rules[at + expected.length]).toBe("Read(**/*.pem)");
     expect(rules.slice(-2)).toEqual(["Read(~/.vault/**)", "Edit(~/.vault/**)"]);
   });
 
@@ -80,7 +80,27 @@ describe("credentialDenies", () => {
     expect(rules).toContain("Read(**/.envrc)");
   });
 
-  it.each(["/repo/.env[1]", "/repo/.env*", "/repo/.env (copy)", "/repo/.env{a,b}", "/repo/.env?", "/repo/!.env", "/repo/.env\\x", "/repo/.env\nx"])(
+  it("denies directories whole, in both the patterns and the absolute rules", () => {
+    const rules = credentialDenies([], ["/repo/.venv-like/.env/**"]);
+    for (const p of ["**/.env/**", "**/.env.*/**", "//repo/.venv-like/.env/**"]) {
+      expect(rules).toContain(`Read(${p})`);
+      expect(rules).toContain(`Edit(${p})`);
+    }
+  });
+
+  it.each([
+    "/repo/.env[1]",
+    "/repo/.env*",
+    "/repo/.env (copy)",
+    "/repo/.env{a,b}",
+    "/repo/.env?",
+    "/repo/!.env",
+    "/repo/.env\\x",
+    "/repo/.env\nx",
+    "/repo/.env*/**",
+    "/repo/**/.env",
+    "/repo/.env/*",
+  ])(
     "keeps the blanket deny when %j cannot be an exact rule",
     (file) => {
       const rules = credentialDenies([], ["/repo/.env", file]);
@@ -89,8 +109,10 @@ describe("credentialDenies", () => {
     },
   );
 
-  it("refuses a relative env file", () => {
+  it("refuses a relative env file or directory", () => {
     expect(codeOf(() => credentialDenies([], ["repo/.env"]))).toBe("usage");
+    expect(codeOf(() => credentialDenies([], ["repo/.env/**"]))).toBe("usage");
+    expect(codeOf(() => credentialDenies([], ["/**"]))).toBe("usage");
   });
 });
 
@@ -105,6 +127,8 @@ describe("env presets", () => {
       "**/.env.staging*",
       "**/.env.test*",
       "**/.envrc",
+      "**/.env/**",
+      "**/.env.*/**",
     ]);
   });
 });

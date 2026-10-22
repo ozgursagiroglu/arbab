@@ -22,19 +22,25 @@ export function commandRules(prefix: string): string[] {
 // A path rule is a glob: a file name with these could fail to match itself, so it cannot be denied one by one.
 const GLOB_SPECIAL = /[*?[\]{}()!\\]/;
 
+// A directory is denied whole as `<abs>/**`; the suffix is the only glob an env-file path may carry.
+const WHOLE_DIR = "/**";
+
 /**
  * Read and Edit denies for the built-in credential paths, then the project's extra ones. With `envFiles` (absolute
- * paths), the blanket `**\/.env*` gives way to the secret patterns plus one absolute rule per file (DESIGN.md §21);
- * the blanket stays when a path could not be written as an exact rule.
+ * paths, directories as `<abs>/**`), the blanket `**\/.env*` gives way to the secret patterns plus one absolute rule
+ * per entry (DESIGN.md §21); the blanket stays when a path could not be written as an exact rule.
  */
 export function credentialDenies(extra: string[], envFiles: string[] | null = null): string[] {
-  for (const file of envFiles ?? []) {
-    if (!isAbsolute(file)) throw new ArbabError("usage", `env file ${JSON.stringify(file)} must be an absolute path`);
-  }
+  const entries = (envFiles ?? []).map((file) => {
+    const whole = file.endsWith(WHOLE_DIR);
+    const base = whole ? file.slice(0, -WHOLE_DIR.length) : file;
+    if (!isAbsolute(base)) throw new ArbabError("usage", `env file ${JSON.stringify(file)} must be an absolute path`);
+    return { base, suffix: whole ? WHOLE_DIR : "" };
+  });
   // `//` makes a rule path absolute; a single `/` would be relative to the settings file.
-  const exact = envFiles === null || envFiles.some((file) => GLOB_SPECIAL.test(file) || /[\n\r]/.test(file))
+  const exact = envFiles === null || entries.some(({ base }) => GLOB_SPECIAL.test(base) || /[\n\r]/.test(base))
     ? null
-    : envFiles.map((file) => `/${resolve(file)}`);
+    : entries.map(({ base, suffix }) => `/${resolve(base)}${suffix}`);
   const paths = BUILTIN_CREDENTIAL_PATHS.flatMap((path) =>
     exact !== null && path === ENV_FILES_BLANKET ? [...ENV_SECRET_PATTERNS, ...exact] : [path],
   );

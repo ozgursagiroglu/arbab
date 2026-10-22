@@ -235,6 +235,16 @@ describe("runIntegrate", () => {
     await expect(runIntegrate(["--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage" });
     await expect(runIntegrate(["Bad Name", "--lanes", "a"], p.ctx)).rejects.toMatchObject({ code: "usage" });
   });
+
+  it("refuses a name with the ref- prefix, which verify --ref reserves, and allows one that only contains it", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    const reserved = { code: "usage", message: expect.stringMatching(/prefix ref- is reserved for verify --ref/) };
+    await expect(runIntegrate(["ref-main", "--lanes", "a"], p.ctx)).rejects.toMatchObject(reserved);
+    await expect(runIntegrate(["ref-main", "--adopt", "arbab/a"], p.ctx)).rejects.toMatchObject(reserved);
+    expect(existsSync(join(p.root, ".arbab", "integrations", "ref-main"))).toBe(false);
+    expect(await runIntegrate(["pref-main", "--lanes", "a"], p.ctx)).toBe(0);
+  });
 });
 
 describe("runIntegrate --adopt", () => {

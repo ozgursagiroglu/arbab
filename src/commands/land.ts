@@ -129,7 +129,8 @@ const notBefore = (later: string, earlier: string): boolean => Date.parse(later)
 
 /**
  * Refuses a readiness report written before the verify or review record of the same head it would have read: it
- * decided on older evidence than what is on disk now.
+ * decided on older evidence than what is on disk now. A review carried over from an earlier head counts as the review
+ * of its head.
  */
 export function assertReadinessCurrent(
   readiness: ReadinessReport,
@@ -137,11 +138,11 @@ export function assertReadinessCurrent(
   review: ReviewRecord | null,
   name: string,
 ): void {
-  for (const [what, record, at] of [
-    ["verify", verify, verify?.finishedAt],
-    ["review", review, review?.finishedAt],
+  for (const [what, record, at, heads] of [
+    ["verify", verify, verify?.finishedAt, [readiness.headSha]],
+    ["review", review, review?.finishedAt, [readiness.headSha, readiness.reviewCarriedOverFrom]],
   ] as const) {
-    if (record === null || at === undefined || record.headSha !== readiness.headSha) continue;
+    if (record === null || at === undefined || !heads.includes(record.headSha)) continue;
     if (!notBefore(readiness.createdAt, at)) {
       throw refuse(`the readiness report (${readiness.createdAt}) is older than ${what}.json (${at}); run arbab readiness ${name} again`);
     }

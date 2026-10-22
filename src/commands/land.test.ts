@@ -143,6 +143,15 @@ describe("assertReadinessCurrent and assertTier", () => {
     expect(() => assertReadinessCurrent({ ...report, createdAt: "yesterday" }, passedVerify(HEAD), null, "rel")).toThrow(/older than verify\.json/);
   });
 
+  it("checks a review carried over from an earlier head like a review of the head", () => {
+    const OLD = "b".repeat(40);
+    const carried: ReadinessReport = { ...report, reviewCarriedOverFrom: OLD };
+    expect(() => assertReadinessCurrent(carried, null, review("2026-10-09T11:00:00.000Z", OLD), "rel")).not.toThrow();
+    expect(() => assertReadinessCurrent(carried, null, review("2026-10-09T13:00:00.000Z", OLD), "rel")).toThrow(/older than review\.json/);
+    // Without the carry-over the earlier head's review is not this report's evidence.
+    expect(() => assertReadinessCurrent(report, null, review("2026-10-09T13:00:00.000Z", OLD), "rel")).not.toThrow();
+  });
+
   it("refuses a tier below the required one and passes an equal or higher one", () => {
     expect(() => assertTier(report, "high", "rel")).toThrow(expect.objectContaining({ code: "usage", message: expect.stringMatching(/tier medium, below the landing tier high/) }));
     expect(() => assertTier(report, "medium", "rel")).not.toThrow();

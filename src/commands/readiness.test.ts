@@ -257,7 +257,7 @@ describe("runReadiness", () => {
     writeFileSync(join(dir(p), "reviews", "3.json"), "{not json");
     writeJsonAtomic(join(dir(p), "reviews", "4.json"), { ...reviewOf(head), name: "other" });
     writeJsonAtomic(join(dir(p), "reviews", "notes.json"), reviewOf(head));
-    expect(reviewRounds(join(dir(p), "reviews"), "rel").map((r) => r.round)).toEqual([1, 2, 10]);
+    expect(reviewRounds(dir(p), "rel").map((r) => r.round)).toEqual([1, 2, 10]);
     expect(reviewRounds(join(dir(p), "missing"), "rel")).toEqual([]);
 
     expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);

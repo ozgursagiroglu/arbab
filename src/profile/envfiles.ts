@@ -1,33 +1,31 @@
-import { readdirSync, type Dirent } from "node:fs";
-import { join, posix, relative, sep } from "node:path";
+import { readdirSync, realpathSync } from "node:fs";
+import { basename, dirname, join, posix, relative, sep } from "node:path";
 import type { GitRunner } from "../run";
-
-const MAX_DEPTH = 6;
-const SKIP_DIRS = new Set(["node_modules", ".git", ".arbab", ".arbab-tmp"]);
-
-type Kind = "file" | "link" | "dir";
+import { confine } from "../util/fs";
 
 /**
- * Absolute paths of the env files to deny one by one when `fence.readableEnvFiles` lifts the blanket `**\/.env*` deny:
- * every `.env*` file in the worktree and the main checkout that is not a listed tracked template, and every `.env*`
- * directory as `<abs>/**`, denied whole (DESIGN.md §21). The attempt calls it only when `readable` is non-empty.
+ * Absolute paths, in the worktree, of the listed files git tracks there (`git ls-files --error-unmatch --
+ * :(literal)<path>` exits 0) and that are regular files, not links. Listed files that are untracked, missing,
+ * links or directories are left out.
  */
-export function envFileDenies(input: { projectRoot: string; worktree: string; readable: string[]; git: GitRunner }): string[] {
-  const readable = new Set(input.readable.map(normalRel));
+export function envFileAllowReads(input: { worktree: string; readable: string[]; git: GitRunner }): string[] {
+  let real: string;
+  try {
+    real = realpathSync(input.worktree);
+  } catch {
+    return [];
+  }
   const out = new Set<string>();
-  for (const root of [input.worktree, input.projectRoot]) {
-    for (const { path, kind } of findEnvEntries(root)) {
-      if (kind === "dir") {
-        out.add(`${path}/**`);
-      } else if (kind === "link") {
-        // Never lifted: reading it reads its target, which may be a secret, or a directory, outside both trees.
-        out.add(path);
-        out.add(`${path}/**`);
-      } else {
-        const rel = relative(root, path).split(sep).join("/");
-        if (!readable.has(rel) || !isTracked(input.git, root, rel)) out.add(path);
-      }
+  for (const listed of input.readable) {
+    let path: string;
+    try {
+      path = confine(input.worktree, normalRel(listed));
+    } catch {
+      continue;
     }
+    const rel = relative(input.worktree, path).split(sep).join("/");
+    if (rel === "") continue;
+    if (isRegularFile(input.worktree, real, path) && isTracked(input.git, input.worktree, rel)) out.add(path);
   }
   return [...out].sort();
 }
@@ -42,32 +40,18 @@ function isTracked(git: GitRunner, root: string, rel: string): boolean {
 }
 
 /**
- * `.env*` entries under `root`, directories at most MAX_DEPTH levels down. Links are reported, never followed; a
- * `.env*` directory is reported and not walked, since it is denied whole.
+ * Whether `path` is a regular file reached without a link: its directory resolves to where it sits in the worktree,
+ * and its own entry is a file. Read from the directory listing, not by stat: a sandbox that denies `.env*` reads
+ * may refuse a stat of the file itself.
  */
-function findEnvEntries(root: string): Array<{ path: string; kind: Kind }> {
-  const found: Array<{ path: string; kind: Kind }> = [];
-  const walk = (dir: string, depth: number): void => {
-    let entries: Dirent[];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      // A missing tree (no main checkout yet) or an unreadable directory has nothing to list.
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      const env = entry.name.startsWith(".env");
-      if (entry.isSymbolicLink()) {
-        if (env) found.push({ path, kind: "link" });
-      } else if (entry.isDirectory()) {
-        if (env) found.push({ path, kind: "dir" });
-        else if (!SKIP_DIRS.has(entry.name) && depth < MAX_DEPTH) walk(path, depth + 1);
-      } else if (env) {
-        found.push({ path, kind: "file" });
-      }
-    }
-  };
-  walk(root, 0);
-  return found;
+function isRegularFile(worktree: string, realWorktree: string, path: string): boolean {
+  const dir = dirname(path);
+  try {
+    if (realpathSync(dir) !== join(realWorktree, relative(worktree, dir))) return false;
+    const entry = readdirSync(dir, { withFileTypes: true }).find((e) => e.name === basename(path));
+    return entry !== undefined && entry.isFile();
+  } catch {
+    // A missing or unreadable directory holds no readable template.
+    return false;
+  }
 }

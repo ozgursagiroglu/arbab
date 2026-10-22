@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeGitRunner, type GitRunner } from "../run";
-import { envFileDenies } from "./envfiles";
+import { envFileAllowReads } from "./envfiles";
 
 let dir: string;
 let root: string;
@@ -55,106 +55,75 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("envFileDenies", () => {
-  it("lifts a listed tracked template and denies untracked, unlisted and skipped-tree files", () => {
+describe("envFileAllowReads", () => {
+  it("holds exactly the listed files git tracks in the worktree that are regular files", () => {
     touch(worktree, ".env.example");
     track(worktree, ".env.example");
-    touch(worktree, "apps/web/.env.sample");
-    touch(worktree, ".env.local");
-    touch(worktree, ".env.tracked");
-    track(worktree, ".env.tracked");
-    touch(worktree, "node_modules/pkg/.env");
-    touch(worktree, ".arbab-tmp/inputs/.env");
-    touch(worktree, "src/env.ts");
-    touch(root, ".env");
-    touch(root, ".env.example");
-    track(root, ".env.example");
-
-    const denied = envFileDenies({ projectRoot: root, worktree, readable: [".env.example", "apps/web/.env.sample"], git });
-    expect(denied).toEqual([
-      join(worktree, ".env.local"),
-      join(worktree, ".env.tracked"),
-      join(worktree, "apps/web/.env.sample"),
-      join(root, ".env"),
-    ].sort());
-  });
-
-  it("denies a listed template that is tracked only in the other tree", () => {
-    touch(root, ".env.example");
-    track(root, ".env.example");
-    touch(worktree, ".env.example");
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([join(worktree, ".env.example")]);
-  });
-
-  it("matches listed paths after normalising them", () => {
-    touch(worktree, "apps/web/.env.sample");
-    track(worktree, "apps/web/.env.sample");
-    expect(envFileDenies({ projectRoot: root, worktree, readable: ["./apps\\web/.env.sample"], git })).toEqual([]);
-  });
-
-  it("walks six directories down and no further", () => {
-    touch(worktree, "a/b/c/d/e/f/.env");
-    touch(worktree, "a/b/c/d/e/f/g/.env");
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([join(worktree, "a/b/c/d/e/f/.env")]);
-  });
-
-  it("denies a link named .env* even when listed and tracked, and never follows a linked directory", () => {
+    touch(worktree, ".env.sample");
     const outside = join(dir, "outside");
     touch(outside, ".env");
-    symlinkSync(join(outside, ".env"), join(worktree, ".env.example"));
-    track(worktree, ".env.example");
-    symlinkSync(outside, join(worktree, "linked"));
-    symlinkSync(outside, join(worktree, ".env.dir"));
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([
-      join(worktree, ".env.dir"),
-      `${join(worktree, ".env.dir")}/**`,
-      join(worktree, ".env.example"),
-      `${join(worktree, ".env.example")}/**`,
-    ]);
+    symlinkSync(join(outside, ".env"), join(worktree, ".env.template"));
+    track(worktree, ".env.template");
+    touch(worktree, ".env.local");
+    track(worktree, ".env.local");
+
+    const readable = [".env.example", ".env.sample", ".env.template"];
+    expect(envFileAllowReads({ worktree, readable, git })).toEqual([join(worktree, ".env.example")]);
   });
 
-  it("denies a .env or .env.<x> directory whole, without walking into it", () => {
-    touch(worktree, ".env/bin/activate");
-    touch(worktree, ".env/.env.example");
-    touch(worktree, "services/api/.env.d/secrets.json");
-    touch(root, ".env.prod/.env");
+  it("leaves out a listed template tracked only in the main checkout", () => {
+    touch(root, ".env.example");
+    track(root, ".env.example");
+    touch(worktree, ".env.example");
+    expect(envFileAllowReads({ worktree, readable: [".env.example"], git })).toEqual([]);
+  });
+
+  it("matches listed paths after normalising them, and lists each once", () => {
+    touch(worktree, "apps/web/.env.sample");
+    track(worktree, "apps/web/.env.sample");
+    const readable = ["./apps\\web/.env.sample", "apps/web/.env.sample"];
+    expect(envFileAllowReads({ worktree, readable, git })).toEqual([join(worktree, "apps/web/.env.sample")]);
+  });
+
+  it("leaves out missing files, directories and files reached through a linked directory", () => {
+    touch(worktree, ".env.d/x");
+    const outside = join(dir, "outside");
+    touch(outside, ".env.example");
+    symlinkSync(outside, join(worktree, "linked"));
     const calls: string[][] = [];
-    const spy: GitRunner = (args, cwd) => {
+    const spy: GitRunner = (args) => {
       calls.push(args);
-      return git(args, cwd);
+      return { code: 0, stdout: "", stderr: "" };
     };
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env/.env.example", ".env.example"], git: spy })).toEqual([
-      `${join(root, ".env.prod")}/**`,
-      `${join(worktree, ".env")}/**`,
-      `${join(worktree, "services/api/.env.d")}/**`,
-    ].sort());
+    expect(envFileAllowReads({ worktree, readable: [".env.missing", ".env.d", "linked/.env.example"], git: spy })).toEqual([]);
     expect(calls).toEqual([]);
   });
 
-  it("finds a .env directory at the walk's depth limit", () => {
-    touch(worktree, "a/b/c/d/e/f/.env/x");
-    touch(worktree, "a/b/c/d/e/f/g/.env/x");
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git })).toEqual([`${join(worktree, "a/b/c/d/e/f/.env")}/**`]);
+  it("leaves out a listed path that escapes the worktree", () => {
+    touch(root, ".env.example");
+    const spy: GitRunner = () => ({ code: 0, stdout: "", stderr: "" });
+    expect(envFileAllowReads({ worktree, readable: ["../../../.env.example"], git: spy })).toEqual([]);
   });
 
-  it("asks git about the listed path literally, in the tree it was found in", () => {
+  it("asks git about the listed path literally, in the worktree", () => {
     touch(worktree, ".env.example");
     const calls: Array<{ args: string[]; cwd: string }> = [];
     const spy: GitRunner = (args, cwd) => {
       calls.push({ args, cwd });
       return { code: 0, stdout: "", stderr: "" };
     };
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git: spy })).toEqual([]);
+    expect(envFileAllowReads({ worktree, readable: [".env.example"], git: spy })).toEqual([join(worktree, ".env.example")]);
     expect(calls).toEqual([{ args: ["ls-files", "--error-unmatch", "--", ":(literal).env.example"], cwd: worktree }]);
   });
 
-  it("denies a listed file when git fails", () => {
+  it("leaves out a listed file when git fails", () => {
     touch(worktree, ".env.example");
     const failing: GitRunner = () => ({ code: 128, stdout: "", stderr: "fatal" });
-    expect(envFileDenies({ projectRoot: root, worktree, readable: [".env.example"], git: failing })).toEqual([join(worktree, ".env.example")]);
+    expect(envFileAllowReads({ worktree, readable: [".env.example"], git: failing })).toEqual([]);
   });
 
-  it("returns nothing for trees that do not exist", () => {
-    expect(envFileDenies({ projectRoot: join(dir, "none"), worktree: join(dir, "gone"), readable: [".env.example"], git })).toEqual([]);
+  it("returns nothing for a worktree that does not exist or an empty list", () => {
+    expect(envFileAllowReads({ worktree: join(dir, "gone"), readable: [".env.example"], git })).toEqual([]);
+    expect(envFileAllowReads({ worktree, readable: [], git })).toEqual([]);
   });
 });

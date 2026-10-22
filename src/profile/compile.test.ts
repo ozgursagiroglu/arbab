@@ -232,49 +232,46 @@ describe("compileProfile, fence strict", () => {
   });
 
   describe("readable env templates", () => {
-    const ENV_DENY = [
-      "**/.env",
-      "**/.env.local",
-      "**/.env.*.local",
-      "**/.env.development*",
-      "**/.env.production*",
-      "**/.env.staging*",
-      "**/.env.test*",
-      "**/.envrc",
-      "**/.env/**",
-      "**/.env.*/**",
-      "//work/repo/.env",
-      "//work/repo/apps/web/.env.local",
-      "//work/repo/tools/.env/**",
-    ].flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
+    const TEMPLATES = [`${WORKTREE}/.env.example`, `${WORKTREE}/apps/web/.env.sample`];
 
-    it("keeps the blanket .env* deny when no template is readable", () => {
-      for (const over of [{}, { readableEnvFiles: [], envFileDenies: ["/work/repo/.env"] }]) {
-        const deny = compileProfile(input("implementer", over)).settings.permissions.deny;
-        expect(deny).toEqual([...BASE_DENY, "WebFetch", "WebSearch"]);
+    it("leaves the deny list identical with and without readable templates", () => {
+      const plain = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git" })).settings.permissions.deny;
+      for (const over of [
+        { readableEnvFiles: [".env.example"] },
+        { readableEnvFiles: [".env.example", "apps/web/.env.sample"], envFileAllowReads: TEMPLATES },
+        { readableEnvFiles: [".env.example"], envFileDenies: ["/work/repo/.env"] },
+      ]) {
+        const deny = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git", ...over })).settings.permissions.deny;
+        expect(deny).toEqual(plain);
         expect(deny).toContain("Read(**/.env*)");
+        expect(deny).toContain("Edit(**/.env*)");
       }
     });
 
-    it("replaces the blanket deny with secret patterns and absolute rules for the files and directories found", () => {
-      const deny = compileProfile(
+    it("re-opens the tracked templates in the sandbox's allowRead, beside denyWrite", () => {
+      const profile = compileProfile(
         input("implementer", {
-          readableEnvFiles: [".env.example"],
-          envFileDenies: ["/work/repo/.env", "/work/repo/apps/web/.env.local", "/work/repo/tools/.env/**"],
+          gitCommonDir: "/work/repo/.git",
+          readableEnvFiles: [".env.example", "apps/web/.env.sample"],
+          envFileAllowReads: [...TEMPLATES, `${WORKTREE}/apps/./web/.env.sample`],
         }),
-      ).settings.permissions.deny;
-      expect(deny).not.toContain("Read(**/.env*)");
-      expect(deny).not.toContain("Edit(**/.env*)");
-      const at = deny.indexOf("Read(**/.env)");
-      expect(deny.slice(at, at + ENV_DENY.length)).toEqual(ENV_DENY);
-      expect(deny).toContain("Read(**/*.pem)");
-      expect(deny).toContain("Read(~/.npmrc)");
+      );
+      expect(profile.settings.sandbox.filesystem).toEqual({ denyWrite: ["/work/repo/.git"], allowRead: TEMPLATES });
     });
 
-    it("keeps the blanket deny when the files found are unknown", () => {
-      const deny = compileProfile(input("implementer", { readableEnvFiles: [".env.example"] })).settings.permissions.deny;
-      expect(deny).toContain("Read(**/.env*)");
-      expect(deny).not.toContain("Read(**/.env.local)");
+    it("writes allowRead without a shared git directory, and no allowRead without templates", () => {
+      expect(compileProfile(input("implementer", { envFileAllowReads: TEMPLATES })).settings.sandbox.filesystem).toEqual({
+        denyWrite: [],
+        allowRead: TEMPLATES,
+      });
+      const none = compileProfile(input("implementer", { gitCommonDir: "/work/repo/.git", envFileAllowReads: [] }));
+      expect(none.settings.sandbox.filesystem).toEqual({ denyWrite: ["/work/repo/.git"] });
+    });
+
+    it("refuses a template path that is relative or outside the worktree", () => {
+      for (const path of [".env.example", "/work/repo/.env.example", `${WORKTREE}/../lane-b/.env.example`, WORKTREE]) {
+        expect(() => compileProfile(input("implementer", { envFileAllowReads: [path] }))).toThrow(ArbabError);
+      }
     });
   });
 

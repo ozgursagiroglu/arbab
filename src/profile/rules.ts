@@ -1,6 +1,5 @@
-import { isAbsolute, resolve } from "node:path";
 import { ArbabError } from "../util/errors";
-import { BUILTIN_CREDENTIAL_PATHS, ENV_FILES_BLANKET, ENV_SECRET_PATTERNS } from "./presets";
+import { BUILTIN_CREDENTIAL_PATHS } from "./presets";
 
 // Shell metacharacters would let a prefix rule match more than the command it names; `*` would make it a wildcard.
 const FORBIDDEN = /[;&|`$<>()\\*\n\r]/;
@@ -19,33 +18,13 @@ export function commandRules(prefix: string): string[] {
   return [`Bash(${prefix})`, `Bash(${prefix} *)`];
 }
 
-// A path rule is a glob: a file name with these could fail to match itself, so it cannot be denied one by one.
-const GLOB_SPECIAL = /[*?[\]{}()!\\]/;
-
-// A directory is denied whole as `<abs>/**`; the suffix is the only glob an env-file path may carry.
-const WHOLE_DIR = "/**";
-
 /**
- * Read and Edit denies for the built-in credential paths, then the project's extra ones. With `envFiles` (absolute
- * paths, directories as `<abs>/**`), the blanket `**\/.env*` gives way to the secret patterns plus one absolute rule
- * per entry (DESIGN.md §21); the blanket stays when a path could not be written as an exact rule.
+ * Read and Edit denies for the built-in credential paths, then the project's extra ones. The `**\/.env*` deny stays
+ * even when templates are readable: those are re-opened for sandboxed commands only, by path (DESIGN.md §21).
  */
-export function credentialDenies(extra: string[], envFiles: string[] | null = null): string[] {
-  const entries = (envFiles ?? []).map((file) => {
-    const whole = file.endsWith(WHOLE_DIR);
-    const base = whole ? file.slice(0, -WHOLE_DIR.length) : file;
-    if (!isAbsolute(base)) throw new ArbabError("usage", `env file ${JSON.stringify(file)} must be an absolute path`);
-    return { base, suffix: whole ? WHOLE_DIR : "" };
-  });
-  // `//` makes a rule path absolute; a single `/` would be relative to the settings file.
-  const exact = envFiles === null || entries.some(({ base }) => GLOB_SPECIAL.test(base) || /[\n\r]/.test(base))
-    ? null
-    : entries.map(({ base, suffix }) => `/${resolve(base)}${suffix}`);
-  const paths = BUILTIN_CREDENTIAL_PATHS.flatMap((path) =>
-    exact !== null && path === ENV_FILES_BLANKET ? [...ENV_SECRET_PATTERNS, ...exact] : [path],
-  );
+export function credentialDenies(extra: string[]): string[] {
   const rules: string[] = [];
-  for (const path of [...paths, ...extra]) rules.push(`Read(${path})`, `Edit(${path})`);
+  for (const path of [...BUILTIN_CREDENTIAL_PATHS, ...extra]) rules.push(`Read(${path})`, `Edit(${path})`);
   return dedupe(rules);
 }
 

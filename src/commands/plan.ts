@@ -64,7 +64,7 @@ export const plansDir = (project: Project, plan: string): string => join(project
 
 /** loadPlan, checkPlan and planWaves, then every phase compiled and linted as `arbab lint` lints a lane file. */
 export function checkPlanFile(ctx: Pick<CommandContext, "git">, project: Project, planPath: string): PlanCheck {
-  const plan = loadPlan(project.root, planPath);
+  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
   const issues = checkPlan(plan);
   let waves: string[][] | null = null;
   try {
@@ -262,7 +262,7 @@ async function runPlanStatus(argv: string[], ctx: CommandContext): Promise<numbe
   const { values, positionals } = parse("plan status", { args: argv, options: { json: { type: "boolean" } }, allowPositionals: true });
   const planPath = onePositional("plan status", positionals, "plan.json");
   const project = openProject(ctx);
-  const plan = loadPlan(project.root, planPath);
+  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
   const rows = planStatus(plan, phaseStates(project, plan, ctx.alive));
   if (values.json === true) printJson(ctx, { plan: plan.name, phases: rows });
   else ctx.stdout(formatPlanStatus(rows) + "\n");

@@ -50,6 +50,37 @@ describe("existingFile", () => {
     expect(() => existingFile(root, "none.pem", "schema")).toThrow(configError(/^schema: none\.pem is named like a credential file/));
   });
 
+  it("refuses a file a credentialPaths entry hits, by either spelling, and passes one it does not", () => {
+    write("vault/brief.md");
+    write("notes/db.secret");
+    write("lanes/a.md");
+    symlinkSync(join(root, "vault", "brief.md"), join(root, "lanes", "link.md"));
+    const extra = ["vault/*.md", "**/*.secret"];
+    expect(() => existingFile(root, "vault/brief.md", "brief", extra)).toThrow(
+      configError(/^brief: vault\/brief\.md matches the credential path vault\/\*\.md; its text would go into a worker's prompt$/),
+    );
+    expect(() => existingFile(root, "notes/db.secret", "schema", extra)).toThrow(configError(/^schema: notes\/db\.secret is named like a credential file \(db\.secret\)/));
+    expect(() => existingFile(root, "lanes/link.md", "instructions[0]", extra)).toThrow(configError(/^instructions\[0\]: lanes\/link\.md resolves to .*vault\/brief\.md, which matches the credential path vault\/\*\.md/));
+    expect(existingFile(root, "lanes/a.md", "brief", extra)).toBe("lanes/a.md");
+    // Without them, only the built-in list applies.
+    expect(existingFile(root, "vault/brief.md", "brief")).toBe("vault/brief.md");
+  });
+
+  it("passes a file in a project under a directory named like a credential, and still refuses one inside it", () => {
+    for (const parent of [".envs", "x.key"]) {
+      const project = join(dir, parent, "app");
+      mkdirSync(join(project, "lanes"), { recursive: true });
+      writeFileSync(join(project, "lanes", "a.md"), "x\n");
+      writeFileSync(join(project, ".env"), "x\n");
+      expect(existingFile(project, "lanes/a.md", "brief"), parent).toBe("lanes/a.md");
+      expect(existingFile(project, join(project, "lanes", "a.md"), "brief"), parent).toBe(join(project, "lanes", "a.md"));
+      expect(() => existingFile(project, ".env", "brief"), parent).toThrow(configError(/^brief: \.env is named like a credential file \(\.env\)/));
+      // The project reached through a link: its real path is the root of the real path.
+      symlinkSync(project, join(dir, `${parent}-link`));
+      expect(existingFile(join(dir, `${parent}-link`), "lanes/a.md", "brief"), parent).toBe("lanes/a.md");
+    }
+  });
+
   it("refuses a link inside the project to a credential file", () => {
     write(".env");
     symlinkSync(join(root, ".env"), join(root, "brief.md"));

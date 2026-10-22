@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { credentialMatcher } from "../profile";
@@ -98,6 +99,26 @@ describe("readLensFiles", () => {
       /--lens-file perf=vault\/perf\.md: the file is under ~\/repo\/vault, where credentials live; a credential file is not a lens/,
     );
     expect(readLensFiles(p.root, ["perf=vault/perf.md"], credentialMatcher(rule, []))).toEqual({ perf: "Hot paths." });
+  });
+
+  it("reads a lens file in a project under a directory named like a credential, and still refuses one inside it", () => {
+    const tmp = mkdtempSync(join(tmpdir(), "arbab-"));
+    try {
+      for (const parent of [".envs", "x.key"]) {
+        const root = join(tmp, parent, "app");
+        mkdirSync(join(root, "lenses"), { recursive: true });
+        writeFileSync(join(root, "lenses", "perf.md"), "Hot paths.");
+        writeFileSync(join(root, ".env"), "TOKEN=x\n");
+        expect(readLensFiles(root, ["perf=lenses/perf.md"], plain), parent).toEqual({ perf: "Hot paths." });
+        expect(readLensFiles(root, [`perf=${join(root, "lenses", "perf.md")}`], plain), parent).toEqual({ perf: "Hot paths." });
+        expect(() => readLensFiles(root, ["perf=.env"], plain), parent).toThrow(/is named like a credential file \(\.env\); a credential file is not a lens$/);
+        // Reached through a link, the real path is checked below the project's real path.
+        symlinkSync(root, join(tmp, `${parent}-link`));
+        expect(readLensFiles(join(tmp, `${parent}-link`), ["perf=lenses/perf.md"], plain), parent).toEqual({ perf: "Hot paths." });
+      }
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

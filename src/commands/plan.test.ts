@@ -6,7 +6,7 @@ import type { AttemptExit, LaneSpec, PlanSpec } from "../types";
 import { launchLockPath, takeLaunchLock } from "./launch";
 import { checkPlanFile, formatPlanStatus, latestExit, phaseStates, planNext, plansDir, runPlan } from "./plan";
 import { openProject } from "./project";
-import { SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { DEFAULT_CONFIG, SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -60,6 +60,15 @@ describe("checkPlanFile", () => {
     expect(check.phases.map((x) => x.phase)).toEqual(["a", "b", "c"]);
     expect(check.phases.find((x) => x.phase === "b")?.lane).toMatchObject({ upstream: ["a"], mergeBranches: ["arbab/a"] });
     expect(check.phases.every((x) => x.issues.length === 0)).toBe(true);
+  });
+
+  it("refuses a phase brief a config credentialPaths entry hits, in check and status", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, credentialPaths: ["lanes/demo.md"] }, files: { "plans/p1.json": JSON.stringify(PLAN) } });
+    expect(() => checkPlanFile(p.ctx, openProject(p.ctx), "plans/p1.json")).toThrow(/^phases\[0\]\.brief: lanes\/demo\.md matches the credential path/);
+    await expect(runPlan(["status", "plans/p1.json"], p.ctx)).rejects.toMatchObject({
+      code: "config",
+      message: expect.stringMatching(/^phases\[0\]\.brief: lanes\/demo\.md matches the credential path/),
+    });
   });
 
   it("lints a phase with the git common dir, as lint does", () => {

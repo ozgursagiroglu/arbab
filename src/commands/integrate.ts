@@ -64,7 +64,7 @@ export function integrationLanes(
   if (opts.lanes !== undefined) {
     lanes = splitList(opts.lanes);
   } else if (opts.plan !== undefined) {
-    lanes = planLanes(loadPlan(project.root, opts.plan));
+    lanes = planLanes(loadPlan(project.root, opts.plan, project.config.credentialPaths));
   } else {
     throw new ArbabError("usage", "usage: arbab integrate <name> (--lanes a,b,… | --plan <plan.json> | --deps-installed <sha> | --adopt <ref> | --refresh)");
   }

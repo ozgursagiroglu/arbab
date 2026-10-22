@@ -332,8 +332,10 @@ Every worker gets:
 - **A scrubbed environment, with credential paths denied.** The environment is built from scratch, and paths such as
   `~/.ssh`, `~/.aws` and `**/.env*` cannot be read or edited. A lane's `inputs`, files from outside the
   repository, are copied into its worktree afresh on every run, never through a link the worker left there. The same
-  credential list, matched in any case, keeps arbab itself from copying a credential file in as an input, inlining
-  one into a prompt (a brief, a schema, `instructions`, a review lens) or committing one as a landing message.
+  credential list plus your `credentialPaths`, matched in any case, keeps arbab itself from copying a credential file
+  in as an input, inlining one into a prompt (a brief, a schema, `instructions`, a review lens) or committing one as a
+  landing message. For files inside the project, name rules such as `.env*` look only below the project root, so a
+  project kept under a folder like `~/.envs/` still works.
 - **A budget and a clock.** Every attempt has a dollar cap, a wall-clock limit and an idle limit.
 
 On your machine:
@@ -465,7 +467,8 @@ clink as a finished worker takes its pay.
 Every command except `help`, `version` and `host-check` also takes `--json`, which prints JSON instead of text. A
 leading `-C <dir>` finds the project from `<dir>` instead of the working directory. arbab refuses a lane worktree as
 a project, from `-C` or the working directory, whether it lies under `.arbab/worktrees` or the configured
-`worktreeRoot`, in any spelling of case.
+`worktreeRoot` (also when that is a link elsewhere in the project and the lane is reached by its real path), in any
+spelling of case.
 
 The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`, bare. The plugin's PreToolUse hook
 approves that form, with these limits:

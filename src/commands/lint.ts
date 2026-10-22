@@ -69,7 +69,7 @@ function readRequired(path: string, what: string): string {
  * `gitCommonDir` (resolveGitCommonDir) lets the lint see the fence the shepherd will compile.
  */
 export function lintLane(project: Project, lanePath: string, gitCommonDir?: string): LaneLint {
-  return lintLaneSpec(project, loadLane(project.root, lanePath), gitCommonDir);
+  return lintLaneSpec(project, loadLane(project.root, lanePath, project.config.credentialPaths), gitCommonDir);
 }
 
 /** lintLane for a lane spec already validated (a compiled plan phase). */

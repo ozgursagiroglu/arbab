@@ -5,7 +5,7 @@ import * as plans from "../plan";
 import type { IntegrationRecord, PlanSpec } from "../types";
 import { formatIntegration, integrationLanes, runIntegrate, splitList } from "./integrate";
 import { openProject } from "./project";
-import { branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { DEFAULT_CONFIG, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -56,6 +56,11 @@ describe("integrationLanes", () => {
     } else {
       expect(() => integrationLanes(openProject(p.ctx), { plan: "plans/p.json" })).toThrow(/use --lanes/);
     }
+  });
+
+  it("refuses a plan whose phase brief a config credentialPaths entry hits", () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, credentialPaths: ["lanes/demo.md"] }, files: { "plans/p.json": JSON.stringify(PLAN) } });
+    expect(() => integrationLanes(openProject(p.ctx), { plan: "plans/p.json" }, () => ["a"])).toThrow(/^phases\[0\]\.brief: lanes\/demo\.md matches the credential path/);
   });
 
   it("refuses both or neither source, an empty list, a duplicate and an invalid name", () => {

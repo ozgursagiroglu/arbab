@@ -1445,6 +1445,16 @@ describe("runShepherd: slots, owners, events, timing and inputs (DESIGN.md §21)
     expect(stateOf("m1-a")).toMatchObject({ endState: "failed", attempt: 0, reason: expect.stringMatching(/^input ~\/vault\/token is under ~\/vault/) });
     expect(attempts("m1-a")).toHaveLength(0);
   });
+
+  it("refuses a brief one of config.credentialPaths hits", async () => {
+    project.cleanup();
+    project = makeProject({ credentialPaths: ["lanes/brief.md"] });
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
+    expect(stateOf("m1-a")).toMatchObject({ endState: "failed", reason: expect.stringMatching(/brief: lanes\/brief\.md matches the credential path lanes\/brief\.md/) });
+    expect(attempts("m1-a")).toHaveLength(0);
+  });
 });
 
 describe("slotCap", () => {

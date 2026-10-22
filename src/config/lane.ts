@@ -100,12 +100,14 @@ export function toolList(v: unknown, field: string): string[] {
 
 /**
  * Validates the PhaseLaneFields keys present in `obj` with the lane-file rules; other keys are left to the caller.
- * `prefix` is prepended to field names in errors ("phases[1]" → "phases[1].effort").
+ * `prefix` is prepended to field names in errors ("phases[1]" → "phases[1].effort"). `credentialPaths`
+ * (config.credentialPaths) is checked against `schema` besides the built-in list.
  */
 export function phaseLaneFields(
   projectRoot: string,
   obj: Record<string, unknown>,
   prefix = "",
+  credentialPaths: readonly string[] = [],
 ): Partial<PhaseLaneFields> {
   const f = (key: string): string => (prefix === "" ? key : `${prefix}.${key}`);
   const out: Partial<PhaseLaneFields> = {};
@@ -121,7 +123,7 @@ export function phaseLaneFields(
     out.fence = obj.fence as FenceLevel;
   }
   if (obj.allow !== undefined) out.allow = stringArray(obj.allow, f("allow"));
-  if (obj.schema !== undefined) out.schema = existingFile(projectRoot, obj.schema, f("schema"));
+  if (obj.schema !== undefined) out.schema = existingFile(projectRoot, obj.schema, f("schema"), credentialPaths);
   if (obj.resources !== undefined) {
     const res = record(obj.resources, f("resources"));
     out.resources = {};
@@ -158,9 +160,10 @@ export function inputList(v: unknown, field: string): string[] {
 
 /**
  * Reads and validates a lane file. `lanePath` is resolved against the project root; `brief` and `schema` are kept as
- * written (project-relative) after checking that they stay inside the project and exist.
+ * written (project-relative) after checking that they stay inside the project, exist and hit neither the built-in
+ * credential list nor `credentialPaths` (config.credentialPaths).
  */
-export function loadLane(projectRoot: string, lanePath: string): LaneSpec {
+export function loadLane(projectRoot: string, lanePath: string, credentialPaths: readonly string[] = []): LaneSpec {
   const file = resolve(projectRoot, lanePath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `lane file ${lanePath} does not exist`);
@@ -170,11 +173,11 @@ export function loadLane(projectRoot: string, lanePath: string): LaneSpec {
   const lane: LaneSpec = {
     name: worktreeName(obj.name, "name"),
     role: role(obj.role, "role"),
-    brief: existingFile(projectRoot, obj.brief, "brief"),
+    brief: existingFile(projectRoot, obj.brief, "brief", credentialPaths),
   };
   if (obj.base !== undefined) lane.base = ref(obj.base, "base");
   if (obj.tools !== undefined) lane.tools = toolList(obj.tools, "tools");
-  Object.assign(lane, phaseLaneFields(projectRoot, obj));
+  Object.assign(lane, phaseLaneFields(projectRoot, obj, "", credentialPaths));
   if (obj.coordination !== undefined) {
     if (typeof obj.coordination !== "string") fail("coordination", "must be a string");
     lane.coordination = obj.coordination;

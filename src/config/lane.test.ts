@@ -101,6 +101,21 @@ describe("loadLane", () => {
     expect(loadLane(dir, writeLane({ name: "m3-a", worktree: "m3-b" }))).toMatchObject({ name: "m3-a", worktree: "m3-b" });
   });
 
+  it("refuses a brief or schema that a credentialPaths entry hits, and passes one that matches nothing", () => {
+    writeFileSync(join(dir, "lanes", "schema.secret"), "{}");
+    writeFileSync(join(dir, "lanes", "schema.json"), "{}");
+    const extra = ["**/*.secret", "lanes/brief.md"];
+    expect(() => loadLane(dir, writeLane({ name: "m3-a" }), extra)).toThrow(/^brief: lanes\/brief\.md matches the credential path lanes\/brief\.md/);
+    writeFileSync(join(dir, "lanes", "other.md"), "## Task\n");
+    const lane = { name: "m3-a", brief: "lanes/other.md" };
+    expect(() => loadLane(dir, writeLane({ ...lane, schema: "lanes/schema.secret" }), extra)).toThrow(
+      /^schema: lanes\/schema\.secret is named like a credential file \(schema\.secret\)/,
+    );
+    expect(loadLane(dir, writeLane({ ...lane, schema: "lanes/schema.json" }), extra)).toMatchObject({ brief: "lanes/other.md", schema: "lanes/schema.json" });
+    // Without the list, only the built-in names apply.
+    expect(loadLane(dir, writeLane({ ...lane, schema: "lanes/schema.secret" })).schema).toBe("lanes/schema.secret");
+  });
+
   it("keeps a valid tools list", () => {
     expect(loadLane(dir, writeLane({ name: "m3-a", tools: ["Read", "Bash", "mcp__srv-1__q"] })).tools).toEqual(["Read", "Bash", "mcp__srv-1__q"]);
     expect(loadLane(dir, writeLane({ name: "m3-a" })).tools).toBeUndefined();

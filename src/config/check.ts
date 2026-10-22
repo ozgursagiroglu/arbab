@@ -110,18 +110,18 @@ export function confined(root: string, v: unknown, field: string): string {
   }
 }
 
-/** No homes: only the list's `**\/` name rules apply to a project's files. */
-const credentialNames = credentialMatcher([], []);
-
 /**
  * An existing file inside the project, returned as written. Confined lexically, then again after resolving symlinks,
- * so a link inside the project cannot point outside it. Its contents go into workers' prompts: neither spelling may be
- * named like a credential file (`.env*`, `*.pem`, `*.key`, …).
+ * so a link inside the project cannot point outside it. Its contents go into workers' prompts: neither spelling may hit
+ * the credential list (`.env*`, `*.pem`, `*.key`, …) plus `credentialPaths` (config.credentialPaths). No homes, so
+ * `~/` entries match nothing; the name rules look only below the project root, which may itself sit under a directory
+ * named like a credential.
  */
-export function existingFile(projectRoot: string, v: unknown, field: string): string {
+export function existingFile(projectRoot: string, v: unknown, field: string, credentialPaths: readonly string[] = []): string {
   const s = nonEmptyString(v, field);
+  const credential = credentialMatcher(credentialPaths, []);
   const full = confined(projectRoot, s, field);
-  const hit = credentialNames(full);
+  const hit = credential(full, projectRoot);
   if (hit !== null) fail(field, `${s} ${credentialReason(hit)}; its text would go into a worker's prompt`);
   let real: string;
   try {
@@ -131,9 +131,10 @@ export function existingFile(projectRoot: string, v: unknown, field: string): st
     if (err instanceof ArbabError) throw err;
     return fail(field, `${s} does not exist`);
   }
-  const rel = relative(realpathSync(projectRoot), real);
+  const realRoot = realpathSync(projectRoot);
+  const rel = relative(realRoot, real);
   if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) fail(field, `${s} resolves outside the project`);
-  const realHit = credentialNames(real);
+  const realHit = credential(real, realRoot);
   if (realHit !== null) fail(field, `${s} resolves to ${real}, which ${credentialReason(realHit)}; its text would go into a worker's prompt`);
   return s;
 }

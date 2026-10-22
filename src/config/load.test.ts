@@ -56,6 +56,42 @@ describe("loadConfig worktreeRoot and runsRoot through symbolic links", () => {
       configError(project, field);
     });
 
+    it(`refuses ${field} as a link to the project root, even reached through a link`, () => {
+      symlinkSync(project, join(project, "self"));
+      writeConfig(project, { [field]: "self" });
+      expect(configError(project, field).message).toContain(`${field}: must not be the project root`);
+      writeConfig(project, { [field]: "self/" });
+      expect(configError(project, field).message).toContain(`${field}: must not be the project root`);
+      symlinkSync(project, join(dir, "via"));
+      writeConfig(join(dir, "via"), { [field]: "self" });
+      expect(configError(join(dir, "via"), field).message).toContain(`${field}: must not be the project root`);
+    });
+
+    it(`refuses ${field} as a link into or over the integration records`, () => {
+      mkdirSync(join(project, ".arbab", "integrations", "m1"), { recursive: true });
+      symlinkSync(join(project, ".arbab", "integrations"), join(project, "recs"));
+      symlinkSync(join(project, ".arbab", "integrations", "m1"), join(project, "m1"));
+      symlinkSync(join(project, ".arbab"), join(project, "state"));
+      for (const value of ["recs", "recs/lanes", "m1", "state"]) {
+        writeConfig(project, { [field]: value });
+        expect(configError(project, field).message, value).toContain(`${field}: must not overlap .arbab/integrations, where integration records live`);
+      }
+      // A link to elsewhere under .arbab is fine.
+      mkdirSync(join(project, ".arbab", "pool"));
+      symlinkSync(join(project, ".arbab", "pool"), join(project, "pool"));
+      writeConfig(project, { [field]: "pool" });
+      expect(loadConfig(project)[field]).toBe("pool");
+    });
+
+    it(`refuses ${field} under a link to .arbab when the records do not exist yet`, () => {
+      mkdirSync(join(project, ".arbab"));
+      symlinkSync(join(project, ".arbab"), join(project, "state"));
+      writeConfig(project, { [field]: "state/integrations/x" });
+      expect(configError(project, field).message).toContain("must not overlap .arbab/integrations");
+      writeConfig(project, { [field]: "state/pool" });
+      expect(loadConfig(project)[field]).toBe("state/pool");
+    });
+
     it(`accepts ${field} as a link to a directory inside the project`, () => {
       mkdirSync(join(project, "real"));
       symlinkSync(join(project, "real"), join(project, "link"));
@@ -77,5 +113,19 @@ describe("loadConfig worktreeRoot and runsRoot through symbolic links", () => {
   it("accepts a worktreeRoot that does not exist yet", () => {
     writeConfig(project, { worktreeRoot: "tmp/deep/wt" });
     expect(loadConfig(project).worktreeRoot).toBe("tmp/deep/wt");
+  });
+});
+
+describe("loadConfig instructions and credentialPaths", () => {
+  it("refuses an instructions file a credentialPaths entry hits, wherever the key sits", () => {
+    mkdirSync(join(project, "vault"));
+    writeFileSync(join(project, "vault", "rules.md"), "# Rules\n");
+    writeFileSync(join(project, "RULES.md"), "# Rules\n");
+    writeConfig(project, { instructions: ["RULES.md", "vault/rules.md"], credentialPaths: ["vault/**"] });
+    expect(configError(project, "instructions[1]").message).toContain("vault/rules.md matches the credential path vault/**");
+    writeConfig(project, { credentialPaths: ["vault/**"], instructions: ["RULES.md"] });
+    expect(loadConfig(project).instructions).toEqual(["RULES.md"]);
+    writeConfig(project, { instructions: ["vault/rules.md"] });
+    expect(loadConfig(project).instructions).toEqual(["vault/rules.md"]);
   });
 });

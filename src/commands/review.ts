@@ -60,7 +60,7 @@ const DEFAULT_TIMEOUT_MIN = 120;
 const SHA = /^[0-9a-f]{40,64}$/;
 
 /** What `credentialMatcher` returns. */
-type CredentialCheck = (path: string) => CredentialHit | null;
+type CredentialCheck = (path: string, root?: string) => CredentialHit | null;
 
 /** The lenses to run: --lenses as given (each must be known), or every configured lens. */
 export function reviewLenses(option: string | undefined, configLenses: Record<string, string>): string[] {
@@ -86,21 +86,24 @@ function lensFilePath(root: string, name: string, file: string, credential: Cred
   } catch {
     throw refuse("the file must be inside the project root");
   }
-  const hit = credential(path);
+  // Name rules look below the project root: a project kept under `~/.envs/` is no credential file.
+  const hit = credential(path, root);
   if (hit !== null) throw refuse(`the file ${credentialReason(hit)}; a credential file is not a lens`);
   let real: string;
+  let realRoot: string;
   try {
     real = realpathSync(path);
+    realRoot = realpathSync(root);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new ArbabError("usage", `the file of lens ${name}, ${file}, does not exist`);
     throw new ArbabError("usage", `cannot read the file of lens ${name}, ${file}: ${err instanceof Error ? err.message : String(err)}`);
   }
   try {
-    confine(realpathSync(root), real);
+    confine(realRoot, real);
   } catch {
     throw refuse("the file must be inside the project root, and a symlink in it may not lead out");
   }
-  const realHit = credential(real);
+  const realHit = credential(real, realRoot);
   if (realHit !== null) throw refuse(`the file resolves to ${real}, which ${credentialReason(realHit)}; a credential file is not a lens`);
   return real;
 }

@@ -221,7 +221,7 @@ export async function runShepherd(
     registerShepherd(deps.home, { pid, lane: laneName, project: root, owner, startedAt });
     registerProject(deps.home, root, startedAt);
     setState("queued");
-    const lane = loadLane(root, paths.laneFile);
+    const lane = loadLane(root, paths.laneFile, config.credentialPaths);
     if (lane.name !== laneName) throw new ArbabError("usage", `${paths.laneFile} names lane ${lane.name}, not ${laneName}`);
     const role = effectiveRole(config, lane);
     // Read before anything is held, so a bad prompt file or digest source fails the run at once.

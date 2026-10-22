@@ -148,6 +148,21 @@ describe("mergeBranches", () => {
     expect(git(["status", "--porcelain"], wt.real)).toBe("");
   });
 
+  it("merges a branch whose package.json edit no install sees, and still refuses a dependency edit", () => {
+    const pkg = (fields: Record<string, unknown>): string => JSON.stringify({ name: "x", version: "1.0.0", dependencies: { a: "1" }, ...fields }, null, 2) + "\n";
+    writeFileSync(join(project.root, "package.json"), pkg({}));
+    git(["add", "package.json"]);
+    git(["commit", "-q", "-m", "package.json"]);
+    const exportsOnly = branchWith("arbab/exports", "package.json", pkg({ version: "1.1.0", exports: { ".": "./index.js" } }));
+    branchWith("arbab/deps", "package.json", pkg({ dependencies: { a: "1", b: "2" } }));
+    const wt = laneWorktree("b");
+
+    expect(mergeBranches(input(wt, ["arbab/exports"]))).toEqual([{ branch: "arbab/exports", sha: exportsOnly }]);
+    expect(git(["rev-parse", "HEAD"], wt.real).trim()).toBe(exportsOnly);
+    expect(() => mergeBranches(input(wt, ["arbab/deps"]))).toThrow(/^arbab\/deps changes dependency manifests \(package\.json\)/);
+    expect(git(["rev-parse", "HEAD"], wt.real).trim()).toBe(exportsOnly);
+  });
+
   it("refuses a manifest whose name differs only in case", () => {
     branchWith("arbab/a", "Package.JSON", "{}\n");
     const wt = laneWorktree("b");

@@ -1,0 +1,140 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { approves, APPROVAL, isRunnerCall, type ApproveOptions } from "./approve";
+
+let dir: string;
+let runner: string;
+let opts: ApproveOptions;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "arbab-"));
+  runner = join(dir, "plugin root", "dist", "arbab.mjs");
+  mkdirSync(join(dir, "plugin root", "dist"), { recursive: true });
+  writeFileSync(runner, "// runner\n");
+  writeFileSync(join(dir, "other.mjs"), "// other\n");
+  symlinkSync(runner, join(dir, "runner-link.mjs"));
+  symlinkSync(join(dir, "other.mjs"), join(dir, "other-link.mjs"));
+  opts = { scriptPath: runner, commands: ["status", "wait", "launch", "hook", "__shepherd"], realpath: realpathSync };
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+const call = (rest: string): string => `node "${runner}" ${rest}`;
+
+describe("APPROVAL", () => {
+  it("is the exact PreToolUse allow output", () => {
+    expect(APPROVAL).toBe(
+      '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"arbab runner"}}',
+    );
+  });
+});
+
+describe("isRunnerCall", () => {
+  it("approves bare calls, with and without -C, with quoted runner path and arguments", () => {
+    expect(isRunnerCall(call("status"), opts)).toBe(true);
+    expect(isRunnerCall(call("status --json"), opts)).toBe(true);
+    expect(isRunnerCall(call("-C /work/repo wait --any --timeout-min 30"), opts)).toBe(true);
+    expect(isRunnerCall(call("-C '/work/my repo' status"), opts)).toBe(true);
+    expect(isRunnerCall(`node '${runner}' launch "lanes/a b.json"`, opts)).toBe(true);
+    expect(isRunnerCall(call("launch 'lanes/$x.json'"), opts)).toBe(true);
+    expect(isRunnerCall(`\tnode  "${runner}"\twait  `, opts)).toBe(true);
+  });
+
+  it("approves a plain runner path and a symlink to the runner", () => {
+    const plain = join(dir, "runner.mjs");
+    symlinkSync(runner, plain);
+    expect(isRunnerCall(`node ${plain} status`, opts)).toBe(true);
+    expect(isRunnerCall(`node ${join(dir, "runner-link.mjs")} status`, opts)).toBe(true);
+    // The runner itself named through a symlinked scriptPath.
+    expect(isRunnerCall(call("status"), { ...opts, scriptPath: join(dir, "runner-link.mjs") })).toBe(true);
+  });
+
+  it("refuses shell syntax around or inside the call", () => {
+    for (const command of [
+      call("status | tail -5"),
+      call("status 2>&1"),
+      `cd /work && ${call("status")}`,
+      call("status && echo ok"),
+      call("status; rm -rf x"),
+      call("status &"),
+      `(${call("status")})`,
+      call("launch $(cat lane)"),
+      call("launch `cat lane`"),
+      call('launch "$HOME/lane.json"'),
+      call("status\nrm -rf x"),
+      call("status > out.txt"),
+    ]) {
+      expect(isRunnerCall(command, opts), command).toBe(false);
+    }
+  });
+
+  it("refuses an env prefix, node options and another program", () => {
+    expect(isRunnerCall(`FOO=bar ${call("status")}`, opts)).toBe(false);
+    expect(isRunnerCall(`env ${call("status")}`, opts)).toBe(false);
+    expect(isRunnerCall(`node --require ./x.js "${runner}" status`, opts)).toBe(false);
+    expect(isRunnerCall(`/usr/bin/node "${runner}" status`, opts)).toBe(false);
+    expect(isRunnerCall(`nodejs "${runner}" status`, opts)).toBe(false);
+  });
+
+  it("refuses another script, a symlink to another file, a missing file and a relative path", () => {
+    expect(isRunnerCall(`node ${join(dir, "other.mjs")} status`, opts)).toBe(false);
+    expect(isRunnerCall(`node ${join(dir, "other-link.mjs")} status`, opts)).toBe(false);
+    expect(isRunnerCall(`node ${join(dir, "missing.mjs")} status`, opts)).toBe(false);
+    expect(isRunnerCall("node arbab.mjs status", { ...opts, realpath: (p) => (p === "arbab.mjs" ? runner : realpathSync(p)) })).toBe(false);
+    expect(isRunnerCall("node ~/arbab.mjs status", opts)).toBe(false);
+    expect(isRunnerCall(call("status"), { ...opts, scriptPath: join(dir, "gone.mjs") })).toBe(false);
+  });
+
+  it("refuses unknown commands, hook, __shepherd and a missing command", () => {
+    expect(isRunnerCall(call("rm"), opts)).toBe(false);
+    expect(isRunnerCall(call("constructor"), opts)).toBe(false);
+    expect(isRunnerCall(call("hook pre-tool-use"), opts)).toBe(false);
+    expect(isRunnerCall(call("__shepherd /r demo {}"), opts)).toBe(false);
+    expect(isRunnerCall(call("-C /work/repo hook stop"), opts)).toBe(false);
+    expect(isRunnerCall(call("--help"), opts)).toBe(false);
+    expect(isRunnerCall(`node "${runner}"`, opts)).toBe(false);
+    expect(isRunnerCall(call("-C /work/repo"), opts)).toBe(false);
+    expect(isRunnerCall(call("-C status"), opts)).toBe(false);
+    expect(isRunnerCall("node", opts)).toBe(false);
+    expect(isRunnerCall("", opts)).toBe(false);
+  });
+});
+
+describe("approves", () => {
+  const input = (over: Record<string, unknown> = {}): string =>
+    JSON.stringify({
+      session_id: "s-1",
+      cwd: "/work/repo",
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: { command: call("status"), description: "status" },
+      tool_use_id: "t-1",
+      permission_mode: "default",
+      ...over,
+    });
+
+  it("approves a Bash runner call", () => {
+    expect(approves(input(), opts)).toBe(true);
+    expect(approves(JSON.stringify({ tool_name: "Bash", tool_input: { command: call("wait --any") } }), opts)).toBe(true);
+  });
+
+  it("refuses another tool, invalid JSON and fields of the wrong type", () => {
+    expect(approves(input({ tool_name: "Read" }), opts)).toBe(false);
+    expect(approves(input({ tool_name: "bash" }), opts)).toBe(false);
+    expect(approves("{not json", opts)).toBe(false);
+    expect(approves("", opts)).toBe(false);
+    expect(approves("[]", opts)).toBe(false);
+    expect(approves("null", opts)).toBe(false);
+    expect(approves(input({ tool_input: { command: 1 } }), opts)).toBe(false);
+    expect(approves(input({ tool_input: call("status") }), opts)).toBe(false);
+    expect(approves(input({ tool_input: [call("status")] }), opts)).toBe(false);
+    expect(approves(input({ session_id: 7 }), opts)).toBe(false);
+    expect(approves(input({ cwd: null }), opts)).toBe(false);
+    expect(approves(input({ hook_event_name: "PostToolUse" }), opts)).toBe(false);
+  });
+
+  it("refuses a Bash call that is not a bare runner call", () => {
+    expect(approves(input({ tool_input: { command: `${call("status")} | tail` } }), opts)).toBe(false);
+  });
+});

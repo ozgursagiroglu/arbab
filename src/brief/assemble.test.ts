@@ -66,6 +66,13 @@ describe("assembleBrief", () => {
   it("asks for a summary when there is no schema", () => {
     expect(assembleBrief(SOURCE, ctx({ schema: null }))).toMatch(/## Report\n\nYour final answer is a short summary .*\n$/);
   });
+  it("lists the lane inputs after Notes, only when there are some", () => {
+    const text = assembleBrief(SOURCE, ctx({ inputs: ["plan.md", "api.json"] }));
+    expect(headings(text).slice(7, 10)).toEqual(["## Notes", "## Inputs", "## Tool belt"]);
+    expect(text).toContain("## Inputs\n\nRead-only copies made for this lane, in .arbab-tmp/inputs/: `plan.md`, `api.json`.\n\n## Tool belt");
+    expect(assembleBrief(SOURCE, ctx({ inputs: [] }))).not.toContain("## Inputs");
+    expect(headings(assembleBrief({ title: "T", sections: { Task: "t" } }, ctx({ inputs: ["a.md"] })))).toContain("## Inputs");
+  });
   it("includes the tool belt", () => {
     expect(assembleBrief(SOURCE, ctx())).toContain("## Tool belt\n\n- Shell commands you may run: `git status …`");
   });

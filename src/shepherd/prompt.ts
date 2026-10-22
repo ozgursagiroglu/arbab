@@ -114,6 +114,8 @@ export interface BriefInput {
   schema: JsonSchema;
   /** A `## Head start` section (digestHeadStart) for a fresh session seeded with a digest. */
   headStart?: string;
+  /** Names of the lane inputs copied into `.arbab-tmp/inputs/` (DESIGN.md §21). */
+  inputs?: string[];
 }
 
 /** The assembled prompt of a start or fresh attempt (DESIGN.md §5). */
@@ -137,6 +139,7 @@ export function buildBrief(input: BriefInput): string {
     upstream: (lane.upstream ?? []).map((up) => ({ lane: up, summary: upstreamSummary(input.runsRoot, up) })),
     schema: input.schema,
     bashMaxTimeoutMin: Number.isFinite(maxMs) ? Math.round(maxMs / 60_000) : 15,
+    ...(input.inputs === undefined || input.inputs.length === 0 ? {} : { inputs: [...input.inputs] }),
   };
   const prompt = assembleBrief(source, ctx);
   if (input.headStart === undefined) return prompt;

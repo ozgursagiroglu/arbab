@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { ROLE_DEFAULTS } from "../config/roles";
+import { workerTmpPaths } from "../run/workertmp";
 import type { ProfileInput, Role } from "../types";
 import { ArbabError } from "../util/errors";
 import { compileProfile } from "./compile";
@@ -190,6 +192,81 @@ describe("compileProfile, fence strict", () => {
       BASH_DEFAULT_TIMEOUT_MS: "300000",
       BASH_MAX_TIMEOUT_MS: "900000",
       XDG_CONFIG_HOME: `${WORKTREE}/.arbab-tmp/xdg-config`,
+      XDG_DATA_HOME: `${WORKTREE}/.arbab-tmp/xdg-data`,
+      XDG_CACHE_HOME: `${WORKTREE}/.arbab-tmp/xdg-cache`,
+      YARN_CACHE_FOLDER: `${WORKTREE}/.arbab-tmp/yarn-cache`,
+      NPM_CONFIG_USERCONFIG: `${WORKTREE}/.arbab-tmp/npmrc`,
+    });
+  });
+
+  it("points the package managers' homes at the worker's temp paths, over config env", () => {
+    const tmp = workerTmpPaths(WORKTREE);
+    const env = compileProfile(
+      input("reviewer", { env: { XDG_DATA_HOME: "/x", XDG_CACHE_HOME: "/x", YARN_CACHE_FOLDER: "/x", NPM_CONFIG_USERCONFIG: "/x" } }),
+    ).settings.env;
+    expect(env["XDG_CONFIG_HOME"]).toBe(tmp.xdgConfig);
+    expect(env["XDG_DATA_HOME"]).toBe(tmp.xdgData);
+    expect(env["XDG_CACHE_HOME"]).toBe(tmp.xdgCache);
+    expect(env["YARN_CACHE_FOLDER"]).toBe(tmp.yarnCache);
+    expect(env["NPM_CONFIG_USERCONFIG"]).toBe(tmp.npmrc);
+  });
+
+  it("carries bashOutputMaxChars only when the input names it", () => {
+    expect(compileProfile(input("implementer", { bashOutputMaxChars: 100000 })).settings.bashOutputMaxChars).toBe(100000);
+    expect(compileProfile(input("reviewer", { bashOutputMaxChars: 4000 })).settings.bashOutputMaxChars).toBe(4000);
+    expect("bashOutputMaxChars" in compileProfile(input("implementer")).settings).toBe(false);
+  });
+
+  it("lets the reviewer preset bind loopback, so its tests can listen on 127.0.0.1", () => {
+    const reviewer = ROLE_DEFAULTS.reviewer;
+    const profile = compileProfile(input("reviewer", { tools: [...reviewer.tools], loopback: reviewer.loopback }));
+    expect(profile.settings.sandbox.network.allowLocalBinding).toBe(true);
+  });
+
+  describe("readable env templates", () => {
+    const ENV_DENY = [
+      "**/.env",
+      "**/.env.local",
+      "**/.env.*.local",
+      "**/.env.development*",
+      "**/.env.production*",
+      "**/.env.staging*",
+      "**/.env.test*",
+      "**/.envrc",
+      "**/.env/**",
+      "**/.env.*/**",
+      "//work/repo/.env",
+      "//work/repo/apps/web/.env.local",
+      "//work/repo/tools/.env/**",
+    ].flatMap((p) => [`Read(${p})`, `Edit(${p})`]);
+
+    it("keeps the blanket .env* deny when no template is readable", () => {
+      for (const over of [{}, { readableEnvFiles: [], envFileDenies: ["/work/repo/.env"] }]) {
+        const deny = compileProfile(input("implementer", over)).settings.permissions.deny;
+        expect(deny).toEqual([...BASE_DENY, "WebFetch", "WebSearch"]);
+        expect(deny).toContain("Read(**/.env*)");
+      }
+    });
+
+    it("replaces the blanket deny with secret patterns and absolute rules for the files and directories found", () => {
+      const deny = compileProfile(
+        input("implementer", {
+          readableEnvFiles: [".env.example"],
+          envFileDenies: ["/work/repo/.env", "/work/repo/apps/web/.env.local", "/work/repo/tools/.env/**"],
+        }),
+      ).settings.permissions.deny;
+      expect(deny).not.toContain("Read(**/.env*)");
+      expect(deny).not.toContain("Edit(**/.env*)");
+      const at = deny.indexOf("Read(**/.env)");
+      expect(deny.slice(at, at + ENV_DENY.length)).toEqual(ENV_DENY);
+      expect(deny).toContain("Read(**/*.pem)");
+      expect(deny).toContain("Read(~/.npmrc)");
+    });
+
+    it("keeps the blanket deny when the files found are unknown", () => {
+      const deny = compileProfile(input("implementer", { readableEnvFiles: [".env.example"] })).settings.permissions.deny;
+      expect(deny).toContain("Read(**/.env*)");
+      expect(deny).not.toContain("Read(**/.env.local)");
     });
   });
 

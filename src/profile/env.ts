@@ -1,6 +1,7 @@
 import { isAbsolute } from "node:path";
 import { isForbiddenWorkerEnv, isReservedEnv } from "../util/env-policy";
 import { ArbabError } from "../util/errors";
+import { WORKER_SHELL } from "./presets";
 
 const HOST_KEYS = ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"] as const;
 const SYSTEM_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
@@ -34,6 +35,8 @@ export function workerEnv(host: Record<string, string | undefined>, opts: Worker
   env.PATH = [...new Set([...dirs, ...SYSTEM_PATH])].join(":");
   env.TERM = "dumb";
   env.DISABLE_AUTOUPDATER = "1";
+  // Set here, not in extra: CLAUDE* names are refused from config, and this one is arbab's own choice.
+  env.CLAUDE_CODE_SHELL = WORKER_SHELL;
   for (const name of opts.passEnv) {
     const value = host[name];
     if (value !== undefined) env[name] = value;

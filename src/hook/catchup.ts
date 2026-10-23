@@ -38,8 +38,28 @@ export function watermarkPath(home: string, session: string): string {
   return join(home, SESSIONS_DIR, `${createHash("sha256").update(session).digest("hex")}.json`);
 }
 
-/** The watermark's time in ms, or null when there is none or it does not read as one. */
-export function readWatermark(path: string): number | null {
+/** How many reported landing keys a watermark keeps, the latest. */
+export const REPORTED_KEPT = 100;
+/**
+ * How far before the watermark the next answer looks: land stamps landedAt before it writes landing.json, so a record
+ * written while a hook ran can carry a time the watermark already passed. The keys keep it from being said twice.
+ */
+export const LANDING_SLACK_MS = 10 * 60_000;
+
+/** What a session saw: when the hooks last answered it, and the landings already reported or already there then. */
+export interface Watermark {
+  seenMs: number;
+  /** landingKey of each, oldest first; empty for a watermark written before keys were kept (0.2.2). */
+  reported: string[];
+}
+
+/** `<name>@<mergeSha>`: one landing, even if the integration name is reused later. */
+export function landingKey(landing: Pick<LandingSince, "name" | "mergeSha">): string {
+  return `${landing.name}@${landing.mergeSha}`;
+}
+
+/** The watermark, or null when there is none or its time does not read; keys that are not strings are dropped. */
+export function readWatermark(path: string): Watermark | null {
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
@@ -49,7 +69,14 @@ export function readWatermark(path: string): number | null {
   if (!isObject(raw)) return null;
   const seenAt = raw["seenAt"];
   const ms = typeof seenAt === "string" ? Date.parse(seenAt) : NaN;
-  return Number.isFinite(ms) ? ms : null;
+  if (!Number.isFinite(ms)) return null;
+  const keys = raw["reported"];
+  const reported = Array.isArray(keys) ? keys.filter((k): k is string => typeof k === "string").slice(-REPORTED_KEPT) : [];
+  return { seenMs: ms, reported };
+}
+
+function writeWatermark(path: string, seenAt: string, reported: readonly string[]): void {
+  writeJsonAtomic(path, { seenAt, reported: [...new Set(reported)].slice(-REPORTED_KEPT) });
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -96,9 +123,10 @@ function sameRoot(a: string, b: string, realpath: (path: string) => string): boo
 
 /**
  * The hook's answer to its input (raw stdin): one JSON object whose additionalContext names the landings other
- * sessions made in this project since the session's watermark, or null. Null too for malformed input, a directory in
- * no registered project or in a lane worktree, and a session's first message, which only sets the watermark: a new
- * session gets no history. Each answer moves the watermark to the clock. Never loads the project's config.
+ * sessions made in this project since the session's watermark (less LANDING_SLACK_MS, without the landings it already
+ * reported), or null. Null too for malformed input, a directory in no registered project or in a lane worktree, and a
+ * session's first message, which only sets the watermark: a new session gets no history. Each answer moves the
+ * watermark to the clock and adds the keys it reported. Never loads the project's config.
  */
 export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchUpOptions): string | null {
   let parsed: unknown;
@@ -121,18 +149,23 @@ export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchU
   if (root === null || !roots.some((r) => sameRoot(r, root, realpath))) return null;
 
   const path = watermarkPath(opts.home, session);
-  const seenMs = readWatermark(path);
+  const watermark = readWatermark(path);
+  const nowMs = opts.clock.now();
   const now = isoAt(opts.clock);
-  if (seenMs === null) {
-    writeJsonAtomic(path, { seenAt: now });
+  if (watermark === null) {
+    // What is on disk now is history, slack window included: only a record written after this counts as news.
+    writeWatermark(path, now, landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey));
     return null;
   }
-  const landings = landingsSince(root, seenMs).filter((l) => l.owner !== session);
+  const reported = new Set(watermark.reported);
+  const landings = landingsSince(root, watermark.seenMs - LANDING_SLACK_MS).filter(
+    (l) => l.owner !== session && !reported.has(landingKey(l)),
+  );
   // Moved first: a watermark that cannot be written would repeat the same news at every message.
-  writeJsonAtomic(path, { seenAt: now });
+  writeWatermark(path, now, [...watermark.reported, ...landings.map(landingKey)]);
   if (landings.length === 0) return null;
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(new Date(seenMs).toISOString(), landings) },
+    hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(new Date(watermark.seenMs).toISOString(), landings) },
   });
 }
 

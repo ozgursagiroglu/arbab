@@ -14,10 +14,11 @@ import type {
   VerifyRecord,
 } from "../types";
 import { commandLine } from "../verify";
+import { baseMergeInstruction } from "./moved";
 import { groupLaneNotes, uniqueTexts, type LaneEntry } from "./notes";
 
 export { reviewCarriesOver } from "./carry";
-export { baseMoved } from "./moved";
+export { baseMergeInstruction, baseMoved, type OwnLanding } from "./moved";
 export { fenceKind, groupLaneNotes, noteKey, uniqueTexts, type LaneEntry, type LaneNote } from "./notes";
 
 /** One round of an integration's review history (reviews/<round>.json). */
@@ -70,8 +71,11 @@ export interface BaseMoved {
   commits: number | null;
 }
 
-/** The `base-moved` risk: what moved the base, by landing record or else by count, and the merge that answers it. */
-export function baseMovedRisk(name: string, moved: BaseMoved): ReadinessItem {
+/**
+ * The `base-moved` risk: what moved the base, by landing record or else by count, and the merge that answers it, in
+ * the words land refuses with.
+ */
+export function baseMovedRisk(name: string, worktree: string, moved: BaseMoved): ReadinessItem {
   const what =
     moved.landings.length > 0
       ? `${moved.landings.map(landingText).join(", ")} landed`
@@ -80,7 +84,7 @@ export function baseMovedRisk(name: string, moved: BaseMoved): ReadinessItem {
         : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
   return {
     id: "base-moved",
-    text: `${moved.base} moved since this integration started: ${what}. Merge ${moved.base} into integrate/${name} before landing.`,
+    text: `${moved.base} moved since this integration started: ${what}, so land would refuse. ${baseMergeInstruction(moved.base, name, worktree)}.`,
   };
 }
 
@@ -376,7 +380,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }
   // Before the sessions: land refuses until it is answered.
-  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.baseMoved));
+  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, integration.worktree, input.baseMoved));
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,

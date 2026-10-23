@@ -41,6 +41,7 @@ describe("USAGE", () => {
     expect(USAGE.land).toContain("land <name> [--squash] [--message <file>]");
     expect(USAGE["host-check"]).toBe("usage: arbab host-check <name>\n");
     expect(USAGE.summary).toContain("summary [--all] [--since <when>] [--json]");
+    expect(USAGE.summary).toContain("<n>m, <n>h, <n>d ago (up to 3650d), YYYY-MM-DD (UTC) or an ISO time with Z or an offset");
     expect(USAGE.hook).toBe("usage: arbab hook <pre-tool-use|stop|user-prompt-submit|session-start>\n");
     expect(USAGE.report).toContain("report <lane> [--attempt <n>] [--json]");
   });

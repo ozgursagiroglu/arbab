@@ -161,8 +161,9 @@ waiters/<pid>.json                {pid, project, owner, startedAt, runner} while
                                   `review` or `preflight` waits for its lanes (`runner`: §21, absent before 0.2.1)
 projects/<sha1(root)>.json        {root, lastLaunchAt}: a project that launched a lane (`summary --all`, the hook's
                                   `-C` check, the catch-up hooks, §21)
-sessions/<sha256(session)>.json   {seenAt}: when the catch-up hooks last answered that Claude Code session (§21);
-                                  `cleanup` removes one not modified for 30 days
+sessions/<sha256(session)>.json   {seenAt, reported}: when the catch-up hooks last answered that Claude Code session
+                                  and the last 100 landing keys they reported (§21); `cleanup` removes one not
+                                  modified for 30 days
 tmp/                              `quota --refresh`'s working directory, removed after the call
 ```
 
@@ -421,7 +422,8 @@ arbab status [--active] [--mine] [lane…]
 arbab summary [--all] [--since <when>]
                                      lanes by state, plans, integrations by stage, what needs attention, quota and
                                      slots; --all: every project in ~/.arbab/projects/; --since: what landed after
-                                     <when>, an ISO time or <n>m, <n>h, <n>d back (§21)
+                                     <when>: <n>m, <n>h, <n>d back (up to 3650 days), a date (UTC) or an ISO
+                                     time with Z or an offset (§21)
 arbab report <lane> [--attempt <n>]  one attempt's summary and report, the latest by default (§21)
 arbab wait [--any|--all] [--all-sessions] [--timeout-min N] [--notify] [lane…]
                                      level-triggered: prints the finished lane runs not yet acked (end state, reason,
@@ -1172,7 +1174,10 @@ each works on its own base; the orchestrator does, before it builds on a stale o
 - `landingsSince(root, sinceMs)` (src/summary/landings.ts) lists the project's landing records whose `landedAt` is
   after a moment, oldest first (ties by name); a record that is missing, does not parse or names another
   integration is skipped.
-- `summary --since <when>`: an ISO time, or `<n>m`, `<n>h`, `<n>d` back from now; anything else is a usage error.
+- `summary --since <when>`: `<n>m`, `<n>h`, `<n>d` back from now, at most 3650 days in any unit; a date
+  (`YYYY-MM-DD`) as midnight UTC; or an ISO date-time with `Z` or an offset (without one, the machine's time zone
+  would decide). Anything else, a longer span, and a date or time that does not exist (`2026-02-30`, `24:00`) are
+  usage errors.
   It adds a `Landed since <time>` section after Integrations, said even when empty (`nothing landed`): per landing
   its name, `into <base>`, time, owner (`session <first 8 characters>`, `outside Claude Code` or `session unknown`)
   and lane count (`, squashed` after a squash). `--json` adds `since` and `landedSince` (oldest first) to the
@@ -1180,17 +1185,25 @@ each works on its own base; the orchestrator does, before it builds on a stale o
 - `readiness` adds the risk `base-moved`, first among the risks, when the base's head is not in the integration
   head, which `land` would refuse. It names the landing records into the base whose commit is among the commits the
   head lacks (name, time, owner), or else how many commits that is ("it has new commits" when git cannot count
-  them), and asks for a merge of the base into `integrate/<name>`. `integration.json` keeps no start time, so the
-  commits, not a time, say which landings the integration lacks. It is advisory: when git cannot tell there is no
-  risk, and `land` checks again. Like every risk it takes no waiver.
+  them), and asks for the merge `land`'s refusal asks for, in the same words (`baseMergeInstruction`,
+  src/readiness/moved.ts): the base merged into `integrate/<name>` in its worktree with hooks off (`untrustedTree()`,
+  `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again.
+  `integration.json` keeps no start time, so the commits, not a time, say which landings the integration lacks. The
+  integration's own landing record is never among them, and once it landed (its `landing.json` exists) there is no
+  such risk: its own merge commit is what the base gained. It is advisory: when git cannot tell there is no risk, and
+  `land` checks again. Like every risk it takes no waiver.
 - The plugin's `hooks/hooks.json` adds UserPromptSubmit and SessionStart entries, running `arbab hook
   user-prompt-submit` and `arbab hook session-start` (src/hook/catchup.ts). Each reads the hook input's `session_id`
   and `cwd` and answers only in a project registered in `~/.arbab/projects/` (the working directory as written or by
   real path, through foldPath, §3), never in a lane worktree; a directory in no registered project costs no git call,
   and the project's config is never loaded. Per session it keeps a watermark, `~/.arbab/sessions/<sha256 of the
-  session id>.json` holding `{seenAt}`. A session's first message only sets it: a new session gets no history.
-  Later, it lists the landings since the watermark whose `owner` is not this session (an ownerless or pre-0.2.2
-  landing counts as another's), moves the watermark to now, and, when there are any, answers with
+  session id>.json` holding `{seenAt, reported}`, `reported` the keys (`<name>@<mergeSha>`) of the landings already
+  reported, the last 100. A session's first message only sets it, with the keys of the landings on disk since 10
+  minutes before: a new session gets no history. Later, it lists the landings since `seenAt` minus 10 minutes whose
+  key is not in `reported` and whose `owner` is not this session (an ownerless or pre-0.2.2 landing counts as
+  another's): `land` stamps `landedAt` before it writes `landing.json`, so a record written while a hook ran can fall
+  just behind the watermark, and the keys say it once. A watermark of 0.2.2 without `reported` reads as having none.
+  It moves the watermark to now, adds the keys it reported, and, when there are any, answers with
   `additionalContext`: up to five landings by name, time and owner, the rest counted, and that lanes keep their own
   base while an integration started before them must merge the base in before it can land. Record text reaches the
   model's context with control characters and line breaks replaced by spaces. SessionStart's `source` (startup,

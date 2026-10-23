@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { HostCheckRecord, IntegrationRecord, ReviewFinding, ReviewRecord, Tier, VerifyRecord } from "../types";
-import { computeReadiness, renderReadiness, roundsLine } from "./index";
+import { baseMergeInstruction, computeReadiness, renderReadiness, roundsLine } from "./index";
 import type { ReadinessInput } from "./index";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
 const NOW = "2026-10-09T12:00:00.000Z";
+const WORKTREE = "/repo/.arbab/worktrees/integrate-m3";
 
 function integration(over: Partial<IntegrationRecord> = {}): IntegrationRecord {
   return {
     name: "m3",
     branch: "integrate/m3",
-    worktree: "/repo/.arbab/worktrees/integrate-m3",
+    worktree: WORKTREE,
     base: "main",
     baseSha: "c".repeat(40),
     merged: [{ lane: "lane-a", branch: "arbab/lane-a", sha: "d".repeat(40), manifests: [] }],
@@ -400,9 +401,15 @@ describe("computeReadiness: risks", () => {
     expect(report.risks[0]).toEqual({
       id: "base-moved",
       text:
-        `main moved since this integration started: hot at ${NOW} (session cccccccc), cold at ${NOW} (outside Claude Code) landed. ` +
-        "Merge main into integrate/m3 before landing.",
+        `main moved since this integration started: hot at ${NOW} (session cccccccc), cold at ${NOW} (outside Claude Code) landed, ` +
+        `so land would refuse. ${baseMergeInstruction("main", "m3", WORKTREE)}.`,
     });
+    // The safe merge land gives too: hooks off, then refresh, verify, review and readiness again.
+    expect(report.risks[0]?.text).toContain(
+      `Merge main into integrate/m3 with hooks off: git -C ${WORKTREE} -c core.hooksPath=/dev/null -c core.fsmonitor=false ` +
+        "-c diff.ignoreSubmodules=all -c submodule.recurse=false merge --no-verify --no-edit main; then arbab integrate m3 " +
+        "--refresh to record the new head, and verify, review and readiness for m3 again.",
+    );
     expect(report.risks[1]?.id).toBe("session:unknown");
     expect(report.skipped).toEqual([]);
     expect(report.ready).toBe(true);
@@ -411,9 +418,10 @@ describe("computeReadiness: risks", () => {
   it("counts the new commits when no landing record explains a moved base, and says nothing of a base that did not move", () => {
     const risk = (commits: number | null) =>
       computeReadiness(input({ baseMoved: { base: "dev", landings: [], commits } })).risks.find((r) => r.id === "base-moved")?.text;
-    expect(risk(1)).toBe("dev moved since this integration started: 1 new commit. Merge dev into integrate/m3 before landing.");
-    expect(risk(3)).toBe("dev moved since this integration started: 3 new commits. Merge dev into integrate/m3 before landing.");
-    expect(risk(null)).toBe("dev moved since this integration started: it has new commits. Merge dev into integrate/m3 before landing.");
+    const merge = `, so land would refuse. ${baseMergeInstruction("dev", "m3", WORKTREE)}.`;
+    expect(risk(1)).toBe(`dev moved since this integration started: 1 new commit${merge}`);
+    expect(risk(3)).toBe(`dev moved since this integration started: 3 new commits${merge}`);
+    expect(risk(null)).toBe(`dev moved since this integration started: it has new commits${merge}`);
     expect(riskIds({ baseMoved: null })).not.toContain("base-moved");
     expect(riskIds({})).not.toContain("base-moved");
   });

@@ -8,7 +8,9 @@
 // Other sessions the landing would affect (otherSessions, against the paths the integration changes) are risks
 // `session:<owner>`, never skipped items; when the machine registry cannot be listed, one risk `session:unknown` says so.
 // A base whose head is not in the integration head (land would refuse) is the first risk, `base-moved`, naming the
-// landing records that moved it (name, time, owner session) or else the number of new commits; it needs no waiver.
+// landing records that moved it (name, time, owner session) or else the number of new commits, and the merge land asks
+// for (baseMergeInstruction); it needs no waiver. Once the integration landed (landing.json exists), its own merge is
+// no move of the base: no such risk.
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
@@ -140,7 +142,7 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     reviewRounds: reviewRounds(paths.dir, name),
     ...(otherSessions !== undefined && { otherSessions }),
     ...(sessionsUnknown !== undefined && { sessionsUnknown }),
-    baseMoved: baseMoved(ctx.git, project.root, base, record.headSha),
+    baseMoved: baseMoved(ctx.git, project.root, base, record.headSha, { name, landing: paths.landing }),
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);

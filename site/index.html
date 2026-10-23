@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>arbab: run fenced headless Claude Code workers from your session</title>
+<meta name="description" content="arbab is a Claude Code plugin that runs headless Claude Code workers in parallel, each in its own git worktree behind Claude Code's sandbox, then verifies, reviews and lands their work only on your yes. It never pushes.">
+<link rel="canonical" href="https://ozgursagiroglu.github.io/arbab/">
+<meta name="theme-color" content="#1B1D2A">
+<meta name="color-scheme" content="dark">
+<meta name="author" content="Özgür Sağıroğlu">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="arbab">
+<meta property="og:title" content="arbab: run fenced headless Claude Code workers from your session">
+<meta property="og:description" content="A Claude Code plugin: parallel headless workers in isolated worktrees and sandboxes, verification inside the fence, adversarial review, and landings only on your yes.">
+<meta property="og:url" content="https://ozgursagiroglu.github.io/arbab/">
+<meta property="og:image" content="https://ozgursagiroglu.github.io/arbab/assets/og.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="The arbab logo in yellow pixel lettering beside a pixel-art pyramid, on a dark background.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="arbab: run fenced headless Claude Code workers from your session">
+<meta name="twitter:description" content="Parallel headless Claude Code workers in isolated worktrees and sandboxes, verified, reviewed and landed only on your yes.">
+<meta name="twitter:image" content="https://ozgursagiroglu.github.io/arbab/assets/og.jpg">
+<meta name="twitter:image:alt" content="The arbab logo in yellow pixel lettering beside a pixel-art pyramid, on a dark background.">
+<link rel="icon" href="assets/arbab-mark.svg" type="image/svg+xml">
+<link rel="alternate icon" href="assets/arbab-mark.png" type="image/png">
+<link rel="apple-touch-icon" href="assets/arbab-mark.png">
+<link rel="stylesheet" href="styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "arbab",
+  "description": "A Claude Code plugin: a skill plus a runner CLI that launches, fences, supervises and measures headless claude -p workers, each in its own git worktree behind Claude Code's sandbox, then verifies, reviews and lands their work only on your yes.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS",
+  "url": "https://ozgursagiroglu.github.io/arbab/",
+  "image": "https://ozgursagiroglu.github.io/arbab/assets/og.jpg",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "downloadUrl": "https://github.com/ozgursagiroglu/arbab/releases",
+  "sameAs": ["https://github.com/ozgursagiroglu/arbab"],
+  "isBasedOn": {
+    "@type": "SoftwareSourceCode",
+    "name": "arbab",
+    "codeRepository": "https://github.com/ozgursagiroglu/arbab",
+    "programmingLanguage": "TypeScript",
+    "license": "https://opensource.org/licenses/MIT"
+  },
+  "author": {
+    "@type": "Person",
+    "name": "Özgür Sağıroğlu",
+    "url": "https://github.com/ozgursagiroglu"
+  }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Does worker code run on my machine?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Workers run on your machine, as the unmodified claude binary under your own login, but inside Claude Code's sandbox: writes stay in their worktree, credential paths are unreadable, and there is no network unless the lane is a researcher. arbab never runs their code on your host outside that fence, except a dependency install you reviewed and confirmed yourself. The gates run inside the fence; checks the fence cannot run, such as Docker or a browser, run on the host only when you start arbab host-check in your terminal."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does arbab push to my remote?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Never. arbab land merges the verified integration into your base branch locally, prints the push command and leaves it to you. Workers cannot push or deploy, and the skill lands only on your yes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How does it use my usage limits?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Workers run under your own login, so your session and every worker spend the same five-hour and seven-day windows: N workers use quota about N times as fast as one. Launches are held while the five-hour window is at or above 85% or the seven-day window at or above 95% (both configurable), and maxParallel, capped for the whole machine by ~/.arbab/machine.json, bounds how many run at once. The margin is your headroom to read reports and land."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What happens when a worker hits a usage limit?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The lane's shepherd sleeps until the reset, plus a little jitter, and resumes the same session: the lane does not start over. New launches stay held meanwhile. After you switch accounts, arbab quota --refresh reads the new account's windows with one small call."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can two sessions work in one repository?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Each session's wait and status --mine cover its own runs. When one session prepares a landing, readiness lists every other Claude Code session whose lanes, waiters or runner the landing affects, and the landing session tells them before it lands; land warns about them again as it merges. land refuses when the base branch has moved past the verified integration, and from arbab 0.2.2 a session that comes back is told what other sessions landed while it was away."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work on Linux?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "macOS is tested: the fence uses Claude Code's sandbox. Linux should work wherever Claude Code's sandbox works, but it is untested so far."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What does it cost to run?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "arbab itself is free and MIT-licensed, with zero runtime dependencies. Workers run on your own Claude subscription or API account, so they spend your quota like any Claude Code session. Reported costs are Claude Code's API-equivalent estimates, notional on a subscription, and each attempt has a budget passed as --max-budget-usd, a client-side estimate that does not cap subscription quota. For scale: arbab's own milestones M1 to M3 took 146 worker attempts, about $225 API-equivalent, run on a subscription."
+      }
+    }
+  ]
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="inner">
+    <a class="brand" href="#hero"><img src="assets/arbab-mark.svg" alt="" width="28" height="28">arbab</a>
+    <nav aria-label="Sections">
+      <ul>
+        <li><a href="#why">Why</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#fence">The fence</a></li>
+        <li><a href="#lanes">Lanes</a></li>
+        <li><a href="#sessions">Sessions</a></li>
+        <li><a href="#examples">Examples</a></li>
+        <li><a href="#install">Install</a></li>
+        <li><a href="#faq">FAQ</a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+<section id="hero" class="hero" aria-labelledby="hero-title">
+  <div class="wrap">
+    <img class="logo" src="assets/arbab-logo.png" alt="arbab" width="1176" height="384">
+    <h1 id="hero-title">Run fenced headless Claude Code workers from your session</h1>
+    <p class="lead">arbab is a Claude Code plugin: your interactive session splits a large task into lanes, and the
+      arbab runner runs each lane as a headless Claude Code worker in its own git worktree, behind Claude Code's
+      sandbox. It then verifies the result inside the fence, has it adversarially reviewed, and prepares a landing
+      that happens only on your yes.</p>
+    <div class="buttons">
+      <a class="button primary" href="#install">Install</a>
+      <a class="button secondary" href="https://github.com/ozgursagiroglu/arbab">GitHub repository</a>
+    </div>
+    <figure class="demo">
+      <video class="motion" autoplay muted loop playsinline preload="metadata" poster="assets/demo-poster.png"
+        width="960" height="644"
+        aria-label="arbab ui during a real run: workers take their briefs from arbab and build a pyramid while the dashboard tracks the crew, the chronicle and the ledger">
+        <source src="assets/demo.mp4" type="video/mp4">
+        <a href="assets/demo.mp4">Watch the arbab ui demo (MP4)</a>
+      </video>
+      <video class="still" controls muted playsinline preload="none" poster="assets/demo-poster.png"
+        width="960" height="644"
+        aria-label="arbab ui during a real run: workers take their briefs from arbab and build a pyramid while the dashboard tracks the crew, the chronicle and the ledger">
+        <source src="assets/demo.mp4" type="video/mp4">
+        <a href="assets/demo.mp4">Watch the arbab ui demo (MP4)</a>
+      </video>
+      <figcaption><code>arbab ui</code> during a real run: each lane is a worker building a pyramid, and arbab is the
+        foreman at the front. Each tool call sets a stone.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="why" aria-labelledby="why-title">
+  <div class="wrap">
+    <h2 id="why-title">Why</h2>
+    <div class="grid-2">
+      <div>
+        <h3>Long workflows that do not finish</h3>
+        <p>Long, multi-phase work with Claude Code's built-in multi-agent tooling took days. One data-deletion job
+          took about a day and a half, and the session limit killed it three times on the way. Older Workflow runs
+          that hit the limit restarted from zero.</p>
+      </div>
+      <div>
+        <h3>One session, shared by every agent</h3>
+        <p>Agents inside one session share its context, its turn loop and its effort setting. The Workflow agents ran
+          at the parent session's max effort, because a workflow script cannot set effort or model per agent, and
+          <code>parallel()</code> waits for every agent before the script goes on. arbab workers are separate
+          processes, each with its own context, effort, budget and clock; your session handles each result as it
+          lands.</p>
+      </div>
+    </div>
+
+    <h3>Does running in parallel help?</h3>
+    <p>The same seven research lanes, run both ways:</p>
+    <div class="table-wrap">
+      <table>
+        <caption class="muted">Workflow agents in one session against headless arbab workers</caption>
+        <thead>
+          <tr><th scope="col"></th><th scope="col">Workflow agents in one session</th><th scope="col">Headless arbab workers</th></tr>
+        </thead>
+        <tbody>
+          <tr><th scope="row">Lanes finished</th><td class="big">0 of 7</td><td class="big win">7 of 7</td></tr>
+          <tr><th scope="row">Time</th><td>stopped after 73 min</td><td class="win">1.9–6.4 min each</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>This was not a controlled benchmark: the Workflow run was stopped at 73 minutes, and 5 of the 7 headless lanes
+      started from digests of the stopped work (the two that did not were still among the fastest).
+      <a href="https://github.com/ozgursagiroglu/arbab/blob/main/REQUIREMENTS.md#1-problem-measured">REQUIREMENTS.md §1</a>
+      has every measurement and confound.</p>
+    <p class="lead">The point is not a speed-up number, but that independent work stops competing for one session's
+      context and turn loop.</p>
+  </div>
+</section>
+
+<section id="how" aria-labelledby="how-title">
+  <div class="wrap">
+    <h2 id="how-title">How it works</h2>
+    <p class="lead">You hand your Claude Code session a task. It plans the lanes and writes their briefs; the arbab
+      runner does everything mechanical from there, up to a landing you approve.</p>
+
+    <figure class="flow-figure">
+      <svg class="diagram" viewBox="0 0 360 782" width="360" height="782" role="img" aria-labelledby="flow-title flow-desc">
+        <title id="flow-title">How a task flows through arbab</title>
+        <desc id="flow-desc">You give the task to your Claude Code session, which plans and writes briefs. The arbab
+          runner launches lanes, each a headless worker in its own worktree and fence. Their branches are integrated,
+          verified inside the fence, reviewed by one reviewer per lens with skeptics for MEDIUM and HIGH findings, and
+          summed up in a readiness report. You approve, and arbab lands the work locally; it never pushes.</desc>
+        <defs>
+          <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path class="arrowhead" d="M0 0 L10 5 L0 10 z"/>
+          </marker>
+        </defs>
+
+        <rect class="box-you" x="110" y="8" width="140" height="40" rx="8"/>
+        <text class="t-head t-accent" x="180" y="33" text-anchor="middle">you</text>
+        <path class="flow" d="M180 48 V72" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box" x="30" y="74" width="300" height="52" rx="8"/>
+        <text class="t-head" x="180" y="96" text-anchor="middle">your Claude Code session</text>
+        <text class="t-sub" x="180" y="114" text-anchor="middle">plans the lanes and writes their briefs</text>
+        <path class="flow" d="M180 126 V148" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box" x="30" y="150" width="300" height="52" rx="8"/>
+        <text class="t-head" x="180" y="172" text-anchor="middle">the arbab runner</text>
+        <text class="t-sub" x="180" y="190" text-anchor="middle">worktrees, fences, quota holds, auto-resume</text>
+        <path class="flow" d="M180 202 V214 H64 V234" marker-end="url(#flow-arrow)"/>
+        <path class="flow" d="M180 202 V234" marker-end="url(#flow-arrow)"/>
+        <path class="flow" d="M180 202 V214 H296 V234" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box-fence" x="12" y="236" width="104" height="78" rx="8"/>
+        <text class="t-head" x="64" y="256" text-anchor="middle">lane A</text>
+        <text class="t-sub" x="64" y="274" text-anchor="middle">headless worker</text>
+        <text class="t-sub" x="64" y="290" text-anchor="middle">own worktree</text>
+        <text class="t-sub" x="64" y="305" text-anchor="middle">and fence</text>
+        <rect class="box-fence" x="128" y="236" width="104" height="78" rx="8"/>
+        <text class="t-head" x="180" y="256" text-anchor="middle">lane B</text>
+        <text class="t-sub" x="180" y="274" text-anchor="middle">headless worker</text>
+        <text class="t-sub" x="180" y="290" text-anchor="middle">own worktree</text>
+        <text class="t-sub" x="180" y="305" text-anchor="middle">and fence</text>
+        <rect class="box-fence" x="244" y="236" width="104" height="78" rx="8"/>
+        <text class="t-head" x="296" y="256" text-anchor="middle">lane C</text>
+        <text class="t-sub" x="296" y="274" text-anchor="middle">headless worker</text>
+        <text class="t-sub" x="296" y="290" text-anchor="middle">own worktree</text>
+        <text class="t-sub" x="296" y="305" text-anchor="middle">and fence</text>
+
+        <path class="flow" d="M64 314 V328 H180"/>
+        <path class="flow" d="M296 314 V328 H180"/>
+        <path class="flow" d="M180 314 V346" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box" x="30" y="348" width="300" height="44" rx="8"/>
+        <text class="t-head" x="180" y="367" text-anchor="middle">integrate</text>
+        <text class="t-sub" x="180" y="384" text-anchor="middle">lane branches merged, wave by wave</text>
+        <path class="flow" d="M180 392 V414" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box-fence" x="30" y="416" width="300" height="52" rx="8"/>
+        <text class="t-head" x="180" y="438" text-anchor="middle">verify</text>
+        <text class="t-sub" x="180" y="456" text-anchor="middle">the gates run inside the fence</text>
+        <path class="flow" d="M180 468 V490" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box-fence" x="30" y="492" width="300" height="66" rx="8"/>
+        <text class="t-head" x="180" y="514" text-anchor="middle">review</text>
+        <text class="t-sub" x="180" y="532" text-anchor="middle">one reviewer lane per lens</text>
+        <text class="t-sub" x="180" y="548" text-anchor="middle">skeptics for MEDIUM and HIGH findings</text>
+        <path class="flow" d="M180 558 V580" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box" x="30" y="582" width="300" height="52" rx="8"/>
+        <text class="t-head" x="180" y="604" text-anchor="middle">readiness report</text>
+        <text class="t-sub" x="180" y="622" text-anchor="middle">verified · skipped · risks</text>
+        <path class="flow" d="M180 634 V656" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box-you" x="110" y="658" width="140" height="40" rx="8"/>
+        <text class="t-head t-accent" x="180" y="683" text-anchor="middle">you approve</text>
+        <path class="flow" d="M180 698 V720" marker-end="url(#flow-arrow)"/>
+
+        <rect class="box" x="30" y="722" width="300" height="52" rx="8"/>
+        <text class="t-head" x="180" y="744" text-anchor="middle">land</text>
+        <text class="t-sub" x="180" y="762" text-anchor="middle">merges locally · never pushes</text>
+      </svg>
+      <figcaption class="legend">Dashed boxes run inside the fence. Yellow boxes are yours.</figcaption>
+    </figure>
+
+    <h3>Four roles</h3>
+    <ul class="cards">
+      <li><strong>You decide.</strong> You approve each landing, review dependency changes, and waive skipped checks
+        from your own terminal.</li>
+      <li><strong>Your session plans.</strong> Your Claude Code session plans, writes narrow briefs and reacts as lanes
+        finish.</li>
+      <li><strong>Workers build.</strong> Headless workers each take one brief in their own worktree and fence, with a
+        budget and a clock.</li>
+      <li><strong>The runner does the mechanics.</strong> Worktrees, sandbox profiles, quota holds, auto-resume,
+        integration, fenced verification, review and landing.</li>
+    </ul>
+
+    <figure class="shot" style="margin-top: 2rem">
+      <img src="assets/scene-page.png" width="1440" height="900" loading="lazy"
+        alt="The arbab ui dashboard: KPI cards for workers at work, waiting, asleep and finished and the spend; a pixel-art desert scene where workers build a pyramid; a crew panel listing running lanes; a monument panel tracking the integration from integrated and verified to landed; and the chronicle and ledger below.">
+      <figcaption><code>arbab ui</code> serves a live, read-only page of your lanes on 127.0.0.1: the scene, quota
+        gauges, the crew, the integration's progress, a chronicle and a ledger of every lane.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="fence" aria-labelledby="fence-title">
+  <div class="wrap">
+    <h2 id="fence-title">The fence</h2>
+    <p class="lead">Workers can write code. They cannot touch your working tree, your git history or your remote.
+      Every worker runs inside Claude Code's sandbox with <code>dontAsk</code> permissions and its role's exact tools;
+      a sandbox that cannot start is fatal, never a silent fallback.</p>
+    <div class="grid-2 fence-cols">
+      <div class="panel allowed">
+        <h3><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-ok" d="M4 10.5 L8.5 15 L16 5" fill="none" stroke-width="2.5"/></svg>A worker can</h3>
+        <ul>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-ok" d="M4 10.5 L8.5 15 L16 5" fill="none" stroke-width="2.5"/></svg>
+            <span>Write in its own git worktree, and the few shared places Claude Code's sandbox allows,
+              such as the per-user temp directory.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-ok" d="M4 10.5 L8.5 15 L16 5" fill="none" stroke-width="2.5"/></svg>
+            <span>Use its role's tools. A tool left out of the role does not exist for the worker.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-ok" d="M4 10.5 L8.5 15 L16 5" fill="none" stroke-width="2.5"/></svg>
+            <span>Run only the project commands its role allows, such as <code>pnpm test</code>, listed in the config's
+              <code>commands</code>.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-ok" d="M4 10.5 L8.5 15 L16 5" fill="none" stroke-width="2.5"/></svg>
+            <span>Read tracked templates such as <code>.env.example</code> with shell commands, when
+              <code>fence.readableEnvFiles</code> lists them.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-ok" d="M4 10.5 L8.5 15 L16 5" fill="none" stroke-width="2.5"/></svg>
+            <span>Listen on 127.0.0.1 for tests. Only researcher lanes reach the web.</span></li>
+        </ul>
+      </div>
+      <div class="panel refused">
+        <h3><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>The fence refuses</h3>
+        <ul>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
+            <span>Writes outside its worktree. Your checkout is never its working directory.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
+            <span>Reading credential paths: <code>~/.ssh</code>, <code>~/.aws</code>, <code>.env*</code>,
+              <code>*.pem</code>, <code>*.key</code>, … at home and in the project.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
+            <span>Writes to the repository's shared <code>.git</code>. The runner, not the worker, commits, merges and
+              creates branches.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
+            <span>"Any code" command prefixes such as bare <code>node</code> or <code>pnpm</code>, and background
+              shells.</span></li>
+          <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
+            <span>Running its tests on your host. The gates run inside the fence, in a lane without file-editing
+              tools, never on your host.</span></li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted" style="margin-top: 1.25rem">Refusals are counted and shown in <code>arbab status</code>, never
+      retried in secret. The full threat model is in
+      <a href="https://github.com/ozgursagiroglu/arbab/blob/main/DESIGN.md">DESIGN.md</a>.</p>
+  </div>
+</section>
+
+<section id="lanes" aria-labelledby="lanes-title">
+  <div class="wrap">
+    <h2 id="lanes-title">Lanes that keep going</h2>
+    <p class="lead">Every worker spends the same account as your session. arbab plans around that, so lanes wait
+      instead of failing, and your session hears as each one ends.</p>
+    <ul class="cards">
+      <li><strong>Quota holds come first.</strong> A launch waits in <code>held</code> while the five-hour window is at
+        or above 85% or the seven-day window at or above 95%. The quota is checked before a lane takes a slot, so a
+        held lane holds no slot.</li>
+      <li><strong>Usage limits do not restart work.</strong> A lane that hits the limit sleeps until the reset and
+        resumes the same session.</li>
+      <li><strong>Slots are machine-wide.</strong> Every project on the machine shares the slots, and
+        <code>~/.arbab/machine.json</code> caps them.</li>
+      <li><strong><code>arbab wait</code> notifies the session.</strong> Run as a background call, it gives your session a
+        task notification when a lane finishes, and the plugin's Stop hook keeps the session from ending its turn while its lanes run
+        unwatched.</li>
+      <li><strong><code>arbab status</code> says why.</strong> Its last column, <code>why</code>, gives a waiting
+        lane's reason, such as <code>no free slot</code> or <code>usage limit</code>.</li>
+    </ul>
+
+    <h3 style="margin-top: 2rem">What <code>status</code> shows</h3>
+    <p>Part of the <code>ui2</code> build of arbab's own page, captured before <code>status</code> gained its
+      <code>why</code> column, so the rows end at the quota:</p>
+<pre><code>lane                 state               attempt  elapsed  turns  calls  last tool  effort  failed  cost    quota
+ui2-font             finished (success)  1        7m40s    18     28     Bash       high    1       $1.27   5h 34% · 7d 62%
+ui2-art              finished (success)  1        45m37s   115    248    Bash       high    12      $15.46  5h 65% · 7d 67%
+ui2-wire             finished (success)  1        24m59s   124    262    Bash       high    11      $10.30  5h 82% · 7d 70%
+ui2-fix              finished (success)  1        8m21s    45     88     Bash       high    3       $2.94   5h 91% · 7d 72%
+ui2-review-security  finished (success)  2        2m33s    23     39     Grep       high    1       $1.77   5h 92% · 7d 73%
+ui2-verify           finished (success)  2        1m34s    4      3      Bash       low     0       $0.00   5h 92% · 7d 72%
+quota: 5h 93% (resets 11:20Z) · 7d 73% (resets Oct 21 10:00Z)</code></pre>
+    <p class="muted" style="margin-top: 0.5rem">Costs are Claude Code's API-equivalent estimates; on a subscription
+      they are notional.</p>
+
+    <figure class="shot" style="margin-top: 2rem">
+      <img src="assets/scene-night.png" width="960" height="540" loading="lazy"
+        alt="The pyramid scene at night under a moon: the half-built pyramid stands still, and the workers lie asleep beside it and by the camp tents.">
+      <figcaption>In <code>arbab ui</code> the sky turns to dusk while launches are held and to night while the account
+        is rejected. Sleeping workers wait for the reset.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="sessions" aria-labelledby="sessions-title">
+  <div class="wrap">
+    <h2 id="sessions-title">Several sessions</h2>
+    <p class="lead">Like a team's morning daily, where everyone knows who is working on what. Several Claude Code
+      sessions can run lanes in one repository, and a landing in one does not take the others by surprise.</p>
+    <div class="grid-2">
+      <div>
+        <ul class="cards" style="grid-template-columns: 1fr; margin-top: 0">
+          <li><strong>Readiness names who is affected.</strong> It lists each other Claude Code session that runs
+            lanes or waiters in the project, or runs a runner file the landing replaces, as a
+            <code>session:&lt;id&gt;</code> risk.</li>
+          <li><strong>The landing session tells them first.</strong> Before it runs <code>land</code>, the skill tells
+            each named session what the landing changes and when, with Claude Code's SendMessage. <code>land</code>
+            warns about them again as it merges: a last record, which also names sessions that appeared since.</li>
+          <li><strong>A session that comes back is told.</strong> From arbab 0.2.2, a session returning after a pause
+            finds a short note on its next message of what other sessions landed while it was away, and
+            <code>arbab summary --since 2h</code> lists the landings on demand.</li>
+        </ul>
+      </div>
+      <figure>
+        <svg class="diagram" viewBox="0 0 360 400" width="360" height="400" role="img" aria-labelledby="sess-title sess-desc">
+          <title id="sess-title">How sessions hear about a landing</title>
+          <desc id="sess-desc">Session A prepares a landing; readiness names session B, which runs lanes in the same
+            project. A tells B what lands and when, then lands. Session C was away; when it comes back, its next
+            message carries a note of what A landed.</desc>
+          <defs>
+            <marker id="sess-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path class="arrowhead" d="M0 0 L10 5 L0 10 z"/>
+            </marker>
+          </defs>
+          <line class="life" x1="60" y1="48" x2="60" y2="392"/>
+          <line class="life" x1="180" y1="48" x2="180" y2="392"/>
+          <line class="life" x1="300" y1="48" x2="300" y2="392"/>
+
+          <rect class="box-you" x="10" y="8" width="100" height="40" rx="8"/>
+          <text class="t-head" x="60" y="33" text-anchor="middle">session A</text>
+          <rect class="box" x="130" y="8" width="100" height="40" rx="8"/>
+          <text class="t-head" x="180" y="33" text-anchor="middle">session B</text>
+          <rect class="box" x="250" y="8" width="100" height="40" rx="8"/>
+          <text class="t-head" x="300" y="33" text-anchor="middle">session C</text>
+
+          <rect class="box" x="6" y="66" width="108" height="46" rx="6"/>
+          <text class="t-small" x="60" y="85" text-anchor="middle">readiness</text>
+          <text class="t-sub" x="60" y="102" text-anchor="middle">names session B</text>
+
+          <rect class="box" x="132" y="72" width="96" height="34" rx="6"/>
+          <text class="t-sub" x="180" y="93" text-anchor="middle">runs lanes here</text>
+
+          <rect class="box" x="258" y="76" width="84" height="28" rx="6"/>
+          <text class="t-sub" x="300" y="94" text-anchor="middle">away</text>
+
+          <text class="t-small t-accent" x="120" y="140" text-anchor="middle">tells B: what lands, when</text>
+          <path class="flow" d="M60 150 H178" marker-end="url(#sess-arrow)"/>
+
+          <rect class="box" x="6" y="176" width="108" height="46" rx="6"/>
+          <text class="t-small" x="60" y="195" text-anchor="middle">land</text>
+          <text class="t-sub" x="60" y="212" text-anchor="middle">warns once more</text>
+
+          <rect class="box" x="246" y="250" width="108" height="34" rx="6"/>
+          <text class="t-sub" x="300" y="271" text-anchor="middle">comes back</text>
+
+          <path class="flow" d="M60 222 V306 H298" stroke-dasharray="5 3" marker-end="url(#sess-arrow)"/>
+          <text class="t-small t-accent" x="180" y="300" text-anchor="middle">note on its next message</text>
+
+          <rect class="box" x="196" y="330" width="160" height="46" rx="6"/>
+          <text class="t-small" x="276" y="349" text-anchor="middle">on demand</text>
+          <text class="t-sub" x="276" y="366" text-anchor="middle" style="font-family: var(--mono)">summary --since 2h</text>
+        </svg>
+        <figcaption>Nothing blocks: readiness and <code>land</code> name the sessions; the landing session tells
+          them.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="examples" aria-labelledby="examples-title">
+  <div class="wrap">
+    <h2 id="examples-title">Examples</h2>
+    <p class="lead">Real snippets from the skill's references and from the run that built arbab's own
+      <code>arbab ui</code>.</p>
+    <div class="examples">
+      <div class="example">
+        <h3>A lane file</h3>
+        <p>A lane names its brief, its role and the limits it runs under, and tells the worker what its sibling lanes
+          own.</p>
+<pre><code>{
+  "name": "w2-ratelimit",
+  "role": "implementer",
+  "brief": "lanes/w2-ratelimit.md",
+  "base": "main",
+  "effort": "high",
+  "budgetUsd": 8,
+  "wallMin": 45,
+  "coordination": "w2-quota-ui owns src/web/** and reads the 429 body shape. w2-billing-sync owns src/billing/**."
+}</code></pre>
+      </div>
+      <div class="example">
+        <h3>A brief, excerpted</h3>
+        <p>A brief is narrow and decided: the task with its choices made, the paths the lane owns, guesses kept apart
+          from facts, and the checks it must report.</p>
+<pre><code># W2 · per-tenant rate limiting for the public API (src/ratelimit)
+
+## Task
+
+Add a token-bucket rate limiter for the public API and wire it into the request pipeline as middleware. The design
+is decided; do not revisit it.
+
+1. `src/ratelimit/bucket.ts`: a pure token bucket. Capacity and refill rate come from the caller; time comes from
+   an injected clock, never from `Date.now()` inside the function.
+…
+
+## Scope
+
+- `src/ratelimit/**` (new)
+- `src/http/pipeline.ts`: the single insertion in step 4
+
+Read anything else; change nothing else.
+
+## Unverified
+
+- Tenants on a plan missing from `config.rateLimits` should probably fall back to `free`. Check whether any such
+  plan exists in `src/billing/plans.ts` and report it in `open_questions` rather than inventing a limit.
+
+## Acceptance
+
+- [ ] The three modules and their tests exist, with the signatures above.
+- [ ] `pnpm typecheck` exits 0.
+- [ ] `pnpm test` exits 0, including the new tests.</code></pre>
+      </div>
+      <div class="example">
+        <h3>A plan</h3>
+        <p>A plan orders lanes into waves by their dependencies; <code>arbab plan check</code> refuses overlapping
+          write scopes between phases that could run together.</p>
+<pre><code>{
+  "name": "m2",
+  "base": "main",
+  "defaults": { "role": "implementer", "effort": "high", "budgetUsd": 10 },
+  "phases": [
+    { "name": "m2-plan", "brief": "lanes/m2-plan.md", "scope": ["src/plan/**"] },
+    { "name": "m2-wire", "brief": "lanes/m2-wire.md", "scope": ["src/commands/plan*.ts"], "dependsOn": ["m2-plan"] }
+  ]
+}</code></pre>
+        <p style="margin-top: 0.75rem">And what <code>arbab plan check plans/ui2.json</code> printed for the
+          <code>ui2</code> plan:</p>
+<pre><code>ui2-font: ok
+ui2-scene: ok
+ui2-art: ok
+ui2-hud: ok
+ui2-wire: ok
+wave 0: ui2-font, ui2-scene
+wave 1: ui2-art, ui2-hud
+wave 2: ui2-wire
+plan ui2: ok</code></pre>
+      </div>
+      <div class="example">
+        <h3>A readiness report, excerpted</h3>
+        <p>The report you decide on: what was verified on the exact head, then what was skipped and every risk, other
+          sessions the landing affects first.</p>
+<pre><code># Readiness report — ui2
+
+Tier: medium · Head: `2eee5ebfb9021b5214ad39f0be0e18bc9bb6e96d` · Date: 2026-10-19
+
+## Verified
+
+| Check | Result |
+| --- | --- |
+| `verify:pnpm typecheck` | gate: exit 0 |
+| `verify:pnpm test` | gate: exit 0 |
+| `verify:pnpm build` | gate: exit 0 |
+| `review:correctness` | lens ran, 27 paths checked |
+| `review:security` | lens ran, 27 paths checked |
+| `findings` | 0 confirmed, 0 refuted, 3 unverified |
+…
+
+## Risks
+…</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install" aria-labelledby="install-title">
+  <div class="wrap">
+    <h2 id="install-title">Install</h2>
+    <div class="grid-2">
+      <div>
+        <h3>Install the plugin</h3>
+<pre><code>claude plugin marketplace add ozgursagiroglu/arbab
+claude plugin install arbab@arbab</code></pre>
+        <h3 style="margin-top: 1.5rem">Upgrade</h3>
+        <p>Refresh the marketplace, then update the plugin:</p>
+<pre><code>claude plugin marketplace update arbab
+claude plugin update arbab@arbab</code></pre>
+        <p style="margin-top: 0.75rem">Then restart Claude Code, or run <code>/reload-plugins</code> in an open
+          session, so it loads the new version.</p>
+      </div>
+      <div>
+        <h3>Requirements</h3>
+        <ul>
+          <li><a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> 2.1.290 or newer;</li>
+          <li>Node.js 20 or newer, and git;</li>
+          <li>macOS (tested; the fence uses Claude Code's sandbox). Linux is untested.</li>
+        </ul>
+        <h3 style="margin-top: 1.5rem">Then</h3>
+        <p>Open Claude Code in your project, type <code>/arbab</code>, and ask it to check the setup first: it runs
+          <code>arbab doctor</code>. Then hand it the work: "Plan this and run it with arbab." The
+          <a href="https://github.com/ozgursagiroglu/arbab#get-started">README</a> covers the project config.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="faq" class="faq" aria-labelledby="faq-title">
+  <div class="wrap">
+    <h2 id="faq-title">FAQ</h2>
+    <details>
+      <summary>Does worker code run on my machine?</summary>
+      <p>Workers run on your machine, as the unmodified <code>claude</code> binary under your own login, but inside
+        Claude Code's sandbox: writes stay in their worktree, credential paths are unreadable, and there is no network
+        unless the lane is a researcher. arbab never runs their code on your host outside that fence, except a
+        dependency install you reviewed and confirmed yourself. The gates run inside the fence; checks the fence cannot
+        run, such as Docker or a browser, run on the host only when you start <code>arbab host-check</code> in your
+        terminal.</p>
+    </details>
+    <details>
+      <summary>Does arbab push to my remote?</summary>
+      <p>Never. <code>arbab land</code> merges the verified integration into your base branch locally, prints the push
+        command and leaves it to you. Workers cannot push or deploy, and the skill lands only on your yes.</p>
+    </details>
+    <details>
+      <summary>How does it use my usage limits?</summary>
+      <p>Workers run under your own login, so your session and every worker spend the same five-hour and seven-day
+        windows: N workers use quota about N times as fast as one. Launches are held while the five-hour window is at
+        or above 85% or the seven-day window at or above 95% (both configurable), and <code>maxParallel</code>, capped
+        for the whole machine by <code>~/.arbab/machine.json</code>, bounds how many run at once. The margin is your
+        headroom to read reports and land.</p>
+    </details>
+    <details>
+      <summary>What happens when a worker hits a usage limit?</summary>
+      <p>The lane's shepherd sleeps until the reset, plus a little jitter, and resumes the same session: the lane does
+        not start over. New launches stay held meanwhile. After you switch accounts, <code>arbab quota --refresh</code>
+        reads the new account's windows with one small call.</p>
+    </details>
+    <details>
+      <summary>Can two sessions work in one repository?</summary>
+      <p>Yes. Each session's <code>wait</code> and <code>status --mine</code> cover its own runs. When one session
+        prepares a landing, readiness lists every other Claude Code session whose lanes, waiters or runner the landing
+        affects, and the landing session tells them before it lands; <code>land</code> warns about them again as it
+        merges. <code>land</code> refuses when the base branch has moved past the verified integration, and from arbab
+        0.2.2 a session that comes back is told what other sessions landed while it was away.</p>
+    </details>
+    <details>
+      <summary>Does it work on Linux?</summary>
+      <p>macOS is tested: the fence uses Claude Code's sandbox. Linux should work wherever Claude Code's sandbox works,
+        but it is untested so far.</p>
+    </details>
+    <details>
+      <summary>What does it cost to run?</summary>
+      <p>arbab itself is free and MIT-licensed, with zero runtime dependencies. Workers run on your own Claude
+        subscription or API account, so they spend your quota like any Claude Code session. Reported costs are Claude
+        Code's API-equivalent estimates, notional on a subscription, and each attempt has a budget passed as
+        <code>--max-budget-usd</code>, a client-side estimate that does not cap subscription quota. For scale: arbab's
+        own milestones M1 to M3 took 146 worker attempts, about $225 API-equivalent, run on a subscription.</p>
+    </details>
+  </div>
+</section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>MIT licence © Özgür Sağıroğlu · Built with arbab</p>
+    <ul>
+      <li><a href="https://github.com/ozgursagiroglu/arbab">Repository</a></li>
+      <li><a href="https://github.com/ozgursagiroglu/arbab/releases">Releases</a></li>
+      <li><a href="https://github.com/ozgursagiroglu/arbab#readme">README</a></li>
+      <li><a href="https://github.com/ozgursagiroglu/arbab/blob/main/LICENSE">Licence</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>

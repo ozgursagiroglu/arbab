@@ -585,7 +585,8 @@ Parallel workers use quota in proportion: N workers use it about N times as fast
 passed as `--max-budget-usd`, which is Claude Code's client-side cost estimate; it does not cap subscription quota.
 
 **Which platforms are supported?**
-macOS is tested. Linux should work wherever Claude Code's sandbox works, but it is untested so far.
+macOS is tested; the fence uses Claude Code's sandbox. Linux is untested. One known limit: loopback services do not
+work under the Linux sandbox, because `allowLocalBinding` has no effect there.
 
 ## Documentation
 

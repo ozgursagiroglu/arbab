@@ -89,7 +89,7 @@ function pngSize(file: string): { width: number; height: number } {
 describe("site", () => {
   it("has the pages it publishes", () => {
     expect(htmlFiles).toEqual(["404.html", "index.html"]);
-    for (const name of ["styles.css", "robots.txt", "sitemap.xml"]) {
+    for (const name of ["styles.css", "sitemap.xml"]) {
       expect(fs.existsSync(path.join(siteDir, name)), name).toBe(true);
     }
   });
@@ -218,18 +218,32 @@ describe("site", () => {
     });
   });
 
-  it("robots.txt allows all and names the sitemap; the sitemap lists the canonical URL", () => {
-    const robots = read("robots.txt");
-    expect(robots).toMatch(/^User-agent: \*$/m);
-    expect(robots).toMatch(/^Allow: \/$/m);
-    expect(robots).toContain(`Sitemap: ${base}sitemap.xml`);
+  it("links the sitemap from the head, and the sitemap lists the canonical URL", () => {
+    // Crawlers never read robots.txt under /arbab/, so the page itself points to the sitemap.
+    const link = elements(read("index.html"), "link").find((l) => l.get("rel") === "sitemap");
+    expect(link?.get("type")).toBe("application/xml");
+    expect(link?.get("href")).toBe("sitemap.xml");
     expect(read("sitemap.xml")).toContain(`<loc>${base}</loc>`);
+  });
+
+  it("gives every video poster the video's declared size", () => {
+    const videos = elements(read("index.html"), "video");
+    expect(videos.length).toBeGreaterThan(0);
+    for (const video of videos) {
+      const poster = video.get("poster") ?? "";
+      const target = siteTarget(poster);
+      if (target === null) throw new Error(`poster ${poster} is not under site/`);
+      expect(pngSize(target), poster).toEqual({
+        width: Number(video.get("width")),
+        height: Number(video.get("height")),
+      });
+    }
   });
 
   it("pins every action in the Pages workflow to a full commit SHA", () => {
     const workflow = fs.readFileSync(path.join(root, ".github/workflows/pages.yml"), "utf8");
     const uses = [...workflow.matchAll(/^\s*(?:-\s+)?uses:\s*(\S+)/gm)].map((m) => m[1] ?? "");
-    expect(uses.length).toBe(4);
+    expect(uses.length).toBe(6);
     for (const ref of uses) expect(ref, ref).toMatch(/^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@[0-9a-f]{40}$/);
   });
 });

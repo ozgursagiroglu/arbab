@@ -117,7 +117,8 @@ claude plugin install arbab@arbab
 
 The install copies only `plugin/`: the skill, its hooks and a single-file runner (the `arbab ui` page included),
 with zero runtime dependencies. The plugin's hooks approve the skill's bare runner calls, all but `land`, so they do
-not wait for your click, and keep the session from ending its turn while its lanes run unwatched. To update, refresh
+not wait for your click, keep the session from ending its turn while its lanes run unwatched, and tell a returning
+session what other sessions landed meanwhile. To update, refresh
 the marketplace with `claude plugin marketplace update arbab`, then run `claude plugin update arbab@arbab`.
 
 Then:
@@ -375,6 +376,11 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
   record, which also names sessions that appeared since readiness. Neither blocks. Run outside Claude Code (no
   session id, such as `readiness --waive` in a terminal), readiness and `land` count every session as another, the
   orchestrator's own included.
+- **A returning session catches up.** Each landing records the session that made it. When a session comes back
+  after a pause, a usage limit or `claude --resume`, the plugin's hooks tell it, with its next message, what other
+  sessions landed in the project since its last one; a new session gets no history. `arbab summary --since <when>`
+  (`2h`, `1d` or an ISO time) lists the landings on demand. When the base moved under an integration, readiness
+  says so as its first risk, `base-moved`, naming the landings it lacks, before `land` refuses it.
 - **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
   cannot be waived. Only you can waive one: `--waive` needs a terminal.
 
@@ -450,14 +456,14 @@ clink as a finished worker takes its pay.
 | `plan next <plan.json> [--retry <phase>]` | Launches every phase whose dependencies all succeeded and that never ran. `--retry` first relaunches a phase that failed or was orphaned. |
 | `plan status <plan.json>` | One row per phase: wave, state, end state, dependencies. |
 | `status [lane…] [--active] [--mine]` | One row per lane, then the quota. `--active`: lanes not finished; `--mine`: this session's runs and ownerless ones. |
-| `summary [--all]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota and slots. `--all`: every project that launched a lane on this machine. |
+| `summary [--all] [--since <when>]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota and slots. `--all`: every project that launched a lane on this machine. `--since`: what landed after `<when>` (an ISO time, or `<n>m`, `<n>h`, `<n>d` ago) and which session landed it. |
 | `report <lane> [--attempt <n>]` | An attempt's metrics and the worker's report, the latest unless `--attempt`. |
 | `wait [lane… \| --any \| --all] [--all-sessions] [--timeout-min N] [--notify]` | Reports finished lanes not yet acknowledged. Without lanes it covers this session's runs and ownerless ones, every session's with `--all-sessions`. `--notify` sends a desktop notification. Exit 3 on timeout. |
 | `resume <lane> [--prompt <file> \| --digest]` | Starts a new attempt in the latest session. `--digest` starts a fresh session seeded with the latest attempt's digest. |
 | `stop <lane>` | Stops the lane's shepherd and worker. |
 | `preflight <lane.json> [--timeout-min N]` | Probes the lane's fence and model. Exit 1 on any failed check. |
 | `quota [--reset \| --refresh]` | Shows the account snapshot and the hold decision. After you switch accounts, `--refresh` reads the new account's windows with one haiku call; `--reset` only deletes the snapshot. |
-| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than` adds clean worktrees unchanged for longer. `--mine`: only this session's runs. |
+| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories and session watermarks unused for 30 days. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than` adds clean worktrees unchanged for longer. `--mine`: only this session's runs. |
 | `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
 | `integrate <name> --adopt <ref> [--base <branch>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. The base (`--base`, or config `baseBranch`) must be a branch, since `land` merges into it, and contained in your base branch: the install runs at the fork point. |
 | `integrate <name> --refresh` | Records the integration's head again after a hand commit or a merge of the base in its worktree. Merges and installs nothing. |

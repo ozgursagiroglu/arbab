@@ -110,7 +110,9 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
                                           unless --keep-worktrees
   ui [--port N] [--hours N] [--no-open] [--json]
                                           serve the pyramid scene on 127.0.0.1 until stopped (read-only)
-  summary [--all] [--json]                plans, lanes by state, integrations by stage and what needs you
+  summary [--all] [--since <when>] [--json]
+                                          plans, lanes by state, integrations by stage and what needs you;
+                                          --since: what landed after <when> (ISO time, or <n>m, <n>h, <n>d ago)
   report <lane> [--attempt <n>] [--json]  an attempt's summary and report, the latest unless --attempt
   host-check <name>                       run hostGates on the integration head from a terminal
   help [<command>], --help                this text, or a command's options

@@ -83,7 +83,7 @@ describe("dispatch", () => {
     p = makeProject();
     for (const name of ["summary", "report", "hook", "host-check"]) expect(Object.hasOwn(COMMANDS, name), name).toBe(true);
     expect(await dispatch(["hook", "x"], p.ctx)).toBe(1);
-    expect(p.stderr()).toBe('arbab hook: hook takes one of pre-tool-use, stop, got "x"\n');
+    expect(p.stderr()).toBe('arbab hook: hook takes one of pre-tool-use, stop, user-prompt-submit, session-start, got "x"\n');
     for (const name of ["summary", "report", "host-check"] as const) {
       p.out.length = 0;
       expect(await dispatch([name, "--help"], p.ctx), name).toBe(0);

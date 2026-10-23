@@ -1,6 +1,6 @@
 {
   "name": "arbab",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Run fenced headless Claude Code workers from your interactive session: narrow briefs, one git worktree per lane, quota-aware launches, usage-limit auto-resume, and a verify, review, readiness and land pipeline with human gates.",
   "author": {
     "name": "Özgür Sağıroğlu",

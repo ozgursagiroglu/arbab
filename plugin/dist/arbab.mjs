@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync12 } from "node:fs";
 
 // src/commands/index.ts
-import { statSync as statSync8 } from "node:fs";
-import { resolve as resolve18 } from "node:path";
+import { statSync as statSync9 } from "node:fs";
+import { resolve as resolve19 } from "node:path";
 
 // src/util/errors.ts
 var ArbabError = class extends Error {
@@ -32,8 +32,8 @@ function exitCodeFor(err) {
 }
 
 // src/commands/cleanup.ts
-import { existsSync as existsSync15, readdirSync as readdirSync10, rmdirSync as rmdirSync2, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
-import { join as join33 } from "node:path";
+import { existsSync as existsSync19, readdirSync as readdirSync14, rmdirSync as rmdirSync2, rmSync as rmSync10, statSync as statSync7 } from "node:fs";
+import { join as join40 } from "node:path";
 
 // src/config/lane.ts
 import { resolve as resolve3 } from "node:path";
@@ -621,1519 +621,47 @@ function loadLane(projectRoot, lanePath, credentialPaths = []) {
   return lane;
 }
 
-// src/integrate/integrate.ts
-import { existsSync as existsSync2, readdirSync as readdirSync3, realpathSync as realpathSync4, renameSync as renameSync3 } from "node:fs";
-import { dirname as dirname3, join as join9, resolve as resolve8 } from "node:path";
-
-// src/run/git.ts
-import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, realpathSync as realpathSync3, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute as isAbsolute4, join as join3, relative as relative4, resolve as resolve4, sep as sep4 } from "node:path";
-function makeGitRunner(env2) {
-  return (args, cwd) => {
-    const r = spawnSync("git", args, { cwd, env: env2, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    if (r.error) return { code: 127, stdout: "", stderr: r.error.message };
-    return { code: r.status ?? 128, stdout: r.stdout, stderr: r.stderr };
-  };
-}
-var nodeGit = makeGitRunner();
-function must(git, args, cwd, options = []) {
-  const r = git([...options, ...args], cwd);
-  if (r.code !== 0) {
-    throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  }
-  return r.stdout;
-}
-function ensureIgnored(projectRoot, entries3, git) {
-  const excludeRel = must(git, ["rev-parse", "--git-path", "info/exclude"], projectRoot).trim();
-  if (excludeRel === "") throw new ArbabError("git", "git rev-parse --git-path info/exclude printed nothing");
-  const exclude = resolve4(projectRoot, excludeRel);
-  const text2 = readText(exclude) ?? "";
-  const present = new Set(text2.split(/\r?\n/).map((line2) => line2.trim()));
-  const missing = entries3.filter((entry) => !present.has(entry));
-  if (missing.length > 0) {
-    const prefix = text2 === "" || text2.endsWith("\n") ? "" : "\n";
-    ensureDir(dirname2(exclude));
-    writeFileSync2(exclude, text2 + prefix + missing.join("\n") + "\n");
-  }
-  for (const entry of entries3) {
-    const probe = `${entry.replace(/\/+$/, "")}/x`;
-    const r = git(["check-ignore", "-q", "--", probe], projectRoot);
-    if (r.code !== 0) throw new ArbabError("git", `${entry} is not ignored by git in ${projectRoot}`);
-  }
-}
-function canonical(path) {
-  try {
-    return realpathSync3(path);
-  } catch {
-    return resolve4(path);
-  }
-}
-function listWorktrees(projectRoot, git) {
-  const out = /* @__PURE__ */ new Map();
-  for (const block3 of must(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
-    const lines = block3.split("\n");
-    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === void 0) continue;
-    out.set(canonical(path), lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null);
-  }
-  return out;
-}
-function branchExists(projectRoot, branch, git) {
-  return git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectRoot).code === 0;
-}
-function refuseWorkerBranch(projectRoot, branch, base, path, git) {
-  const r = git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, base], projectRoot);
-  if (r.code === 0) return;
-  if (r.code !== 1) {
-    throw new ArbabError("git", `git merge-base --is-ancestor refs/heads/${branch} ${base} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  }
-  throw new ArbabError(
-    "git",
-    `the worktree ${path} is missing, and its branch ${branch} holds worker commits that are not on ${base}; arbab installs dependencies only on a trusted base. Restore the worktree at ${path}, or delete the branch ${branch}`
-  );
-}
-function assertRevision(rev, what) {
-  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
-  return rev;
-}
-function commonDir(projectRoot, git) {
-  const out = must(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
-  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
-  return canonical(resolve4(projectRoot, out));
-}
-function createWorktree(input) {
-  const lane = assertValidName(input.lane, "lane");
-  const path = join3(confine(input.projectRoot, input.root), lane);
-  const branch = `arbab/${lane}`;
-  if (existsSync(path)) {
-    const ref2 = listWorktrees(input.projectRoot, input.git).get(canonical(path));
-    if (ref2 !== void 0) {
-      if (ref2 !== `refs/heads/${branch}`) {
-        throw new ArbabError("git", `${path} is a worktree on ${ref2 ?? "a detached HEAD"}, not on ${branch}; lane ${lane} cannot run there`);
-      }
-      return { path, branch, created: false, gitCommonDir: commonDir(input.projectRoot, input.git) };
-    }
-  }
-  const trusted = assertRevision(input.trustedBase, "trusted base");
-  if (typeof input.base === "string") assertRevision(input.base, "base");
-  must(input.git, ["worktree", "prune"], input.projectRoot);
-  ensureDir(dirname2(path));
-  if (branchExists(input.projectRoot, branch, input.git)) {
-    refuseWorkerBranch(input.projectRoot, branch, trusted, path, input.git);
-    must(input.git, ["worktree", "add", path, branch], input.projectRoot, untrustedTree());
-  } else {
-    const base = assertRevision(typeof input.base === "string" ? input.base : input.base(), "base");
-    must(input.git, ["worktree", "add", "-b", branch, path, base], input.projectRoot, untrustedTree());
-  }
-  return { path, branch, created: true, gitCommonDir: commonDir(input.projectRoot, input.git) };
-}
-function discardWorktree(input) {
-  const lane = assertValidName(input.lane, "lane");
-  const path = join3(confine(input.projectRoot, input.root), lane);
-  const branch = `arbab/${lane}`;
-  const sources = input.sources.map((s) => assertRevision(s, "source"));
-  const head = branchExists(input.projectRoot, branch, input.git);
-  const keeps = [];
-  if (head) {
-    const extra = must(input.git, ["rev-list", `refs/heads/${branch}`, "--not", ...sources, "--"], input.projectRoot).split("\n").filter((l) => l !== "");
-    if (extra.length > 0) {
-      const shown = extra.slice(0, 3).join(", ") + (extra.length > 3 ? ` and ${extra.length - 3} more` : "");
-      keeps.push(`commits on ${branch} that are not on its base, its merge branches or the trusted base: ${shown}`);
-    }
-  }
-  if (existsSync(path)) {
-    const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: input.gitCommonDir });
-    if (verified.gitDir === null) {
-      keeps.push(`a git dir that cannot be verified (${verified.error})`);
-    } else {
-      const changes = worktreeStatus(path, verified.gitDir, input.git);
-      if (changes.length > 0) {
-        const shown = changes.slice(0, 5).join("; ") + (changes.length > 5 ? `; and ${changes.length - 5} more` : "");
-        keeps.push(`uncommitted changes (${shown})`);
-      }
-    }
-  }
-  if (keeps.length > 0) {
-    throw new ArbabError(
-      "git",
-      `no worker has run in ${path}, but it holds what arbab cannot rebuild: ${keeps.join("; ")}. arbab will neither install dependencies there nor remove it. Keep what you need, remove the worktree and the branch ${branch}, then launch ${lane} again`
-    );
-  }
-  if (existsSync(path)) must(input.git, ["worktree", "remove", "--force", path], input.projectRoot, untrustedTree());
-  must(input.git, ["worktree", "prune"], input.projectRoot);
-  if (head) must(input.git, ["branch", "-D", branch], input.projectRoot, untrustedTree());
-}
-function verifyWorktreeGit(input) {
-  const fail2 = (error) => ({ gitDir: null, error });
-  const read2 = (path) => {
-    try {
-      return readText(path);
-    } catch {
-      return null;
-    }
-  };
-  const common = canonical(input.gitCommonDir);
-  const pointer = /^gitdir: (.+)$/.exec((read2(join3(input.worktree, ".git")) ?? "").trim());
-  if (pointer?.[1] === void 0) return fail2(`${join3(input.worktree, ".git")} is not a worktree's gitdir pointer`);
-  const gitDir = canonical(resolve4(input.worktree, pointer[1]));
-  const rel = relative4(join3(common, "worktrees"), gitDir);
-  if (rel === "" || rel.startsWith("..") || isAbsolute4(rel) || rel.includes(sep4)) {
-    return fail2(`git dir ${gitDir} is not under ${join3(common, "worktrees")}`);
-  }
-  const head = read2(join3(gitDir, "HEAD"))?.trim();
-  if (head !== `ref: refs/heads/${input.branch}`) return fail2(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ref: refs/heads/${input.branch}`);
-  const commondir = read2(join3(gitDir, "commondir"))?.trim();
-  if (commondir === void 0 || commondir === "" || canonical(resolve4(gitDir, commondir)) !== common) {
-    return fail2(`commondir of ${gitDir} does not lead to ${common}`);
-  }
-  return { gitDir, error: null };
-}
-function explicitGit(gitDir, worktree) {
-  return [`--git-dir=${gitDir}`, `--work-tree=${worktree}`];
-}
-function untrustedTree() {
-  return [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    "diff.ignoreSubmodules=all",
-    "-c",
-    "submodule.recurse=false"
-  ];
-}
-function holdsGit(path) {
-  try {
-    lstatSync(join3(path, ".git"));
-    return true;
-  } catch {
-    return false;
-  }
-}
-function indexGitlinks(worktree, gitDir, git) {
-  return must(git, [...explicitGit(gitDir, worktree), "ls-files", "-s", "-z"], worktree, untrustedTree()).split("\0").filter((entry) => entry.startsWith("160000 ")).map((entry) => entry.slice(entry.indexOf("	") + 1)).filter((path) => path !== "");
-}
-function worktreeStatus(worktree, gitDir, git) {
-  const args = [...explicitGit(gitDir, worktree), "status", "--porcelain", "--ignore-submodules=all"];
-  const lines = must(git, args, worktree, untrustedTree()).split("\n").filter((line2) => line2.trim() !== "");
-  const nested = indexGitlinks(worktree, gitDir, git).filter((path) => holdsGit(join3(worktree, path))).map((path) => `?? ${path}/`);
-  return [...lines, ...nested.filter((line2) => !lines.includes(line2))];
-}
-
-// src/run/deps.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-var DEPENDENCY_MANIFESTS = [
-  "package.json",
-  "package-lock.json",
-  "npm-shrinkwrap.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "yarn.lock",
-  "bun.lock",
-  "bun.lockb",
-  ".npmrc",
-  ".yarnrc",
-  ".yarnrc.yml",
-  ".pnpmfile.cjs",
-  ".pnpmfile.mjs",
-  // bun's install config: registries, scopes.
-  "bunfig.toml",
-  // yarn PnP's loader, which yarn loads into the scripts it runs.
-  ".pnp.cjs",
-  ".pnp.loader.mjs"
-];
-var MANIFEST_NAMES = new Set(DEPENDENCY_MANIFESTS.map((name2) => name2.toLowerCase()));
-var PATCH_SUFFIX = ".patch";
-var YARN_DIRECTORIES = ["releases", "plugins", "patches"];
-function isDependencyManifest(path) {
-  const segments = path.toLowerCase().split("/");
-  const base = segments.at(-1) ?? "";
-  if (MANIFEST_NAMES.has(base) || base.endsWith(PATCH_SUFFIX)) return true;
-  for (let i = 0; i + 2 < segments.length; i++) {
-    if (segments[i] === ".yarn" && YARN_DIRECTORIES.includes(segments[i + 1] ?? "")) return true;
-  }
-  return false;
-}
-var INSTALL_FIELDS = [
-  "dependencies",
-  "devDependencies",
-  "optionalDependencies",
-  "peerDependencies",
-  "bundledDependencies",
-  "bundleDependencies",
-  "overrides",
-  "resolutions",
-  "pnpm",
-  "workspaces",
-  "packageManager",
-  "dependenciesMeta",
-  "peerDependenciesMeta",
-  // Linked into node_modules/.bin, where scripts run them.
-  "bin",
-  // engine-strict, os, cpu and libc decide what installs; trustedDependencies which packages' scripts run (bun).
-  "engines",
-  "os",
-  "cpu",
-  "libc",
-  "trustedDependencies",
-  // It can make the package manager fetch and use another runtime.
-  "devEngines"
-];
-var INSTALL_SCRIPTS = [
-  "preinstall",
-  "install",
-  "postinstall",
-  "preprepare",
-  "prepare",
-  "postprepare",
-  "prepublish",
-  "dependencies",
-  "pnpm:devPreinstall"
-];
-var isPlainObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function canonical2(v) {
-  if (Array.isArray(v)) return `[${v.map(canonical2).join(",")}]`;
-  if (isPlainObject(v)) {
-    const keys = Object.keys(v).filter((k) => v[k] !== void 0).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical2(v[k])}`).join(",")}}`;
-  }
-  return JSON.stringify(v) ?? "undefined";
-}
-var own = (o, key) => Object.hasOwn(o, key) ? o[key] : void 0;
-function installView(text2) {
-  let pkg;
-  try {
-    pkg = JSON.parse(text2);
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(pkg)) return null;
-  const scripts = own(pkg, "scripts");
-  const lifecycle = scripts === void 0 ? {} : isPlainObject(scripts) ? Object.fromEntries(INSTALL_SCRIPTS.map((s) => [s, own(scripts, s)])) : scripts;
-  return canonical2({ fields: Object.fromEntries(INSTALL_FIELDS.map((f) => [f, own(pkg, f)])), lifecycle });
-}
-function installRelevantChange(path, before, after) {
-  if (before === after) return false;
-  const base = (path.split("/").at(-1) ?? "").toLowerCase();
-  if (base !== "package.json") return isDependencyManifest(path);
-  if (before === null || after === null) return true;
-  const a = installView(before);
-  const b = installView(after);
-  return a === null || b === null || a !== b;
-}
-function fileAt(git, rev, path) {
-  const r = git(["show", "--no-textconv", `${rev}:${path}`]);
-  return r.code === 0 ? r.stdout : null;
-}
-function installRelevantPaths(git, from, to, paths) {
-  const out = /* @__PURE__ */ new Set();
-  for (const path of paths) {
-    if (!isDependencyManifest(path)) continue;
-    if ((path.split("/").at(-1) ?? "").toLowerCase() !== "package.json") {
-      out.add(path);
-      continue;
-    }
-    const before = fileAt(git, from, path);
-    const after = fileAt(git, to, path);
-    if (before === null && after === null || installRelevantChange(path, before, after)) out.add(path);
-  }
-  return [...out].sort();
-}
-var runArgv = (argv2, cwd) => {
-  const [command, ...args] = argv2;
-  if (command === void 0) return { code: 127, output: "empty command" };
-  const r = spawnSync2(command, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (r.error) return { code: 127, output: r.error.message };
-  return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
-};
-function prepareDependencies(strategy, worktree, run) {
-  if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
-  if (strategy.strategy === "command") {
-    const argv2 = strategy.command;
-    if (!Array.isArray(argv2) || argv2.length === 0 || !argv2.every((a) => typeof a === "string") || argv2[0] === "") {
-      throw new ArbabError("config", "dependencies.command must be a non-empty argv array of strings");
-    }
-    const r = run(argv2, worktree);
-    return { ok: r.code === 0, code: r.code, output: r.output };
-  }
-  throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify(strategy.strategy)}`);
-}
-
-// src/run/pool.ts
-import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-import { linkSync, readdirSync, renameSync as renameSync2, rmdirSync, rmSync as rmSync2 } from "node:fs";
-import { join as join4, resolve as resolve5 } from "node:path";
-function isHolder(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value;
-  return Number.isInteger(v.pid) && v.pid > 0 && typeof v.lane === "string" && typeof v.project === "string" && typeof v.createdAt === "string";
-}
-function assertHolder(holder2) {
-  if (!isHolder(holder2)) throw new ArbabError("usage", "pool holder needs a positive pid, lane, project and createdAt");
-}
-function entryPath(dir, value) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new ArbabError("usage", `pool value ${value} is not a non-negative integer`);
-  return join4(dir, `${value}.json`);
-}
-function parseHolder(text2) {
-  try {
-    const value = JSON.parse(text2);
-    return isHolder(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-function releaseIfStale(path, alive, unparsedIsStale = false) {
-  const text2 = readText(path);
-  if (text2 === null) return true;
-  const holder2 = parseHolder(text2);
-  if (holder2 === null ? !unparsedIsStale : alive(holder2.pid)) return false;
-  const tomb = `${path}.${randomBytes2(6).toString("hex")}.stale`;
-  try {
-    renameSync2(path, tomb);
-  } catch (err) {
-    if (err.code === "ENOENT") return true;
-    throw new ArbabError("io", `cannot reclaim ${path}: ${err.message}`, { cause: err });
-  }
-  const moved = readText(tomb);
-  if (moved !== text2) {
-    try {
-      linkSync(tomb, path);
-    } catch {
-    }
-    rmSync2(tomb, { force: true });
-    return false;
-  }
-  rmSync2(tomb, { force: true });
-  return true;
-}
-function acquireFromPool(dir, values, holder2, alive) {
-  assertHolder(holder2);
-  const data = JSON.stringify(holder2);
-  for (const value of values) {
-    const path = entryPath(dir, value);
-    if (createExclusive(path, data)) return value;
-    if (!releaseIfStale(path, alive) || !createExclusive(path, data)) continue;
-    if (readText(path) === data) return value;
-  }
-  return null;
-}
-function releaseToPool(dir, value, holder2) {
-  const path = entryPath(dir, value);
-  const text2 = readText(path);
-  if (text2 === null) return false;
-  const current = parseHolder(text2);
-  if (current === null || current.pid !== holder2.pid || current.lane !== holder2.lane) return false;
-  rmSync2(path, { force: true });
-  return true;
-}
-function list(dir) {
-  try {
-    return readdirSync(dir).sort();
-  } catch {
-    return [];
-  }
-}
-var POOL_FILE = /^\d+\.json(\.[0-9a-f]+\.stale)?$/;
-function listPoolEntries(home) {
-  const root = resolve5(home);
-  const dirs = [join4(root, "slots")];
-  for (const kind of ["semaphores", "leases", "locks"]) {
-    for (const name2 of list(join4(root, kind))) dirs.push(join4(root, kind, name2));
-  }
-  return dirs.flatMap((dir) => list(dir).filter((name2) => POOL_FILE.test(name2)).map((name2) => join4(dir, name2)));
-}
-var range = (n) => Array.from({ length: n }, (_, i) => i);
-function assertCount(n, what) {
-  if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("config", `${what} must be a positive integer, got ${n}`);
-}
-function acquireSlot(home, maxParallel, holder2, alive) {
-  assertCount(maxParallel, "maxParallel");
-  return acquireFromPool(join4(resolve5(home), "slots"), range(maxParallel), holder2, alive);
-}
-function releaseSlot(home, slot, holder2) {
-  return releaseToPool(join4(resolve5(home), "slots"), slot, holder2);
-}
-function acquireSemaphore(home, name2, capacity, holder2, alive) {
-  assertValidName(name2, "semaphore");
-  assertCount(capacity, `semaphore ${name2} capacity`);
-  return acquireFromPool(join4(resolve5(home), "semaphores", name2), range(capacity), holder2, alive);
-}
-function releaseSemaphore(home, name2, slot, holder2) {
-  assertValidName(name2, "semaphore");
-  return releaseToPool(join4(resolve5(home), "semaphores", name2), slot, holder2);
-}
-function writerLockKey(worktreeRealpath) {
-  return createHash("sha1").update(worktreeRealpath).digest("hex");
-}
-function lockDir(home, key) {
-  if (!/^[0-9a-f]{40}$/.test(key)) throw new ArbabError("usage", `writer lock key ${JSON.stringify(key)} is not a sha1`);
-  return join4(resolve5(home), "locks", key);
-}
-var LOCK_DIR_RETRIES = 5;
-function vanished(err) {
-  return err instanceof ArbabError && err.cause?.code === "ENOENT";
-}
-function acquireWriterLock(home, key, holder2, alive) {
-  const dir = lockDir(home, key);
-  for (let tries = 1; ; tries++) {
-    try {
-      return acquireFromPool(dir, [0], holder2, alive) === 0;
-    } catch (err) {
-      if (!vanished(err) || tries >= LOCK_DIR_RETRIES) throw err;
-    }
-  }
-}
-function releaseWriterLock(home, key, holder2) {
-  const dir = lockDir(home, key);
-  const released = releaseToPool(dir, 0, holder2);
-  if (released) {
-    try {
-      rmdirSync(dir);
-    } catch {
-    }
-  }
-  return released;
-}
-
-// src/run/leases.ts
-import { createServer } from "node:net";
-import { join as join5, resolve as resolve6 } from "node:path";
-function isPortFree(port) {
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.resolve(false);
-  return new Promise((done) => {
-    const server = createServer();
-    server.once("error", () => done(false));
-    server.listen({ port, host: "127.0.0.1", exclusive: true }, () => {
-      server.close(() => done(true));
-    });
-  });
-}
-function leaseDir(home, type) {
-  return join5(resolve6(home), "leases", assertValidName(type, "resource type"));
-}
-function checkedRange(type, ranges) {
-  const spec = Object.hasOwn(ranges, type) ? ranges[type] : void 0;
-  const r = typeof spec === "object" && spec !== null ? spec.range : void 0;
-  if (!Array.isArray(r) || r.length !== 2) throw new ArbabError("lease", `no range configured for resource ${type}`);
-  const [lo, hi] = r;
-  if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi) || lo < 0 || lo > hi) {
-    throw new ArbabError("lease", `resource ${type} has an invalid range ${JSON.stringify(r)}`);
-  }
-  if (type === "port" && (lo < 1 || hi > 65535)) {
-    throw new ArbabError("lease", `port range ${JSON.stringify(r)} is outside 1..65535`);
-  }
-  return [lo, hi];
-}
-async function acquireLeases(req) {
-  const plan = [];
-  for (const type of Object.keys(req.requests).sort()) {
-    assertValidName(type, "resource type");
-    const count = req.requests[type];
-    if (count === void 0 || !Number.isSafeInteger(count) || count < 0) {
-      throw new ArbabError("lease", `resource ${type} count must be a non-negative integer`);
-    }
-    if (count === 0) continue;
-    const [lo, hi] = checkedRange(type, req.ranges);
-    plan.push({ type, count, lo, hi });
-  }
-  const taken = [];
-  try {
-    for (const { type, count, lo, hi } of plan) {
-      const dir = leaseDir(req.home, type);
-      let got = 0;
-      for (let value = lo; value <= hi && got < count; value++) {
-        if (acquireFromPool(dir, [value], req.holder, req.alive) === null) continue;
-        if (type === "port") {
-          let isFree;
-          try {
-            isFree = await req.probePort(value);
-          } catch (err) {
-            releaseToPool(dir, value, req.holder);
-            throw err;
-          }
-          if (!isFree) {
-            releaseToPool(dir, value, req.holder);
-            continue;
-          }
-        }
-        const { pid, lane, project, createdAt } = req.holder;
-        taken.push({ type, value, lane, project, pid, createdAt });
-        got++;
-      }
-      if (got < count) throw new ArbabError("lease", `only ${got} of ${count} ${type} values free in ${lo}..${hi}`);
-    }
-  } catch (err) {
-    releaseLeases(req.home, taken, req.holder);
-    throw err instanceof ArbabError ? err : new ArbabError("lease", err.message, { cause: err });
-  }
-  return taken;
-}
-function releaseLeases(home, leases, holder2) {
-  for (const lease of leases) releaseToPool(leaseDir(home, lease.type), lease.value, holder2);
-}
-function leaseEnv(leases) {
-  const env2 = {};
-  const next = /* @__PURE__ */ new Map();
-  for (const lease of leases) {
-    const i = next.get(lease.type) ?? 0;
-    next.set(lease.type, i + 1);
-    env2[`ARBAB_${envSuffix(lease.type)}_${i}`] = String(lease.value);
-  }
-  return env2;
-}
-
-// src/run/spawn.ts
-import { spawn } from "node:child_process";
-import { closeSync as closeSync2, openSync as openSync2 } from "node:fs";
-function open(path, flags, opened) {
-  try {
-    const fd = openSync2(path, flags);
-    opened.push(fd);
-    return fd;
-  } catch (err) {
-    const code4 = err.code;
-    const why = code4 === "EEXIST" ? "already exists (attempt files are never overwritten)" : err.message;
-    throw new ArbabError("io", `cannot open ${path}: ${why}`, { cause: err });
-  }
-}
-function spawnWorker(input) {
-  const opened = [];
-  let child2;
-  try {
-    const stdin = open(input.promptFile, "r", opened);
-    const stdout = open(input.streamFile, "wx", opened);
-    const stderr = open(input.stderrFile, "wx", opened);
-    child2 = (input.spawnImpl ?? spawn)(input.binary, input.args, {
-      cwd: input.cwd,
-      env: input.env,
-      detached: true,
-      stdio: [stdin, stdout, stderr]
-    });
-  } finally {
-    for (const fd of opened) closeSync2(fd);
-  }
-  const exited = new Promise((done) => {
-    child2.once("error", () => {
-      if (child2.pid === void 0) done({ code: null, signal: null });
-    });
-    child2.once("exit", (code4, signal) => done({ code: code4, signal }));
-  });
-  if (child2.pid === void 0) throw new ArbabError("runtime", `cannot start ${input.binary}`);
-  return { pid: child2.pid, exited };
-}
-
-// src/run/tree.ts
-import { execFileSync } from "node:child_process";
-
-// src/util/proc.ts
-function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-function sendSignal(target, signal) {
-  if (!Number.isInteger(target) || target === 0 || target === -1) {
-    throw new RangeError(`refusing to signal ${target}`);
-  }
-  try {
-    process.kill(target, signal);
-    return true;
-  } catch (err) {
-    if (err.code === "ESRCH") return false;
-    throw err;
-  }
-}
-var sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-var systemClock = { now: () => Date.now() };
-var isoAt = (clock) => new Date(clock.now()).toISOString();
-
-// src/run/tree.ts
-function parsePs(output4) {
-  const rows = [];
-  for (const line2 of output4.split("\n")) {
-    const parts = line2.trim().split(/\s+/);
-    if (parts.length !== 3 || !parts.every((p) => /^\d+$/.test(p))) continue;
-    const [pid, ppid, pgid] = parts.map(Number);
-    rows.push({ pid, ppid, pgid });
-  }
-  return rows;
-}
-var execText = (file, args) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-function readPs(exec = execText) {
-  return exec("ps", ["-A", "-o", "pid=,ppid=,pgid="]);
-}
-function descendantsOf(root, table3, known) {
-  const children = /* @__PURE__ */ new Map();
-  for (const row of table3) {
-    const list3 = children.get(row.ppid);
-    if (list3) list3.push(row.pid);
-    else children.set(row.ppid, [row.pid]);
-  }
-  const found = /* @__PURE__ */ new Set();
-  const queue = [root, ...known, ...table3.filter((r) => r.pgid === root).map((r) => r.pid)];
-  for (const pid of queue) {
-    if (pid !== root && pid > 1) found.add(pid);
-  }
-  while (queue.length > 0) {
-    const pid = queue.pop();
-    for (const child2 of children.get(pid) ?? []) {
-      if (child2 === root || child2 <= 1 || found.has(child2)) continue;
-      found.add(child2);
-      queue.push(child2);
-    }
-  }
-  return found;
-}
-function trackDescendants(root, table3, tracked, rootRunning) {
-  const present = new Set(table3.map((row) => row.pid));
-  const rows = rootRunning ? table3 : table3.filter((row) => row.ppid !== root);
-  return new Set([...descendantsOf(root, rows, tracked)].filter((pid) => present.has(pid)));
-}
-function signalTargets(root, table3, tracked, rootRunning) {
-  const present = new Set(table3.map((row) => row.pid));
-  const parents = new Set([...tracked].filter((pid) => present.has(pid)));
-  if (rootRunning) parents.add(root);
-  const out = /* @__PURE__ */ new Set();
-  for (const row of table3) {
-    if (row.pid === root || row.pid <= 1) continue;
-    if (row.pgid === root || parents.has(row.ppid)) out.add(row.pid);
-  }
-  return out;
-}
-async function reap(input) {
-  const signal = input.signal ?? sendSignal;
-  const alive = input.alive ?? isAlive;
-  const sleep2 = input.sleep ?? sleep;
-  const graceMs = input.graceMs ?? 1e4;
-  const self = input.selfPid ?? process.pid;
-  const safe = (pid) => Number.isInteger(pid) && pid > 1 && pid !== self;
-  const vouched = (pids) => {
-    if (input.verify === void 0) return pids;
-    const ok = input.verify(pids);
-    return ok === null ? [] : pids.filter((pid) => ok.has(pid));
-  };
-  const targets = [.../* @__PURE__ */ new Set([input.pgid, ...input.pids])].filter(safe);
-  const living = vouched(targets.filter((pid) => alive(pid)));
-  const group = safe(input.pgid) ? -input.pgid : null;
-  const send = (target, sig) => {
-    try {
-      return signal(target, sig);
-    } catch {
-      return false;
-    }
-  };
-  let sent = group !== null && send(group, "SIGTERM");
-  for (const pid of living) sent = send(pid, "SIGTERM") || sent;
-  if (!sent) return living;
-  await sleep2(graceMs);
-  if (group !== null) send(group, "SIGKILL");
-  for (const pid of vouched(living.filter((p) => alive(p)))) send(pid, "SIGKILL");
-  return living;
-}
-
-// src/run/watch.ts
-import { closeSync as closeSync3, openSync as openSync3, readSync, statSync as statSync2 } from "node:fs";
-function fileSize(path) {
-  try {
-    return statSync2(path).size;
-  } catch (err) {
-    if (err.code === "ENOENT") return 0;
-    throw new ArbabError("io", `cannot stat ${path}: ${err.message}`, { cause: err });
-  }
-}
-function fileRange(path, start, end) {
-  const buf = Buffer.alloc(Math.max(0, end - start));
-  if (buf.length === 0) return buf;
-  const fd = openSync3(path, "r");
-  try {
-    let done = 0;
-    while (done < buf.length) {
-      const n = readSync(fd, buf, done, buf.length - done, start + done);
-      if (n === 0) break;
-      done += n;
-    }
-    return buf.subarray(0, done);
-  } finally {
-    closeSync3(fd);
-  }
-}
-var NEWLINE = 10;
-function createWatcher(input) {
-  const hangAfterResultMs = input.hangAfterResultMs ?? 15 * 6e4;
-  const hangAfterErrorMs = input.hangAfterErrorMs ?? 2 * 6e4;
-  const readSize = input.readSize ?? fileSize;
-  const readRange = input.readRange ?? fileRange;
-  let offset = 0;
-  let carry = Buffer.alloc(0);
-  let lastGrowthMs = input.startedAtMs;
-  let resultSeen = false;
-  let lastResultIsError = false;
-  let rateLimitEvent = null;
-  const consume2 = (line2) => {
-    let event;
-    try {
-      event = JSON.parse(line2.toString("utf8"));
-    } catch {
-      return;
-    }
-    if (typeof event !== "object" || event === null || Array.isArray(event)) return;
-    const e = event;
-    if (e.type === "rate_limit_event") rateLimitEvent = e;
-    if (e.type !== "result") return;
-    resultSeen = true;
-    lastResultIsError = e.is_error === true;
-  };
-  const read2 = (now) => {
-    const size2 = readSize(input.streamPath);
-    if (size2 < offset) {
-      offset = 0;
-      carry = Buffer.alloc(0);
-    }
-    if (size2 <= offset) return;
-    const chunk = readRange(input.streamPath, offset, size2);
-    if (chunk.length === 0) return;
-    offset += chunk.length;
-    lastGrowthMs = now;
-    let data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
-    let nl = data.indexOf(NEWLINE);
-    while (nl !== -1) {
-      consume2(data.subarray(0, nl));
-      data = data.subarray(nl + 1);
-      nl = data.indexOf(NEWLINE);
-    }
-    carry = Buffer.from(data);
-  };
-  return {
-    tick() {
-      const now = input.clock.now();
-      rateLimitEvent = null;
-      read2(now);
-      const quiet = now - lastGrowthMs;
-      let kill = null;
-      if (now - input.startedAtMs > input.wallMs) kill = "wall";
-      else if (resultSeen && lastResultIsError && quiet > hangAfterErrorMs) kill = "hang-after-error";
-      else if (resultSeen && quiet > hangAfterResultMs) kill = "hang-after-result";
-      else if (quiet > input.idleMs) kill = "idle";
-      return { kill, rateLimitEvent };
-    },
-    state: () => ({ offset, lastGrowthMs, resultSeen, lastResultIsError })
-  };
-}
-
-// src/run/checkpoint.ts
-import { readdirSync as readdirSync2 } from "node:fs";
-import { join as join6 } from "node:path";
-function nestedUnder(worktree, rel, out) {
-  const abs = join6(worktree, rel);
-  if (holdsGit(abs)) {
-    out.push(rel);
-    return;
-  }
-  let entries3;
-  try {
-    entries3 = readdirSync2(abs, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries3) if (e.isDirectory()) nestedUnder(worktree, `${rel}/${e.name}`, out);
-}
-function untrackedRepositories(git, worktree) {
-  const others = git(["ls-files", "--others", "--exclude-standard", "--directory", "-z"]);
-  if (others.code !== 0) return others;
-  const out = [];
-  for (const entry of others.stdout.split("\0")) {
-    if (entry.endsWith("/")) nestedUnder(worktree, entry.replace(/\/+$/, ""), out);
-  }
-  return out;
-}
-function stagedGitlinks(raw) {
-  const fields = raw.split("\0");
-  const out = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) {
-    const [src, dst] = (fields[i] ?? "").replace(/^:/, "").split(" ");
-    const path = fields[i + 1] ?? "";
-    if ((src === "160000" || dst === "160000") && path !== "") out.push(path);
-  }
-  return out.sort();
-}
-var ARBAB_STATE = [".arbab", ".arbab-tmp"];
-function checkpoint(input) {
-  const lane = assertValidName(input.lane, "lane");
-  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
-    throw new ArbabError("usage", `attempt ${input.attempt} is not a positive integer`);
-  }
-  const verified = verifyWorktreeGit({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir });
-  if (verified.gitDir === null) return { sha: null, error: `checkpoint skipped: ${verified.error}` };
-  const gitDir = verified.gitDir;
-  const prefix = [...explicitGit(gitDir, input.worktree), ...untrustedTree()];
-  const git = (args) => input.git([...prefix, ...args], input.worktree);
-  let tracked;
-  try {
-    if (worktreeStatus(input.worktree, gitDir, input.git).length === 0) return { sha: null, error: null };
-    tracked = indexGitlinks(input.worktree, gitDir, input.git);
-  } catch (err) {
-    return { sha: null, error: err.message };
-  }
-  const failed = (step, r) => ({
-    sha: null,
-    error: `${step} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`
-  });
-  const untracked = untrackedRepositories(git, input.worktree);
-  if (!Array.isArray(untracked)) return failed("git ls-files --others", untracked);
-  const left = [.../* @__PURE__ */ new Set([...tracked.filter((p) => holdsGit(join6(input.worktree, p))), ...untracked])].sort();
-  const leftOut = left.length === 0 ? null : `nested repositories were not committed: ${left.join(", ")}; arbab never commits or inspects them`;
-  const state = ARBAB_STATE.filter((path) => git(["check-ignore", "-q", "--", path]).code !== 0);
-  const add = git([
-    "add",
-    "-A",
-    "--",
-    ".",
-    ...[.../* @__PURE__ */ new Set([...tracked, ...untracked])].map((p) => `:(exclude,literal)${p}`),
-    ...state.map((p) => `:(exclude,icase,literal)${p}`)
-  ]);
-  if (add.code !== 0) return failed("git add -A", add);
-  const cached = git(["diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none"]);
-  if (cached.code !== 0) return failed("git diff --cached", cached);
-  const staged = stagedGitlinks(cached.stdout);
-  if (staged.length > 0) {
-    return {
-      sha: null,
-      error: `nested repositories are staged in the index: ${staged.join(", ")}; arbab never commits or inspects them, so nothing was committed. Unstage them to let the checkpoint commit the rest`
-    };
-  }
-  if (cached.stdout === "") return { sha: null, error: leftOut };
-  const message5 = `arbab(${lane}): checkpoint attempt ${input.attempt} (${input.endState})
-
-Co-Authored-By: Claude <noreply@anthropic.com>`;
-  const commit = git(["commit", "--no-verify", "-m", message5]);
-  if (commit.code !== 0) return failed("git commit", commit);
-  const head = git(["rev-parse", "HEAD"]);
-  if (head.code !== 0) return failed("git rev-parse HEAD", head);
-  return { sha: head.stdout.trim(), error: leftOut };
-}
-
-// src/run/workertmp.ts
-import { closeSync as closeSync4, constants, lstatSync as lstatSync2, mkdirSync as mkdirSync2, openSync as openSync4, rmSync as rmSync3, unlinkSync } from "node:fs";
-import { join as join7 } from "node:path";
-var WORKER_TMP_DIR = ".arbab-tmp";
-function workerTmpPaths(worktree) {
-  const root = join7(worktree, WORKER_TMP_DIR);
-  return {
-    root,
-    xdgConfig: join7(root, "xdg-config"),
-    yarnCache: join7(root, "yarn-cache"),
-    npmrc: join7(root, "npmrc"),
-    inputs: join7(root, "inputs")
-  };
-}
-function lstatOrNull(path) {
-  try {
-    return lstatSync2(path);
-  } catch (err) {
-    if (err.code === "ENOENT") return null;
-    throw new ArbabError("io", `cannot read ${path}: ${err.message}`, { cause: err });
-  }
-}
-function removeEntry(path, stat) {
-  try {
-    if (stat.isDirectory()) rmSync3(path, { recursive: true, force: true });
-    else unlinkSync(path);
-  } catch (err) {
-    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
-  }
-}
-function realDir(worktree, rel) {
-  let at = worktree;
-  for (const part of rel.split(/[\\/]+/)) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") throw new ArbabError("usage", `${rel} leaves the worktree`);
-    at = join7(at, part);
-    const stat = lstatOrNull(at);
-    if (stat?.isDirectory() === true) continue;
-    if (stat !== null) removeEntry(at, stat);
-    try {
-      mkdirSync2(at);
-    } catch (err) {
-      throw new ArbabError("io", `cannot create ${at}: ${err.message}`, { cause: err });
-    }
-  }
-  return at;
-}
-function ensureWorkerTmp(worktree) {
-  const paths = workerTmpPaths(worktree);
-  for (const dir of ["xdg-config", "yarn-cache", "inputs"]) realDir(worktree, join7(WORKER_TMP_DIR, dir));
-  const stat = lstatOrNull(paths.npmrc);
-  if (stat?.isFile() === true) return paths;
-  if (stat !== null) removeEntry(paths.npmrc, stat);
-  let fd;
-  try {
-    fd = openSync4(paths.npmrc, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
-  } catch (err) {
-    throw new ArbabError("io", `cannot create ${paths.npmrc}: ${err.message}`, { cause: err });
-  }
-  closeSync4(fd);
-  return paths;
-}
-
-// src/run/project-files.ts
-import { join as join8, relative as relative5, resolve as resolve7, sep as sep5 } from "node:path";
-var ARBAB_DIR = ".arbab";
-var ESLINT_MARKER = ".eslintrc.json";
-function arbabIgnoreEntries(projectRoot, config) {
-  const rel = (p) => `${relative5(resolve7(projectRoot), confine(projectRoot, p)).split(sep5).join("/")}/`;
-  const own2 = `${ARBAB_DIR}/`;
-  const outside = [rel(config.worktreeRoot), rel(config.runsRoot)].filter((r) => !r.startsWith(own2));
-  return [.../* @__PURE__ */ new Set([own2, `${WORKER_TMP_DIR}/`, ...outside])];
-}
-function ensureArbabMarkers(projectRoot) {
-  createExclusive(join8(projectRoot, ARBAB_DIR, ESLINT_MARKER), `${JSON.stringify({ root: true }, null, 2)}
-`);
-}
-
-// src/shepherd/trust.ts
-var SHA = /^[0-9a-f]{40,64}$/;
-var output = (r) => (r.stderr || r.stdout).trim();
-function confirmedHeads(projectRoot, config, git) {
-  const heads = /* @__PURE__ */ new Set();
-  const listed = git(["ls-files", "-z", "--", `:(icase)${INTEGRATIONS_DIR}`], projectRoot);
-  if (listed.code !== 0) return heads;
-  const depth = INTEGRATIONS_DIR.split("/").length;
-  const trackedNames = new Set(
-    listed.stdout.split("\0").filter((p) => p !== "").map((p) => (p.split("/")[depth] ?? "").toLowerCase())
-  );
-  for (const name2 of listIntegrations(projectRoot)) {
-    if (trackedNames.has(name2)) continue;
-    try {
-      const at = readIntegration(integrationPaths(projectRoot, config, name2))?.depsConfirmedAt ?? null;
-      if (at !== null) heads.add(at);
-    } catch {
-    }
-  }
-  return heads;
-}
-function assertRevision2(rev, what) {
-  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
-}
-function resolveCommit(projectRoot, rev, git) {
-  assertRevision2(rev, "revision");
-  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], projectRoot);
-  const sha = r.stdout.trim();
-  return r.code === 0 && SHA.test(sha) ? sha : null;
-}
-function isTrustedInstallPoint(sha, input) {
-  if (input.confirmed.has(sha)) return true;
-  assertRevision2(input.baseBranch, "baseBranch");
-  const r = input.git(["merge-base", "--is-ancestor", sha, input.baseBranch], input.projectRoot);
-  if (r.code === 0) return true;
-  if (r.code === 1) return false;
-  throw new ArbabError("git", `git merge-base --is-ancestor ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
-}
-function distance(ancestor, sha, input) {
-  const r = input.git(["rev-list", "--count", `${ancestor}..${sha}`], input.projectRoot);
-  const n = Number(r.stdout.trim());
-  if (r.code !== 0 || !Number.isInteger(n)) {
-    throw new ArbabError("git", `git rev-list --count ${ancestor}..${sha} failed (${r.code}): ${output(r)}`);
-  }
-  return n;
-}
-function installPlan(base, input) {
-  assertRevision2(base, "base");
-  assertRevision2(input.baseBranch, "baseBranch");
-  const sha = resolveCommit(input.projectRoot, base, input.git);
-  if (sha === null) return { start: base, merge: null };
-  if (isTrustedInstallPoint(sha, input)) return { start: sha, merge: null };
-  const candidates = [...input.confirmed].filter((c) => SHA.test(c) && input.git(["merge-base", "--is-ancestor", c, sha], input.projectRoot).code === 0).sort();
-  const r = input.git(["merge-base", sha, input.baseBranch], input.projectRoot);
-  const fork = r.stdout.trim();
-  if (r.code === 0 && SHA.test(fork)) {
-    candidates.push(fork);
-  } else if (r.code !== 1) {
-    throw new ArbabError("git", `git merge-base ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
-  }
-  if (candidates.length === 0) {
-    throw new ArbabError(
-      "git",
-      `base ${base} shares no history with ${input.baseBranch}, so the lane has no trusted commit to install its dependencies on; base it on ${input.baseBranch} or on a commit that descends from it`
-    );
-  }
-  let start = candidates[0];
-  let least = distance(start, sha, input);
-  for (const c of candidates.slice(1)) {
-    const d = distance(c, sha, input);
-    if (d < least) [start, least] = [c, d];
-  }
-  return { start, merge: sha };
-}
-
-// src/integrate/integrate.ts
-function listIntegrations(projectRoot) {
-  try {
-    return readdirSync3(join9(resolve8(projectRoot), INTEGRATIONS_DIR), { withFileTypes: true }).filter((e) => e.isDirectory() && isValidName(e.name)).map((e) => e.name).sort();
-  } catch {
-    return [];
-  }
-}
-function integrationPaths(projectRoot, config, name2) {
-  const valid = assertValidName(name2, "integration");
-  if (valid === "integrate" || valid.startsWith("integrate-")) {
-    throw new ArbabError("usage", `integration name ${valid} may not be integrate or start with integrate-`);
-  }
-  const root = resolve8(projectRoot);
-  const dir = join9(root, INTEGRATIONS_DIR, valid);
-  return {
-    name: valid,
-    projectRoot: root,
-    dir,
-    integration: join9(dir, "integration.json"),
-    verify: join9(dir, "verify.json"),
-    review: join9(dir, "review.json"),
-    readiness: join9(dir, "readiness.json"),
-    readinessMd: join9(dir, "readiness.md"),
-    landing: join9(dir, "landing.json"),
-    lanesDir: join9(dir, "lanes"),
-    worktree: join9(confine(root, config.worktreeRoot), `${INTEGRATION_WORKTREE_PREFIX}${valid}`),
-    branch: `integrate/${valid}`
-  };
-}
-var SHA2 = /^[0-9a-f]{40,64}$/;
-var output2 = (r) => (r.stderr || r.stdout).trim();
-function must2(git, args, cwd) {
-  const r = git(args, cwd);
-  if (r.code !== 0) throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${output2(r)}`);
-  return r.stdout;
-}
-function canonical3(path) {
-  try {
-    return realpathSync4(path);
-  } catch {
-    return resolve8(path);
-  }
-}
-function commitOf(git, rev, cwd) {
-  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd);
-  const sha = r.stdout.trim();
-  return r.code === 0 && SHA2.test(sha) ? sha : null;
-}
-function isAncestor(git, ancestor, of, cwd) {
-  const r = git(["merge-base", "--is-ancestor", ancestor, of], cwd);
-  if (r.code === 0) return true;
-  if (r.code === 1) return false;
-  throw new ArbabError("git", `git merge-base --is-ancestor ${ancestor} ${of} failed (${r.code}): ${output2(r)}`);
-}
-function worktreeBranches(projectRoot, git) {
-  const out = /* @__PURE__ */ new Map();
-  for (const block3 of must2(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
-    const lines = block3.split("\n");
-    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === void 0) continue;
-    const ref2 = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null;
-    out.set(canonical3(path), ref2);
-  }
-  return out;
-}
-function gitCommonDir(projectRoot, git) {
-  const out = must2(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
-  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
-  return canonical3(resolve8(projectRoot, out));
-}
-function refuseLaneWorktree(paths, git) {
-  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
-  const lanePrefix = "refs/heads/arbab/";
-  if (typeof ref2 !== "string" || !ref2.startsWith(lanePrefix)) return;
-  throw new ArbabError(
-    "usage",
-    `${paths.worktree} is the worktree of lane ${ref2.slice(lanePrefix.length)}, where a worker runs, so integration ${paths.name} cannot use it. Lane names starting with ${INTEGRATION_WORKTREE_PREFIX} are reserved: rename that lane and remove its worktree, or choose another integration name`
-  );
-}
-function ownedGitDir(paths, git) {
-  const refused = (why) => new ArbabError("git", `${paths.worktree} exists but is not a worktree of this repository on ${paths.branch}: ${why}`);
-  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
-  if (ref2 === void 0) throw refused("git does not list it as a worktree");
-  if (ref2 !== `refs/heads/${paths.branch}`) throw refused(`it is on ${ref2 ?? "a detached HEAD"}`);
-  const verified = verifyWorktreeGit({
-    worktree: paths.worktree,
-    branch: paths.branch,
-    gitCommonDir: gitCommonDir(paths.projectRoot, git)
-  });
-  if (verified.gitDir === null) throw refused(verified.error);
-  return verified.gitDir;
-}
-function refuseLanded(paths) {
-  if (!existsSync2(paths.landing)) return;
-  let landedAt;
-  try {
-    const landing = readJson(paths.landing);
-    landedAt = isRecord2(landing) ? landing["landedAt"] : void 0;
-  } catch {
-  }
-  const when = typeof landedAt === "string" && landedAt !== "" ? `at ${landedAt}` : `(${paths.landing} does not say when)`;
-  throw new ArbabError(
-    "usage",
-    `integration ${paths.name} landed ${when}; its records stay as that landing's measurement. Choose a new name for a new integration`
-  );
-}
-function supersedeRecord(paths) {
-  if (!existsSync2(paths.integration)) return;
-  let updatedAt;
-  try {
-    const old = readJson(paths.integration);
-    updatedAt = isRecord2(old) ? old["updatedAt"] : void 0;
-  } catch {
-  }
-  const stamp = typeof updatedAt === "string" && updatedAt !== "" ? updatedAt.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-") : "unknown";
-  let target = join9(paths.dir, `integration.superseded-${stamp}.json`);
-  for (let n = 2; existsSync2(target); n++) target = join9(paths.dir, `integration.superseded-${stamp}-${n}.json`);
-  renameSync3(paths.integration, target);
-}
-function createIntegrationWorktree(input, paths) {
-  const { git, projectRoot } = input;
-  const base = input.config.baseBranch;
-  if (base === "" || base.startsWith("-")) {
-    throw new ArbabError("config", `baseBranch ${JSON.stringify(base)} is not a valid revision`);
-  }
-  const baseSha = commitOf(git, base, projectRoot);
-  if (baseSha === null) throw new ArbabError("git", `base ${base} does not name a commit`);
-  must2(git, ["worktree", "prune"], projectRoot);
-  ensureDir(dirname3(paths.worktree));
-  const existing = commitOf(git, `refs/heads/${paths.branch}`, projectRoot);
-  if (existing === null) {
-    must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, base], projectRoot);
-    supersedeRecord(paths);
-  } else {
-    if (!isAncestor(git, existing, baseSha, projectRoot)) {
-      throw new ArbabError(
-        "git",
-        `${paths.branch} exists without its worktree and holds commits that are not on ${base}; arbab prepares dependencies only on the trusted base. Restore the worktree at ${paths.worktree}, or delete the branch and integrate again`
-      );
-    }
-    must2(git, ["worktree", "add", paths.worktree, paths.branch], projectRoot);
-  }
-  let deps;
-  try {
-    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
-  } catch (err) {
-    removeWorktree(git, paths);
-    throw err;
-  }
-  if (!deps.ok) {
-    removeWorktree(git, paths);
-    const tail = deps.output.trim().split("\n").slice(-5).join("\n");
-    throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
-  }
-}
-function refuseDirtyLanes(input, lanes) {
-  const { git, projectRoot } = input;
-  const root = confine(projectRoot, input.config.worktreeRoot);
-  let common = null;
-  for (const lane of lanes) {
-    const worktree = join9(root, lane);
-    if (!existsSync2(worktree)) continue;
-    common ??= gitCommonDir(projectRoot, git);
-    const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: common });
-    if (verified.gitDir === null) {
-      throw new ArbabError("git", `cannot check lane ${lane}'s worktree ${worktree} for uncommitted changes: ${verified.error}`);
-    }
-    const status = worktreeStatus(worktree, verified.gitDir, git).map((l) => l.slice(3));
-    if (status.length === 0) continue;
-    const shown = status.slice(0, 5).join(", ") + (status.length > 5 ? ` and ${status.length - 5} more` : "");
-    throw new ArbabError(
-      "usage",
-      `lane ${lane} has uncommitted changes in ${worktree} (${shown}): its checkpoint did not commit them, and integrating its branch would leave them behind. Commit or discard them, then integrate again`
-    );
-  }
-}
-function removeWorktree(git, paths) {
-  git(["worktree", "remove", "--force", paths.worktree], paths.projectRoot);
-}
-function oneEntryPerLane(entries3) {
-  const out = [];
-  for (const e of entries3) {
-    const i = out.findIndex((o) => o.lane === e.lane);
-    const prior = i < 0 ? void 0 : out[i];
-    if (prior === void 0) out.push({ ...e, manifests: [...e.manifests] });
-    else out[i] = { ...e, manifests: [.../* @__PURE__ */ new Set([...prior.manifests, ...e.manifests])].sort() };
-  }
-  return out;
-}
-function integrate(input) {
-  const paths = integrationPaths(input.projectRoot, input.config, input.name);
-  const lanes = input.lanes.map((lane) => assertValidName(lane, "lane"));
-  const { git, config } = input;
-  refuseLanded(paths);
-  refuseLaneWorktree(paths, git);
-  refuseDirtyLanes(input, lanes);
-  if (!existsSync2(paths.worktree)) createIntegrationWorktree(input, paths);
-  const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
-  ensureIgnored(paths.projectRoot, arbabIgnoreEntries(paths.projectRoot, config), git);
-  ensureArbabMarkers(paths.projectRoot);
-  const wt = (args) => git([...prefix, ...args], paths.worktree);
-  const head = () => {
-    const sha = commitOf(wt, "HEAD", paths.worktree);
-    if (sha === null) throw new ArbabError("git", `cannot read HEAD of ${paths.worktree}`);
-    return sha;
-  };
-  const previous = readIntegration(paths);
-  let headSha = head();
-  const present = (sha) => SHA2.test(sha) && commitOf(wt, sha, paths.worktree) !== null;
-  let merged = oneEntryPerLane(
-    (previous?.merged ?? []).filter((m) => present(m.sha) && isAncestor(wt, m.sha, headSha, paths.worktree))
-  );
-  const keptBase = previous !== null && present(previous.baseSha) && isAncestor(wt, previous.baseSha, headSha, paths.worktree);
-  const base = keptBase ? previous.base : config.baseBranch;
-  if (base === "" || base.startsWith("-")) {
-    const from = keptBase ? `${paths.integration} records base` : "baseBranch";
-    throw new ArbabError(keptBase ? "io" : "config", `${from} ${JSON.stringify(base)} is not a valid revision`);
-  }
-  const mergeBase = () => must2(wt, ["merge-base", headSha, base], paths.worktree).trim();
-  let baseSha = mergeBase();
-  let confirmedAt = previous?.depsConfirmedAt ?? null;
-  const manifestsBetween = (from, to, what) => {
-    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", from, to, "--"]);
-    if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${what} (${diff.code}): ${output2(diff)}`);
-    return installRelevantPaths(wt, from, to, diff.stdout.split("\0").filter((p) => p !== ""));
-  };
-  const stillConfirmed = (at) => commitOf(wt, at, paths.worktree) !== null && isAncestor(wt, at, headSha, paths.worktree) && manifestsBetween(at, headSha, `${paths.branch} changed since ${at}`).length === 0;
-  const record2 = () => {
-    baseSha = mergeBase();
-    const manifests = manifestsBetween(baseSha, headSha, `${paths.branch} changed since ${baseSha}`);
-    if (confirmedAt !== null && !stillConfirmed(confirmedAt)) confirmedAt = null;
-    const depsConfirmedAt = confirmedAt;
-    const rec = {
-      name: paths.name,
-      branch: paths.branch,
-      worktree: paths.worktree,
-      base,
-      baseSha,
-      merged: [...merged],
-      manifests,
-      depsConfirmedAt,
-      depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null,
-      headSha,
-      updatedAt: isoAt(input.clock)
-    };
-    writeJsonAtomic(paths.integration, rec);
-    return rec;
-  };
-  record2();
-  const alreadyIn = [];
-  for (const lane of lanes) {
-    const branch = `arbab/${lane}`;
-    const sha = commitOf(wt, `refs/heads/${branch}`, paths.worktree);
-    if (sha === null) throw new ArbabError("git", `cannot integrate ${lane}: branch ${branch} does not exist`);
-    if (isAncestor(wt, sha, headSha, paths.worktree)) {
-      alreadyIn.push(lane);
-      if (merged.some((m) => m.lane === lane && m.sha === sha)) continue;
-      const fork = must2(wt, ["merge-base", baseSha, sha], paths.worktree).trim();
-      const manifests2 = manifestsBetween(fork, sha, `${lane} changed since ${baseSha}`);
-      merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests: manifests2 }]);
-      record2();
-      continue;
-    }
-    const r = wt(["merge", "--no-ff", "--no-edit", "--no-verify", "-m", `arbab: integrate ${lane} into ${paths.branch}`, sha]);
-    if (r.code !== 0) {
-      const unmerged = wt(["diff", "--name-only", "-z", "--diff-filter=U"]);
-      const conflicts = unmerged.code === 0 ? unmerged.stdout.split("\0").filter((p) => p !== "") : [];
-      wt(["merge", "--abort"]);
-      const kept = merged.length > 0 ? `; ${merged.map((m) => m.lane).join(", ")} stay merged` : "";
-      if (conflicts.length > 0) {
-        throw new ArbabError("git", `integrating ${lane} into ${paths.branch} conflicts in ${conflicts.join(", ")}; the merge was aborted${kept}`);
-      }
-      throw new ArbabError("git", `integrating ${lane} into ${paths.branch} failed (${r.code}): ${output2(r)}; the merge was aborted${kept}`);
-    }
-    const before = headSha;
-    headSha = head();
-    const manifests = manifestsBetween(before, headSha, `${lane} changed in ${paths.branch}`);
-    merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests }]);
-    record2();
-  }
-  return { record: record2(), alreadyIn };
-}
-function assertRevision3(rev, what) {
-  if (rev === "" || rev.startsWith("-") || /\s/.test(rev)) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
-}
-function adoptIntegration(input) {
-  const paths = integrationPaths(input.projectRoot, input.config, input.name);
-  const { git, projectRoot } = input;
-  const base = input.base ?? input.config.baseBranch;
-  assertRevision3(input.ref, "--adopt");
-  assertRevision3(base, input.base === void 0 ? "baseBranch" : "--base");
-  refuseLanded(paths);
-  refuseLaneWorktree(paths, git);
-  const existing = [
-    existsSync2(paths.integration) ? paths.integration : null,
-    commitOf(git, `refs/heads/${paths.branch}`, projectRoot) !== null ? `branch ${paths.branch}` : null,
-    existsSync2(paths.worktree) ? paths.worktree : null
-  ].filter((e) => e !== null);
-  if (existing.length > 0) {
-    throw new ArbabError("usage", `integration ${paths.name} already exists (${existing.join(", ")}); choose a new name to adopt ${input.ref}`);
-  }
-  const sha = commitOf(git, input.ref, projectRoot);
-  if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
-  const baseSha = commitOf(git, base, projectRoot);
-  if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
-  if (git(["show-ref", "--verify", "--quiet", `refs/heads/${base}`], projectRoot).code !== 0) {
-    throw new ArbabError(
-      "usage",
-      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not a branch: land merges the integration into its base, so the base must be a branch`
-    );
-  }
-  const trusted = input.config.baseBranch;
-  assertRevision3(trusted, "baseBranch");
-  if (!isAncestor(git, baseSha, trusted, projectRoot)) {
-    throw new ArbabError(
-      "usage",
-      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ${base} may hold worker code. Adopt against ${trusted}, or a branch it contains`
-    );
-  }
-  const fork = git(["merge-base", sha, baseSha], projectRoot);
-  if (fork.code !== 0 || !SHA2.test(fork.stdout.trim())) {
-    if (fork.code === 1) throw new ArbabError("usage", `${input.ref} shares no history with ${base}: there is nothing to land it into`);
-    throw new ArbabError("git", `git merge-base ${sha} ${baseSha} failed (${fork.code}): ${output2(fork)}`);
-  }
-  const start = fork.stdout.trim();
-  const trust = { projectRoot, baseBranch: trusted, confirmed: confirmedHeads(projectRoot, input.config, git), git };
-  if (!isTrustedInstallPoint(start, trust)) {
-    throw new ArbabError(
-      "usage",
-      `the fork point ${start} of ${input.ref} and ${base} is not a trusted install point (a commit of ${trusted} or an integration head a human confirmed), so arbab will not install dependencies there`
-    );
-  }
-  must2(git, ["worktree", "prune"], projectRoot);
-  ensureDir(dirname3(paths.worktree));
-  must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
-  try {
-    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
-    if (!deps.ok) {
-      const tail = deps.output.trim().split("\n").slice(-5).join("\n");
-      throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
-    }
-    if (sha !== start) {
-      const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
-      must2(git, [...prefix, "merge", "--ff-only", "--no-verify", sha], paths.worktree);
-    }
-  } catch (err) {
-    removeWorktree(git, paths);
-    git([...untrustedTree(), "branch", "-D", paths.branch], projectRoot);
-    throw err;
-  }
-  return integrate({ ...input, config: { ...input.config, baseBranch: base }, lanes: [] });
-}
-function refreshIntegration(input) {
-  const paths = integrationPaths(input.projectRoot, input.config, input.name);
-  refuseLanded(paths);
-  if (readIntegration(paths) === null) {
-    throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
-  }
-  if (!existsSync2(paths.worktree)) {
-    throw new ArbabError("usage", `integration ${paths.name} has no worktree at ${paths.worktree}; restore it on ${paths.branch} to refresh`);
-  }
-  const tracked = worktreeStatus(paths.worktree, ownedGitDir(paths, input.git), input.git).filter((l) => !l.startsWith("?? ")).map((l) => l.slice(3));
-  if (tracked.length > 0) {
-    const shown = tracked.slice(0, 5).join(", ") + (tracked.length > 5 ? ` and ${tracked.length - 5} more` : "");
-    throw new ArbabError(
-      "usage",
-      `integration ${paths.name} has uncommitted changes in ${paths.worktree} (${shown}); commit or discard them, then refresh`
-    );
-  }
-  return integrate({ ...input, lanes: [] });
-}
-function isRecord2(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-var isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === "string");
-function isMergedEntry(v) {
-  return isRecord2(v) && typeof v["lane"] === "string" && typeof v["branch"] === "string" && typeof v["sha"] === "string" && isStringArray(v["manifests"]);
-}
-function mergedManifests(merged) {
-  return [...new Set(merged.flatMap((m) => m.manifests))].sort();
-}
-var isOptional = (v, check2) => v === void 0 || check2(v);
-function readIntegration(paths) {
-  const raw = readJson(paths.integration);
-  if (raw === null) return null;
-  const ok = isRecord2(raw) && raw["name"] === paths.name && typeof raw["branch"] === "string" && typeof raw["worktree"] === "string" && typeof raw["base"] === "string" && typeof raw["baseSha"] === "string" && Array.isArray(raw["merged"]) && raw["merged"].every(isMergedEntry) && isOptional(raw["manifests"], isStringArray) && isOptional(raw["depsConfirmedAt"], (v) => v === null || typeof v === "string" && SHA2.test(v)) && typeof raw["depsConfirmed"] === "boolean" && typeof raw["headSha"] === "string" && typeof raw["updatedAt"] === "string";
-  if (!ok) throw new ArbabError("io", `${paths.integration} is not an integration record for ${paths.name}`);
-  const stored = raw;
-  const manifests = stored.manifests ?? mergedManifests(stored.merged);
-  const depsConfirmedAt = stored.depsConfirmedAt ?? null;
-  return { ...stored, manifests, depsConfirmedAt, depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null };
-}
-function confirmCommand(name2, sha) {
-  return `arbab integrate ${name2} --deps-installed ${sha}`;
-}
-function confirmDeps(paths, sha, git, clock) {
-  refuseLanded(paths);
-  const previous = readIntegration(paths);
-  if (previous === null) throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate first`);
-  if (!SHA2.test(sha)) {
-    throw new ArbabError(
-      "usage",
-      `--deps-installed takes the full head sha arbab integrate printed, not ${JSON.stringify(sha)}; the recorded head is ${previous.headSha}: review its manifests, then run ${confirmCommand(paths.name, previous.headSha)}`
-    );
-  }
-  if (sha !== previous.headSha) {
-    throw new ArbabError(
-      "usage",
-      `integration ${paths.name} records head ${previous.headSha}, not ${sha}: it moved since you reviewed it. Review the manifests arbab integrate ${paths.name} lists for ${previous.headSha} (run it again with its lanes), then run ` + confirmCommand(paths.name, previous.headSha)
-    );
-  }
-  const headSha = commitOf(git, `refs/heads/${paths.branch}`, paths.projectRoot);
-  if (headSha === null) throw new ArbabError("git", `branch ${paths.branch} does not exist`);
-  if (headSha !== previous.headSha) {
-    throw new ArbabError(
-      "usage",
-      `${paths.branch} is at ${headSha}, not ${previous.headSha}, the head whose manifests arbab integrate listed; run arbab integrate ${paths.name} --refresh (or with its lanes) again, review the manifests it lists, then run the arbab integrate ${paths.name} --deps-installed <sha> it prints`
-    );
-  }
-  if (previous.manifests.length === 0) return previous;
-  const rec = { ...previous, depsConfirmedAt: headSha, depsConfirmed: true, updatedAt: isoAt(clock) };
-  writeJsonAtomic(paths.integration, rec);
-  return rec;
-}
+// src/hook/catchup.ts
+import { createHash as createHash4 } from "node:crypto";
+import { readdirSync as readdirSync10, readFileSync as readFileSync7, realpathSync as realpathSync6, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
+import { join as join22 } from "node:path";
 
 // src/registry/paths.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4 } from "node:fs";
-import { join as join10 } from "node:path";
+import { existsSync, mkdirSync as mkdirSync2, readdirSync } from "node:fs";
+import { join as join3 } from "node:path";
 var ATTEMPT_DIR = /^attempt-([1-9][0-9]*)$/;
 function runPaths(runsRoot, lane) {
   assertValidName(lane, "lane");
   const laneDir = confine(runsRoot, lane);
   return {
     laneDir,
-    laneFile: join10(laneDir, "lane.json"),
-    stateFile: join10(laneDir, "state.json"),
-    shepherdFile: join10(laneDir, "shepherd.json"),
+    laneFile: join3(laneDir, "lane.json"),
+    stateFile: join3(laneDir, "state.json"),
+    shepherdFile: join3(laneDir, "shepherd.json"),
     attemptDir(n) {
       if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("usage", `attempt ${n} must be a positive integer`);
-      return join10(laneDir, `attempt-${n}`);
+      return join3(laneDir, `attempt-${n}`);
     }
   };
 }
 function attemptFiles(dir) {
   return {
-    brief: join10(dir, "brief.md"),
-    settings: join10(dir, "settings.json"),
-    args: join10(dir, "args.json"),
-    started: join10(dir, "started.json"),
-    stream: join10(dir, "stream.jsonl"),
-    stderr: join10(dir, "stderr.log"),
-    registration: join10(dir, "registration.json"),
-    exit: join10(dir, "exit.json"),
-    summary: join10(dir, "summary.json"),
-    report: join10(dir, "report.json"),
-    acked: join10(dir, "acked")
+    brief: join3(dir, "brief.md"),
+    settings: join3(dir, "settings.json"),
+    args: join3(dir, "args.json"),
+    started: join3(dir, "started.json"),
+    stream: join3(dir, "stream.jsonl"),
+    stderr: join3(dir, "stderr.log"),
+    registration: join3(dir, "registration.json"),
+    exit: join3(dir, "exit.json"),
+    summary: join3(dir, "summary.json"),
+    report: join3(dir, "report.json"),
+    acked: join3(dir, "acked")
   };
 }
 function entries(dir) {
   try {
-    return readdirSync4(dir, { withFileTypes: true });
+    return readdirSync(dir, { withFileTypes: true });
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw new ArbabError("io", `cannot list ${dir}: ${err.message}`, { cause: err });
@@ -2157,7 +685,7 @@ function createAttempt(runsRoot, lane) {
   for (; ; ) {
     const dir = paths.attemptDir(n);
     try {
-      mkdirSync3(dir);
+      mkdirSync2(dir);
       return { n, dir };
     } catch (err) {
       if (err.code !== "EEXIST") {
@@ -2179,13 +707,13 @@ function readAttempt(dir) {
     started: readObject(files.started),
     exit: readObject(files.exit),
     summary: readObject(files.summary),
-    acked: existsSync3(files.acked)
+    acked: existsSync(files.acked)
   };
 }
 
 // src/registry/events.ts
-import { appendFileSync, mkdirSync as mkdirSync4, readFileSync as readFileSync2 } from "node:fs";
-import { join as join11 } from "node:path";
+import { appendFileSync, mkdirSync as mkdirSync3, readFileSync as readFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // src/registry/state.ts
 var LANE_STATES = [
@@ -2197,20 +725,20 @@ var LANE_STATES = [
   "finished",
   "orphaned"
 ];
-function isRecord3(value) {
+function isRecord2(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value;
   return isValidName(v["lane"]) && typeof v["state"] === "string" && LANE_STATES.includes(v["state"]) && Number.isSafeInteger(v["attempt"]) && typeof v["since"] === "string" && Number.isSafeInteger(v["shepherdPid"]);
 }
 function writeState(runsRoot, record2) {
-  if (!isRecord3(record2)) throw new ArbabError("usage", "invalid lane state record");
+  if (!isRecord2(record2)) throw new ArbabError("usage", "invalid lane state record");
   writeJsonAtomic(runPaths(runsRoot, record2.lane).stateFile, record2);
 }
 function readState(runsRoot, lane) {
   const path = runPaths(runsRoot, lane).stateFile;
   const value = readJson(path);
   if (value === null) return null;
-  if (!isRecord3(value) || value.lane !== lane) throw new ArbabError("io", `${path} is not a valid state record`);
+  if (!isRecord2(value) || value.lane !== lane) throw new ArbabError("io", `${path} is not a valid state record`);
   return value;
 }
 function effectiveState(record2, alive) {
@@ -2221,12 +749,12 @@ function effectiveState(record2, alive) {
 // src/registry/events.ts
 var EVENTS_FILE = "events.jsonl";
 function eventsFile(runsRoot, lane) {
-  return join11(runPaths(runsRoot, lane).laneDir, EVENTS_FILE);
+  return join4(runPaths(runsRoot, lane).laneDir, EVENTS_FILE);
 }
 function appendLaneEvent(runsRoot, lane, event) {
   try {
     const file = eventsFile(runsRoot, lane);
-    mkdirSync4(join11(file, ".."), { recursive: true });
+    mkdirSync3(join4(file, ".."), { recursive: true });
     appendFileSync(file, `${JSON.stringify(event)}
 `);
   } catch {
@@ -2234,26 +762,26 @@ function appendLaneEvent(runsRoot, lane, event) {
 }
 
 // src/registry/machine.ts
-import { createHash as createHash2 } from "node:crypto";
-import { readdirSync as readdirSync5, readFileSync as readFileSync3, rmSync as rmSync4 } from "node:fs";
-import { join as join12 } from "node:path";
+import { createHash } from "node:crypto";
+import { readdirSync as readdirSync2, readFileSync as readFileSync3, rmSync as rmSync2 } from "node:fs";
+import { join as join5 } from "node:path";
 var SHEPHERDS_DIR = "shepherds";
 var WAITERS_DIR = "waiters";
 var PROJECTS_DIR = "projects";
 var ENTRY_FILE = /^([1-9][0-9]*)\.json$/;
 function pidFile(home, dir, pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) throw new ArbabError("usage", `pid ${pid} must be a positive integer`);
-  return join12(home, dir, `${pid}.json`);
+  return join5(home, dir, `${pid}.json`);
 }
 function remove(path) {
   try {
-    rmSync4(path, { force: true });
+    rmSync2(path, { force: true });
   } catch {
   }
 }
 function fileNames(dir) {
   try {
-    return readdirSync5(dir);
+    return readdirSync2(dir);
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw new ArbabError("io", `cannot list ${dir}: ${err.message}`, { cause: err });
@@ -2291,10 +819,10 @@ function asProject(v) {
 }
 function listByPid(home, dir, as, alive) {
   const out = [];
-  for (const file of fileNames(join12(home, dir))) {
+  for (const file of fileNames(join5(home, dir))) {
     const match = ENTRY_FILE.exec(file);
     if (match === null) continue;
-    const path = join12(home, dir, file);
+    const path = join5(home, dir, file);
     const entry = as(parsed(path));
     if (entry === null || entry.pid !== Number(match[1])) continue;
     if (!alive(entry.pid)) {
@@ -2324,7 +852,7 @@ function listWaiters(home, alive) {
   return listByPid(home, WAITERS_DIR, asWaiter, alive);
 }
 function projectFile(home, root) {
-  return join12(home, PROJECTS_DIR, `${createHash2("sha1").update(root).digest("hex")}.json`);
+  return join5(home, PROJECTS_DIR, `${createHash("sha1").update(root).digest("hex")}.json`);
 }
 function registerProject(home, root, at) {
   const entry = { root, lastLaunchAt: at };
@@ -2332,9 +860,9 @@ function registerProject(home, root, at) {
 }
 function listProjects(home) {
   const out = [];
-  for (const file of fileNames(join12(home, PROJECTS_DIR))) {
+  for (const file of fileNames(join5(home, PROJECTS_DIR))) {
     if (!/^[0-9a-f]{40}\.json$/.test(file)) continue;
-    const entry = asProject(parsed(join12(home, PROJECTS_DIR, file)));
+    const entry = asProject(parsed(join5(home, PROJECTS_DIR, file)));
     if (entry !== null) out.push(entry);
   }
   return out.sort((a, b) => a.root < b.root ? -1 : a.root > b.root ? 1 : 0);
@@ -2368,9 +896,9 @@ function ownedBy(record2, session, opts = {}) {
 }
 
 // src/registry/sessions.ts
-import { realpathSync as realpathSync5 } from "node:fs";
-import { isAbsolute as isAbsolute5, join as join13, relative as relative6, sep as sep6 } from "node:path";
-function runnerPath(path, realpath2 = (p) => realpathSync5.native(p)) {
+import { realpathSync as realpathSync3 } from "node:fs";
+import { isAbsolute as isAbsolute4, join as join6, relative as relative4, sep as sep4 } from "node:path";
+function runnerPath(path, realpath2 = (p) => realpathSync3.native(p)) {
   try {
     return realpath2(path);
   } catch {
@@ -2379,8 +907,8 @@ function runnerPath(path, realpath2 = (p) => realpathSync5.native(p)) {
 }
 function inside(root, path) {
   if (!sameOrInside(root, path)) return null;
-  const rel = relative6(foldPath(root), foldPath(path));
-  return rel === "" ? null : rel.split(sep6).join("/");
+  const rel = relative4(foldPath(root), foldPath(path));
+  return rel === "" ? null : rel.split(sep4).join("/");
 }
 var sorted = (values) => [...values].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
 function otherSessions(input) {
@@ -2390,11 +918,11 @@ function otherSessions(input) {
   const base = input.changedBase === void 0 ? root : real2(input.changedBase);
   const changed = /* @__PURE__ */ new Map();
   for (const path of input.changed) {
-    const full = join13(base, path);
+    const full = join6(base, path);
     const key = inside(root, full);
     if (key === null) continue;
-    const rel = relative6(root, full);
-    changed.set(key, rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute5(rel) ? key : rel.split(sep6).join("/"));
+    const rel = relative4(root, full);
+    changed.set(key, rel === ".." || rel.startsWith(`..${sep4}`) || isAbsolute4(rel) ? key : rel.split(sep4).join("/"));
   }
   const byOwner = /* @__PURE__ */ new Map();
   const tally = (owner) => {
@@ -2572,9 +1100,9 @@ function formatStatusTable(rows, nowSec) {
 }
 
 // src/registry/wait.ts
-import { createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync4 } from "node:fs";
-import { join as join14 } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { existsSync as existsSync2 } from "node:fs";
+import { join as join7 } from "node:path";
 var isDone = (state) => state === "finished" || state === "orphaned";
 function doneRecord(runsRoot, lane, alive) {
   const record2 = readState(runsRoot, lane);
@@ -2589,11 +1117,11 @@ function isRunning(runsRoot, lane, alive) {
   return shepherd !== null && alive(shepherd.pid);
 }
 function ackedFile(runsRoot, lane) {
-  return join14(runPaths(runsRoot, lane).laneDir, "acked.json");
+  return join7(runPaths(runsRoot, lane).laneDir, "acked.json");
 }
 function runMarker(runsRoot, lane, run) {
-  const since = createHash3("sha256").update(run.since).digest("hex").slice(0, 16);
-  return join14(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
+  const since = createHash2("sha256").update(run.since).digest("hex").slice(0, 16);
+  return join7(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
 }
 var sameRun = (a, b) => typeof a === "object" && a !== null && a["shepherdPid"] === b.shepherdPid && a["since"] === b.since;
 function isAcked(runsRoot, lane, run) {
@@ -2602,7 +1130,7 @@ function isAcked(runsRoot, lane, run) {
     recorded = readJson(ackedFile(runsRoot, lane));
   } catch {
   }
-  return sameRun(recorded, run) || existsSync4(runMarker(runsRoot, lane, run));
+  return sameRun(recorded, run) || existsSync2(runMarker(runsRoot, lane, run));
 }
 function ackRun(runsRoot, lane, run, attempt = null) {
   if (!Number.isSafeInteger(run.shepherdPid) || typeof run.since !== "string") throw new ArbabError("usage", "invalid lane run");
@@ -2611,7 +1139,7 @@ function ackRun(runsRoot, lane, run, attempt = null) {
   writeJsonAtomic(ackedFile(runsRoot, lane), { shepherdPid: run.shepherdPid, since: run.since, attempt });
   if (attempt !== null) {
     const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-    if (existsSync4(dir)) createExclusive(attemptFiles(dir).acked, `${attempt}
+    if (existsSync2(dir)) createExclusive(attemptFiles(dir).acked, `${attempt}
 `);
   }
   return true;
@@ -2625,7 +1153,7 @@ function pendingFinished(runsRoot, lanes, alive) {
     const run = { shepherdPid: record2.shepherdPid, since: record2.since };
     if (isAcked(runsRoot, lane, run)) continue;
     const dir = record2.attempt >= 1 ? runPaths(runsRoot, lane).attemptDir(record2.attempt) : null;
-    const attempt = dir !== null && existsSync4(dir) ? record2.attempt : null;
+    const attempt = dir !== null && existsSync2(dir) ? record2.attempt : null;
     const summary = attempt === null || dir === null ? null : readAttempt(dir).summary;
     const finished = record2.state === "finished";
     out.push({
@@ -2642,7 +1170,7 @@ function pendingFinished(runsRoot, lanes, alive) {
 }
 function ack(runsRoot, lane, attempt) {
   const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-  if (!existsSync4(dir)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt}`);
+  if (!existsSync2(dir)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt}`);
   const marked = createExclusive(attemptFiles(dir).acked, `${attempt}
 `);
   const record2 = readState(runsRoot, lane);
@@ -2657,7 +1185,7 @@ async function waitForFinished(options) {
   if (lanes) {
     for (const lane of lanes) {
       assertValidName(lane, "lane");
-      if (!existsSync4(runPaths(runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+      if (!existsSync2(runPaths(runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
     }
   }
   const start = clock.now();
@@ -2681,56 +1209,192 @@ async function waitForFinished(options) {
   }
 }
 
-// src/commands/generated.ts
-import { existsSync as existsSync5 } from "node:fs";
-import { join as join15 } from "node:path";
-var GENERATED = "generated.json";
-var BY = "integration:";
-var SHA3 = /^[0-9a-f]{40,64}$/;
-var ownerTag = (owner) => `${BY}${owner.integration}`;
-var markerPath = (runsRoot, lane) => join15(runsRoot, assertValidName(lane, "lane"), GENERATED);
-function markGenerated(runsRoot, lane, owner, now) {
-  const marker = { by: ownerTag(owner), createdAt: now, baseSha: owner.head };
-  writeJsonAtomic(markerPath(runsRoot, lane), marker);
+// src/summary/advice.ts
+var ATTENTION_END_STATES = /* @__PURE__ */ new Set([
+  "failed",
+  "invalid-report",
+  "no-result",
+  "budget",
+  "max-turns",
+  "unsupported-cli"
+]);
+function needsAttention(endState) {
+  if (endState === null) return false;
+  return ATTENTION_END_STATES.has(endState) || endState.startsWith("killed:");
 }
-function readGenerated(runsRoot, lane) {
-  const path = markerPath(runsRoot, lane);
-  if (!existsSync5(path)) return null;
-  let raw;
-  try {
-    raw = readJson(path);
-  } catch {
-    raw = null;
-  }
-  const fields = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
-  return {
-    by: typeof fields["by"] === "string" ? fields["by"] : null,
-    baseSha: typeof fields["baseSha"] === "string" && SHA3.test(fields["baseSha"]) ? fields["baseSha"] : null
-  };
-}
-function lanesGeneratedBy(runsRoot, integration) {
-  const tag = ownerTag({ integration });
-  return listLanes(runsRoot).filter((lane) => readGenerated(runsRoot, lane)?.by === tag);
-}
-function generatingIntegration(by) {
-  if (by?.startsWith(BY) !== true) return null;
-  const name2 = by.slice(BY.length);
-  return isValidName(name2) ? name2 : null;
-}
-function assertNotGenerated(runsRoot, lane) {
-  const marker = readGenerated(runsRoot, lane);
-  if (marker === null) return;
-  const owner = generatingIntegration(marker.by);
-  throw new ArbabError(
-    "usage",
-    `lane ${lane} was generated by ${owner === null ? "an integration" : `integration ${owner}`}, which owns the name; only its arbab verify or arbab review runs it. Give your lane another name`
-  );
+var ADVICE = {
+  "killed:wall": "ran past wallMin: read the last events; split the task or name the timeout, then relaunch or resume",
+  "killed:idle": "no stream growth for idleMin (often a foreground server or watcher): fix the brief, then resume or relaunch",
+  "killed:hang-after-result": "the work ended but the process hung: read report.json as for success; check the reaped pids in exit.json",
+  "killed:hang-after-error": "treat as the error it followed: read stderr.log and the last result",
+  "killed:stopped": "stopped by arbab stop: resume or relaunch when you have the correction",
+  "no-result": "crashed before a result: read stderr.log and exit.json, then decide as for failed",
+  "unsupported-cli": "the claude binary is too old for the model: run arbab doctor, upgrade or pin it, then relaunch",
+  budget: "spent budgetUsd: check the report and checkpoint, split or decide more, then resume or relaunch",
+  "max-turns": "hit the turn cap: check the report and checkpoint, split or decide more, then resume or relaunch",
+  "invalid-report": "the report is not usable: check the diff and reportErrors in summary.json; resume asking only for the report",
+  failed: "read the report, stderr.log and the last events; then arbab resume <lane> --prompt <file>, arbab resume <lane> --digest, or relaunch with a corrected brief",
+  orphaned: "the shepherd died before finishing: arbab cleanup, then decide as for failed"
+};
+function adviceFor(state) {
+  return Object.hasOwn(ADVICE, state) ? ADVICE[state] : "see references/end-states.md";
 }
 
-// src/commands/integration.ts
-import { createHash as createHash4 } from "node:crypto";
-import { existsSync as existsSync14 } from "node:fs";
-import { join as join32 } from "node:path";
+// src/quota/quota.ts
+import { existsSync as existsSync3, rmSync as rmSync3 } from "node:fs";
+import { join as join8 } from "node:path";
+
+// src/util/proc.ts
+function isAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+function sendSignal(target, signal) {
+  if (!Number.isInteger(target) || target === 0 || target === -1) {
+    throw new RangeError(`refusing to signal ${target}`);
+  }
+  try {
+    process.kill(target, signal);
+    return true;
+  } catch (err) {
+    if (err.code === "ESRCH") return false;
+    throw err;
+  }
+}
+var sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+var systemClock = { now: () => Date.now() };
+var isoAt = (clock) => new Date(clock.now()).toISOString();
+
+// src/quota/quota.ts
+var quotaPath = (home) => join8(home, "quota.json");
+var resetFile = (home) => join8(home, "quota-reset.json");
+function isWindow(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  return Number.isFinite(v["utilization"]) && Number.isFinite(v["resetsAt"]);
+}
+function isSnapshot(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value;
+  const nullableString = (x) => x === null || typeof x === "string";
+  return typeof v["observedAt"] === "string" && !Number.isNaN(Date.parse(v["observedAt"])) && nullableString(v["status"]) && nullableString(v["type"]) && (v["fiveHour"] === null || isWindow(v["fiveHour"])) && (v["sevenDay"] === null || isWindow(v["sevenDay"]));
+}
+function readQuota(home) {
+  let value;
+  try {
+    value = readJson(quotaPath(home));
+  } catch (err) {
+    if (err instanceof ArbabError) return null;
+    throw err;
+  }
+  return isSnapshot(value) ? value : null;
+}
+function updateQuota(home, snapshot) {
+  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
+  const stored = readQuota(home);
+  if (stored && Date.parse(snapshot.observedAt) <= Date.parse(stored.observedAt)) return false;
+  writeJsonAtomic(quotaPath(home), snapshot);
+  return true;
+}
+function resetQuota(home, clock) {
+  const path = quotaPath(home);
+  const existed = existsSync3(path);
+  try {
+    rmSync3(path, { force: true });
+  } catch (err) {
+    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
+  }
+  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
+  return existed;
+}
+function replaceQuota(home, snapshot, clock) {
+  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
+  writeJsonAtomic(quotaPath(home), snapshot);
+  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
+}
+function lastQuotaReset(home) {
+  let value;
+  try {
+    value = readJson(resetFile(home));
+  } catch (err) {
+    if (err instanceof ArbabError) return null;
+    throw err;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const resetAt = value["resetAt"];
+  if (typeof resetAt !== "string") return null;
+  const ms = Date.parse(resetAt);
+  return Number.isNaN(ms) ? null : ms;
+}
+var pct = (utilization) => `${Math.round(utilization * 100)}%`;
+var WINDOWS = [
+  { key: "fiveHour", name: "five-hour", label: "5h" },
+  { key: "sevenDay", name: "seven-day", label: "7d" }
+];
+function rejectedWindow(type) {
+  if (type?.startsWith("five_hour")) return "fiveHour";
+  if (type?.startsWith("seven_day")) return "sevenDay";
+  return null;
+}
+function holdDecision(snapshot, holdAbove, nowSec) {
+  if (!snapshot) return { hold: false, reason: null, until: null };
+  const reasons = [];
+  let until = null;
+  const named2 = snapshot.status === "rejected" ? rejectedWindow(snapshot.type) : null;
+  for (const { key, name: name2 } of WINDOWS) {
+    const window = snapshot[key];
+    if (!window || window.resetsAt <= nowSec) continue;
+    let reason = null;
+    if (snapshot.status === "rejected" && (named2 === null || named2 === key)) {
+      reason = `rate limit rejected (${name2} window at ${pct(window.utilization)})`;
+    } else if (window.utilization >= holdAbove[key]) {
+      reason = `${name2} window at ${pct(window.utilization)} (hold above ${pct(holdAbove[key])})`;
+    }
+    if (reason) {
+      reasons.push(reason);
+      until = Math.max(until ?? 0, window.resetsAt);
+    }
+  }
+  return reasons.length > 0 ? { hold: true, reason: reasons.join("; "), until } : { hold: false, reason: null, until: null };
+}
+function resumeAt(resetsAt, jitterSec) {
+  if (!Number.isFinite(jitterSec) || jitterSec < 0 || jitterSec > 60) {
+    throw new ArbabError("usage", `jitter ${jitterSec} must be between 0 and 60 seconds`);
+  }
+  return resetsAt + 60 + jitterSec;
+}
+var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function formatReset(resetsAt, nowSec) {
+  const at = new Date(resetsAt * 1e3);
+  const now = new Date(nowSec * 1e3);
+  const two = (n) => String(n).padStart(2, "0");
+  const time = `${two(at.getUTCHours())}:${two(at.getUTCMinutes())}Z`;
+  const sameDay = at.getUTCFullYear() === now.getUTCFullYear() && at.getUTCMonth() === now.getUTCMonth() && at.getUTCDate() === now.getUTCDate();
+  return sameDay ? time : `${MONTHS[at.getUTCMonth()]} ${at.getUTCDate()} ${time}`;
+}
+function formatQuota(snapshot, nowSec) {
+  if (!snapshot) return "quota unknown";
+  const parts = [];
+  for (const { key, label } of WINDOWS) {
+    const window = snapshot[key];
+    if (!window) continue;
+    parts.push(
+      window.resetsAt > nowSec ? `${label} ${pct(window.utilization)} (resets ${formatReset(window.resetsAt, nowSec)})` : `${label} \u2014 (reset ${formatReset(window.resetsAt, nowSec)})`
+    );
+  }
+  if (parts.length === 0) return "quota unknown";
+  if (snapshot.status === "rejected") parts.push("rejected");
+  return parts.join(" \xB7 ");
+}
+
+// src/quota/refresh.ts
+import { mkdtempSync, rmSync as rmSync4 } from "node:fs";
+import { join as join10 } from "node:path";
 
 // src/stream/classify.ts
 var UNSUPPORTED_CLI = /does not support this model|or newer is required/i;
@@ -2756,7 +1420,7 @@ function classifyAttempt(input) {
 }
 
 // src/stream/json.ts
-function isRecord4(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringOrNull(value) {
@@ -2819,16 +1483,16 @@ function failureCause(text2, deniedType) {
   return "real";
 }
 function quotaWindow(value) {
-  if (!isRecord4(value)) return null;
+  if (!isRecord3(value)) return null;
   const utilization = numberOrNull(value.utilization);
   const resetsAt = numberOrNull(value.resetsAt);
   return utilization === null || resetsAt === null ? null : { utilization, resetsAt };
 }
 function rateLimitFromEvent(event, observedAt) {
-  if (!isRecord4(event) || event.type !== "rate_limit_event") return null;
+  if (!isRecord3(event) || event.type !== "rate_limit_event") return null;
   const info = event.rate_limit_info;
-  if (!isRecord4(info)) return null;
-  const windows = isRecord4(info.unifiedWindows) ? info.unifiedWindows : {};
+  if (!isRecord3(info)) return null;
+  const windows = isRecord3(info.unifiedWindows) ? info.unifiedWindows : {};
   return {
     observedAt,
     status: stringOrNull(info.status),
@@ -2841,9 +1505,9 @@ function initFacts(event) {
   const plugins = [];
   for (const p of arrayOrEmpty(event.plugins)) {
     if (typeof p === "string") plugins.push(p);
-    else if (isRecord4(p) && typeof p.name === "string") plugins.push(p.name);
+    else if (isRecord3(p) && typeof p.name === "string") plugins.push(p.name);
   }
-  const timing = isRecord4(event.startup_timing) ? event.startup_timing : {};
+  const timing = isRecord3(event.startup_timing) ? event.startup_timing : {};
   return {
     tools: arrayOrEmpty(event.tools).filter((t) => typeof t === "string"),
     permissionMode: stringOrNull(event.permissionMode),
@@ -2872,7 +1536,7 @@ function resultFacts(event) {
   };
 }
 function tokenUsageOf(usage) {
-  if (!isRecord4(usage)) return null;
+  if (!isRecord3(usage)) return null;
   return {
     input: numberOrNull(usage.input_tokens) ?? 0,
     cacheCreation: numberOrNull(usage.cache_creation_input_tokens) ?? 0,
@@ -2895,7 +1559,7 @@ function maxGapMs(events) {
   let previous = null;
   let max = null;
   for (const e of events) {
-    if (!isRecord4(e) || typeof e.timestamp !== "string") continue;
+    if (!isRecord3(e) || typeof e.timestamp !== "string") continue;
     const ms = Date.parse(e.timestamp);
     if (Number.isNaN(ms)) continue;
     if (previous !== null) max = Math.max(max ?? 0, ms - previous, 0);
@@ -2905,13 +1569,13 @@ function maxGapMs(events) {
 }
 function toolResultText(content) {
   if (typeof content === "string") return content;
-  return arrayOrEmpty(content).map((item) => isRecord4(item) && typeof item.text === "string" ? item.text : "").join("\n");
+  return arrayOrEmpty(content).map((item) => isRecord3(item) && typeof item.text === "string" ? item.text : "").join("\n");
 }
 function contentBlocks(event) {
-  return isRecord4(event) && isRecord4(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord4) : [];
+  return isRecord3(event) && isRecord3(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord3) : [];
 }
 function toolUses(event) {
-  if (!isRecord4(event) || event.type !== "assistant") return [];
+  if (!isRecord3(event) || event.type !== "assistant") return [];
   const out = [];
   for (const block3 of contentBlocks(event)) {
     if (block3.type === "tool_use" && typeof block3.name === "string") out.push({ id: stringOrNull(block3.id), name: block3.name });
@@ -2919,7 +1583,7 @@ function toolUses(event) {
   return out;
 }
 function digestStream(events, observedAt, unparsedLines = 0) {
-  const records = events.filter(isRecord4);
+  const records = events.filter(isRecord3);
   let sessionId2 = null;
   let init = null;
   const results = [];
@@ -2944,7 +1608,7 @@ function digestStream(events, observedAt, unparsedLines = 0) {
       const type = stringOrNull(e.decision_reason_type);
       if (typeof e.tool_use_id === "string" && type) deniedTypes.set(e.tool_use_id, type);
     } else if (e.type === "assistant") {
-      if (isRecord4(e.message) && typeof e.message.id === "string") {
+      if (isRecord3(e.message) && typeof e.message.id === "string") {
         messageIds.add(e.message.id);
         const usage = tokenUsageOf(e.message.usage);
         if (usage !== null) usageById.set(e.message.id, usage);
@@ -3040,41 +1704,2678 @@ function buildAttemptSummary(input) {
 }
 
 // src/stream/transcript.ts
-import { readdirSync as readdirSync6, statSync as statSync3 } from "node:fs";
-import { join as join16 } from "node:path";
+import { readdirSync as readdirSync3, statSync as statSync2 } from "node:fs";
+import { join as join9 } from "node:path";
 var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function findTranscript(projectsDir, sessionId2) {
   if (!UUID.test(sessionId2)) return null;
   let dirs;
   try {
-    dirs = readdirSync6(projectsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+    dirs = readdirSync3(projectsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
   } catch {
     return null;
   }
   const file = `${sessionId2}.jsonl`;
   for (const dir of dirs) {
-    const candidate = join16(projectsDir, dir, file);
-    if (statSync3(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
+    const candidate = join9(projectsDir, dir, file);
+    if (statSync2(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
   }
   return null;
 }
 function measuredEffort(transcriptText) {
   const counts = new Counter();
   for (const entry of parseStream(transcriptText).events) {
-    if (isRecord4(entry) && entry.type === "assistant" && typeof entry.effort === "string" && entry.effort !== "") {
+    if (isRecord3(entry) && entry.type === "assistant" && typeof entry.effort === "string" && entry.effort !== "") {
       counts.add(entry.effort);
     }
   }
   return counts.toObject();
 }
 
+// src/quota/refresh.ts
+var REFRESH_PROMPT = "Reply with the single word: ok";
+var REFRESH_TIMEOUT_MS = 6e4;
+var STDERR_TAIL_LINES = 5;
+var STDERR_KEEP_CHARS = 16384;
+var TAIL_LINE_CHARS = 500;
+function refreshArgs() {
+  return [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--max-turns",
+    "1",
+    "--tools",
+    "",
+    // The same empty source list as a worker's: no user, project or local settings.
+    "--setting-sources",
+    "",
+    "--strict-mcp-config"
+  ];
+}
+function makeRefreshSpawn(spawnImpl, graceMs = 2e3) {
+  return (binary, args, opts) => new Promise((resolve20) => {
+    const out = [];
+    let err = "";
+    let timedOut = false;
+    let exit = null;
+    const timers = [];
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      resolve20({ code: exit?.code ?? null, signal: exit?.signal ?? null, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: err });
+    };
+    let child2;
+    try {
+      child2 = spawnImpl(binary, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e) {
+      err = `cannot start ${binary}: ${e.message}`;
+      finish();
+      return;
+    }
+    const kill = (sig) => {
+      try {
+        child2.kill(sig);
+      } catch {
+      }
+    };
+    child2.stdout?.on("data", (chunk) => out.push(chunk));
+    child2.stderr?.on("data", (chunk) => {
+      err = (err + chunk.toString("utf8")).slice(-STDERR_KEEP_CHARS);
+    });
+    child2.once("error", (e) => {
+      err += `${err === "" || err.endsWith("\n") ? "" : "\n"}${e.message}
+`;
+      if (child2.pid === void 0) finish();
+    });
+    child2.once("exit", (code4, signal) => {
+      exit = { code: code4, signal };
+      if (!timedOut) for (const t of timers.splice(0)) clearTimeout(t);
+      timers.push(setTimeout(finish, graceMs));
+    });
+    child2.once("close", finish);
+    timers.push(
+      setTimeout(() => {
+        timedOut = true;
+        kill("SIGTERM");
+        timers.push(
+          setTimeout(() => {
+            kill("SIGKILL");
+            timers.push(setTimeout(finish, graceMs));
+          }, graceMs)
+        );
+      }, opts.timeoutMs)
+    );
+    child2.stdin?.on("error", () => void 0);
+    child2.stdin?.end(opts.input);
+  });
+}
+function stderrTail(stderr) {
+  return stderr.split("\n").map((line2) => line2.trimEnd()).filter((line2) => line2.trim() !== "").slice(-STDERR_TAIL_LINES).map((line2) => line2.length > TAIL_LINE_CHARS ? `${line2.slice(0, TAIL_LINE_CHARS)}\u2026` : line2);
+}
+async function refreshQuota(input) {
+  const timeoutMs = input.timeoutMs ?? REFRESH_TIMEOUT_MS;
+  const tmpRoot = join10(input.home, "tmp");
+  let cwd;
+  try {
+    ensureDir(tmpRoot);
+    cwd = mkdtempSync(join10(tmpRoot, "quota-refresh-"));
+  } catch (err) {
+    throw new ArbabError("io", `cannot create a working directory under ${tmpRoot}: ${err.message}`, { cause: err });
+  }
+  let run;
+  try {
+    run = await input.spawn(input.binary, refreshArgs(), { cwd, env: input.env, input: REFRESH_PROMPT, timeoutMs });
+  } finally {
+    rmSync4(cwd, { recursive: true, force: true });
+  }
+  const fail2 = (what) => {
+    const tail = stderrTail(run.stderr);
+    const lines = tail.length === 0 ? ["  (stderr empty)"] : tail.map((line2) => `  ${line2}`);
+    return new ArbabError("runtime", [`refresh failed: ${what}; ${quotaPath(input.home)} is unchanged`, "stderr:", ...lines].join("\n"));
+  };
+  if (run.timedOut) throw fail2(`claude did not finish within ${Math.round(timeoutMs / 1e3)} s`);
+  if (run.code !== 0) throw fail2(`claude exited with ${run.code === null ? `signal ${run.signal ?? "unknown"}` : `code ${run.code}`}`);
+  const parsed2 = parseStream(run.stdout);
+  const snapshot = digestStream(parsed2.events, isoAt(input.clock), parsed2.unparsedLines).rateLimit;
+  if (snapshot === null) throw fail2("claude's stream had no rate_limit_event");
+  replaceQuota(input.home, snapshot, input.clock);
+  return snapshot;
+}
+
+// src/summary/integrations.ts
+import { existsSync as existsSync6 } from "node:fs";
+
+// src/review/findings.ts
+var SEVERITIES = ["HIGH", "MEDIUM", "LOW"];
+function text(v) {
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+function severity(v) {
+  return SEVERITIES.includes(v) ? v : null;
+}
+function parseFinding(lens, raw) {
+  if (!isRecord3(raw)) return null;
+  const title = text(raw.title);
+  const sev = severity(raw.severity);
+  const file = text(raw.file);
+  const failureScenario = text(raw.failure_scenario);
+  const evidence = text(raw.evidence);
+  if (title === null || sev === null || file === null || failureScenario === null || evidence === null) return null;
+  const finding = { lens, title, severity: sev, file, failureScenario, evidence, verdict: "unverified" };
+  if (Number.isInteger(raw.line) && raw.line >= 1) finding.line = raw.line;
+  if (text(raw.suggested_fix) !== null) finding.suggestedFix = raw.suggested_fix;
+  return finding;
+}
+function collectFindings(reports) {
+  const out = [];
+  const counts = /* @__PURE__ */ new Map();
+  for (const { lens, report } of reports) {
+    if (!isRecord3(report) || !Array.isArray(report.findings)) continue;
+    for (const raw of report.findings) {
+      const finding = parseFinding(lens, raw);
+      if (finding === null) continue;
+      const n = (counts.get(lens) ?? 0) + 1;
+      counts.set(lens, n);
+      out.push({ id: `${lens}-${n}`, ...finding });
+    }
+  }
+  return out;
+}
+function reviewerCoverage(report) {
+  if (!isRecord3(report)) return { coverage: null, pathsChecked: 0 };
+  const paths = Array.isArray(report.paths_checked) ? report.paths_checked.filter((p) => text(p) !== null) : [];
+  return { coverage: text(report.coverage), pathsChecked: new Set(paths).size };
+}
+function parseVerdicts(raw) {
+  const list3 = Array.isArray(raw) ? raw : isRecord3(raw) && Array.isArray(raw.verdicts) ? raw.verdicts : [];
+  const out = /* @__PURE__ */ new Map();
+  for (const v of list3) {
+    if (!isRecord3(v) || typeof v.id !== "string" || typeof v.refuted !== "boolean" || typeof v.reasoning !== "string") {
+      continue;
+    }
+    const sev = v.corrected_severity === "NONE" ? "NONE" : severity(v.corrected_severity);
+    if (sev === null) continue;
+    if (!out.has(v.id)) out.set(v.id, { refuted: v.refuted, severity: sev, reasoning: v.reasoning });
+  }
+  return out;
+}
+function applyVerdicts(findings, verdicts) {
+  const byId = parseVerdicts(verdicts);
+  return findings.map((f) => {
+    const v = byId.get(f.id);
+    if (v === void 0 || f.severity === "LOW") return { ...f };
+    if (v.refuted || v.severity === "NONE") return { ...f, verdict: "refuted", verdictReason: v.reasoning };
+    return { ...f, severity: v.severity, verdict: "confirmed", verdictReason: v.reasoning };
+  });
+}
+function reviewRecord(input) {
+  return {
+    name: input.name,
+    headSha: input.headSha,
+    lenses: input.lenses.map((l) => ({ ...l })),
+    skeptics: input.skeptics.map((s) => ({ ...s })),
+    findings: input.findings.map((f) => ({ ...f })),
+    finishedAt: new Date(input.now).toISOString(),
+    ...input.since !== void 0 && { since: input.since }
+  };
+}
+
+// src/review/history.ts
+import { readdirSync as readdirSync4 } from "node:fs";
+import { join as join11 } from "node:path";
+var ROUND_FILE = /^([1-9][0-9]{0,8})\.json$/;
+function reviewRoundPath(integrationDir, round) {
+  if (!Number.isInteger(round) || round < 1) throw new ArbabError("usage", `review round ${round} is not a positive integer`);
+  return join11(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
+}
+function reviewRounds(integrationDir) {
+  let names2;
+  try {
+    names2 = readdirSync4(join11(integrationDir, REVIEW_HISTORY_DIR));
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw new ArbabError("io", `cannot list ${join11(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
+  }
+  return names2.flatMap((n) => {
+    const round = ROUND_FILE.exec(n)?.[1];
+    return round === void 0 ? [] : [Number(round)];
+  }).sort((a, b) => a - b);
+}
+function writeReviewRound(integrationDir, record2) {
+  for (let round = (reviewRounds(integrationDir).at(-1) ?? 0) + 1; ; round++) {
+    const numbered = { ...record2, round };
+    if (createExclusive(reviewRoundPath(integrationDir, round), JSON.stringify(numbered, null, 2) + "\n")) return numbered;
+  }
+}
+function keepOtherLenses(previous, current, ran) {
+  if (previous === null || previous.headSha !== current.headSha) return current;
+  const rerun = new Set(ran);
+  const fresh2 = new Map(current.lenses.map((l) => [l.lens, l]));
+  const lenses2 = [];
+  for (const entry of previous.lenses) {
+    if (!rerun.has(entry.lens)) lenses2.push({ ...entry });
+    else {
+      const now = fresh2.get(entry.lens);
+      if (now !== void 0 && !lenses2.includes(now)) lenses2.push(now);
+    }
+  }
+  for (const entry of current.lenses) if (!lenses2.includes(entry)) lenses2.push(entry);
+  const order = new Map(lenses2.map((l, i) => [l.lens, i]));
+  const byLens = (items) => items.map((item, i) => ({ item, i })).sort((a, b) => (order.get(a.item.lens) ?? order.size) - (order.get(b.item.lens) ?? order.size) || a.i - b.i).map((x) => x.item);
+  const kept = (items) => items.filter((x) => !rerun.has(x.lens)).map((x) => ({ ...x }));
+  return {
+    ...current,
+    lenses: lenses2,
+    skeptics: byLens([...kept(previous.skeptics), ...current.skeptics]),
+    findings: byLens([...kept(previous.findings), ...current.findings])
+  };
+}
+
+// src/review/lanes.ts
+import { isAbsolute as isAbsolute5, relative as relative5, sep as sep5 } from "node:path";
+var MAX_LANE_NAME = 48;
+var MAX_FINDINGS = 10;
+var REF = /^[A-Za-z0-9._/@^~{}-]+$/;
+function reviewLaneFiles(paths, lane) {
+  const name2 = assertValidName(lane, "lane name");
+  const rel = relative5(paths.projectRoot, paths.lanesDir);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep5}`) || isAbsolute5(rel)) {
+    throw new ArbabError("usage", `the lanes directory ${paths.lanesDir} is not inside the project ${paths.projectRoot}`);
+  }
+  const dir = rel.split(sep5).join("/");
+  return { brief: `${dir}/${name2}.md`, schema: `${dir}/${name2}.schema.json` };
+}
+function startFields(start) {
+  const base = checkRef(start.base, "base");
+  if (start.mergeBranches === void 0) return { base };
+  return { base, mergeBranches: start.mergeBranches.map((ref2) => checkRef(ref2, "merge branch")) };
+}
+function laneName(name2, kind, lens) {
+  assertValidName(name2, "integration name");
+  assertValidName(lens, "lens");
+  const lane = `${name2}-${kind}-${lens}`;
+  if (lane.length > MAX_LANE_NAME) {
+    throw new ArbabError(
+      "usage",
+      `lane name ${lane} has ${lane.length} characters (at most ${MAX_LANE_NAME}): shorten the integration name or the lens`
+    );
+  }
+  return assertValidName(lane, "lane name");
+}
+function assertReviewLaneNames(name2, lenses2) {
+  for (const lens of lenses2) for (const kind of ["review", "skeptic"]) laneName(name2, kind, lens);
+}
+function checkRef(ref2, what) {
+  if (ref2.startsWith("-") || ref2.includes("..") || !REF.test(ref2)) {
+    throw new ArbabError("usage", `${what} ${JSON.stringify(ref2)} is not a plain git ref`);
+  }
+  return ref2;
+}
+function quote(text2) {
+  return text2.trim().split(/\r?\n/).map((line2) => line2 === "" ? ">" : `> ${line2}`).join("\n");
+}
+function reviewLane(input) {
+  const name2 = input.paths.name;
+  const lane = laneName(name2, "review", input.lens);
+  const base = checkRef(input.diffBase, "diff base");
+  if (input.text.trim() === "") throw new ArbabError("usage", `lens ${input.lens} has no text`);
+  const start = startFields(input);
+  const range2 = `${base}..HEAD`;
+  const since = input.since === true ? `
+
+The branch's earlier commits were reviewed in an earlier round: this round covers only what changed since
+\`${base}\`.` : "";
+  const brief = `# Review ${name2}: ${input.lens}
+
+## Task
+
+Review the change on this branch through the **${input.lens}** lens. Run \`git diff ${range2}\` to see the change, and
+\`git diff --stat ${range2}\` for the files it touches.${since}
+
+The ${input.lens} lens looks for:
+
+${quote(input.text)}
+
+Depth floor:
+
+- Read in full every file the diff changes, not only the hunks.
+- Where a finding depends on code the changed files call, read that code too; do not assume what it does.
+
+Findings:
+
+- Every finding names a file, a line, a concrete failure scenario (the inputs or events, and what goes wrong) and
+  evidence (the code that does it, quoted or cited by line).
+- At most ${MAX_FINDINGS} findings, strongest first. Severity: HIGH loses or corrupts work, escapes the fence or
+  leaks secrets; MEDIUM is wrong behaviour on a reachable path; LOW is a real but minor defect.
+- No style remarks. Report no finding rather than a speculative one.
+
+## Scope
+
+Read-only. Do not edit, create or delete files, and do not commit.
+
+## Acceptance
+
+- \`paths_checked\` lists every file you read in full.
+- \`coverage\` says what you verified and how, and what you did not check.
+- Each finding has a file, a line, a failure scenario and evidence.
+`;
+  const spec = {
+    name: lane,
+    role: "reviewer",
+    brief: reviewLaneFiles(input.paths, lane).brief,
+    ...start
+  };
+  return { spec, brief };
+}
+var SEVERITY_VERDICTS = ["HIGH", "MEDIUM", "LOW", "NONE"];
+var SKEPTIC_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    verdicts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          refuted: { type: "boolean" },
+          corrected_severity: { type: "string", enum: SEVERITY_VERDICTS },
+          reasoning: { type: "string" }
+        },
+        required: ["id", "refuted", "corrected_severity", "reasoning"]
+      }
+    }
+  },
+  required: ["verdicts"]
+};
+function skepticFindings(lens, findings) {
+  return findings.filter((f) => f.lens === lens && (f.severity === "HIGH" || f.severity === "MEDIUM"));
+}
+function skepticLane(input) {
+  const name2 = input.paths.name;
+  const lane = laneName(name2, "skeptic", input.lens);
+  const findings = skepticFindings(input.lens, input.findings);
+  if (findings.length === 0) {
+    throw new ArbabError("usage", `lens ${input.lens} has no MEDIUM or HIGH findings: no skeptic lane is needed`);
+  }
+  const base = input.diffBase === void 0 ? null : checkRef(input.diffBase, "diff base");
+  const start = startFields(input);
+  const listed = findings.map((f) => ({
+    id: f.id,
+    severity: f.severity,
+    title: f.title,
+    file: f.file,
+    ...f.line === void 0 ? {} : { line: f.line },
+    failure_scenario: f.failureScenario,
+    evidence: f.evidence
+  }));
+  const provenance = base === null ? "use the file's history (`git log` and `git blame`) to tell" : `run \`git diff ${base}..HEAD\` and the file's history to tell`;
+  const brief = `# Skeptic ${name2}: ${input.lens}
+
+## Task
+
+A reviewer reported the findings below about the change on this branch, through the **${input.lens}** lens. Try to
+refute each one. Check every finding from three angles:
+
+- Trace: does the code do what the finding says? Read the cited file and line and follow the calls.
+- Reachability: can it happen with real inputs, callers and configuration, not only in theory?
+- Provenance: was it introduced by this change or was it there before? To check, ${provenance}. A pre-existing defect
+  is still real: do not refute it for that, but say "pre-existing" in the reasoning.
+
+Give one verdict per finding id: \`refuted\` true when the finding is wrong or cannot happen, and the severity it
+really has (\`NONE\` when it is not a defect). If still uncertain after checking the code, refute it.
+
+The findings:
+
+\`\`\`json
+${JSON.stringify(listed, null, 2)}
+\`\`\`
+
+## Scope
+
+Read-only. Do not edit, create or delete files, and do not commit.
+
+## Acceptance
+
+- \`verdicts\` has exactly one entry for each finding id listed in the Task.
+- Each \`reasoning\` names the code it checked (file and line) for the trace, reachability and provenance angles.
+`;
+  const files = reviewLaneFiles(input.paths, lane);
+  const spec = {
+    name: lane,
+    role: "reviewer",
+    brief: files.brief,
+    ...start,
+    schema: files.schema
+  };
+  return { spec, brief, schema: SKEPTIC_SCHEMA };
+}
+
+// src/review/lenses.ts
+var BUILTIN_LENSES = Object.freeze({
+  correctness: "Wrong behaviour on reachable paths, lost or duplicated work, wrong end states, time and unit errors, resource leaks.",
+  security: "Fence escapes, code from workers running on the host, path traversal and symlinks, argument injection, secrets on disk or in logs, signals to the wrong processes, races.",
+  contracts: "Files and fields modules disagree on, behaviour against DESIGN.md, duplicated logic, untested exports, bundle-only breakage."
+});
+function lensNames(configLenses) {
+  const names2 = Object.keys(BUILTIN_LENSES);
+  for (const name2 of Object.keys(configLenses)) if (!names2.includes(name2)) names2.push(name2);
+  return names2;
+}
+function lensText(lens, configLenses) {
+  if (Object.hasOwn(configLenses, lens)) return configLenses[lens] ?? null;
+  return Object.hasOwn(BUILTIN_LENSES, lens) ? BUILTIN_LENSES[lens] ?? null : null;
+}
+var MAX_LENS_FILE_TEXT = 8e3;
+function parseLensFileOption(option) {
+  const at = option.indexOf("=");
+  if (at <= 0 || at === option.length - 1) {
+    throw new ArbabError("usage", `--lens-file ${JSON.stringify(option)} must be <name>=<file>`);
+  }
+  return { name: assertValidName(option.slice(0, at), "lens"), file: option.slice(at + 1) };
+}
+function lensFileText(name2, text2) {
+  const trimmed = text2.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_LENS_FILE_TEXT) {
+    throw new ArbabError("usage", `the file of lens ${name2} has ${trimmed.length} characters; a lens text has 1 to ${MAX_LENS_FILE_TEXT}`);
+  }
+  return trimmed;
+}
+
+// src/commands/records.ts
+var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isString = (v) => typeof v === "string";
+var isStringOrNull = (v) => v === null || typeof v === "string";
+var isNumberOrNull = (v) => v === null || Number.isFinite(v);
+var listOf = (v, item) => Array.isArray(v) && v.every(item);
+function read(path, name2, what, valid) {
+  const raw = readJson(path);
+  if (raw === null) return null;
+  if (!isObject2(raw) || raw["name"] !== name2 || !valid(raw)) {
+    throw new ArbabError("io", `${path} is not a ${what} for ${name2}`);
+  }
+  return raw;
+}
+var isGateResult = (v) => isObject2(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && listOf(v["argv"], isString) && isString(v["command"]) && isNumberOrNull(v["exitCode"]);
+function readVerifyRecord(path, name2) {
+  return read(
+    path,
+    name2,
+    "verify record",
+    (v) => isString(v["lane"]) && isNumberOrNull(v["attempt"]) && isString(v["headSha"]) && listOf(v["results"], isGateResult) && typeof v["passed"] === "boolean" && (v["reason"] === void 0 || isString(v["reason"])) && isString(v["finishedAt"])
+  );
+}
+var SEVERITIES2 = ["HIGH", "MEDIUM", "LOW"];
+var VERDICTS = ["confirmed", "refuted", "unverified"];
+var isFinding = (v) => isObject2(v) && isString(v["id"]) && isString(v["lens"]) && isString(v["title"]) && SEVERITIES2.includes(v["severity"]) && isString(v["file"]) && (v["line"] === void 0 || Number.isInteger(v["line"])) && isString(v["failureScenario"]) && isString(v["evidence"]) && VERDICTS.includes(v["verdict"]);
+var isLensEntry = (v) => isObject2(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]) && isStringOrNull(v["coverage"]) && Number.isInteger(v["pathsChecked"]);
+var isSkepticEntry = (v) => isObject2(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]);
+function readReviewRecord(path, name2) {
+  return read(
+    path,
+    name2,
+    "review record",
+    (v) => isString(v["headSha"]) && listOf(v["lenses"], isLensEntry) && listOf(v["skeptics"], isSkepticEntry) && listOf(v["findings"], isFinding) && isString(v["finishedAt"]) && (v["round"] === void 0 || Number.isInteger(v["round"]) && v["round"] >= 1) && (v["since"] === void 0 || isStringOrNull(v["since"]))
+  );
+}
+var isItem = (v) => isObject2(v) && isString(v["id"]) && isString(v["text"]);
+function readReadinessReport(path, name2) {
+  return read(
+    path,
+    name2,
+    "readiness report",
+    (v) => TIERS.includes(v["tier"]) && isString(v["headSha"]) && listOf(v["verified"], isItem) && listOf(v["skipped"], (s) => isItem(s) && typeof s["waived"] === "boolean") && listOf(v["risks"], isItem) && typeof v["ready"] === "boolean" && isString(v["createdAt"])
+  );
+}
+
+// src/integrate/integrate.ts
+import { existsSync as existsSync5, readdirSync as readdirSync7, realpathSync as realpathSync5, renameSync as renameSync3 } from "node:fs";
+import { dirname as dirname3, join as join18, resolve as resolve8 } from "node:path";
+
+// src/run/git.ts
+import { spawnSync } from "node:child_process";
+import { existsSync as existsSync4, lstatSync, realpathSync as realpathSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute as isAbsolute6, join as join12, relative as relative6, resolve as resolve4, sep as sep6 } from "node:path";
+function makeGitRunner(env2) {
+  return (args, cwd) => {
+    const r = spawnSync("git", args, { cwd, env: env2, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    if (r.error) return { code: 127, stdout: "", stderr: r.error.message };
+    return { code: r.status ?? 128, stdout: r.stdout, stderr: r.stderr };
+  };
+}
+var nodeGit = makeGitRunner();
+function must(git, args, cwd, options = []) {
+  const r = git([...options, ...args], cwd);
+  if (r.code !== 0) {
+    throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
+  }
+  return r.stdout;
+}
+function ensureIgnored(projectRoot, entries3, git) {
+  const excludeRel = must(git, ["rev-parse", "--git-path", "info/exclude"], projectRoot).trim();
+  if (excludeRel === "") throw new ArbabError("git", "git rev-parse --git-path info/exclude printed nothing");
+  const exclude = resolve4(projectRoot, excludeRel);
+  const text2 = readText(exclude) ?? "";
+  const present = new Set(text2.split(/\r?\n/).map((line2) => line2.trim()));
+  const missing = entries3.filter((entry) => !present.has(entry));
+  if (missing.length > 0) {
+    const prefix = text2 === "" || text2.endsWith("\n") ? "" : "\n";
+    ensureDir(dirname2(exclude));
+    writeFileSync2(exclude, text2 + prefix + missing.join("\n") + "\n");
+  }
+  for (const entry of entries3) {
+    const probe = `${entry.replace(/\/+$/, "")}/x`;
+    const r = git(["check-ignore", "-q", "--", probe], projectRoot);
+    if (r.code !== 0) throw new ArbabError("git", `${entry} is not ignored by git in ${projectRoot}`);
+  }
+}
+function canonical(path) {
+  try {
+    return realpathSync4(path);
+  } catch {
+    return resolve4(path);
+  }
+}
+function listWorktrees(projectRoot, git) {
+  const out = /* @__PURE__ */ new Map();
+  for (const block3 of must(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
+    const lines = block3.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === void 0) continue;
+    out.set(canonical(path), lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null);
+  }
+  return out;
+}
+function branchExists(projectRoot, branch, git) {
+  return git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectRoot).code === 0;
+}
+function refuseWorkerBranch(projectRoot, branch, base, path, git) {
+  const r = git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, base], projectRoot);
+  if (r.code === 0) return;
+  if (r.code !== 1) {
+    throw new ArbabError("git", `git merge-base --is-ancestor refs/heads/${branch} ${base} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
+  }
+  throw new ArbabError(
+    "git",
+    `the worktree ${path} is missing, and its branch ${branch} holds worker commits that are not on ${base}; arbab installs dependencies only on a trusted base. Restore the worktree at ${path}, or delete the branch ${branch}`
+  );
+}
+function assertRevision(rev, what) {
+  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+  return rev;
+}
+function commonDir(projectRoot, git) {
+  const out = must(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
+  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
+  return canonical(resolve4(projectRoot, out));
+}
+function createWorktree(input) {
+  const lane = assertValidName(input.lane, "lane");
+  const path = join12(confine(input.projectRoot, input.root), lane);
+  const branch = `arbab/${lane}`;
+  if (existsSync4(path)) {
+    const ref2 = listWorktrees(input.projectRoot, input.git).get(canonical(path));
+    if (ref2 !== void 0) {
+      if (ref2 !== `refs/heads/${branch}`) {
+        throw new ArbabError("git", `${path} is a worktree on ${ref2 ?? "a detached HEAD"}, not on ${branch}; lane ${lane} cannot run there`);
+      }
+      return { path, branch, created: false, gitCommonDir: commonDir(input.projectRoot, input.git) };
+    }
+  }
+  const trusted = assertRevision(input.trustedBase, "trusted base");
+  if (typeof input.base === "string") assertRevision(input.base, "base");
+  must(input.git, ["worktree", "prune"], input.projectRoot);
+  ensureDir(dirname2(path));
+  if (branchExists(input.projectRoot, branch, input.git)) {
+    refuseWorkerBranch(input.projectRoot, branch, trusted, path, input.git);
+    must(input.git, ["worktree", "add", path, branch], input.projectRoot, untrustedTree());
+  } else {
+    const base = assertRevision(typeof input.base === "string" ? input.base : input.base(), "base");
+    must(input.git, ["worktree", "add", "-b", branch, path, base], input.projectRoot, untrustedTree());
+  }
+  return { path, branch, created: true, gitCommonDir: commonDir(input.projectRoot, input.git) };
+}
+function discardWorktree(input) {
+  const lane = assertValidName(input.lane, "lane");
+  const path = join12(confine(input.projectRoot, input.root), lane);
+  const branch = `arbab/${lane}`;
+  const sources = input.sources.map((s) => assertRevision(s, "source"));
+  const head = branchExists(input.projectRoot, branch, input.git);
+  const keeps = [];
+  if (head) {
+    const extra = must(input.git, ["rev-list", `refs/heads/${branch}`, "--not", ...sources, "--"], input.projectRoot).split("\n").filter((l) => l !== "");
+    if (extra.length > 0) {
+      const shown = extra.slice(0, 3).join(", ") + (extra.length > 3 ? ` and ${extra.length - 3} more` : "");
+      keeps.push(`commits on ${branch} that are not on its base, its merge branches or the trusted base: ${shown}`);
+    }
+  }
+  if (existsSync4(path)) {
+    const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: input.gitCommonDir });
+    if (verified.gitDir === null) {
+      keeps.push(`a git dir that cannot be verified (${verified.error})`);
+    } else {
+      const changes = worktreeStatus(path, verified.gitDir, input.git);
+      if (changes.length > 0) {
+        const shown = changes.slice(0, 5).join("; ") + (changes.length > 5 ? `; and ${changes.length - 5} more` : "");
+        keeps.push(`uncommitted changes (${shown})`);
+      }
+    }
+  }
+  if (keeps.length > 0) {
+    throw new ArbabError(
+      "git",
+      `no worker has run in ${path}, but it holds what arbab cannot rebuild: ${keeps.join("; ")}. arbab will neither install dependencies there nor remove it. Keep what you need, remove the worktree and the branch ${branch}, then launch ${lane} again`
+    );
+  }
+  if (existsSync4(path)) must(input.git, ["worktree", "remove", "--force", path], input.projectRoot, untrustedTree());
+  must(input.git, ["worktree", "prune"], input.projectRoot);
+  if (head) must(input.git, ["branch", "-D", branch], input.projectRoot, untrustedTree());
+}
+function verifyWorktreeGit(input) {
+  const fail2 = (error) => ({ gitDir: null, error });
+  const read2 = (path) => {
+    try {
+      return readText(path);
+    } catch {
+      return null;
+    }
+  };
+  const common = canonical(input.gitCommonDir);
+  const pointer = /^gitdir: (.+)$/.exec((read2(join12(input.worktree, ".git")) ?? "").trim());
+  if (pointer?.[1] === void 0) return fail2(`${join12(input.worktree, ".git")} is not a worktree's gitdir pointer`);
+  const gitDir = canonical(resolve4(input.worktree, pointer[1]));
+  const rel = relative6(join12(common, "worktrees"), gitDir);
+  if (rel === "" || rel.startsWith("..") || isAbsolute6(rel) || rel.includes(sep6)) {
+    return fail2(`git dir ${gitDir} is not under ${join12(common, "worktrees")}`);
+  }
+  const head = read2(join12(gitDir, "HEAD"))?.trim();
+  if (head !== `ref: refs/heads/${input.branch}`) return fail2(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ref: refs/heads/${input.branch}`);
+  const commondir = read2(join12(gitDir, "commondir"))?.trim();
+  if (commondir === void 0 || commondir === "" || canonical(resolve4(gitDir, commondir)) !== common) {
+    return fail2(`commondir of ${gitDir} does not lead to ${common}`);
+  }
+  return { gitDir, error: null };
+}
+function explicitGit(gitDir, worktree) {
+  return [`--git-dir=${gitDir}`, `--work-tree=${worktree}`];
+}
+function untrustedTree() {
+  return [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "submodule.recurse=false"
+  ];
+}
+function holdsGit(path) {
+  try {
+    lstatSync(join12(path, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function indexGitlinks(worktree, gitDir, git) {
+  return must(git, [...explicitGit(gitDir, worktree), "ls-files", "-s", "-z"], worktree, untrustedTree()).split("\0").filter((entry) => entry.startsWith("160000 ")).map((entry) => entry.slice(entry.indexOf("	") + 1)).filter((path) => path !== "");
+}
+function worktreeStatus(worktree, gitDir, git) {
+  const args = [...explicitGit(gitDir, worktree), "status", "--porcelain", "--ignore-submodules=all"];
+  const lines = must(git, args, worktree, untrustedTree()).split("\n").filter((line2) => line2.trim() !== "");
+  const nested = indexGitlinks(worktree, gitDir, git).filter((path) => holdsGit(join12(worktree, path))).map((path) => `?? ${path}/`);
+  return [...lines, ...nested.filter((line2) => !lines.includes(line2))];
+}
+
+// src/run/deps.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+var DEPENDENCY_MANIFESTS = [
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  ".npmrc",
+  ".yarnrc",
+  ".yarnrc.yml",
+  ".pnpmfile.cjs",
+  ".pnpmfile.mjs",
+  // bun's install config: registries, scopes.
+  "bunfig.toml",
+  // yarn PnP's loader, which yarn loads into the scripts it runs.
+  ".pnp.cjs",
+  ".pnp.loader.mjs"
+];
+var MANIFEST_NAMES = new Set(DEPENDENCY_MANIFESTS.map((name2) => name2.toLowerCase()));
+var PATCH_SUFFIX = ".patch";
+var YARN_DIRECTORIES = ["releases", "plugins", "patches"];
+function isDependencyManifest(path) {
+  const segments = path.toLowerCase().split("/");
+  const base = segments.at(-1) ?? "";
+  if (MANIFEST_NAMES.has(base) || base.endsWith(PATCH_SUFFIX)) return true;
+  for (let i = 0; i + 2 < segments.length; i++) {
+    if (segments[i] === ".yarn" && YARN_DIRECTORIES.includes(segments[i + 1] ?? "")) return true;
+  }
+  return false;
+}
+var INSTALL_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "bundledDependencies",
+  "bundleDependencies",
+  "overrides",
+  "resolutions",
+  "pnpm",
+  "workspaces",
+  "packageManager",
+  "dependenciesMeta",
+  "peerDependenciesMeta",
+  // Linked into node_modules/.bin, where scripts run them.
+  "bin",
+  // engine-strict, os, cpu and libc decide what installs; trustedDependencies which packages' scripts run (bun).
+  "engines",
+  "os",
+  "cpu",
+  "libc",
+  "trustedDependencies",
+  // It can make the package manager fetch and use another runtime.
+  "devEngines"
+];
+var INSTALL_SCRIPTS = [
+  "preinstall",
+  "install",
+  "postinstall",
+  "preprepare",
+  "prepare",
+  "postprepare",
+  "prepublish",
+  "dependencies",
+  "pnpm:devPreinstall"
+];
+var isPlainObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function canonical2(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical2).join(",")}]`;
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).filter((k) => v[k] !== void 0).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical2(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "undefined";
+}
+var own = (o, key) => Object.hasOwn(o, key) ? o[key] : void 0;
+function installView(text2) {
+  let pkg;
+  try {
+    pkg = JSON.parse(text2);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(pkg)) return null;
+  const scripts = own(pkg, "scripts");
+  const lifecycle = scripts === void 0 ? {} : isPlainObject(scripts) ? Object.fromEntries(INSTALL_SCRIPTS.map((s) => [s, own(scripts, s)])) : scripts;
+  return canonical2({ fields: Object.fromEntries(INSTALL_FIELDS.map((f) => [f, own(pkg, f)])), lifecycle });
+}
+function installRelevantChange(path, before, after) {
+  if (before === after) return false;
+  const base = (path.split("/").at(-1) ?? "").toLowerCase();
+  if (base !== "package.json") return isDependencyManifest(path);
+  if (before === null || after === null) return true;
+  const a = installView(before);
+  const b = installView(after);
+  return a === null || b === null || a !== b;
+}
+function fileAt(git, rev, path) {
+  const r = git(["show", "--no-textconv", `${rev}:${path}`]);
+  return r.code === 0 ? r.stdout : null;
+}
+function installRelevantPaths(git, from, to, paths) {
+  const out = /* @__PURE__ */ new Set();
+  for (const path of paths) {
+    if (!isDependencyManifest(path)) continue;
+    if ((path.split("/").at(-1) ?? "").toLowerCase() !== "package.json") {
+      out.add(path);
+      continue;
+    }
+    const before = fileAt(git, from, path);
+    const after = fileAt(git, to, path);
+    if (before === null && after === null || installRelevantChange(path, before, after)) out.add(path);
+  }
+  return [...out].sort();
+}
+var runArgv = (argv2, cwd) => {
+  const [command, ...args] = argv2;
+  if (command === void 0) return { code: 127, output: "empty command" };
+  const r = spawnSync2(command, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) return { code: 127, output: r.error.message };
+  return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
+};
+function prepareDependencies(strategy, worktree, run) {
+  if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
+  if (strategy.strategy === "command") {
+    const argv2 = strategy.command;
+    if (!Array.isArray(argv2) || argv2.length === 0 || !argv2.every((a) => typeof a === "string") || argv2[0] === "") {
+      throw new ArbabError("config", "dependencies.command must be a non-empty argv array of strings");
+    }
+    const r = run(argv2, worktree);
+    return { ok: r.code === 0, code: r.code, output: r.output };
+  }
+  throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify(strategy.strategy)}`);
+}
+
+// src/run/pool.ts
+import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
+import { linkSync, readdirSync as readdirSync5, renameSync as renameSync2, rmdirSync, rmSync as rmSync5 } from "node:fs";
+import { join as join13, resolve as resolve5 } from "node:path";
+function isHolder(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  return Number.isInteger(v.pid) && v.pid > 0 && typeof v.lane === "string" && typeof v.project === "string" && typeof v.createdAt === "string";
+}
+function assertHolder(holder2) {
+  if (!isHolder(holder2)) throw new ArbabError("usage", "pool holder needs a positive pid, lane, project and createdAt");
+}
+function entryPath(dir, value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new ArbabError("usage", `pool value ${value} is not a non-negative integer`);
+  return join13(dir, `${value}.json`);
+}
+function parseHolder(text2) {
+  try {
+    const value = JSON.parse(text2);
+    return isHolder(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function releaseIfStale(path, alive, unparsedIsStale = false) {
+  const text2 = readText(path);
+  if (text2 === null) return true;
+  const holder2 = parseHolder(text2);
+  if (holder2 === null ? !unparsedIsStale : alive(holder2.pid)) return false;
+  const tomb = `${path}.${randomBytes2(6).toString("hex")}.stale`;
+  try {
+    renameSync2(path, tomb);
+  } catch (err) {
+    if (err.code === "ENOENT") return true;
+    throw new ArbabError("io", `cannot reclaim ${path}: ${err.message}`, { cause: err });
+  }
+  const moved = readText(tomb);
+  if (moved !== text2) {
+    try {
+      linkSync(tomb, path);
+    } catch {
+    }
+    rmSync5(tomb, { force: true });
+    return false;
+  }
+  rmSync5(tomb, { force: true });
+  return true;
+}
+function acquireFromPool(dir, values, holder2, alive) {
+  assertHolder(holder2);
+  const data = JSON.stringify(holder2);
+  for (const value of values) {
+    const path = entryPath(dir, value);
+    if (createExclusive(path, data)) return value;
+    if (!releaseIfStale(path, alive) || !createExclusive(path, data)) continue;
+    if (readText(path) === data) return value;
+  }
+  return null;
+}
+function releaseToPool(dir, value, holder2) {
+  const path = entryPath(dir, value);
+  const text2 = readText(path);
+  if (text2 === null) return false;
+  const current = parseHolder(text2);
+  if (current === null || current.pid !== holder2.pid || current.lane !== holder2.lane) return false;
+  rmSync5(path, { force: true });
+  return true;
+}
+function list(dir) {
+  try {
+    return readdirSync5(dir).sort();
+  } catch {
+    return [];
+  }
+}
+var POOL_FILE = /^\d+\.json(\.[0-9a-f]+\.stale)?$/;
+function listPoolEntries(home) {
+  const root = resolve5(home);
+  const dirs = [join13(root, "slots")];
+  for (const kind of ["semaphores", "leases", "locks"]) {
+    for (const name2 of list(join13(root, kind))) dirs.push(join13(root, kind, name2));
+  }
+  return dirs.flatMap((dir) => list(dir).filter((name2) => POOL_FILE.test(name2)).map((name2) => join13(dir, name2)));
+}
+var range = (n) => Array.from({ length: n }, (_, i) => i);
+function assertCount(n, what) {
+  if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("config", `${what} must be a positive integer, got ${n}`);
+}
+function acquireSlot(home, maxParallel, holder2, alive) {
+  assertCount(maxParallel, "maxParallel");
+  return acquireFromPool(join13(resolve5(home), "slots"), range(maxParallel), holder2, alive);
+}
+function releaseSlot(home, slot, holder2) {
+  return releaseToPool(join13(resolve5(home), "slots"), slot, holder2);
+}
+function acquireSemaphore(home, name2, capacity, holder2, alive) {
+  assertValidName(name2, "semaphore");
+  assertCount(capacity, `semaphore ${name2} capacity`);
+  return acquireFromPool(join13(resolve5(home), "semaphores", name2), range(capacity), holder2, alive);
+}
+function releaseSemaphore(home, name2, slot, holder2) {
+  assertValidName(name2, "semaphore");
+  return releaseToPool(join13(resolve5(home), "semaphores", name2), slot, holder2);
+}
+function writerLockKey(worktreeRealpath) {
+  return createHash3("sha1").update(worktreeRealpath).digest("hex");
+}
+function lockDir(home, key) {
+  if (!/^[0-9a-f]{40}$/.test(key)) throw new ArbabError("usage", `writer lock key ${JSON.stringify(key)} is not a sha1`);
+  return join13(resolve5(home), "locks", key);
+}
+var LOCK_DIR_RETRIES = 5;
+function vanished(err) {
+  return err instanceof ArbabError && err.cause?.code === "ENOENT";
+}
+function acquireWriterLock(home, key, holder2, alive) {
+  const dir = lockDir(home, key);
+  for (let tries = 1; ; tries++) {
+    try {
+      return acquireFromPool(dir, [0], holder2, alive) === 0;
+    } catch (err) {
+      if (!vanished(err) || tries >= LOCK_DIR_RETRIES) throw err;
+    }
+  }
+}
+function releaseWriterLock(home, key, holder2) {
+  const dir = lockDir(home, key);
+  const released = releaseToPool(dir, 0, holder2);
+  if (released) {
+    try {
+      rmdirSync(dir);
+    } catch {
+    }
+  }
+  return released;
+}
+
+// src/run/leases.ts
+import { createServer } from "node:net";
+import { join as join14, resolve as resolve6 } from "node:path";
+function isPortFree(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.resolve(false);
+  return new Promise((done) => {
+    const server = createServer();
+    server.once("error", () => done(false));
+    server.listen({ port, host: "127.0.0.1", exclusive: true }, () => {
+      server.close(() => done(true));
+    });
+  });
+}
+function leaseDir(home, type) {
+  return join14(resolve6(home), "leases", assertValidName(type, "resource type"));
+}
+function checkedRange(type, ranges) {
+  const spec = Object.hasOwn(ranges, type) ? ranges[type] : void 0;
+  const r = typeof spec === "object" && spec !== null ? spec.range : void 0;
+  if (!Array.isArray(r) || r.length !== 2) throw new ArbabError("lease", `no range configured for resource ${type}`);
+  const [lo, hi] = r;
+  if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi) || lo < 0 || lo > hi) {
+    throw new ArbabError("lease", `resource ${type} has an invalid range ${JSON.stringify(r)}`);
+  }
+  if (type === "port" && (lo < 1 || hi > 65535)) {
+    throw new ArbabError("lease", `port range ${JSON.stringify(r)} is outside 1..65535`);
+  }
+  return [lo, hi];
+}
+async function acquireLeases(req) {
+  const plan = [];
+  for (const type of Object.keys(req.requests).sort()) {
+    assertValidName(type, "resource type");
+    const count = req.requests[type];
+    if (count === void 0 || !Number.isSafeInteger(count) || count < 0) {
+      throw new ArbabError("lease", `resource ${type} count must be a non-negative integer`);
+    }
+    if (count === 0) continue;
+    const [lo, hi] = checkedRange(type, req.ranges);
+    plan.push({ type, count, lo, hi });
+  }
+  const taken = [];
+  try {
+    for (const { type, count, lo, hi } of plan) {
+      const dir = leaseDir(req.home, type);
+      let got = 0;
+      for (let value = lo; value <= hi && got < count; value++) {
+        if (acquireFromPool(dir, [value], req.holder, req.alive) === null) continue;
+        if (type === "port") {
+          let isFree;
+          try {
+            isFree = await req.probePort(value);
+          } catch (err) {
+            releaseToPool(dir, value, req.holder);
+            throw err;
+          }
+          if (!isFree) {
+            releaseToPool(dir, value, req.holder);
+            continue;
+          }
+        }
+        const { pid, lane, project, createdAt } = req.holder;
+        taken.push({ type, value, lane, project, pid, createdAt });
+        got++;
+      }
+      if (got < count) throw new ArbabError("lease", `only ${got} of ${count} ${type} values free in ${lo}..${hi}`);
+    }
+  } catch (err) {
+    releaseLeases(req.home, taken, req.holder);
+    throw err instanceof ArbabError ? err : new ArbabError("lease", err.message, { cause: err });
+  }
+  return taken;
+}
+function releaseLeases(home, leases, holder2) {
+  for (const lease of leases) releaseToPool(leaseDir(home, lease.type), lease.value, holder2);
+}
+function leaseEnv(leases) {
+  const env2 = {};
+  const next = /* @__PURE__ */ new Map();
+  for (const lease of leases) {
+    const i = next.get(lease.type) ?? 0;
+    next.set(lease.type, i + 1);
+    env2[`ARBAB_${envSuffix(lease.type)}_${i}`] = String(lease.value);
+  }
+  return env2;
+}
+
+// src/run/spawn.ts
+import { spawn } from "node:child_process";
+import { closeSync as closeSync2, openSync as openSync2 } from "node:fs";
+function open(path, flags, opened) {
+  try {
+    const fd = openSync2(path, flags);
+    opened.push(fd);
+    return fd;
+  } catch (err) {
+    const code4 = err.code;
+    const why = code4 === "EEXIST" ? "already exists (attempt files are never overwritten)" : err.message;
+    throw new ArbabError("io", `cannot open ${path}: ${why}`, { cause: err });
+  }
+}
+function spawnWorker(input) {
+  const opened = [];
+  let child2;
+  try {
+    const stdin = open(input.promptFile, "r", opened);
+    const stdout = open(input.streamFile, "wx", opened);
+    const stderr = open(input.stderrFile, "wx", opened);
+    child2 = (input.spawnImpl ?? spawn)(input.binary, input.args, {
+      cwd: input.cwd,
+      env: input.env,
+      detached: true,
+      stdio: [stdin, stdout, stderr]
+    });
+  } finally {
+    for (const fd of opened) closeSync2(fd);
+  }
+  const exited = new Promise((done) => {
+    child2.once("error", () => {
+      if (child2.pid === void 0) done({ code: null, signal: null });
+    });
+    child2.once("exit", (code4, signal) => done({ code: code4, signal }));
+  });
+  if (child2.pid === void 0) throw new ArbabError("runtime", `cannot start ${input.binary}`);
+  return { pid: child2.pid, exited };
+}
+
+// src/run/tree.ts
+import { execFileSync } from "node:child_process";
+function parsePs(output4) {
+  const rows = [];
+  for (const line2 of output4.split("\n")) {
+    const parts = line2.trim().split(/\s+/);
+    if (parts.length !== 3 || !parts.every((p) => /^\d+$/.test(p))) continue;
+    const [pid, ppid, pgid] = parts.map(Number);
+    rows.push({ pid, ppid, pgid });
+  }
+  return rows;
+}
+var execText = (file, args) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+function readPs(exec = execText) {
+  return exec("ps", ["-A", "-o", "pid=,ppid=,pgid="]);
+}
+function descendantsOf(root, table3, known) {
+  const children = /* @__PURE__ */ new Map();
+  for (const row of table3) {
+    const list3 = children.get(row.ppid);
+    if (list3) list3.push(row.pid);
+    else children.set(row.ppid, [row.pid]);
+  }
+  const found = /* @__PURE__ */ new Set();
+  const queue = [root, ...known, ...table3.filter((r) => r.pgid === root).map((r) => r.pid)];
+  for (const pid of queue) {
+    if (pid !== root && pid > 1) found.add(pid);
+  }
+  while (queue.length > 0) {
+    const pid = queue.pop();
+    for (const child2 of children.get(pid) ?? []) {
+      if (child2 === root || child2 <= 1 || found.has(child2)) continue;
+      found.add(child2);
+      queue.push(child2);
+    }
+  }
+  return found;
+}
+function trackDescendants(root, table3, tracked, rootRunning) {
+  const present = new Set(table3.map((row) => row.pid));
+  const rows = rootRunning ? table3 : table3.filter((row) => row.ppid !== root);
+  return new Set([...descendantsOf(root, rows, tracked)].filter((pid) => present.has(pid)));
+}
+function signalTargets(root, table3, tracked, rootRunning) {
+  const present = new Set(table3.map((row) => row.pid));
+  const parents = new Set([...tracked].filter((pid) => present.has(pid)));
+  if (rootRunning) parents.add(root);
+  const out = /* @__PURE__ */ new Set();
+  for (const row of table3) {
+    if (row.pid === root || row.pid <= 1) continue;
+    if (row.pgid === root || parents.has(row.ppid)) out.add(row.pid);
+  }
+  return out;
+}
+async function reap(input) {
+  const signal = input.signal ?? sendSignal;
+  const alive = input.alive ?? isAlive;
+  const sleep2 = input.sleep ?? sleep;
+  const graceMs = input.graceMs ?? 1e4;
+  const self = input.selfPid ?? process.pid;
+  const safe = (pid) => Number.isInteger(pid) && pid > 1 && pid !== self;
+  const vouched = (pids) => {
+    if (input.verify === void 0) return pids;
+    const ok = input.verify(pids);
+    return ok === null ? [] : pids.filter((pid) => ok.has(pid));
+  };
+  const targets = [.../* @__PURE__ */ new Set([input.pgid, ...input.pids])].filter(safe);
+  const living = vouched(targets.filter((pid) => alive(pid)));
+  const group = safe(input.pgid) ? -input.pgid : null;
+  const send = (target, sig) => {
+    try {
+      return signal(target, sig);
+    } catch {
+      return false;
+    }
+  };
+  let sent = group !== null && send(group, "SIGTERM");
+  for (const pid of living) sent = send(pid, "SIGTERM") || sent;
+  if (!sent) return living;
+  await sleep2(graceMs);
+  if (group !== null) send(group, "SIGKILL");
+  for (const pid of vouched(living.filter((p) => alive(p)))) send(pid, "SIGKILL");
+  return living;
+}
+
+// src/run/watch.ts
+import { closeSync as closeSync3, openSync as openSync3, readSync, statSync as statSync3 } from "node:fs";
+function fileSize(path) {
+  try {
+    return statSync3(path).size;
+  } catch (err) {
+    if (err.code === "ENOENT") return 0;
+    throw new ArbabError("io", `cannot stat ${path}: ${err.message}`, { cause: err });
+  }
+}
+function fileRange(path, start, end) {
+  const buf = Buffer.alloc(Math.max(0, end - start));
+  if (buf.length === 0) return buf;
+  const fd = openSync3(path, "r");
+  try {
+    let done = 0;
+    while (done < buf.length) {
+      const n = readSync(fd, buf, done, buf.length - done, start + done);
+      if (n === 0) break;
+      done += n;
+    }
+    return buf.subarray(0, done);
+  } finally {
+    closeSync3(fd);
+  }
+}
+var NEWLINE = 10;
+function createWatcher(input) {
+  const hangAfterResultMs = input.hangAfterResultMs ?? 15 * 6e4;
+  const hangAfterErrorMs = input.hangAfterErrorMs ?? 2 * 6e4;
+  const readSize = input.readSize ?? fileSize;
+  const readRange = input.readRange ?? fileRange;
+  let offset = 0;
+  let carry = Buffer.alloc(0);
+  let lastGrowthMs = input.startedAtMs;
+  let resultSeen = false;
+  let lastResultIsError = false;
+  let rateLimitEvent = null;
+  const consume2 = (line2) => {
+    let event;
+    try {
+      event = JSON.parse(line2.toString("utf8"));
+    } catch {
+      return;
+    }
+    if (typeof event !== "object" || event === null || Array.isArray(event)) return;
+    const e = event;
+    if (e.type === "rate_limit_event") rateLimitEvent = e;
+    if (e.type !== "result") return;
+    resultSeen = true;
+    lastResultIsError = e.is_error === true;
+  };
+  const read2 = (now) => {
+    const size2 = readSize(input.streamPath);
+    if (size2 < offset) {
+      offset = 0;
+      carry = Buffer.alloc(0);
+    }
+    if (size2 <= offset) return;
+    const chunk = readRange(input.streamPath, offset, size2);
+    if (chunk.length === 0) return;
+    offset += chunk.length;
+    lastGrowthMs = now;
+    let data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+    let nl = data.indexOf(NEWLINE);
+    while (nl !== -1) {
+      consume2(data.subarray(0, nl));
+      data = data.subarray(nl + 1);
+      nl = data.indexOf(NEWLINE);
+    }
+    carry = Buffer.from(data);
+  };
+  return {
+    tick() {
+      const now = input.clock.now();
+      rateLimitEvent = null;
+      read2(now);
+      const quiet = now - lastGrowthMs;
+      let kill = null;
+      if (now - input.startedAtMs > input.wallMs) kill = "wall";
+      else if (resultSeen && lastResultIsError && quiet > hangAfterErrorMs) kill = "hang-after-error";
+      else if (resultSeen && quiet > hangAfterResultMs) kill = "hang-after-result";
+      else if (quiet > input.idleMs) kill = "idle";
+      return { kill, rateLimitEvent };
+    },
+    state: () => ({ offset, lastGrowthMs, resultSeen, lastResultIsError })
+  };
+}
+
+// src/run/checkpoint.ts
+import { readdirSync as readdirSync6 } from "node:fs";
+import { join as join15 } from "node:path";
+function nestedUnder(worktree, rel, out) {
+  const abs = join15(worktree, rel);
+  if (holdsGit(abs)) {
+    out.push(rel);
+    return;
+  }
+  let entries3;
+  try {
+    entries3 = readdirSync6(abs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries3) if (e.isDirectory()) nestedUnder(worktree, `${rel}/${e.name}`, out);
+}
+function untrackedRepositories(git, worktree) {
+  const others = git(["ls-files", "--others", "--exclude-standard", "--directory", "-z"]);
+  if (others.code !== 0) return others;
+  const out = [];
+  for (const entry of others.stdout.split("\0")) {
+    if (entry.endsWith("/")) nestedUnder(worktree, entry.replace(/\/+$/, ""), out);
+  }
+  return out;
+}
+function stagedGitlinks(raw) {
+  const fields = raw.split("\0");
+  const out = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const [src, dst] = (fields[i] ?? "").replace(/^:/, "").split(" ");
+    const path = fields[i + 1] ?? "";
+    if ((src === "160000" || dst === "160000") && path !== "") out.push(path);
+  }
+  return out.sort();
+}
+var ARBAB_STATE = [".arbab", ".arbab-tmp"];
+function checkpoint(input) {
+  const lane = assertValidName(input.lane, "lane");
+  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
+    throw new ArbabError("usage", `attempt ${input.attempt} is not a positive integer`);
+  }
+  const verified = verifyWorktreeGit({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir });
+  if (verified.gitDir === null) return { sha: null, error: `checkpoint skipped: ${verified.error}` };
+  const gitDir = verified.gitDir;
+  const prefix = [...explicitGit(gitDir, input.worktree), ...untrustedTree()];
+  const git = (args) => input.git([...prefix, ...args], input.worktree);
+  let tracked;
+  try {
+    if (worktreeStatus(input.worktree, gitDir, input.git).length === 0) return { sha: null, error: null };
+    tracked = indexGitlinks(input.worktree, gitDir, input.git);
+  } catch (err) {
+    return { sha: null, error: err.message };
+  }
+  const failed = (step, r) => ({
+    sha: null,
+    error: `${step} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`
+  });
+  const untracked = untrackedRepositories(git, input.worktree);
+  if (!Array.isArray(untracked)) return failed("git ls-files --others", untracked);
+  const left = [.../* @__PURE__ */ new Set([...tracked.filter((p) => holdsGit(join15(input.worktree, p))), ...untracked])].sort();
+  const leftOut = left.length === 0 ? null : `nested repositories were not committed: ${left.join(", ")}; arbab never commits or inspects them`;
+  const state = ARBAB_STATE.filter((path) => git(["check-ignore", "-q", "--", path]).code !== 0);
+  const add = git([
+    "add",
+    "-A",
+    "--",
+    ".",
+    ...[.../* @__PURE__ */ new Set([...tracked, ...untracked])].map((p) => `:(exclude,literal)${p}`),
+    ...state.map((p) => `:(exclude,icase,literal)${p}`)
+  ]);
+  if (add.code !== 0) return failed("git add -A", add);
+  const cached = git(["diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none"]);
+  if (cached.code !== 0) return failed("git diff --cached", cached);
+  const staged = stagedGitlinks(cached.stdout);
+  if (staged.length > 0) {
+    return {
+      sha: null,
+      error: `nested repositories are staged in the index: ${staged.join(", ")}; arbab never commits or inspects them, so nothing was committed. Unstage them to let the checkpoint commit the rest`
+    };
+  }
+  if (cached.stdout === "") return { sha: null, error: leftOut };
+  const message5 = `arbab(${lane}): checkpoint attempt ${input.attempt} (${input.endState})
+
+Co-Authored-By: Claude <noreply@anthropic.com>`;
+  const commit = git(["commit", "--no-verify", "-m", message5]);
+  if (commit.code !== 0) return failed("git commit", commit);
+  const head = git(["rev-parse", "HEAD"]);
+  if (head.code !== 0) return failed("git rev-parse HEAD", head);
+  return { sha: head.stdout.trim(), error: leftOut };
+}
+
+// src/run/workertmp.ts
+import { closeSync as closeSync4, constants, lstatSync as lstatSync2, mkdirSync as mkdirSync4, openSync as openSync4, rmSync as rmSync6, unlinkSync } from "node:fs";
+import { join as join16 } from "node:path";
+var WORKER_TMP_DIR = ".arbab-tmp";
+function workerTmpPaths(worktree) {
+  const root = join16(worktree, WORKER_TMP_DIR);
+  return {
+    root,
+    xdgConfig: join16(root, "xdg-config"),
+    yarnCache: join16(root, "yarn-cache"),
+    npmrc: join16(root, "npmrc"),
+    inputs: join16(root, "inputs")
+  };
+}
+function lstatOrNull(path) {
+  try {
+    return lstatSync2(path);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw new ArbabError("io", `cannot read ${path}: ${err.message}`, { cause: err });
+  }
+}
+function removeEntry(path, stat) {
+  try {
+    if (stat.isDirectory()) rmSync6(path, { recursive: true, force: true });
+    else unlinkSync(path);
+  } catch (err) {
+    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
+  }
+}
+function realDir(worktree, rel) {
+  let at = worktree;
+  for (const part of rel.split(/[\\/]+/)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") throw new ArbabError("usage", `${rel} leaves the worktree`);
+    at = join16(at, part);
+    const stat = lstatOrNull(at);
+    if (stat?.isDirectory() === true) continue;
+    if (stat !== null) removeEntry(at, stat);
+    try {
+      mkdirSync4(at);
+    } catch (err) {
+      throw new ArbabError("io", `cannot create ${at}: ${err.message}`, { cause: err });
+    }
+  }
+  return at;
+}
+function ensureWorkerTmp(worktree) {
+  const paths = workerTmpPaths(worktree);
+  for (const dir of ["xdg-config", "yarn-cache", "inputs"]) realDir(worktree, join16(WORKER_TMP_DIR, dir));
+  const stat = lstatOrNull(paths.npmrc);
+  if (stat?.isFile() === true) return paths;
+  if (stat !== null) removeEntry(paths.npmrc, stat);
+  let fd;
+  try {
+    fd = openSync4(paths.npmrc, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+  } catch (err) {
+    throw new ArbabError("io", `cannot create ${paths.npmrc}: ${err.message}`, { cause: err });
+  }
+  closeSync4(fd);
+  return paths;
+}
+
+// src/run/project-files.ts
+import { join as join17, relative as relative7, resolve as resolve7, sep as sep7 } from "node:path";
+var ARBAB_DIR = ".arbab";
+var ESLINT_MARKER = ".eslintrc.json";
+function arbabIgnoreEntries(projectRoot, config) {
+  const rel = (p) => `${relative7(resolve7(projectRoot), confine(projectRoot, p)).split(sep7).join("/")}/`;
+  const own2 = `${ARBAB_DIR}/`;
+  const outside = [rel(config.worktreeRoot), rel(config.runsRoot)].filter((r) => !r.startsWith(own2));
+  return [.../* @__PURE__ */ new Set([own2, `${WORKER_TMP_DIR}/`, ...outside])];
+}
+function ensureArbabMarkers(projectRoot) {
+  createExclusive(join17(projectRoot, ARBAB_DIR, ESLINT_MARKER), `${JSON.stringify({ root: true }, null, 2)}
+`);
+}
+
+// src/shepherd/trust.ts
+var SHA = /^[0-9a-f]{40,64}$/;
+var output = (r) => (r.stderr || r.stdout).trim();
+function confirmedHeads(projectRoot, config, git) {
+  const heads = /* @__PURE__ */ new Set();
+  const listed = git(["ls-files", "-z", "--", `:(icase)${INTEGRATIONS_DIR}`], projectRoot);
+  if (listed.code !== 0) return heads;
+  const depth = INTEGRATIONS_DIR.split("/").length;
+  const trackedNames = new Set(
+    listed.stdout.split("\0").filter((p) => p !== "").map((p) => (p.split("/")[depth] ?? "").toLowerCase())
+  );
+  for (const name2 of listIntegrations(projectRoot)) {
+    if (trackedNames.has(name2)) continue;
+    try {
+      const at = readIntegration(integrationPaths(projectRoot, config, name2))?.depsConfirmedAt ?? null;
+      if (at !== null) heads.add(at);
+    } catch {
+    }
+  }
+  return heads;
+}
+function assertRevision2(rev, what) {
+  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+}
+function resolveCommit(projectRoot, rev, git) {
+  assertRevision2(rev, "revision");
+  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], projectRoot);
+  const sha = r.stdout.trim();
+  return r.code === 0 && SHA.test(sha) ? sha : null;
+}
+function isTrustedInstallPoint(sha, input) {
+  if (input.confirmed.has(sha)) return true;
+  assertRevision2(input.baseBranch, "baseBranch");
+  const r = input.git(["merge-base", "--is-ancestor", sha, input.baseBranch], input.projectRoot);
+  if (r.code === 0) return true;
+  if (r.code === 1) return false;
+  throw new ArbabError("git", `git merge-base --is-ancestor ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
+}
+function distance(ancestor, sha, input) {
+  const r = input.git(["rev-list", "--count", `${ancestor}..${sha}`], input.projectRoot);
+  const n = Number(r.stdout.trim());
+  if (r.code !== 0 || !Number.isInteger(n)) {
+    throw new ArbabError("git", `git rev-list --count ${ancestor}..${sha} failed (${r.code}): ${output(r)}`);
+  }
+  return n;
+}
+function installPlan(base, input) {
+  assertRevision2(base, "base");
+  assertRevision2(input.baseBranch, "baseBranch");
+  const sha = resolveCommit(input.projectRoot, base, input.git);
+  if (sha === null) return { start: base, merge: null };
+  if (isTrustedInstallPoint(sha, input)) return { start: sha, merge: null };
+  const candidates = [...input.confirmed].filter((c) => SHA.test(c) && input.git(["merge-base", "--is-ancestor", c, sha], input.projectRoot).code === 0).sort();
+  const r = input.git(["merge-base", sha, input.baseBranch], input.projectRoot);
+  const fork = r.stdout.trim();
+  if (r.code === 0 && SHA.test(fork)) {
+    candidates.push(fork);
+  } else if (r.code !== 1) {
+    throw new ArbabError("git", `git merge-base ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
+  }
+  if (candidates.length === 0) {
+    throw new ArbabError(
+      "git",
+      `base ${base} shares no history with ${input.baseBranch}, so the lane has no trusted commit to install its dependencies on; base it on ${input.baseBranch} or on a commit that descends from it`
+    );
+  }
+  let start = candidates[0];
+  let least = distance(start, sha, input);
+  for (const c of candidates.slice(1)) {
+    const d = distance(c, sha, input);
+    if (d < least) [start, least] = [c, d];
+  }
+  return { start, merge: sha };
+}
+
+// src/integrate/integrate.ts
+function listIntegrations(projectRoot) {
+  try {
+    return readdirSync7(join18(resolve8(projectRoot), INTEGRATIONS_DIR), { withFileTypes: true }).filter((e) => e.isDirectory() && isValidName(e.name)).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+}
+function integrationPaths(projectRoot, config, name2) {
+  const valid = assertValidName(name2, "integration");
+  if (valid === "integrate" || valid.startsWith("integrate-")) {
+    throw new ArbabError("usage", `integration name ${valid} may not be integrate or start with integrate-`);
+  }
+  const root = resolve8(projectRoot);
+  const dir = join18(root, INTEGRATIONS_DIR, valid);
+  return {
+    name: valid,
+    projectRoot: root,
+    dir,
+    integration: join18(dir, "integration.json"),
+    verify: join18(dir, "verify.json"),
+    review: join18(dir, "review.json"),
+    readiness: join18(dir, "readiness.json"),
+    readinessMd: join18(dir, "readiness.md"),
+    landing: join18(dir, "landing.json"),
+    lanesDir: join18(dir, "lanes"),
+    worktree: join18(confine(root, config.worktreeRoot), `${INTEGRATION_WORKTREE_PREFIX}${valid}`),
+    branch: `integrate/${valid}`
+  };
+}
+var SHA2 = /^[0-9a-f]{40,64}$/;
+var output2 = (r) => (r.stderr || r.stdout).trim();
+function must2(git, args, cwd) {
+  const r = git(args, cwd);
+  if (r.code !== 0) throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${output2(r)}`);
+  return r.stdout;
+}
+function canonical3(path) {
+  try {
+    return realpathSync5(path);
+  } catch {
+    return resolve8(path);
+  }
+}
+function commitOf(git, rev, cwd) {
+  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd);
+  const sha = r.stdout.trim();
+  return r.code === 0 && SHA2.test(sha) ? sha : null;
+}
+function isAncestor(git, ancestor, of, cwd) {
+  const r = git(["merge-base", "--is-ancestor", ancestor, of], cwd);
+  if (r.code === 0) return true;
+  if (r.code === 1) return false;
+  throw new ArbabError("git", `git merge-base --is-ancestor ${ancestor} ${of} failed (${r.code}): ${output2(r)}`);
+}
+function worktreeBranches(projectRoot, git) {
+  const out = /* @__PURE__ */ new Map();
+  for (const block3 of must2(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
+    const lines = block3.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === void 0) continue;
+    const ref2 = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null;
+    out.set(canonical3(path), ref2);
+  }
+  return out;
+}
+function gitCommonDir(projectRoot, git) {
+  const out = must2(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
+  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
+  return canonical3(resolve8(projectRoot, out));
+}
+function refuseLaneWorktree(paths, git) {
+  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
+  const lanePrefix = "refs/heads/arbab/";
+  if (typeof ref2 !== "string" || !ref2.startsWith(lanePrefix)) return;
+  throw new ArbabError(
+    "usage",
+    `${paths.worktree} is the worktree of lane ${ref2.slice(lanePrefix.length)}, where a worker runs, so integration ${paths.name} cannot use it. Lane names starting with ${INTEGRATION_WORKTREE_PREFIX} are reserved: rename that lane and remove its worktree, or choose another integration name`
+  );
+}
+function ownedGitDir(paths, git) {
+  const refused = (why) => new ArbabError("git", `${paths.worktree} exists but is not a worktree of this repository on ${paths.branch}: ${why}`);
+  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
+  if (ref2 === void 0) throw refused("git does not list it as a worktree");
+  if (ref2 !== `refs/heads/${paths.branch}`) throw refused(`it is on ${ref2 ?? "a detached HEAD"}`);
+  const verified = verifyWorktreeGit({
+    worktree: paths.worktree,
+    branch: paths.branch,
+    gitCommonDir: gitCommonDir(paths.projectRoot, git)
+  });
+  if (verified.gitDir === null) throw refused(verified.error);
+  return verified.gitDir;
+}
+function refuseLanded(paths) {
+  if (!existsSync5(paths.landing)) return;
+  let landedAt;
+  try {
+    const landing = readJson(paths.landing);
+    landedAt = isRecord4(landing) ? landing["landedAt"] : void 0;
+  } catch {
+  }
+  const when = typeof landedAt === "string" && landedAt !== "" ? `at ${landedAt}` : `(${paths.landing} does not say when)`;
+  throw new ArbabError(
+    "usage",
+    `integration ${paths.name} landed ${when}; its records stay as that landing's measurement. Choose a new name for a new integration`
+  );
+}
+function supersedeRecord(paths) {
+  if (!existsSync5(paths.integration)) return;
+  let updatedAt;
+  try {
+    const old = readJson(paths.integration);
+    updatedAt = isRecord4(old) ? old["updatedAt"] : void 0;
+  } catch {
+  }
+  const stamp = typeof updatedAt === "string" && updatedAt !== "" ? updatedAt.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-") : "unknown";
+  let target = join18(paths.dir, `integration.superseded-${stamp}.json`);
+  for (let n = 2; existsSync5(target); n++) target = join18(paths.dir, `integration.superseded-${stamp}-${n}.json`);
+  renameSync3(paths.integration, target);
+}
+function createIntegrationWorktree(input, paths) {
+  const { git, projectRoot } = input;
+  const base = input.config.baseBranch;
+  if (base === "" || base.startsWith("-")) {
+    throw new ArbabError("config", `baseBranch ${JSON.stringify(base)} is not a valid revision`);
+  }
+  const baseSha = commitOf(git, base, projectRoot);
+  if (baseSha === null) throw new ArbabError("git", `base ${base} does not name a commit`);
+  must2(git, ["worktree", "prune"], projectRoot);
+  ensureDir(dirname3(paths.worktree));
+  const existing = commitOf(git, `refs/heads/${paths.branch}`, projectRoot);
+  if (existing === null) {
+    must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, base], projectRoot);
+    supersedeRecord(paths);
+  } else {
+    if (!isAncestor(git, existing, baseSha, projectRoot)) {
+      throw new ArbabError(
+        "git",
+        `${paths.branch} exists without its worktree and holds commits that are not on ${base}; arbab prepares dependencies only on the trusted base. Restore the worktree at ${paths.worktree}, or delete the branch and integrate again`
+      );
+    }
+    must2(git, ["worktree", "add", paths.worktree, paths.branch], projectRoot);
+  }
+  let deps;
+  try {
+    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+  } catch (err) {
+    removeWorktree(git, paths);
+    throw err;
+  }
+  if (!deps.ok) {
+    removeWorktree(git, paths);
+    const tail = deps.output.trim().split("\n").slice(-5).join("\n");
+    throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
+  }
+}
+function refuseDirtyLanes(input, lanes) {
+  const { git, projectRoot } = input;
+  const root = confine(projectRoot, input.config.worktreeRoot);
+  let common = null;
+  for (const lane of lanes) {
+    const worktree = join18(root, lane);
+    if (!existsSync5(worktree)) continue;
+    common ??= gitCommonDir(projectRoot, git);
+    const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: common });
+    if (verified.gitDir === null) {
+      throw new ArbabError("git", `cannot check lane ${lane}'s worktree ${worktree} for uncommitted changes: ${verified.error}`);
+    }
+    const status = worktreeStatus(worktree, verified.gitDir, git).map((l) => l.slice(3));
+    if (status.length === 0) continue;
+    const shown = status.slice(0, 5).join(", ") + (status.length > 5 ? ` and ${status.length - 5} more` : "");
+    throw new ArbabError(
+      "usage",
+      `lane ${lane} has uncommitted changes in ${worktree} (${shown}): its checkpoint did not commit them, and integrating its branch would leave them behind. Commit or discard them, then integrate again`
+    );
+  }
+}
+function removeWorktree(git, paths) {
+  git(["worktree", "remove", "--force", paths.worktree], paths.projectRoot);
+}
+function oneEntryPerLane(entries3) {
+  const out = [];
+  for (const e of entries3) {
+    const i = out.findIndex((o) => o.lane === e.lane);
+    const prior = i < 0 ? void 0 : out[i];
+    if (prior === void 0) out.push({ ...e, manifests: [...e.manifests] });
+    else out[i] = { ...e, manifests: [.../* @__PURE__ */ new Set([...prior.manifests, ...e.manifests])].sort() };
+  }
+  return out;
+}
+function integrate(input) {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  const lanes = input.lanes.map((lane) => assertValidName(lane, "lane"));
+  const { git, config } = input;
+  refuseLanded(paths);
+  refuseLaneWorktree(paths, git);
+  refuseDirtyLanes(input, lanes);
+  if (!existsSync5(paths.worktree)) createIntegrationWorktree(input, paths);
+  const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
+  ensureIgnored(paths.projectRoot, arbabIgnoreEntries(paths.projectRoot, config), git);
+  ensureArbabMarkers(paths.projectRoot);
+  const wt = (args) => git([...prefix, ...args], paths.worktree);
+  const head = () => {
+    const sha = commitOf(wt, "HEAD", paths.worktree);
+    if (sha === null) throw new ArbabError("git", `cannot read HEAD of ${paths.worktree}`);
+    return sha;
+  };
+  const previous = readIntegration(paths);
+  let headSha = head();
+  const present = (sha) => SHA2.test(sha) && commitOf(wt, sha, paths.worktree) !== null;
+  let merged = oneEntryPerLane(
+    (previous?.merged ?? []).filter((m) => present(m.sha) && isAncestor(wt, m.sha, headSha, paths.worktree))
+  );
+  const keptBase = previous !== null && present(previous.baseSha) && isAncestor(wt, previous.baseSha, headSha, paths.worktree);
+  const base = keptBase ? previous.base : config.baseBranch;
+  if (base === "" || base.startsWith("-")) {
+    const from = keptBase ? `${paths.integration} records base` : "baseBranch";
+    throw new ArbabError(keptBase ? "io" : "config", `${from} ${JSON.stringify(base)} is not a valid revision`);
+  }
+  const mergeBase = () => must2(wt, ["merge-base", headSha, base], paths.worktree).trim();
+  let baseSha = mergeBase();
+  let confirmedAt = previous?.depsConfirmedAt ?? null;
+  const manifestsBetween = (from, to, what) => {
+    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", from, to, "--"]);
+    if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${what} (${diff.code}): ${output2(diff)}`);
+    return installRelevantPaths(wt, from, to, diff.stdout.split("\0").filter((p) => p !== ""));
+  };
+  const stillConfirmed = (at) => commitOf(wt, at, paths.worktree) !== null && isAncestor(wt, at, headSha, paths.worktree) && manifestsBetween(at, headSha, `${paths.branch} changed since ${at}`).length === 0;
+  const record2 = () => {
+    baseSha = mergeBase();
+    const manifests = manifestsBetween(baseSha, headSha, `${paths.branch} changed since ${baseSha}`);
+    if (confirmedAt !== null && !stillConfirmed(confirmedAt)) confirmedAt = null;
+    const depsConfirmedAt = confirmedAt;
+    const rec = {
+      name: paths.name,
+      branch: paths.branch,
+      worktree: paths.worktree,
+      base,
+      baseSha,
+      merged: [...merged],
+      manifests,
+      depsConfirmedAt,
+      depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null,
+      headSha,
+      updatedAt: isoAt(input.clock)
+    };
+    writeJsonAtomic(paths.integration, rec);
+    return rec;
+  };
+  record2();
+  const alreadyIn = [];
+  for (const lane of lanes) {
+    const branch = `arbab/${lane}`;
+    const sha = commitOf(wt, `refs/heads/${branch}`, paths.worktree);
+    if (sha === null) throw new ArbabError("git", `cannot integrate ${lane}: branch ${branch} does not exist`);
+    if (isAncestor(wt, sha, headSha, paths.worktree)) {
+      alreadyIn.push(lane);
+      if (merged.some((m) => m.lane === lane && m.sha === sha)) continue;
+      const fork = must2(wt, ["merge-base", baseSha, sha], paths.worktree).trim();
+      const manifests2 = manifestsBetween(fork, sha, `${lane} changed since ${baseSha}`);
+      merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests: manifests2 }]);
+      record2();
+      continue;
+    }
+    const r = wt(["merge", "--no-ff", "--no-edit", "--no-verify", "-m", `arbab: integrate ${lane} into ${paths.branch}`, sha]);
+    if (r.code !== 0) {
+      const unmerged = wt(["diff", "--name-only", "-z", "--diff-filter=U"]);
+      const conflicts = unmerged.code === 0 ? unmerged.stdout.split("\0").filter((p) => p !== "") : [];
+      wt(["merge", "--abort"]);
+      const kept = merged.length > 0 ? `; ${merged.map((m) => m.lane).join(", ")} stay merged` : "";
+      if (conflicts.length > 0) {
+        throw new ArbabError("git", `integrating ${lane} into ${paths.branch} conflicts in ${conflicts.join(", ")}; the merge was aborted${kept}`);
+      }
+      throw new ArbabError("git", `integrating ${lane} into ${paths.branch} failed (${r.code}): ${output2(r)}; the merge was aborted${kept}`);
+    }
+    const before = headSha;
+    headSha = head();
+    const manifests = manifestsBetween(before, headSha, `${lane} changed in ${paths.branch}`);
+    merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests }]);
+    record2();
+  }
+  return { record: record2(), alreadyIn };
+}
+function assertRevision3(rev, what) {
+  if (rev === "" || rev.startsWith("-") || /\s/.test(rev)) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+}
+function adoptIntegration(input) {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  const { git, projectRoot } = input;
+  const base = input.base ?? input.config.baseBranch;
+  assertRevision3(input.ref, "--adopt");
+  assertRevision3(base, input.base === void 0 ? "baseBranch" : "--base");
+  refuseLanded(paths);
+  refuseLaneWorktree(paths, git);
+  const existing = [
+    existsSync5(paths.integration) ? paths.integration : null,
+    commitOf(git, `refs/heads/${paths.branch}`, projectRoot) !== null ? `branch ${paths.branch}` : null,
+    existsSync5(paths.worktree) ? paths.worktree : null
+  ].filter((e) => e !== null);
+  if (existing.length > 0) {
+    throw new ArbabError("usage", `integration ${paths.name} already exists (${existing.join(", ")}); choose a new name to adopt ${input.ref}`);
+  }
+  const sha = commitOf(git, input.ref, projectRoot);
+  if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
+  const baseSha = commitOf(git, base, projectRoot);
+  if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
+  if (git(["show-ref", "--verify", "--quiet", `refs/heads/${base}`], projectRoot).code !== 0) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not a branch: land merges the integration into its base, so the base must be a branch`
+    );
+  }
+  const trusted = input.config.baseBranch;
+  assertRevision3(trusted, "baseBranch");
+  if (!isAncestor(git, baseSha, trusted, projectRoot)) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ${base} may hold worker code. Adopt against ${trusted}, or a branch it contains`
+    );
+  }
+  const fork = git(["merge-base", sha, baseSha], projectRoot);
+  if (fork.code !== 0 || !SHA2.test(fork.stdout.trim())) {
+    if (fork.code === 1) throw new ArbabError("usage", `${input.ref} shares no history with ${base}: there is nothing to land it into`);
+    throw new ArbabError("git", `git merge-base ${sha} ${baseSha} failed (${fork.code}): ${output2(fork)}`);
+  }
+  const start = fork.stdout.trim();
+  const trust = { projectRoot, baseBranch: trusted, confirmed: confirmedHeads(projectRoot, input.config, git), git };
+  if (!isTrustedInstallPoint(start, trust)) {
+    throw new ArbabError(
+      "usage",
+      `the fork point ${start} of ${input.ref} and ${base} is not a trusted install point (a commit of ${trusted} or an integration head a human confirmed), so arbab will not install dependencies there`
+    );
+  }
+  must2(git, ["worktree", "prune"], projectRoot);
+  ensureDir(dirname3(paths.worktree));
+  must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
+  try {
+    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+    if (!deps.ok) {
+      const tail = deps.output.trim().split("\n").slice(-5).join("\n");
+      throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
+    }
+    if (sha !== start) {
+      const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
+      must2(git, [...prefix, "merge", "--ff-only", "--no-verify", sha], paths.worktree);
+    }
+  } catch (err) {
+    removeWorktree(git, paths);
+    git([...untrustedTree(), "branch", "-D", paths.branch], projectRoot);
+    throw err;
+  }
+  return integrate({ ...input, config: { ...input.config, baseBranch: base }, lanes: [] });
+}
+function refreshIntegration(input) {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  refuseLanded(paths);
+  if (readIntegration(paths) === null) {
+    throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
+  }
+  if (!existsSync5(paths.worktree)) {
+    throw new ArbabError("usage", `integration ${paths.name} has no worktree at ${paths.worktree}; restore it on ${paths.branch} to refresh`);
+  }
+  const tracked = worktreeStatus(paths.worktree, ownedGitDir(paths, input.git), input.git).filter((l) => !l.startsWith("?? ")).map((l) => l.slice(3));
+  if (tracked.length > 0) {
+    const shown = tracked.slice(0, 5).join(", ") + (tracked.length > 5 ? ` and ${tracked.length - 5} more` : "");
+    throw new ArbabError(
+      "usage",
+      `integration ${paths.name} has uncommitted changes in ${paths.worktree} (${shown}); commit or discard them, then refresh`
+    );
+  }
+  return integrate({ ...input, lanes: [] });
+}
+function isRecord4(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+var isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === "string");
+function isMergedEntry(v) {
+  return isRecord4(v) && typeof v["lane"] === "string" && typeof v["branch"] === "string" && typeof v["sha"] === "string" && isStringArray(v["manifests"]);
+}
+function mergedManifests(merged) {
+  return [...new Set(merged.flatMap((m) => m.manifests))].sort();
+}
+var isOptional = (v, check2) => v === void 0 || check2(v);
+function readIntegration(paths) {
+  const raw = readJson(paths.integration);
+  if (raw === null) return null;
+  const ok = isRecord4(raw) && raw["name"] === paths.name && typeof raw["branch"] === "string" && typeof raw["worktree"] === "string" && typeof raw["base"] === "string" && typeof raw["baseSha"] === "string" && Array.isArray(raw["merged"]) && raw["merged"].every(isMergedEntry) && isOptional(raw["manifests"], isStringArray) && isOptional(raw["depsConfirmedAt"], (v) => v === null || typeof v === "string" && SHA2.test(v)) && typeof raw["depsConfirmed"] === "boolean" && typeof raw["headSha"] === "string" && typeof raw["updatedAt"] === "string";
+  if (!ok) throw new ArbabError("io", `${paths.integration} is not an integration record for ${paths.name}`);
+  const stored = raw;
+  const manifests = stored.manifests ?? mergedManifests(stored.merged);
+  const depsConfirmedAt = stored.depsConfirmedAt ?? null;
+  return { ...stored, manifests, depsConfirmedAt, depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null };
+}
+function confirmCommand(name2, sha) {
+  return `arbab integrate ${name2} --deps-installed ${sha}`;
+}
+function confirmDeps(paths, sha, git, clock) {
+  refuseLanded(paths);
+  const previous = readIntegration(paths);
+  if (previous === null) throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate first`);
+  if (!SHA2.test(sha)) {
+    throw new ArbabError(
+      "usage",
+      `--deps-installed takes the full head sha arbab integrate printed, not ${JSON.stringify(sha)}; the recorded head is ${previous.headSha}: review its manifests, then run ${confirmCommand(paths.name, previous.headSha)}`
+    );
+  }
+  if (sha !== previous.headSha) {
+    throw new ArbabError(
+      "usage",
+      `integration ${paths.name} records head ${previous.headSha}, not ${sha}: it moved since you reviewed it. Review the manifests arbab integrate ${paths.name} lists for ${previous.headSha} (run it again with its lanes), then run ` + confirmCommand(paths.name, previous.headSha)
+    );
+  }
+  const headSha = commitOf(git, `refs/heads/${paths.branch}`, paths.projectRoot);
+  if (headSha === null) throw new ArbabError("git", `branch ${paths.branch} does not exist`);
+  if (headSha !== previous.headSha) {
+    throw new ArbabError(
+      "usage",
+      `${paths.branch} is at ${headSha}, not ${previous.headSha}, the head whose manifests arbab integrate listed; run arbab integrate ${paths.name} --refresh (or with its lanes) again, review the manifests it lists, then run the arbab integrate ${paths.name} --deps-installed <sha> it prints`
+    );
+  }
+  if (previous.manifests.length === 0) return previous;
+  const rec = { ...previous, depsConfirmedAt: headSha, depsConfirmed: true, updatedAt: isoAt(clock) };
+  writeJsonAtomic(paths.integration, rec);
+  return rec;
+}
+
+// src/summary/integrations.ts
+var SHORT_SHA = 7;
+var short = (sha) => sha.slice(0, SHORT_SHA);
+function integrationLine(projectRoot, config, name2) {
+  const paths = integrationPaths(projectRoot, config, name2);
+  const record2 = readIntegration(paths);
+  if (record2 === null) return null;
+  const head = record2.headSha;
+  const verify = readVerifyRecord(paths.verify, name2);
+  const review = readReviewRecord(paths.review, name2);
+  const readiness = readReadinessReport(paths.readiness, name2);
+  const readinessOnHead = readiness !== null && readiness.headSha === head ? readiness : null;
+  const verified = verify !== null && verify.headSha === head && verify.passed;
+  const reviewed = review !== null && (review.headSha === head || readinessOnHead?.reviewCarriedOverFrom === review.headSha);
+  const ready = readinessOnHead?.ready === true;
+  const landed = existsSync6(paths.landing);
+  const stage = landed ? "landed" : ready ? "ready" : reviewed ? "reviewed" : verified ? "verified" : "integrated";
+  const waitsFor = [];
+  if (!landed) {
+    if (!record2.depsConfirmed) waitsFor.push(`dependencies to confirm: ${confirmCommand(name2, head)}`);
+    if (verify === null) waitsFor.push("verify has not run");
+    else if (verify.headSha !== head) waitsFor.push(`verify is stale (ran on ${short(verify.headSha)})`);
+    else if (!verify.passed) waitsFor.push(`verify failed${verify.reason === void 0 ? "" : `: ${verify.reason}`}`);
+    if (review === null) waitsFor.push("review missing");
+    else if (!reviewed) waitsFor.push(`review is stale (ran on ${short(review.headSha)})`);
+    if (readinessOnHead === null) waitsFor.push(readiness === null ? "readiness has not run" : "readiness is stale");
+    else {
+      const open2 = readinessOnHead.skipped.filter((s) => !s.waived).map((s) => s.id);
+      if (open2.length > 0) waitsFor.push(`readiness skipped, not waived: ${open2.join(", ")}`);
+    }
+    if (ready) waitsFor.push("ready: ask the human to land");
+  }
+  return { name: name2, stage, head, waitsFor };
+}
+function integrationOverview(projectRoot, config) {
+  const integrations = [];
+  const errors = [];
+  for (const name2 of listIntegrations(projectRoot)) {
+    try {
+      const line2 = integrationLine(projectRoot, config, name2);
+      if (line2 !== null) integrations.push(line2);
+    } catch (err) {
+      errors.push(`integration ${name2}: ${err.message}`);
+    }
+  }
+  return { integrations, errors };
+}
+
+// src/summary/landings.ts
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join19, resolve as resolve9 } from "node:path";
+function isObject3(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function readLanding(projectRoot, name2) {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync5(join19(resolve9(projectRoot), INTEGRATIONS_DIR, name2, "landing.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject3(raw) || raw["name"] !== name2) return null;
+  const { into, landedAt, mergeSha, owner, squash, lanes } = raw;
+  if (typeof into !== "string" || into === "" || typeof mergeSha !== "string" || typeof landedAt !== "string") return null;
+  const ms = Date.parse(landedAt);
+  if (!Number.isFinite(ms)) return null;
+  const landing = {
+    name: name2,
+    into,
+    landedAt,
+    mergeSha,
+    squash: squash === true,
+    lanes: Array.isArray(lanes) ? lanes.length : 0
+  };
+  if (owner === null || typeof owner === "string") landing.owner = owner;
+  return { landing, ms };
+}
+var SESSION_CHARS = 8;
+function landingOwner(owner) {
+  if (owner === null) return "outside Claude Code";
+  return owner === void 0 ? "session unknown" : `session ${owner.slice(0, SESSION_CHARS)}`;
+}
+function landingText(landing) {
+  return `${landing.name} at ${landing.landedAt} (${landingOwner(landing.owner)})`;
+}
+function landingsSince(projectRoot, sinceMs) {
+  return listIntegrations(projectRoot).map((name2) => readLanding(projectRoot, name2)).filter((l) => l !== null && l.ms > sinceMs).sort((a, b) => a.ms - b.ms || (a.landing.name < b.landing.name ? -1 : a.landing.name > b.landing.name ? 1 : 0)).map((l) => l.landing);
+}
+
+// src/summary/format.ts
+var NONE = "-";
+var INDENT = "  ";
+function table(rows) {
+  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
+  return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd());
+}
+function formatCounts(counts) {
+  const parts = [];
+  const s = counts.byState;
+  for (const state of ["running", "held", "preparing", "waiting-reset", "queued"]) {
+    if (s[state] > 0) parts.push(`${s[state]} ${state}`);
+  }
+  const finished = Object.entries(counts.finished).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const total = finished.reduce((n, [, c]) => n + c, 0);
+  if (total > 0) parts.push(`${total} finished (${finished.map(([end, c]) => `${c} ${end}`).join(", ")})`);
+  if (s.orphaned > 0) parts.push(`${s.orphaned} orphaned`);
+  return parts.join(" \xB7 ");
+}
+function phaseText(p) {
+  return p.status === "failed" && p.endState !== null ? `failed (${p.endState})` : p.status;
+}
+var isoAt2 = (sec) => new Date(sec * 1e3).toISOString().replace(/\.000Z$/, "Z");
+function formatSummary(s, nowSec) {
+  const out = [];
+  const section2 = (title, lines) => {
+    if (out.length > 0) out.push("");
+    out.push(title, ...lines.map((l) => INDENT + l));
+  };
+  if (s.lanes.total > 0) {
+    const lines = [formatCounts(s.lanes.counts)];
+    if (s.lanes.active.length > 0) {
+      lines.push(
+        ...table([
+          ["LANE", "STATE", "ELAPSED", "ATTEMPT", "OWNER", "REASON"],
+          ...s.lanes.active.map((l) => [
+            l.lane,
+            l.state,
+            l.elapsedMs === null ? NONE : formatElapsed(l.elapsedMs),
+            String(l.attempt),
+            l.owner ?? NONE,
+            l.reason ?? NONE
+          ])
+        ])
+      );
+    }
+    section2(`Lanes (${s.lanes.total})`, lines);
+  }
+  if (s.plans.length > 0) {
+    const lines = [];
+    for (const plan of s.plans) {
+      lines.push(`${plan.plan}:`);
+      lines.push(...table(plan.phases.map((p) => [phaseText(p), p.phase])).map((l) => INDENT + l));
+    }
+    lines.push("run `arbab plan status <plan file>` for the phases not launched yet");
+    section2("Plans", lines);
+  }
+  if (s.integrations.length > 0) {
+    section2(
+      "Integrations",
+      table(
+        s.integrations.map((i) => [
+          i.name,
+          i.stage,
+          i.head.slice(0, SHORT_SHA),
+          i.waitsFor.length > 0 ? `waits for: ${i.waitsFor.join("; ")}` : NONE
+        ])
+      )
+    );
+  }
+  if (s.landedSince !== void 0 && s.since !== void 0) {
+    section2(
+      `Landed since ${s.since}`,
+      s.landedSince.length === 0 ? ["nothing landed"] : table(
+        s.landedSince.map((l) => [
+          l.name,
+          `into ${l.into}`,
+          l.landedAt,
+          landingOwner(l.owner),
+          `${l.lanes} ${l.lanes === 1 ? "lane" : "lanes"}${l.squash ? ", squashed" : ""}`
+        ])
+      )
+    );
+  }
+  if (s.attention.length > 0) {
+    const lines = [];
+    for (const a of s.attention) {
+      lines.push(`${a.lane}: ${a.state} (attempt ${a.attempt})${a.reason === null ? "" : `: ${a.reason}`}`);
+      lines.push(`${INDENT}${a.todo}`);
+    }
+    section2("Needs attention", lines);
+  }
+  const q = s.quota;
+  const machine = q.slots.machineMaxParallel === null ? "" : `, machine cap ${q.slots.machineMaxParallel}`;
+  section2("Quota and slots", [
+    `quota: ${formatQuota(q.snapshot, nowSec)}`,
+    q.hold.hold ? `hold: yes, ${q.hold.reason ?? "quota"}${q.hold.until === null ? "" : ` (until ${isoAt2(q.hold.until)})`}` : "hold: no",
+    `slots: ${q.slots.inUse.length} in use machine-wide of ${q.slots.cap} (maxParallel ${q.slots.projectMaxParallel}${machine})`
+  ]);
+  if (s.errors.length > 0) section2("Unreadable records", s.errors);
+  return out.join("\n");
+}
+
+// src/summary/lanes.ts
+import { existsSync as existsSync7 } from "node:fs";
+var OWNER_CHARS = 8;
+var emptyCounts = () => ({
+  byState: { running: 0, held: 0, preparing: 0, "waiting-reset": 0, queued: 0, orphaned: 0 },
+  finished: {}
+});
+function attemptSummary(runsRoot, lane, attempt) {
+  if (attempt < 1) return null;
+  const dir = runPaths(runsRoot, lane).attemptDir(attempt);
+  return existsSync7(dir) ? readAttempt(dir).summary : null;
+}
+function laneOverview(runsRoot, alive, nowMs) {
+  const out = { total: 0, counts: emptyCounts(), active: [], attention: [], errors: [] };
+  for (const lane of listLanes(runsRoot)) {
+    try {
+      const record2 = readState(runsRoot, lane);
+      if (record2 === null) continue;
+      const state = effectiveState(record2, alive);
+      const summary = attemptSummary(runsRoot, lane, record2.attempt);
+      const reason = record2.reason ?? null;
+      out.total++;
+      if (state === "finished") {
+        const end = record2.endState ?? summary?.state ?? null;
+        const key = end ?? "unknown";
+        out.counts.finished[key] = (out.counts.finished[key] ?? 0) + 1;
+        if (needsAttention(end)) {
+          const endState = end;
+          out.attention.push({ lane, state: endState, attempt: record2.attempt, reason, todo: adviceFor(endState) });
+        }
+        continue;
+      }
+      out.counts.byState[state]++;
+      const owner = readShepherdRecord(runsRoot, lane)?.owner ?? null;
+      out.active.push({
+        lane,
+        state,
+        attempt: record2.attempt,
+        elapsedMs: statusRow({ ...record2, state }, summary, nowMs).elapsedMs,
+        owner: owner === null ? null : owner.slice(0, OWNER_CHARS),
+        reason
+      });
+      if (state === "orphaned") {
+        out.attention.push({ lane, state: "orphaned", attempt: record2.attempt, reason, todo: adviceFor("orphaned") });
+      }
+    } catch (err) {
+      out.errors.push(`lane ${lane}: ${err.message}`);
+    }
+  }
+  return out;
+}
+
+// src/summary/plans.ts
+import { readdirSync as readdirSync8 } from "node:fs";
+import { join as join20 } from "node:path";
+var PLANS_DIR = join20(".arbab", "plans");
+function names(dir, keep) {
+  try {
+    return readdirSync8(dir, { withFileTypes: true }).filter(keep).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+}
+function phaseLine(runsRoot, phase, alive) {
+  const record2 = readState(runsRoot, phase);
+  if (record2 === null) return { phase, status: "launched", endState: null };
+  const state = effectiveState(record2, alive);
+  if (state === "orphaned") return { phase, status: "failed", endState: "orphaned" };
+  if (state !== "finished") return { phase, status: state, endState: null };
+  let end = record2.endState ?? null;
+  if (end === null && record2.attempt >= 1) end = readAttempt(runPaths(runsRoot, phase).attemptDir(record2.attempt)).summary?.state ?? null;
+  return { phase, status: end === "success" ? "done" : "failed", endState: end };
+}
+function planOverview(projectRoot, runsRoot, alive) {
+  const root = join20(projectRoot, PLANS_DIR);
+  const plans = [];
+  const errors = [];
+  for (const plan of names(root, (e) => e.isDirectory() && isValidName(e.name))) {
+    const phases = [];
+    for (const file of names(join20(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
+      const phase = file.slice(0, -".json".length);
+      if (!isValidName(phase)) continue;
+      try {
+        phases.push(phaseLine(runsRoot, phase, alive));
+      } catch (err) {
+        errors.push(`plan ${plan} phase ${phase}: ${err.message}`);
+      }
+    }
+    if (phases.length > 0) plans.push({ plan, phases });
+  }
+  return { plans, errors };
+}
+
+// src/summary/slots.ts
+import { readdirSync as readdirSync9, readFileSync as readFileSync6 } from "node:fs";
+import { join as join21 } from "node:path";
+var SLOT_FILE = /^(0|[1-9][0-9]*)\.json$/;
+function holder(path) {
+  let v;
+  try {
+    v = JSON.parse(readFileSync6(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v;
+  if (!Number.isSafeInteger(o.pid) || o.pid < 1 || typeof o.lane !== "string" || typeof o.project !== "string") return null;
+  return { pid: o.pid, lane: o.lane, project: o.project };
+}
+function slotsInUse(home, alive) {
+  let files;
+  try {
+    files = readdirSync9(join21(home, "slots"));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const file of files) {
+    const match = SLOT_FILE.exec(file);
+    if (match === null) continue;
+    const h = holder(join21(home, "slots", file));
+    if (h !== null && alive(h.pid)) out.push({ slot: Number(match[1]), ...h });
+  }
+  return out.sort((a, b) => a.slot - b.slot);
+}
+function effectiveCap(projectMaxParallel, machine) {
+  return machine.maxParallel === null ? projectMaxParallel : Math.min(projectMaxParallel, machine.maxParallel);
+}
+function quotaOverview(input) {
+  const snapshot = readQuota(input.home);
+  return {
+    snapshot,
+    hold: holdDecision(snapshot, input.config.quota.holdAbove, input.nowSec),
+    slots: {
+      inUse: slotsInUse(input.home, input.alive),
+      cap: effectiveCap(input.config.maxParallel, input.machine),
+      projectMaxParallel: input.config.maxParallel,
+      machineMaxParallel: input.machine.maxParallel
+    }
+  };
+}
+
+// src/summary/project.ts
+function projectSummary(input) {
+  const { project, alive, nowMs, sinceMs } = input;
+  const lanes = laneOverview(project.runsRoot, alive, nowMs);
+  const plans = planOverview(project.root, project.runsRoot, alive);
+  const integrations = integrationOverview(project.root, project.config);
+  return {
+    root: project.root,
+    lanes: { total: lanes.total, counts: lanes.counts, active: lanes.active },
+    plans: plans.plans,
+    integrations: integrations.integrations,
+    attention: lanes.attention,
+    quota: quotaOverview({ home: input.home, config: project.config, machine: input.machine, alive, nowSec: Math.floor(nowMs / 1e3) }),
+    ...sinceMs !== void 0 && { since: new Date(sinceMs).toISOString(), landedSince: landingsSince(project.root, sinceMs) },
+    errors: [...lanes.errors, ...plans.errors, ...integrations.errors]
+  };
+}
+
+// src/summary/report.ts
+import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
+var FILES_SHOWN = 10;
+function size(path) {
+  try {
+    return statSync4(path).size;
+  } catch {
+    return null;
+  }
+}
+function laneFileRole(path) {
+  try {
+    const spec = readJson(path);
+    const role2 = typeof spec === "object" && spec !== null ? spec["role"] : void 0;
+    return ROLES.includes(role2) ? role2 : null;
+  } catch {
+    return null;
+  }
+}
+function readLaneReport(runsRoot, lane, n) {
+  const paths = runPaths(runsRoot, lane);
+  if (!existsSync8(paths.laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+  const attempts = listAttempts(runsRoot, lane);
+  const latest = attempts.at(-1);
+  if (latest === void 0) throw new ArbabError("usage", `lane ${lane} has no attempt yet`);
+  const attempt = n ?? latest;
+  if (!attempts.includes(attempt)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt} (attempts: ${attempts.join(", ")})`);
+  const dir = paths.attemptDir(attempt);
+  const files = attemptFiles(dir);
+  const record2 = readAttempt(dir);
+  let report = null;
+  let reportError = null;
+  try {
+    report = readJson(files.report);
+  } catch (err) {
+    reportError = err.message;
+  }
+  const summaryRole = record2.summary !== null && ROLES.includes(record2.summary.role) ? record2.summary.role : null;
+  return {
+    lane,
+    role: summaryRole ?? laneFileRole(paths.laneFile),
+    attempt,
+    latest,
+    record: record2,
+    report,
+    reportError,
+    stderr: { path: files.stderr, bytes: size(files.stderr) },
+    stream: { path: files.stream, bytes: size(files.stream) }
+  };
+}
+var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var str = (v) => typeof v === "string" ? v : null;
+var strings = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : null;
+var objects = (v) => Array.isArray(v) ? v.filter(isObject4) : null;
+var INDENT2 = "  ";
+var block = (text2, indent = INDENT2) => text2.split("\n").join(`
+${indent}`);
+function formatTokens2(t) {
+  return `${t.input} in \xB7 ${t.cacheCreation} cache write \xB7 ${t.cacheRead} cache read \xB7 ${t.output} out`;
+}
+function isTokens(v) {
+  return isObject4(v) && ["input", "cacheCreation", "cacheRead", "output"].every((k) => Number.isFinite(v[k]));
+}
+function costLine(s) {
+  if (typeof s.costUsd === "number") {
+    const delta = typeof s.costDeltaUsd === "number" && s.costDeltaUsd.toFixed(2) !== s.costUsd.toFixed(2) ? ` (\u0394$${s.costDeltaUsd.toFixed(2)})` : "";
+    return `cost:      $${s.costUsd.toFixed(2)}${delta}`;
+  }
+  return isTokens(s.tokens) ? `tokens:    ${formatTokens2(s.tokens)}` : "cost:      -";
+}
+function effortText(s) {
+  const measured = isObject4(s.measuredEffort) ? Object.entries(s.measuredEffort).filter(([, n]) => Number.isFinite(n)).map(([e, n]) => `${e} ${n}`) : [];
+  const requested = s.requestedEffort ?? "-";
+  return measured.length > 0 ? `${requested} (measured: ${measured.join(", ")})` : requested;
+}
+function formatHeader(r, live = null) {
+  const s = r.record.summary ?? live;
+  const lines = [
+    `lane:      ${r.lane}`,
+    `role:      ${r.role ?? "-"}`,
+    `attempt:   ${r.attempt}${r.attempt === r.latest ? "" : ` (latest ${r.latest})`}`
+  ];
+  if (s === null) {
+    lines.push("end state: - (no summary.json)");
+    return lines;
+  }
+  const wallMs = s.wallMs ?? r.record.exit?.wallMs ?? null;
+  lines.push(
+    `end state: ${s.state}${r.record.summary === null ? " (live, no summary.json yet)" : ""}`,
+    `wall:      ${typeof wallMs === "number" ? formatElapsed(wallMs) : "-"}`,
+    `turns:     ${s.turns}`,
+    costLine(s),
+    `effort:    ${effortText(s)}`
+  );
+  return lines;
+}
+function listSection(title, items) {
+  if (items === null) return [];
+  if (items.length === 0) return [`${title}: none`];
+  return [`${title}:`, ...items.map((i) => `${INDENT2}- ${block(i, INDENT2 + "  ")}`)];
+}
+function workerBody(rep) {
+  const lines = [];
+  const status = str(rep["status"]);
+  if (status !== null) lines.push(`status: ${status}`);
+  const summary = str(rep["summary"]);
+  if (summary !== null) lines.push(`summary: ${block(summary)}`);
+  const files = strings(rep["files_changed"]);
+  if (files !== null) {
+    const more = files.length > FILES_SHOWN ? `, \u2026 ${files.length - FILES_SHOWN} more` : "";
+    lines.push(`files changed (${files.length})${files.length > 0 ? `: ${files.slice(0, FILES_SHOWN).join(", ")}${more}` : ""}`);
+  }
+  const checks = objects(rep["checks"]);
+  if (checks !== null) {
+    if (checks.length === 0) lines.push("checks: none");
+    else {
+      lines.push("checks:");
+      for (const c of checks) {
+        const code4 = Number.isInteger(c["exit_code"]) ? String(c["exit_code"]) : "?";
+        const result = str(c["result"]);
+        lines.push(`${INDENT2}${str(c["command"]) ?? "?"} \u2192 ${code4}${result === null || result === "" ? "" : `  ${block(result, INDENT2 + "  ")}`}`);
+      }
+    }
+  }
+  lines.push(...listSection("decisions", strings(rep["decisions"])));
+  lines.push(...listSection("open questions", strings(rep["open_questions"])));
+  lines.push(...listSection("not verified", strings(rep["not_verified"])));
+  const notes = str(rep["notes_for_reviewer"]);
+  if (notes !== null) lines.push(`notes for reviewer: ${block(notes)}`);
+  return lines;
+}
+function reviewerBody(rep, findings) {
+  const lines = [];
+  const coverage = str(rep["coverage"]);
+  if (coverage !== null) lines.push(`coverage: ${block(coverage)}`);
+  const paths = strings(rep["paths_checked"]);
+  if (paths !== null) lines.push(`paths checked: ${paths.length}`);
+  lines.push(findings.length === 0 ? "findings: none" : `findings (${findings.length}):`);
+  findings.forEach((f, i) => {
+    const line2 = Number.isInteger(f["line"]) ? `:${f["line"]}` : "";
+    const id = str(f["id"]) ?? String(i + 1);
+    lines.push(`${INDENT2}${id}  ${str(f["severity"]) ?? "?"}  ${str(f["title"]) ?? "?"}  ${str(f["file"]) ?? "?"}${line2}`);
+  });
+  return lines;
+}
+function skepticBody(verdicts) {
+  const lines = [verdicts.length === 0 ? "verdicts: none" : `verdicts (${verdicts.length}):`];
+  for (const v of verdicts) {
+    const refuted = v["refuted"] === true ? "refuted" : v["refuted"] === false ? "stands" : "?";
+    const reasoning = str(v["reasoning"]);
+    lines.push(
+      `${INDENT2}${str(v["id"]) ?? "?"}  ${refuted}  ${str(v["corrected_severity"]) ?? "?"}${reasoning === null ? "" : `  ${block(reasoning, INDENT2 + "  ")}`}`
+    );
+  }
+  return lines;
+}
+function formatReportBody(report) {
+  if (!isObject4(report)) return ["report.json is not an object (see --json)"];
+  const findings = objects(report["findings"]);
+  if (findings !== null) return reviewerBody(report, findings);
+  const verdicts = objects(report["verdicts"]);
+  if (verdicts !== null) return skepticBody(verdicts);
+  const worker = workerBody(report);
+  if (worker.length > 0) return worker;
+  return [`report fields: ${Object.keys(report).join(", ") || "none"} (see --json)`];
+}
+var bytes = (n) => n === null ? "missing" : `${n} bytes`;
+function formatLaneReport(r, live = null) {
+  const lines = formatHeader(r, live);
+  lines.push("");
+  if (r.reportError !== null) {
+    lines.push(`report.json cannot be read: ${r.reportError}`);
+  } else if (r.report === null) {
+    lines.push(`no report.json; see ${r.stderr.path} (${bytes(r.stderr.bytes)}); stream.jsonl: ${bytes(r.stream.bytes)}`);
+  } else {
+    lines.push(...formatReportBody(r.report));
+  }
+  return lines.join("\n");
+}
+
+// src/hook/catchup.ts
+var SESSIONS_DIR = "sessions";
+var NAMED_LANDINGS = 5;
+var WATERMARK_MAX_AGE_MS = 30 * 864e5;
+var WATERMARK_FILE = /^[0-9a-f]{64}\.json$/;
+function watermarkPath(home, session) {
+  return join22(home, SESSIONS_DIR, `${createHash4("sha256").update(session).digest("hex")}.json`);
+}
+function readWatermark(path) {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync7(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject5(raw)) return null;
+  const seenAt = raw["seenAt"];
+  const ms = typeof seenAt === "string" ? Date.parse(seenAt) : NaN;
+  return Number.isFinite(ms) ? ms : null;
+}
+function isObject5(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+var flat = (text2) => text2.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
+function catchUpText(seenAt, landings) {
+  const intos = [...new Set(landings.map((l) => l.into))];
+  const named2 = landings.slice(0, NAMED_LANDINGS).map(landingText);
+  const more = landings.length > NAMED_LANDINGS ? ` and ${landings.length - NAMED_LANDINGS} more` : "";
+  const into = intos.join(", ");
+  const merge = intos.length === 1 ? into : `its base (${into})`;
+  return flat(
+    `arbab: since this session's last message (${seenAt}), other sessions landed into ${into} here: ${named2.join(", ")}${more}. Lanes keep their own base; an integration started before these must merge ${merge} in before it can land.`
+  );
+}
+function registeredAround(home, cwd, realpath2) {
+  let real2 = null;
+  try {
+    real2 = realpath2(cwd);
+  } catch {
+  }
+  return listProjects(home).map((entry) => entry.root).filter((root) => sameOrInside(root, cwd) || real2 !== null && sameOrInside(root, real2));
+}
+function sameRoot(a, b, realpath2) {
+  if (foldPath(a) === foldPath(b)) return true;
+  try {
+    return foldPath(realpath2(a)) === foldPath(realpath2(b));
+  } catch {
+    return false;
+  }
+}
+function catchUpDecision(input, event, opts) {
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(input);
+  } catch {
+    return null;
+  }
+  if (!isObject5(parsed2)) return null;
+  const { session_id: session, cwd, hook_event_name: name2, source } = parsed2;
+  if (typeof session !== "string" || session === "" || typeof cwd !== "string" || cwd === "") return null;
+  if (name2 !== void 0 && name2 !== event) return null;
+  if (source !== void 0 && typeof source !== "string") return null;
+  const realpath2 = opts.realpath ?? ((path2) => realpathSync6.native(path2));
+  const roots = registeredAround(opts.home, cwd, realpath2);
+  if (roots.length === 0) return null;
+  const root = opts.findRoot(cwd);
+  if (root === null || !roots.some((r) => sameRoot(r, root, realpath2))) return null;
+  const path = watermarkPath(opts.home, session);
+  const seenMs = readWatermark(path);
+  const now = isoAt(opts.clock);
+  if (seenMs === null) {
+    writeJsonAtomic(path, { seenAt: now });
+    return null;
+  }
+  const landings = landingsSince(root, seenMs).filter((l) => l.owner !== session);
+  writeJsonAtomic(path, { seenAt: now });
+  if (landings.length === 0) return null;
+  return JSON.stringify({
+    hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(new Date(seenMs).toISOString(), landings) }
+  });
+}
+function removeStaleWatermarks(home, nowMs, maxAgeMs = WATERMARK_MAX_AGE_MS) {
+  const dir = join22(home, SESSIONS_DIR);
+  let files;
+  try {
+    files = readdirSync10(dir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const file of files) {
+    if (!WATERMARK_FILE.test(file)) continue;
+    const path = join22(dir, file);
+    try {
+      if (!(nowMs - statSync5(path).mtimeMs > maxAgeMs)) continue;
+      rmSync7(path, { force: true });
+      removed++;
+    } catch {
+    }
+  }
+  return removed;
+}
+
+// src/commands/generated.ts
+import { existsSync as existsSync9 } from "node:fs";
+import { join as join23 } from "node:path";
+var GENERATED = "generated.json";
+var BY = "integration:";
+var SHA3 = /^[0-9a-f]{40,64}$/;
+var ownerTag = (owner) => `${BY}${owner.integration}`;
+var markerPath = (runsRoot, lane) => join23(runsRoot, assertValidName(lane, "lane"), GENERATED);
+function markGenerated(runsRoot, lane, owner, now) {
+  const marker = { by: ownerTag(owner), createdAt: now, baseSha: owner.head };
+  writeJsonAtomic(markerPath(runsRoot, lane), marker);
+}
+function readGenerated(runsRoot, lane) {
+  const path = markerPath(runsRoot, lane);
+  if (!existsSync9(path)) return null;
+  let raw;
+  try {
+    raw = readJson(path);
+  } catch {
+    raw = null;
+  }
+  const fields = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
+  return {
+    by: typeof fields["by"] === "string" ? fields["by"] : null,
+    baseSha: typeof fields["baseSha"] === "string" && SHA3.test(fields["baseSha"]) ? fields["baseSha"] : null
+  };
+}
+function lanesGeneratedBy(runsRoot, integration) {
+  const tag = ownerTag({ integration });
+  return listLanes(runsRoot).filter((lane) => readGenerated(runsRoot, lane)?.by === tag);
+}
+function generatingIntegration(by) {
+  if (by?.startsWith(BY) !== true) return null;
+  const name2 = by.slice(BY.length);
+  return isValidName(name2) ? name2 : null;
+}
+function assertNotGenerated(runsRoot, lane) {
+  const marker = readGenerated(runsRoot, lane);
+  if (marker === null) return;
+  const owner = generatingIntegration(marker.by);
+  throw new ArbabError(
+    "usage",
+    `lane ${lane} was generated by ${owner === null ? "an integration" : `integration ${owner}`}, which owns the name; only its arbab verify or arbab review runs it. Give your lane another name`
+  );
+}
+
+// src/commands/integration.ts
+import { createHash as createHash5 } from "node:crypto";
+import { existsSync as existsSync18 } from "node:fs";
+import { join as join39 } from "node:path";
+
 // src/commands/launch.ts
-import { rmSync as rmSync5, statSync as statSync4 } from "node:fs";
-import { join as join22 } from "node:path";
+import { rmSync as rmSync8, statSync as statSync6 } from "node:fs";
+import { join as join29 } from "node:path";
 
 // src/commands/lint.ts
-import { realpathSync as realpathSync9 } from "node:fs";
-import { join as join21, resolve as resolve12 } from "node:path";
+import { realpathSync as realpathSync10 } from "node:fs";
+import { join as join28, resolve as resolve13 } from "node:path";
 
 // src/brief/markdown.ts
 var OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -3564,8 +4865,8 @@ function lintBrief(markdown, source, profile) {
 }
 
 // src/config/load.ts
-import { existsSync as existsSync6, lstatSync as lstatSync3, realpathSync as realpathSync6 } from "node:fs";
-import { dirname as dirname4, isAbsolute as isAbsolute6, join as join17, relative as relative7, sep as sep7 } from "node:path";
+import { existsSync as existsSync10, lstatSync as lstatSync3, realpathSync as realpathSync7 } from "node:fs";
+import { dirname as dirname4, isAbsolute as isAbsolute7, join as join24, relative as relative8, sep as sep8 } from "node:path";
 
 // src/util/env-policy.ts
 var FORBIDDEN_PREFIX = /^(CLAUDE|VSCODE|CURSOR|TERM_PROGRAM)/;
@@ -3638,7 +4939,7 @@ function loadConfig(projectRoot) {
   let raw = null;
   let label = CONFIG_FILE;
   for (const rel of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
-    raw = readJsonFile(join17(projectRoot, rel));
+    raw = readJsonFile(join24(projectRoot, rel));
     label = rel;
     if (raw !== null) break;
   }
@@ -3709,7 +5010,7 @@ function readableEnvFiles(v) {
   const seen = /* @__PURE__ */ new Set();
   return stringArray(v, "fence.readableEnvFiles").map((p, i) => {
     const field = `fence.readableEnvFiles[${i}]`;
-    if (isAbsolute6(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (isAbsolute7(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
     if (/[\0\n\r]/.test(p)) fail(field, "must not contain NUL or a newline");
     const segments = p.split(/[\\/]/);
     if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
@@ -3741,9 +5042,9 @@ function arbabRoot(projectRoot, v, field) {
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
   checkArbabRoot(path, root, records, field);
   const real2 = realExisting(path);
-  const realRoot = realpathSync6.native(projectRoot);
-  const rel = real2 === null ? ".." : relative7(realRoot, real2);
-  if (rel === ".." || rel.startsWith(`..${sep7}`) || isAbsolute6(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  const realRoot = realpathSync7.native(projectRoot);
+  const rel = real2 === null ? ".." : relative8(realRoot, real2);
+  if (rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute7(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   if (real2 !== null) checkArbabRoot(real2, realRoot, realExisting(records), field);
   return s;
 }
@@ -3763,8 +5064,8 @@ function realExisting(path) {
     }
     if (present) {
       try {
-        const tail = relative7(p, path);
-        return tail === "" ? realpathSync6.native(p) : join17(realpathSync6.native(p), tail);
+        const tail = relative8(p, path);
+        return tail === "" ? realpathSync7.native(p) : join24(realpathSync7.native(p), tail);
       } catch {
         return null;
       }
@@ -3871,9 +5172,9 @@ function roles(v) {
 }
 
 // src/config/machine.ts
-import { join as join18 } from "node:path";
+import { join as join25 } from "node:path";
 function loadMachineConfig(home) {
-  const raw = readJsonFile(join18(home, MACHINE_CONFIG_FILE));
+  const raw = readJsonFile(join25(home, MACHINE_CONFIG_FILE));
   const config = { maxParallel: null };
   if (raw === null) return config;
   const obj = record(raw, MACHINE_CONFIG_FILE);
@@ -4020,12 +5321,12 @@ function dedupe(items) {
 }
 
 // src/profile/compile.ts
-import { isAbsolute as isAbsolute7, relative as relative8, resolve as resolve9 } from "node:path";
+import { isAbsolute as isAbsolute8, relative as relative9, resolve as resolve10 } from "node:path";
 var FILE_TOOLS2 = /* @__PURE__ */ new Set(["Read", "Glob", "Grep", "Edit", "Write"]);
 var WRITE_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "Write"]);
 var WRITERS = ["implementer", "verifier", "probe"];
 function compileProfile(input) {
-  if (!isAbsolute7(input.worktree)) {
+  if (!isAbsolute8(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
   const gitDir = input.gitCommonDir === void 0 ? void 0 : absoluteDir("gitCommonDir", input.gitCommonDir);
@@ -4079,19 +5380,19 @@ function compileProfile(input) {
   return { tools: input.tools, settings };
 }
 function absoluteDir(field, dir) {
-  if (!isAbsolute7(dir)) {
+  if (!isAbsolute8(dir)) {
     throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
-  const normal = resolve9(dir);
+  const normal = resolve10(dir);
   if (normal === "/") throw new ArbabError("usage", `${field} must not be the filesystem root`);
   return normal;
 }
 function envAllowReads(worktree, paths) {
   return dedupe(paths.map((path) => {
-    if (!isAbsolute7(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
-    const normal = resolve9(path);
-    const rel = relative8(resolve9(worktree), normal);
-    if (rel === "" || rel.startsWith("..") || isAbsolute7(rel)) {
+    if (!isAbsolute8(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    const normal = resolve10(path);
+    const rel = relative9(resolve10(worktree), normal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute8(rel)) {
       throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
     }
     return normal;
@@ -4115,12 +5416,12 @@ function roleAllow(role2) {
 }
 
 // src/profile/envfiles.ts
-import { readdirSync as readdirSync7, realpathSync as realpathSync7 } from "node:fs";
-import { basename, dirname as dirname5, join as join19, posix as posix2, relative as relative9, sep as sep8 } from "node:path";
+import { readdirSync as readdirSync11, realpathSync as realpathSync8 } from "node:fs";
+import { basename, dirname as dirname5, join as join26, posix as posix2, relative as relative10, sep as sep9 } from "node:path";
 function envFileAllowReads(input) {
   let real2;
   try {
-    real2 = realpathSync7(input.worktree);
+    real2 = realpathSync8(input.worktree);
   } catch {
     return [];
   }
@@ -4134,7 +5435,7 @@ function envFileAllowReads(input) {
     } catch {
       continue;
     }
-    const rel = relative9(input.worktree, path).split(sep8).join("/");
+    const rel = relative10(input.worktree, path).split(sep9).join("/");
     if (rel === "") continue;
     if (isRegularFile(input.worktree, real2, path)) candidates.set(rel, path);
   }
@@ -4154,8 +5455,8 @@ function trackedOf(git, worktree, gitDir, rels) {
 function isRegularFile(worktree, realWorktree, path) {
   const dir = dirname5(path);
   try {
-    if (realpathSync7(dir) !== join19(realWorktree, relative9(worktree, dir))) return false;
-    const entry = readdirSync7(dir, { withFileTypes: true }).find((e) => e.name === basename(path));
+    if (realpathSync8(dir) !== join26(realWorktree, relative10(worktree, dir))) return false;
+    const entry = readdirSync11(dir, { withFileTypes: true }).find((e) => e.name === basename(path));
     return entry !== void 0 && entry.isFile();
   } catch {
     return false;
@@ -4219,7 +5520,7 @@ function buildClaudeArgs(input) {
 }
 
 // src/profile/env.ts
-import { isAbsolute as isAbsolute8 } from "node:path";
+import { isAbsolute as isAbsolute9 } from "node:path";
 var HOST_KEYS = ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"];
 var SYSTEM_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 var ENV_NAME2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -4228,7 +5529,7 @@ function workerEnv(host, opts) {
   for (const name2 of Object.keys(opts.extra)) assertWorkerEnvName(name2, isReservedEnv);
   const dirs = opts.pnpmDir === void 0 ? [opts.nodeDir] : [opts.nodeDir, opts.pnpmDir];
   for (const dir of dirs) {
-    if (!isAbsolute8(dir) || dir.includes(":")) {
+    if (!isAbsolute9(dir) || dir.includes(":")) {
       throw new ArbabError("config", `PATH entry ${JSON.stringify(dir)} must be an absolute path without ":"`);
     }
   }
@@ -4258,7 +5559,7 @@ function assertWorkerEnvName(name2, refused) {
 }
 
 // src/profile/lint.ts
-import { resolve as resolve10 } from "node:path";
+import { resolve as resolve11 } from "node:path";
 var BASH_RULE = /^Bash\((.*)\)$/s;
 var PARAM_RULE = /^\s*([A-Za-z_]+)\s*:/;
 var PATH_RULE = /^(?:Read|Edit)\((.*)\)$/s;
@@ -4318,7 +5619,7 @@ function lintProfile(profile, input) {
         "no shared git directory is known, so sandboxed commands can write its refs and objects",
         "sandbox.filesystem.denyWrite"
       );
-    } else if (!(sandbox.filesystem?.denyWrite ?? []).map((p) => resolve10(p)).includes(resolve10(gitDir))) {
+    } else if (!(sandbox.filesystem?.denyWrite ?? []).map((p) => resolve11(p)).includes(resolve11(gitDir))) {
       warn("shared-git-writable", `${gitDir} is not in the sandbox's denyWrite`, "sandbox.filesystem.denyWrite");
     }
   }
@@ -4344,11 +5645,11 @@ function wildcardPrefix(content) {
 }
 
 // src/commands/project.ts
-import { existsSync as existsSync7, readFileSync as readFileSync5, realpathSync as realpathSync8 } from "node:fs";
-import { dirname as dirname6, join as join20, resolve as resolve11, sep as sep9 } from "node:path";
+import { existsSync as existsSync11, readFileSync as readFileSync8, realpathSync as realpathSync9 } from "node:fs";
+import { dirname as dirname6, join as join27, resolve as resolve12, sep as sep10 } from "node:path";
 import { parseArgs } from "node:util";
 function hasWorktreesPair(path) {
-  const parts = path.split(sep9).map(foldPath);
+  const parts = path.split(sep10).map(foldPath);
   return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
 }
 function configuredWorktreeRoots(dir, io) {
@@ -4361,7 +5662,7 @@ function configuredWorktreeRoots(dir, io) {
   for (const file of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
     let parsed2;
     try {
-      parsed2 = JSON.parse(io.readFile(join20(dir, file)));
+      parsed2 = JSON.parse(io.readFile(join27(dir, file)));
     } catch {
       continue;
     }
@@ -4374,7 +5675,7 @@ function configuredWorktreeRoots(dir, io) {
     } catch {
       continue;
     }
-    if (full === resolve11(dir)) continue;
+    if (full === resolve12(dir)) continue;
     roots.push(full);
     let real2;
     try {
@@ -4394,10 +5695,10 @@ function underConfiguredRoot(path, io) {
 }
 function inLaneWorktree(path, io = {}) {
   const full = {
-    realpath: io.realpath ?? ((p) => realpathSync8.native(p)),
-    readFile: io.readFile ?? ((p) => readFileSync5(p, "utf8"))
+    realpath: io.realpath ?? ((p) => realpathSync9.native(p)),
+    readFile: io.readFile ?? ((p) => readFileSync8(p, "utf8"))
   };
-  const lexical = resolve11(path);
+  const lexical = resolve12(path);
   let canonical4;
   try {
     canonical4 = full.realpath(lexical);
@@ -4413,9 +5714,9 @@ function notALaneWorktree(root) {
   return root;
 }
 function findProjectRoot(cwd, git) {
-  let dir = resolve11(cwd);
+  let dir = resolve12(cwd);
   for (; ; ) {
-    if (existsSync7(join20(dir, CONFIG_FILE))) return notALaneWorktree(dir);
+    if (existsSync11(join27(dir, CONFIG_FILE))) return notALaneWorktree(dir);
     const parent = dirname6(dir);
     if (parent === dir) break;
     dir = parent;
@@ -4454,9 +5755,9 @@ function resolveGitCommonDir(git, root) {
   const r = git(["rev-parse", "--git-common-dir"], root);
   const out = r.stdout.trim();
   if (r.code !== 0 || out === "") return void 0;
-  const path = resolve12(root, out);
+  const path = resolve13(root, out);
   try {
-    return realpathSync9(path);
+    return realpathSync10(path);
   } catch {
     return path;
   }
@@ -4475,7 +5776,7 @@ function profileInputFor(project, lane, gitCommonDir2) {
     laneAllow: lane.allow ?? [],
     credentialPaths: project.config.credentialPaths,
     env: { ...project.config.env, ...leaseEnv(leases) },
-    worktree: join21(project.worktreeRoot, lane.worktree ?? lane.name),
+    worktree: join28(project.worktreeRoot, lane.worktree ?? lane.name),
     ...gitCommonDir2 !== void 0 && { gitCommonDir: gitCommonDir2 }
   };
 }
@@ -4538,14 +5839,14 @@ async function runLint(argv2, ctx) {
 // src/commands/launch.ts
 var LAUNCH_LOCK_MS = 1e4;
 var LAUNCH_POLL_MS = 50;
-var launchLockPath = (project, lane) => join22(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
+var launchLockPath = (project, lane) => join29(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
 function takeLaunchLock(ctx, project, lane, pid) {
   const path = launchLockPath(project, lane);
   const holder2 = { pid, lane, project: project.root, createdAt: isoAt(ctx.clock) };
   const data = JSON.stringify(holder2);
   const unparsedIsStale = () => {
     try {
-      return ctx.clock.now() - statSync4(path).mtimeMs > LAUNCH_LOCK_MS;
+      return ctx.clock.now() - statSync6(path).mtimeMs > LAUNCH_LOCK_MS;
     } catch {
       return false;
     }
@@ -4555,7 +5856,7 @@ function takeLaunchLock(ctx, project, lane, pid) {
   }
   return () => {
     try {
-      if (readText(path) === data) rmSync5(path, { force: true });
+      if (readText(path) === data) rmSync8(path, { force: true });
     } catch {
     }
   };
@@ -4643,29 +5944,29 @@ async function runLaunch(argv2, ctx) {
 }
 
 // src/commands/preflight.ts
-import { existsSync as existsSync13 } from "node:fs";
-import { join as join31, relative as relative10 } from "node:path";
+import { existsSync as existsSync17 } from "node:fs";
+import { join as join38, relative as relative11 } from "node:path";
 
 // src/commands/doctor.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
-import { rmSync as rmSync6 } from "node:fs";
-import { join as join30 } from "node:path";
+import { rmSync as rmSync9 } from "node:fs";
+import { join as join37 } from "node:path";
 
 // src/binary/node.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { existsSync as existsSync8, realpathSync as realpathSync10 } from "node:fs";
+import { existsSync as existsSync12, realpathSync as realpathSync11 } from "node:fs";
 function runVersion(path, args) {
   return execFileSync2(path, args, { encoding: "utf8", timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
 }
 function pathExists(p) {
-  return existsSync8(p);
+  return existsSync12(p);
 }
 function realpath(p) {
-  return realpathSync10(p);
+  return realpathSync11(p);
 }
 
 // src/binary/resolve.ts
-import { isAbsolute as isAbsolute9, join as join23 } from "node:path";
+import { isAbsolute as isAbsolute10, join as join30 } from "node:path";
 function parseVersion(text2) {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(text2);
   if (m === null) return null;
@@ -4687,8 +5988,8 @@ function compareVersions(a, b) {
 function findOnPath(cmd, pathEnv, exists) {
   if (cmd === "" || cmd.includes("/")) return null;
   for (const dir of pathEnv.split(":")) {
-    if (dir === "" || !isAbsolute9(dir)) continue;
-    const candidate = join23(dir, cmd);
+    if (dir === "" || !isAbsolute10(dir)) continue;
+    const candidate = join30(dir, cmd);
     if (exists(candidate)) return candidate;
   }
   return null;
@@ -4776,27 +6077,27 @@ function checkEnvTemplates(git, root, readableEnvFiles2) {
 }
 
 // src/doctor/gates.ts
-import { basename as basename2, join as join25 } from "node:path";
+import { basename as basename2, join as join32 } from "node:path";
 
 // src/doctor/read.ts
-import { readdirSync as readdirSync8, readFileSync as readFileSync6 } from "node:fs";
-import { join as join24 } from "node:path";
+import { readdirSync as readdirSync12, readFileSync as readFileSync9 } from "node:fs";
+import { join as join31 } from "node:path";
 function readOptional(path) {
   try {
-    return readFileSync6(path, "utf8");
+    return readFileSync9(path, "utf8");
   } catch {
     return null;
   }
 }
 function listNames(dir) {
   try {
-    return readdirSync8(dir).sort();
+    return readdirSync12(dir).sort();
   } catch {
     return [];
   }
 }
 function readPackageJson(root) {
-  const text2 = readOptional(join24(root, "package.json"));
+  const text2 = readOptional(join31(root, "package.json"));
   if (text2 === null) return null;
   try {
     const value = JSON.parse(text2);
@@ -4897,10 +6198,10 @@ function checkGates(root, gates) {
   const out = [
     missing.length === 0 ? { status: "ok", check: "gates", detail: `gates run ${checks.join(", ")}` } : { status: "warn", check: "gates", detail: `no gate runs these package.json scripts: ${missing.join(", ")}` }
   ];
-  const workflows = join25(root, ".github", "workflows");
+  const workflows = join32(root, ".github", "workflows");
   const inCi = /* @__PURE__ */ new Set();
   for (const file of listNames(workflows).filter((n) => /\.ya?ml$/.test(n))) {
-    for (const line2 of workflowRunLines(readOptional(join25(workflows, file)) ?? "")) {
+    for (const line2 of workflowRunLines(readOptional(join32(workflows, file)) ?? "")) {
       for (const call of scriptCalls(line2)) for (const name2 of matching(call, missing)) inCi.add(name2);
     }
   }
@@ -4909,11 +6210,11 @@ function checkGates(root, gates) {
 }
 
 // src/doctor/hook.ts
-import { basename as basename3, dirname as dirname7, join as join26 } from "node:path";
+import { basename as basename3, dirname as dirname7, join as join33 } from "node:path";
 var HOOK_MISSING = "runner calls will wait for approval: the plugin hook is missing (update the plugin)";
 function hookFile(scriptPath2) {
   const dist = dirname7(scriptPath2);
-  return basename3(dist) === "dist" ? join26(dirname7(dist), "hooks", "hooks.json") : null;
+  return basename3(dist) === "dist" ? join33(dirname7(dist), "hooks", "hooks.json") : null;
 }
 function checkHook(scriptPath2) {
   const file = hookFile(scriptPath2);
@@ -4922,14 +6223,14 @@ function checkHook(scriptPath2) {
 }
 
 // src/doctor/machine.ts
-import { existsSync as existsSync9, readdirSync as readdirSync9 } from "node:fs";
-import { join as join27 } from "node:path";
+import { existsSync as existsSync13, readdirSync as readdirSync13 } from "node:fs";
+import { join as join34 } from "node:path";
 var MAX_WORKTREE_DIRS = 30;
 var MAX_EMPTY_LOCK_DIRS = 100;
 var message = (err) => err instanceof Error ? err.message : String(err);
 function entries2(dir) {
   try {
-    return readdirSync9(dir, { withFileTypes: true });
+    return readdirSync13(dir, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -4938,11 +6239,11 @@ function countDirs(dir) {
   return entries2(dir).filter((e) => e.isDirectory()).length;
 }
 function countEmptyDirs(dir) {
-  return entries2(dir).filter((e) => e.isDirectory() && entries2(join27(dir, e.name)).length === 0).length;
+  return entries2(dir).filter((e) => e.isDirectory() && entries2(join34(dir, e.name)).length === 0).length;
 }
 function checkDisk(worktreeDir, worktreeLabel, home) {
   const worktrees = countDirs(worktreeDir);
-  const locks = countEmptyDirs(join27(home, "locks"));
+  const locks = countEmptyDirs(join34(home, "locks"));
   const out = [];
   if (worktrees > MAX_WORKTREE_DIRS) {
     out.push({
@@ -4975,7 +6276,7 @@ function checkMachineCap(home, root, maxParallel) {
   } catch {
   }
   for (const p of projects) {
-    if (caps.has(p.root) || !existsSync9(p.root)) continue;
+    if (caps.has(p.root) || !existsSync13(p.root)) continue;
     try {
       caps.set(p.root, loadConfig(p.root).maxParallel);
     } catch {
@@ -4991,8 +6292,8 @@ function checkMachineCap(home, root, maxParallel) {
 }
 
 // src/doctor/project.ts
-import { existsSync as existsSync10 } from "node:fs";
-import { join as join28 } from "node:path";
+import { existsSync as existsSync14 } from "node:fs";
+import { join as join35 } from "node:path";
 function checkIgnored(git, root, config) {
   const entries3 = arbabIgnoreEntries(root, config).filter((e) => e !== `${WORKER_TMP_DIR}/`);
   const notIgnored = entries3.filter((e) => git(["check-ignore", "-q", "--", `${e}x`], root).code !== 0);
@@ -5005,34 +6306,34 @@ function checkIgnored(git, root, config) {
   };
 }
 function checkConfigFiles(root) {
-  if (!existsSync10(join28(root, CONFIG_FILE)) || !existsSync10(join28(root, LOCAL_CONFIG_FILE))) return null;
+  if (!existsSync14(join35(root, CONFIG_FILE)) || !existsSync14(join35(root, LOCAL_CONFIG_FILE))) return null;
   return { status: "warn", check: "configs", detail: `both ${CONFIG_FILE} and ${LOCAL_CONFIG_FILE} exist: ${CONFIG_FILE} wins` };
 }
 
 // src/doctor/scanners.ts
-import { existsSync as existsSync11 } from "node:fs";
-import { join as join29 } from "node:path";
+import { existsSync as existsSync15 } from "node:fs";
+import { join as join36 } from "node:path";
 var FLAT_CONFIG = /^eslint\.config\.(js|mjs|cjs|ts|mts|cts)$/;
 var TEST_CONFIG = /^(vitest|vite|jest)\.config\.(js|mjs|cjs|ts|mts|cts|json)$/;
 var ESLINT_FLAT_UNGUARDED = "eslint in this checkout also lints .arbab/worktrees: add '.arbab/**' to its ignores";
 function checkEslint(root) {
   const names2 = listNames(root);
-  const flat2 = names2.filter((n) => FLAT_CONFIG.test(n));
+  const flat3 = names2.filter((n) => FLAT_CONFIG.test(n));
   const legacy = names2.filter((n) => n.startsWith(".eslintrc"));
   if (readPackageJson(root)?.["eslintConfig"] !== void 0) legacy.push("package.json eslintConfig");
-  if (flat2.length === 0 && legacy.length === 0) return [];
+  if (flat3.length === 0 && legacy.length === 0) return [];
   const out = [];
-  const unguarded = flat2.filter((n) => !(readOptional(join29(root, n)) ?? "").includes(ARBAB_DIR));
+  const unguarded = flat3.filter((n) => !(readOptional(join36(root, n)) ?? "").includes(ARBAB_DIR));
   if (unguarded.length > 0) out.push({ status: "warn", check: "eslint", detail: `${ESLINT_FLAT_UNGUARDED} (${unguarded.join(", ")})` });
   const marker = `${ARBAB_DIR}/${ESLINT_MARKER}`;
-  if (legacy.length > 0 && !existsSync11(join29(root, marker))) {
+  if (legacy.length > 0 && !existsSync15(join36(root, marker))) {
     out.push({
       status: "warn",
       check: "eslint",
       detail: `${marker} is missing, so ESLint in a worktree also loads ${legacy.join(", ")} of this checkout (the shepherd writes the marker on the next launch)`
     });
   }
-  if (out.length === 0) out.push({ status: "ok", check: "eslint", detail: `${[...flat2, ...legacy].join(", ")} stop at ${ARBAB_DIR}/` });
+  if (out.length === 0) out.push({ status: "ok", check: "eslint", detail: `${[...flat3, ...legacy].join(", ")} stop at ${ARBAB_DIR}/` });
   return out;
 }
 function confinesTests(text2) {
@@ -5042,7 +6343,7 @@ function checkTestConfigs(root) {
   const configs = [];
   const open2 = [];
   for (const name2 of listNames(root).filter((n) => TEST_CONFIG.test(n))) {
-    const text2 = readOptional(join29(root, name2)) ?? "";
+    const text2 = readOptional(join36(root, name2)) ?? "";
     if (name2.startsWith("vite.") && !/\btest\s*:/.test(text2)) continue;
     configs.push(name2);
     if (!confinesTests(text2)) open2.push(name2);
@@ -5098,11 +6399,11 @@ function checkSandbox(platform, deps) {
   return { status: "fail", check: "sandbox", detail: `Claude Code has no sandbox on ${platform}` };
 }
 function checkHome(home) {
-  const probe = join30(home, `.doctor-${randomBytes3(6).toString("hex")}`);
+  const probe = join37(home, `.doctor-${randomBytes3(6).toString("hex")}`);
   try {
     ensureDir(home);
     createExclusive(probe, "");
-    rmSync6(probe, { force: true });
+    rmSync9(probe, { force: true });
     return { status: "ok", check: "home", detail: `${home} is writable` };
   } catch (err) {
     return { status: "fail", check: "home", detail: `${home} is not writable: ${message2(err)}` };
@@ -5172,10 +6473,10 @@ async function runDoctor(argv2, ctx) {
 }
 
 // src/commands/wait.ts
-import { existsSync as existsSync12 } from "node:fs";
+import { existsSync as existsSync16 } from "node:fs";
 var WAIT_TIMEOUT_EXIT = 3;
 var POLL_MS = 2e3;
-var NONE = "\u2014";
+var NONE2 = "\u2014";
 function describeFinished(runsRoot, item) {
   const s = item.summary;
   const report = item.attempt === null ? null : attemptFiles(runPaths(runsRoot, item.lane).attemptDir(item.attempt)).report;
@@ -5191,14 +6492,14 @@ function describeFinished(runsRoot, item) {
     toolCalls: s?.toolCallTotal ?? 0,
     failed: s?.failedTotal ?? 0,
     costDeltaUsd: s?.costDeltaUsd ?? null,
-    report: report !== null && existsSync12(report) ? report : null
+    report: report !== null && existsSync16(report) ? report : null
   };
 }
 function formatFinished(line2) {
   const parts = [line2.attempt === null ? line2.lane : `${line2.lane}#${line2.attempt}`, line2.endState];
   if (line2.attempt !== null) {
-    const wall = line2.wallMs === null ? NONE : formatElapsed(line2.wallMs);
-    const cost = line2.costDeltaUsd === null ? NONE : `$${line2.costDeltaUsd.toFixed(2)}`;
+    const wall = line2.wallMs === null ? NONE2 : formatElapsed(line2.wallMs);
+    const cost = line2.costDeltaUsd === null ? NONE2 : `$${line2.costDeltaUsd.toFixed(2)}`;
     parts.push(wall, `turns=${line2.turns}`, `calls=${line2.toolCalls}`, `failed=${line2.failed}`, `cost=${cost}`);
   }
   if (line2.report !== null) parts.push(`report=${line2.report}`);
@@ -5350,7 +6651,7 @@ var MAX_PREFLIGHT_NAME = (() => {
   return n;
 })();
 var PREFLIGHT_DIR = ".arbab/preflight";
-var preflightDir = (project, lane) => join31(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
+var preflightDir = (project, lane) => join38(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
 function writeProbeLanes(project, lane) {
   if (lane.name.length > MAX_PREFLIGHT_NAME) {
     throw new ArbabError(
@@ -5359,9 +6660,9 @@ function writeProbeLanes(project, lane) {
     );
   }
   const dir = preflightDir(project, lane.name);
-  const rel = (path) => relative10(project.root, path);
+  const rel = (path) => relative11(project.root, path);
   const owner = lane.worktree ?? lane.name;
-  const worktree = lane.worktree !== void 0 || existsSync13(join31(project.worktreeRoot, owner)) ? owner : void 0;
+  const worktree = lane.worktree !== void 0 || existsSync17(join38(project.worktreeRoot, owner)) ? owner : void 0;
   const shared = {
     role: lane.role,
     ...lane.fence !== void 0 && { fence: lane.fence },
@@ -5378,9 +6679,9 @@ function writeProbeLanes(project, lane) {
   };
   const write = (suffix, brief, schema, fields) => {
     const name2 = assertValidName(`${lane.name}-${suffix}`, "probe lane");
-    const briefFile = join31(dir, `${name2}.md`);
-    const schemaFile = join31(dir, `${name2}.schema.json`);
-    const laneFile = join31(dir, `${name2}.json`);
+    const briefFile = join38(dir, `${name2}.md`);
+    const schemaFile = join38(dir, `${name2}.schema.json`);
+    const laneFile = join38(dir, `${name2}.json`);
     writeTextAtomic(briefFile, brief);
     writeJsonAtomic(schemaFile, schema);
     writeJsonAtomic(laneFile, { name: name2, ...shared, brief: rel(briefFile), schema: rel(schemaFile), ...fields });
@@ -5408,9 +6709,9 @@ function writeProbeLanes(project, lane) {
 }
 var gitMessage = (r) => (r.stderr || r.stdout).trim();
 function removeProbeWorktree(git, project, probe, gitCommonDir2) {
-  const path = join31(project.worktreeRoot, assertValidName(probe, "probe lane"));
+  const path = join38(project.worktreeRoot, assertValidName(probe, "probe lane"));
   const branch = `arbab/${probe}`;
-  if (existsSync13(path)) {
+  if (existsSync17(path)) {
     if (gitCommonDir2 === void 0) return `kept ${path}: the repository's git directory is unknown`;
     const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: gitCommonDir2 });
     if (verified.gitDir === null) return `kept ${path}: ${verified.error}`;
@@ -5686,7 +6987,7 @@ function writeGeneratedLane(project, paths, lane) {
     if (lane.spec.schema === void 0) throw new ArbabError("usage", `lane ${name2} has a schema but no schema path`);
     writeJsonAtomic(confine(project.root, lane.spec.schema), lane.schema);
   }
-  const file = join32(paths.lanesDir, `${name2}.json`);
+  const file = join39(paths.lanesDir, `${name2}.json`);
   writeJsonAtomic(file, lane.spec);
   return file;
 }
@@ -5739,11 +7040,11 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
   assertInactive(ctx, project, name2);
   assertNoLiveWorker(ctx, project, name2);
   assertNotBorrowed(ctx, project, name2);
-  const runDir = join32(project.runsRoot, name2);
-  const path = join32(project.worktreeRoot, name2);
+  const runDir = join39(project.runsRoot, name2);
+  const path = join39(project.worktreeRoot, name2);
   const branch = `arbab/${name2}`;
   const head = branchHead(ctx.git, project.root, branch);
-  if (!existsSync14(runDir) && !existsSync14(path) && head === null) return;
+  if (!existsSync18(runDir) && !existsSync18(path) && head === null) return;
   const marker = readGenerated(project.runsRoot, name2);
   if (marker === null || marker.by !== ownerTag(owner)) {
     throw new ArbabError(
@@ -5757,7 +7058,7 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
       throw new ArbabError("git", `${branch} has commits that are not on ${owner.branch}, so nothing was removed`);
     }
   }
-  if (existsSync14(path)) mustGit(ctx, [...untrustedTree(), "worktree", "remove", "--force", path], project.root);
+  if (existsSync18(path)) mustGit(ctx, [...untrustedTree(), "worktree", "remove", "--force", path], project.root);
   mustGit(ctx, ["worktree", "prune"], project.root);
   if (head !== null) mustGit(ctx, [...untrustedTree(), "branch", "-D", branch], project.root);
 }
@@ -5789,7 +7090,7 @@ function collectRun(runsRoot, run) {
   if (own2 !== null) ackRun(runsRoot, run.lane, { shepherdPid: own2.shepherdPid, since: own2.since }, outcome2.attempts.at(-1) ?? null);
   return outcome2;
 }
-var runRecordPath = (lanesDir, lane) => join32(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
+var runRecordPath = (lanesDir, lane) => join39(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
 function readGeneratedRun(lanesDir, lane) {
   let raw;
   try {
@@ -5809,7 +7110,7 @@ function settleGeneratedRuns(lanesDir, lanes) {
   }
 }
 function laneFingerprint(lane) {
-  return createHash4("sha256").update(JSON.stringify([lane.spec, lane.brief, lane.schema ?? null])).digest("hex");
+  return createHash5("sha256").update(JSON.stringify([lane.spec, lane.brief, lane.schema ?? null])).digest("hex");
 }
 var hasReport = (o) => o.report !== null;
 function reusableRun(ctx, project, lanesDir, lane, owner, fingerprint, usable = hasReport) {
@@ -5882,13 +7183,13 @@ function releaseStalePoolFiles(home, alive, nowMs) {
   for (const path of listPoolEntries(home)) {
     let old;
     try {
-      old = nowMs - statSync5(path).mtimeMs > UNPARSED_GRACE_MS;
+      old = nowMs - statSync7(path).mtimeMs > UNPARSED_GRACE_MS;
     } catch {
       continue;
     }
     if (path.endsWith(".stale")) {
       if (old) {
-        rmSync7(path, { force: true });
+        rmSync10(path, { force: true });
         released.push(path);
       }
       continue;
@@ -5901,10 +7202,10 @@ function releaseStalePoolFiles(home, alive, nowMs) {
   return released;
 }
 function removeEmptyLockDirs(home) {
-  const root = join33(home, "locks");
+  const root = join40(home, "locks");
   let entries3;
   try {
-    entries3 = readdirSync10(root, { withFileTypes: true });
+    entries3 = readdirSync14(root, { withFileTypes: true });
   } catch {
     return 0;
   }
@@ -5912,7 +7213,7 @@ function removeEmptyLockDirs(home) {
   for (const entry of entries3) {
     if (!entry.isDirectory()) continue;
     try {
-      rmdirSync2(join33(root, entry.name));
+      rmdirSync2(join40(root, entry.name));
       removed++;
     } catch {
     }
@@ -6032,7 +7333,7 @@ function judge(git, root, target, hasWorktree, hasBranch, rules, common) {
   return { keep: `branch ${target.branch} is not merged into ${rules.base}` };
 }
 function removeWorktreeAndBranch(git, root, target, rules, out, blocker, common) {
-  const hasWorktree = existsSync15(target.path);
+  const hasWorktree = existsSync19(target.path);
   if (!hasWorktree && !target.deleteBranch) return;
   const hasBranch = branchHead(git, root, target.branch) !== null;
   if (!hasWorktree && !hasBranch) return;
@@ -6100,7 +7401,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
     }
     try {
       const target = {
-        path: join33(project.worktreeRoot, lane),
+        path: join40(project.worktreeRoot, lane),
         branch: `arbab/${lane}`,
         deleteBranch: readGenerated(project.runsRoot, lane) !== null
       };
@@ -6108,7 +7409,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
       if (owner !== lane) {
         const where = typeof owner === "string" && isValidName(owner) ? `lane ${owner}'s worktree` : `worktree ${JSON.stringify(owner)}`;
         const reason = `lane ${lane} works in ${where}`;
-        if (existsSync15(target.path)) out.worktreesKept.push({ path: target.path, reason });
+        if (existsSync19(target.path)) out.worktreesKept.push({ path: target.path, reason });
         else if (target.deleteBranch && branchHead(ctx.git, project.root, target.branch) !== null) out.branchesKept.push({ branch: target.branch, reason });
         continue;
       }
@@ -6117,7 +7418,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
         if (state === void 0) {
           const error = unreadable.get(lane);
           if (error !== void 0) return error;
-          return existsSync15(runPaths(project.runsRoot, lane).laneDir) ? "no run state" : null;
+          return existsSync19(runPaths(project.runsRoot, lane).laneDir) ? "no run state" : null;
         }
         if (isActive(state)) return `lane ${lane} is ${state}`;
         if (state === "orphaned") return "orphaned: run arbab cleanup first";
@@ -6144,7 +7445,7 @@ function removeLandedIntegrations(ctx, project, out, opts = {}) {
   for (const name2 of listIntegrations(project.root)) {
     try {
       const paths = integrationPaths(project.root, project.config, name2);
-      if (!existsSync15(paths.landing)) continue;
+      if (!existsSync19(paths.landing)) continue;
       const record2 = readIntegration(paths);
       if (record2 === null) {
         out.warnings.push(`integration ${name2} landed but has no integration.json`);
@@ -6197,6 +7498,7 @@ function formatCleanup(report) {
     ...report.reaped.map((r) => `reaped ${r.lane} pgid ${r.pgid}`),
     ...report.released.map((path) => `released ${path}`),
     ...report.lockDirsRemoved > 0 ? [`removed ${report.lockDirsRemoved} empty lock ${report.lockDirsRemoved === 1 ? "directory" : "directories"}`] : [],
+    ...report.sessionWatermarksRemoved > 0 ? [`removed ${report.sessionWatermarksRemoved} session ${report.sessionWatermarksRemoved === 1 ? "watermark" : "watermarks"} unused for 30 days`] : [],
     ...formatWorktreeCleanup(report, report.worktreeRemovals)
   ];
   return lines.length === 0 ? "nothing to clean" : lines.join("\n");
@@ -6220,10 +7522,19 @@ async function runCleanup(argv2, ctx) {
   const project = openProject(ctx);
   const session = sessionOf(ctx.hostEnv);
   const include = values.mine === true && session !== null ? (lane) => ownedBy(readShepherdRecord(project.runsRoot, lane), session, { ownerless: false }) : void 0;
-  const report = { orphaned: [], reaped: [], released: [], ...emptyWorktreeCleanup(), worktreeRemovals: [], lockDirsRemoved: 0 };
+  const report = {
+    orphaned: [],
+    reaped: [],
+    released: [],
+    ...emptyWorktreeCleanup(),
+    worktreeRemovals: [],
+    lockDirsRemoved: 0,
+    sessionWatermarksRemoved: 0
+  };
   await reapOrphans(ctx, project, report, include);
   report.released = releaseStalePoolFiles(ctx.home, ctx.alive, ctx.clock.now());
   report.lockDirsRemoved = removeEmptyLockDirs(ctx.home);
+  report.sessionWatermarksRemoved = removeStaleWatermarks(ctx.home, ctx.clock.now());
   if (values.worktrees === true) removeMergedWorktrees(ctx, project, report, { olderThanMs: ageMs, include });
   if (values.json === true) printJson(ctx, report);
   else ctx.stdout(formatCleanup(report) + "\n");
@@ -6231,10 +7542,10 @@ async function runCleanup(argv2, ctx) {
 }
 
 // src/commands/hook.ts
-import { realpathSync as realpathSync11 } from "node:fs";
+import { realpathSync as realpathSync12 } from "node:fs";
 
 // src/hook/approve.ts
-import { isAbsolute as isAbsolute10, resolve as resolve13, sep as sep10 } from "node:path";
+import { isAbsolute as isAbsolute11, resolve as resolve14, sep as sep11 } from "node:path";
 
 // src/hook/command.ts
 var UNQUOTED = /^[A-Za-z0-9_@%+=:,./~-]+$/;
@@ -6297,26 +7608,26 @@ function sameFile(a, b, realpath2) {
   return ra !== null && ra === real(b, realpath2);
 }
 function under(base, path) {
-  const b = resolve13(base);
-  return path === b || path.startsWith(b.endsWith(sep10) ? b : b + sep10);
+  const b = resolve14(base);
+  return path === b || path.startsWith(b.endsWith(sep11) ? b : b + sep11);
 }
 function knownProject(dir, opts) {
-  if (!isAbsolute10(dir)) return false;
+  if (!isAbsolute11(dir)) return false;
   const path = real(dir, opts.realpath);
   if (path === null || inLaneWorktree(dir, { realpath: opts.realpath })) return false;
   for (const temp of opts.tempDirs) {
-    if (!isAbsolute10(temp)) continue;
+    if (!isAbsolute11(temp)) continue;
     const realTemp = real(temp, opts.realpath);
     if (under(temp, path) || realTemp !== null && under(realTemp, path)) return false;
   }
-  return opts.projectRoots().some((root) => isAbsolute10(root) && (root === path || real(root, opts.realpath) === path));
+  return opts.projectRoots().some((root) => isAbsolute11(root) && (root === path || real(root, opts.realpath) === path));
 }
 function isRunnerCall(command, opts) {
   const words = tokenize(command);
   if (words === null || words.length < 3) return false;
   const [node, runner] = words;
   if (node?.value !== "node" || runner === void 0) return false;
-  if (!isAbsolute10(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
+  if (!isAbsolute11(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
   let at = 2;
   if (words[at]?.value === "-C") at += 2;
   const name2 = words[at]?.value;
@@ -6324,7 +7635,7 @@ function isRunnerCall(command, opts) {
   const dir = at === 4 ? words[3]?.value : void 0;
   return dir === void 0 || knownProject(dir, opts);
 }
-function isObject2(v) {
+function isObject6(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 var STRING_FIELDS = ["session_id", "transcript_path", "cwd", "permission_mode", "tool_use_id"];
@@ -6335,19 +7646,19 @@ function approves(input, opts) {
   } catch {
     return false;
   }
-  if (!isObject2(parsed2)) return false;
+  if (!isObject6(parsed2)) return false;
   for (const field of STRING_FIELDS) {
     if (parsed2[field] !== void 0 && typeof parsed2[field] !== "string") return false;
   }
   if (parsed2.hook_event_name !== void 0 && parsed2.hook_event_name !== "PreToolUse") return false;
-  if (parsed2.tool_name !== "Bash" || !isObject2(parsed2.tool_input)) return false;
+  if (parsed2.tool_name !== "Bash" || !isObject6(parsed2.tool_input)) return false;
   const command = parsed2.tool_input.command;
   return typeof command === "string" && isRunnerCall(command, opts);
 }
 
 // src/hook/stop.ts
 var NAMED_LANES = 5;
-function isObject3(v) {
+function isObject7(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function runnerWord(path) {
@@ -6372,7 +7683,7 @@ function stopDecision(input, opts) {
   } catch {
     return null;
   }
-  if (!isObject3(parsed2)) return null;
+  if (!isObject7(parsed2)) return null;
   const { session_id: session, stop_hook_active: active, cwd } = parsed2;
   if (typeof session !== "string" || session === "") return null;
   if (active !== void 0 && typeof active !== "boolean") return null;
@@ -6386,7 +7697,8 @@ function stopDecision(input, opts) {
 }
 
 // src/commands/hook.ts
-var HOOK_EVENTS = ["pre-tool-use", "stop"];
+var HOOK_EVENTS = ["pre-tool-use", "stop", "user-prompt-submit", "session-start"];
+var isHookEvent = (value) => HOOK_EVENTS.includes(value);
 async function answer(event, ctx, tempDirs) {
   const input = await ctx.readStdin();
   if (event === "pre-tool-use") {
@@ -6396,17 +7708,25 @@ async function answer(event, ctx, tempDirs) {
       // COMMANDS is read here, not at load: index.ts imports this module.
       commands: Object.keys(COMMANDS),
       // The native one returns the spelling on disk, so a case-insensitive file system's other spellings compare equal.
-      realpath: (path) => realpathSync11.native(path),
+      realpath: (path) => realpathSync12.native(path),
       projectRoots: () => listProjects(ctx.home).map((entry) => entry.root),
       tempDirs: tmp === void 0 || tmp === "" ? tempDirs : [...tempDirs, tmp]
     });
     return ok ? APPROVAL : null;
   }
+  if (event === "user-prompt-submit" || event === "session-start") {
+    return catchUpDecision(input, event === "session-start" ? "SessionStart" : "UserPromptSubmit", {
+      home: ctx.home,
+      clock: ctx.clock,
+      // A worker's worktree is no project of the human's; findProjectRoot would refuse it after a git call.
+      findRoot: (cwd) => inLaneWorktree(cwd) ? null : findProjectRoot(cwd, ctx.git)
+    });
+  }
   return stopDecision(input, { home: ctx.home, alive: ctx.alive, scriptPath: ctx.scriptPath, cwd: ctx.cwd });
 }
 async function runHook(argv2, ctx, tempDirs = TEMP_DIRS) {
   const [event, ...rest] = argv2;
-  if (event !== "pre-tool-use" && event !== "stop") {
+  if (!isHookEvent(event)) {
     throw new ArbabError("usage", `hook takes one of ${HOOK_EVENTS.join(", ")}, got ${JSON.stringify(event ?? "")}`);
   }
   if (rest.length > 0) throw new ArbabError("usage", `hook ${event} takes no arguments`);
@@ -6421,8 +7741,8 @@ async function runHook(argv2, ctx, tempDirs = TEMP_DIRS) {
 }
 
 // src/commands/host-check.ts
-import { existsSync as existsSync16 } from "node:fs";
-import { join as join34 } from "node:path";
+import { existsSync as existsSync20 } from "node:fs";
+import { join as join41 } from "node:path";
 
 // src/verify/index.ts
 var VERIFY_TIMEOUT_MS = 9e5;
@@ -6489,7 +7809,7 @@ function gateResults(events, gates, smoke) {
   const results = /* @__PURE__ */ new Map();
   for (const event of Array.isArray(events) ? events : []) {
     for (const block3 of contentBlocks(event)) {
-      if (block3.type === "tool_use" && block3.name === "Bash" && isRecord4(block3.input)) {
+      if (block3.type === "tool_use" && block3.name === "Bash" && isRecord3(block3.input)) {
         const id = stringOrNull(block3.id);
         const command = stringOrNull(block3.input.command)?.trim() ?? null;
         if (id !== null && command !== null && !firstCall.has(command)) firstCall.set(command, id);
@@ -6519,17 +7839,17 @@ function verifyRecord(input) {
 }
 
 // src/commands/host-check.ts
-var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-var isGateResult = (v) => isObject4(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && Array.isArray(v["argv"]) && v["argv"].every((a) => typeof a === "string") && typeof v["command"] === "string" && (v["exitCode"] === null || Number.isInteger(v["exitCode"]));
+var isObject8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isGateResult2 = (v) => isObject8(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && Array.isArray(v["argv"]) && v["argv"].every((a) => typeof a === "string") && typeof v["command"] === "string" && (v["exitCode"] === null || Number.isInteger(v["exitCode"]));
 function readHostCheckRecord(path, name2) {
   const raw = readJson(path);
   if (raw === null) return null;
-  const ok = isObject4(raw) && raw["name"] === name2 && typeof raw["headSha"] === "string" && Array.isArray(raw["results"]) && raw["results"].every(isGateResult) && typeof raw["passed"] === "boolean" && raw["interactive"] === true && typeof raw["finishedAt"] === "string";
+  const ok = isObject8(raw) && raw["name"] === name2 && typeof raw["headSha"] === "string" && Array.isArray(raw["results"]) && raw["results"].every(isGateResult2) && typeof raw["passed"] === "boolean" && raw["interactive"] === true && typeof raw["finishedAt"] === "string";
   if (!ok) throw new ArbabError("io", `${path} is not a host check record for ${name2}`);
   return raw;
 }
 function assertWorktreeAt(ctx, worktree, head) {
-  if (!existsSync16(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
+  if (!existsSync20(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
   const at = ctx.git([...untrustedTree(), "rev-parse", "HEAD"], worktree);
   if (at.code !== 0 || at.stdout.trim() !== head) {
     throw new ArbabError("usage", `${worktree} is at ${at.code === 0 ? at.stdout.trim() : "no commit"}, not at the integration head ${head}`);
@@ -6576,7 +7896,7 @@ ${r.output.endsWith("\n") ? r.output : `${r.output}
     interactive: true,
     finishedAt: isoAt(ctx.clock)
   };
-  writeJsonAtomic(join34(integration.paths.dir, HOST_CHECKS_FILE), record2);
+  writeJsonAtomic(join41(integration.paths.dir, HOST_CHECKS_FILE), record2);
   return record2.passed ? 0 : 1;
 }
 
@@ -6932,11 +8252,11 @@ function coordination(plan, siblings) {
 }
 
 // src/plan/load.ts
-import { isAbsolute as isAbsolute11, resolve as resolve14 } from "node:path";
+import { isAbsolute as isAbsolute12, resolve as resolve15 } from "node:path";
 var PLAN_KEYS = ["name", "base", "defaults", "phases"];
 var PHASE_KEYS = ["name", "brief", "scope", "dependsOn", ...PHASE_LANE_KEYS];
 function loadPlan(projectRoot, planPath, credentialPaths = []) {
-  const file = resolve14(projectRoot, planPath);
+  const file = resolve15(projectRoot, planPath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `plan file ${planPath} does not exist`);
   const obj = record(raw, planPath);
@@ -6971,7 +8291,7 @@ function scope(v, field) {
   if (!Array.isArray(v) || v.length === 0) fail(field, "must be a non-empty array of globs");
   return v.map((item, i) => {
     const glob = nonEmptyString(item, `${field}[${i}]`);
-    if (isAbsolute11(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
+    if (isAbsolute12(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
     if (glob.split(/[\\/]/).includes("..")) fail(`${field}[${i}]`, `${glob} must not contain ".."`);
     return glob;
   });
@@ -7204,393 +8524,8 @@ async function runIntegrate(argv2, ctx) {
 }
 
 // src/commands/land.ts
-import { existsSync as existsSync17, readFileSync as readFileSync7, realpathSync as realpathSync12 } from "node:fs";
-import { dirname as dirname8, resolve as resolve15 } from "node:path";
-
-// src/review/findings.ts
-var SEVERITIES = ["HIGH", "MEDIUM", "LOW"];
-function text(v) {
-  return typeof v === "string" && v.trim() !== "" ? v : null;
-}
-function severity(v) {
-  return SEVERITIES.includes(v) ? v : null;
-}
-function parseFinding(lens, raw) {
-  if (!isRecord4(raw)) return null;
-  const title = text(raw.title);
-  const sev = severity(raw.severity);
-  const file = text(raw.file);
-  const failureScenario = text(raw.failure_scenario);
-  const evidence = text(raw.evidence);
-  if (title === null || sev === null || file === null || failureScenario === null || evidence === null) return null;
-  const finding = { lens, title, severity: sev, file, failureScenario, evidence, verdict: "unverified" };
-  if (Number.isInteger(raw.line) && raw.line >= 1) finding.line = raw.line;
-  if (text(raw.suggested_fix) !== null) finding.suggestedFix = raw.suggested_fix;
-  return finding;
-}
-function collectFindings(reports) {
-  const out = [];
-  const counts = /* @__PURE__ */ new Map();
-  for (const { lens, report } of reports) {
-    if (!isRecord4(report) || !Array.isArray(report.findings)) continue;
-    for (const raw of report.findings) {
-      const finding = parseFinding(lens, raw);
-      if (finding === null) continue;
-      const n = (counts.get(lens) ?? 0) + 1;
-      counts.set(lens, n);
-      out.push({ id: `${lens}-${n}`, ...finding });
-    }
-  }
-  return out;
-}
-function reviewerCoverage(report) {
-  if (!isRecord4(report)) return { coverage: null, pathsChecked: 0 };
-  const paths = Array.isArray(report.paths_checked) ? report.paths_checked.filter((p) => text(p) !== null) : [];
-  return { coverage: text(report.coverage), pathsChecked: new Set(paths).size };
-}
-function parseVerdicts(raw) {
-  const list3 = Array.isArray(raw) ? raw : isRecord4(raw) && Array.isArray(raw.verdicts) ? raw.verdicts : [];
-  const out = /* @__PURE__ */ new Map();
-  for (const v of list3) {
-    if (!isRecord4(v) || typeof v.id !== "string" || typeof v.refuted !== "boolean" || typeof v.reasoning !== "string") {
-      continue;
-    }
-    const sev = v.corrected_severity === "NONE" ? "NONE" : severity(v.corrected_severity);
-    if (sev === null) continue;
-    if (!out.has(v.id)) out.set(v.id, { refuted: v.refuted, severity: sev, reasoning: v.reasoning });
-  }
-  return out;
-}
-function applyVerdicts(findings, verdicts) {
-  const byId = parseVerdicts(verdicts);
-  return findings.map((f) => {
-    const v = byId.get(f.id);
-    if (v === void 0 || f.severity === "LOW") return { ...f };
-    if (v.refuted || v.severity === "NONE") return { ...f, verdict: "refuted", verdictReason: v.reasoning };
-    return { ...f, severity: v.severity, verdict: "confirmed", verdictReason: v.reasoning };
-  });
-}
-function reviewRecord(input) {
-  return {
-    name: input.name,
-    headSha: input.headSha,
-    lenses: input.lenses.map((l) => ({ ...l })),
-    skeptics: input.skeptics.map((s) => ({ ...s })),
-    findings: input.findings.map((f) => ({ ...f })),
-    finishedAt: new Date(input.now).toISOString(),
-    ...input.since !== void 0 && { since: input.since }
-  };
-}
-
-// src/review/history.ts
-import { readdirSync as readdirSync11 } from "node:fs";
-import { join as join35 } from "node:path";
-var ROUND_FILE = /^([1-9][0-9]{0,8})\.json$/;
-function reviewRoundPath(integrationDir, round) {
-  if (!Number.isInteger(round) || round < 1) throw new ArbabError("usage", `review round ${round} is not a positive integer`);
-  return join35(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
-}
-function reviewRounds(integrationDir) {
-  let names2;
-  try {
-    names2 = readdirSync11(join35(integrationDir, REVIEW_HISTORY_DIR));
-  } catch (err) {
-    if (err.code === "ENOENT") return [];
-    throw new ArbabError("io", `cannot list ${join35(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
-  }
-  return names2.flatMap((n) => {
-    const round = ROUND_FILE.exec(n)?.[1];
-    return round === void 0 ? [] : [Number(round)];
-  }).sort((a, b) => a - b);
-}
-function writeReviewRound(integrationDir, record2) {
-  for (let round = (reviewRounds(integrationDir).at(-1) ?? 0) + 1; ; round++) {
-    const numbered = { ...record2, round };
-    if (createExclusive(reviewRoundPath(integrationDir, round), JSON.stringify(numbered, null, 2) + "\n")) return numbered;
-  }
-}
-function keepOtherLenses(previous, current, ran) {
-  if (previous === null || previous.headSha !== current.headSha) return current;
-  const rerun = new Set(ran);
-  const fresh2 = new Map(current.lenses.map((l) => [l.lens, l]));
-  const lenses2 = [];
-  for (const entry of previous.lenses) {
-    if (!rerun.has(entry.lens)) lenses2.push({ ...entry });
-    else {
-      const now = fresh2.get(entry.lens);
-      if (now !== void 0 && !lenses2.includes(now)) lenses2.push(now);
-    }
-  }
-  for (const entry of current.lenses) if (!lenses2.includes(entry)) lenses2.push(entry);
-  const order = new Map(lenses2.map((l, i) => [l.lens, i]));
-  const byLens = (items) => items.map((item, i) => ({ item, i })).sort((a, b) => (order.get(a.item.lens) ?? order.size) - (order.get(b.item.lens) ?? order.size) || a.i - b.i).map((x) => x.item);
-  const kept = (items) => items.filter((x) => !rerun.has(x.lens)).map((x) => ({ ...x }));
-  return {
-    ...current,
-    lenses: lenses2,
-    skeptics: byLens([...kept(previous.skeptics), ...current.skeptics]),
-    findings: byLens([...kept(previous.findings), ...current.findings])
-  };
-}
-
-// src/review/lanes.ts
-import { isAbsolute as isAbsolute12, relative as relative11, sep as sep11 } from "node:path";
-var MAX_LANE_NAME = 48;
-var MAX_FINDINGS = 10;
-var REF = /^[A-Za-z0-9._/@^~{}-]+$/;
-function reviewLaneFiles(paths, lane) {
-  const name2 = assertValidName(lane, "lane name");
-  const rel = relative11(paths.projectRoot, paths.lanesDir);
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep11}`) || isAbsolute12(rel)) {
-    throw new ArbabError("usage", `the lanes directory ${paths.lanesDir} is not inside the project ${paths.projectRoot}`);
-  }
-  const dir = rel.split(sep11).join("/");
-  return { brief: `${dir}/${name2}.md`, schema: `${dir}/${name2}.schema.json` };
-}
-function startFields(start) {
-  const base = checkRef(start.base, "base");
-  if (start.mergeBranches === void 0) return { base };
-  return { base, mergeBranches: start.mergeBranches.map((ref2) => checkRef(ref2, "merge branch")) };
-}
-function laneName(name2, kind, lens) {
-  assertValidName(name2, "integration name");
-  assertValidName(lens, "lens");
-  const lane = `${name2}-${kind}-${lens}`;
-  if (lane.length > MAX_LANE_NAME) {
-    throw new ArbabError(
-      "usage",
-      `lane name ${lane} has ${lane.length} characters (at most ${MAX_LANE_NAME}): shorten the integration name or the lens`
-    );
-  }
-  return assertValidName(lane, "lane name");
-}
-function assertReviewLaneNames(name2, lenses2) {
-  for (const lens of lenses2) for (const kind of ["review", "skeptic"]) laneName(name2, kind, lens);
-}
-function checkRef(ref2, what) {
-  if (ref2.startsWith("-") || ref2.includes("..") || !REF.test(ref2)) {
-    throw new ArbabError("usage", `${what} ${JSON.stringify(ref2)} is not a plain git ref`);
-  }
-  return ref2;
-}
-function quote(text2) {
-  return text2.trim().split(/\r?\n/).map((line2) => line2 === "" ? ">" : `> ${line2}`).join("\n");
-}
-function reviewLane(input) {
-  const name2 = input.paths.name;
-  const lane = laneName(name2, "review", input.lens);
-  const base = checkRef(input.diffBase, "diff base");
-  if (input.text.trim() === "") throw new ArbabError("usage", `lens ${input.lens} has no text`);
-  const start = startFields(input);
-  const range2 = `${base}..HEAD`;
-  const since = input.since === true ? `
-
-The branch's earlier commits were reviewed in an earlier round: this round covers only what changed since
-\`${base}\`.` : "";
-  const brief = `# Review ${name2}: ${input.lens}
-
-## Task
-
-Review the change on this branch through the **${input.lens}** lens. Run \`git diff ${range2}\` to see the change, and
-\`git diff --stat ${range2}\` for the files it touches.${since}
-
-The ${input.lens} lens looks for:
-
-${quote(input.text)}
-
-Depth floor:
-
-- Read in full every file the diff changes, not only the hunks.
-- Where a finding depends on code the changed files call, read that code too; do not assume what it does.
-
-Findings:
-
-- Every finding names a file, a line, a concrete failure scenario (the inputs or events, and what goes wrong) and
-  evidence (the code that does it, quoted or cited by line).
-- At most ${MAX_FINDINGS} findings, strongest first. Severity: HIGH loses or corrupts work, escapes the fence or
-  leaks secrets; MEDIUM is wrong behaviour on a reachable path; LOW is a real but minor defect.
-- No style remarks. Report no finding rather than a speculative one.
-
-## Scope
-
-Read-only. Do not edit, create or delete files, and do not commit.
-
-## Acceptance
-
-- \`paths_checked\` lists every file you read in full.
-- \`coverage\` says what you verified and how, and what you did not check.
-- Each finding has a file, a line, a failure scenario and evidence.
-`;
-  const spec = {
-    name: lane,
-    role: "reviewer",
-    brief: reviewLaneFiles(input.paths, lane).brief,
-    ...start
-  };
-  return { spec, brief };
-}
-var SEVERITY_VERDICTS = ["HIGH", "MEDIUM", "LOW", "NONE"];
-var SKEPTIC_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    verdicts: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          refuted: { type: "boolean" },
-          corrected_severity: { type: "string", enum: SEVERITY_VERDICTS },
-          reasoning: { type: "string" }
-        },
-        required: ["id", "refuted", "corrected_severity", "reasoning"]
-      }
-    }
-  },
-  required: ["verdicts"]
-};
-function skepticFindings(lens, findings) {
-  return findings.filter((f) => f.lens === lens && (f.severity === "HIGH" || f.severity === "MEDIUM"));
-}
-function skepticLane(input) {
-  const name2 = input.paths.name;
-  const lane = laneName(name2, "skeptic", input.lens);
-  const findings = skepticFindings(input.lens, input.findings);
-  if (findings.length === 0) {
-    throw new ArbabError("usage", `lens ${input.lens} has no MEDIUM or HIGH findings: no skeptic lane is needed`);
-  }
-  const base = input.diffBase === void 0 ? null : checkRef(input.diffBase, "diff base");
-  const start = startFields(input);
-  const listed = findings.map((f) => ({
-    id: f.id,
-    severity: f.severity,
-    title: f.title,
-    file: f.file,
-    ...f.line === void 0 ? {} : { line: f.line },
-    failure_scenario: f.failureScenario,
-    evidence: f.evidence
-  }));
-  const provenance = base === null ? "use the file's history (`git log` and `git blame`) to tell" : `run \`git diff ${base}..HEAD\` and the file's history to tell`;
-  const brief = `# Skeptic ${name2}: ${input.lens}
-
-## Task
-
-A reviewer reported the findings below about the change on this branch, through the **${input.lens}** lens. Try to
-refute each one. Check every finding from three angles:
-
-- Trace: does the code do what the finding says? Read the cited file and line and follow the calls.
-- Reachability: can it happen with real inputs, callers and configuration, not only in theory?
-- Provenance: was it introduced by this change or was it there before? To check, ${provenance}. A pre-existing defect
-  is still real: do not refute it for that, but say "pre-existing" in the reasoning.
-
-Give one verdict per finding id: \`refuted\` true when the finding is wrong or cannot happen, and the severity it
-really has (\`NONE\` when it is not a defect). If still uncertain after checking the code, refute it.
-
-The findings:
-
-\`\`\`json
-${JSON.stringify(listed, null, 2)}
-\`\`\`
-
-## Scope
-
-Read-only. Do not edit, create or delete files, and do not commit.
-
-## Acceptance
-
-- \`verdicts\` has exactly one entry for each finding id listed in the Task.
-- Each \`reasoning\` names the code it checked (file and line) for the trace, reachability and provenance angles.
-`;
-  const files = reviewLaneFiles(input.paths, lane);
-  const spec = {
-    name: lane,
-    role: "reviewer",
-    brief: files.brief,
-    ...start,
-    schema: files.schema
-  };
-  return { spec, brief, schema: SKEPTIC_SCHEMA };
-}
-
-// src/review/lenses.ts
-var BUILTIN_LENSES = Object.freeze({
-  correctness: "Wrong behaviour on reachable paths, lost or duplicated work, wrong end states, time and unit errors, resource leaks.",
-  security: "Fence escapes, code from workers running on the host, path traversal and symlinks, argument injection, secrets on disk or in logs, signals to the wrong processes, races.",
-  contracts: "Files and fields modules disagree on, behaviour against DESIGN.md, duplicated logic, untested exports, bundle-only breakage."
-});
-function lensNames(configLenses) {
-  const names2 = Object.keys(BUILTIN_LENSES);
-  for (const name2 of Object.keys(configLenses)) if (!names2.includes(name2)) names2.push(name2);
-  return names2;
-}
-function lensText(lens, configLenses) {
-  if (Object.hasOwn(configLenses, lens)) return configLenses[lens] ?? null;
-  return Object.hasOwn(BUILTIN_LENSES, lens) ? BUILTIN_LENSES[lens] ?? null : null;
-}
-var MAX_LENS_FILE_TEXT = 8e3;
-function parseLensFileOption(option) {
-  const at = option.indexOf("=");
-  if (at <= 0 || at === option.length - 1) {
-    throw new ArbabError("usage", `--lens-file ${JSON.stringify(option)} must be <name>=<file>`);
-  }
-  return { name: assertValidName(option.slice(0, at), "lens"), file: option.slice(at + 1) };
-}
-function lensFileText(name2, text2) {
-  const trimmed = text2.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_LENS_FILE_TEXT) {
-    throw new ArbabError("usage", `the file of lens ${name2} has ${trimmed.length} characters; a lens text has 1 to ${MAX_LENS_FILE_TEXT}`);
-  }
-  return trimmed;
-}
-
-// src/commands/records.ts
-var isObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-var isString = (v) => typeof v === "string";
-var isStringOrNull = (v) => v === null || typeof v === "string";
-var isNumberOrNull = (v) => v === null || Number.isFinite(v);
-var listOf = (v, item) => Array.isArray(v) && v.every(item);
-function read(path, name2, what, valid) {
-  const raw = readJson(path);
-  if (raw === null) return null;
-  if (!isObject5(raw) || raw["name"] !== name2 || !valid(raw)) {
-    throw new ArbabError("io", `${path} is not a ${what} for ${name2}`);
-  }
-  return raw;
-}
-var isGateResult2 = (v) => isObject5(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && listOf(v["argv"], isString) && isString(v["command"]) && isNumberOrNull(v["exitCode"]);
-function readVerifyRecord(path, name2) {
-  return read(
-    path,
-    name2,
-    "verify record",
-    (v) => isString(v["lane"]) && isNumberOrNull(v["attempt"]) && isString(v["headSha"]) && listOf(v["results"], isGateResult2) && typeof v["passed"] === "boolean" && (v["reason"] === void 0 || isString(v["reason"])) && isString(v["finishedAt"])
-  );
-}
-var SEVERITIES2 = ["HIGH", "MEDIUM", "LOW"];
-var VERDICTS = ["confirmed", "refuted", "unverified"];
-var isFinding = (v) => isObject5(v) && isString(v["id"]) && isString(v["lens"]) && isString(v["title"]) && SEVERITIES2.includes(v["severity"]) && isString(v["file"]) && (v["line"] === void 0 || Number.isInteger(v["line"])) && isString(v["failureScenario"]) && isString(v["evidence"]) && VERDICTS.includes(v["verdict"]);
-var isLensEntry = (v) => isObject5(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]) && isStringOrNull(v["coverage"]) && Number.isInteger(v["pathsChecked"]);
-var isSkepticEntry = (v) => isObject5(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]);
-function readReviewRecord(path, name2) {
-  return read(
-    path,
-    name2,
-    "review record",
-    (v) => isString(v["headSha"]) && listOf(v["lenses"], isLensEntry) && listOf(v["skeptics"], isSkepticEntry) && listOf(v["findings"], isFinding) && isString(v["finishedAt"]) && (v["round"] === void 0 || Number.isInteger(v["round"]) && v["round"] >= 1) && (v["since"] === void 0 || isStringOrNull(v["since"]))
-  );
-}
-var isItem = (v) => isObject5(v) && isString(v["id"]) && isString(v["text"]);
-function readReadinessReport(path, name2) {
-  return read(
-    path,
-    name2,
-    "readiness report",
-    (v) => TIERS.includes(v["tier"]) && isString(v["headSha"]) && listOf(v["verified"], isItem) && listOf(v["skipped"], (s) => isItem(s) && typeof s["waived"] === "boolean") && listOf(v["risks"], isItem) && typeof v["ready"] === "boolean" && isString(v["createdAt"])
-  );
-}
-
-// src/commands/land.ts
+import { existsSync as existsSync21, readFileSync as readFileSync10, realpathSync as realpathSync13 } from "node:fs";
+import { dirname as dirname8, resolve as resolve16 } from "node:path";
 var refuse = (message5) => new ArbabError("usage", `not landed: ${message5}`);
 function gitOut(git, args, cwd) {
   const r = git(args, cwd);
@@ -7643,14 +8578,14 @@ function readMessage(root, file, credential) {
   try {
     path = confine(root, file);
   } catch {
-    throw refuse(`the --message file ${file} is outside the project ${resolve15(root)}`);
+    throw refuse(`the --message file ${file} is outside the project ${resolve16(root)}`);
   }
   const hit = credential(path, root);
   if (hit !== null) throw refuse(`the --message file ${path} ${credentialReason(hit)}`);
   let text2;
   try {
-    const real2 = realpathSync12(path);
-    const realRoot = realpathSync12(root);
+    const real2 = realpathSync13(path);
+    const realRoot = realpathSync13(root);
     try {
       confine(realRoot, real2);
     } catch {
@@ -7658,7 +8593,7 @@ function readMessage(root, file, credential) {
     }
     const realHit = credential(real2, realRoot);
     if (realHit !== null) throw refuse(`the --message file ${path} resolves to ${real2}, which ${credentialReason(realHit)}`);
-    text2 = readFileSync7(real2, "utf8");
+    text2 = readFileSync10(real2, "utf8");
   } catch (err) {
     if (err instanceof ArbabError) throw err;
     throw refuse(`cannot read the --message file ${path}: ${err.message}`);
@@ -7718,7 +8653,7 @@ async function runLand(argv2, ctx) {
   assertReadinessCurrent(readiness, verify, readReviewRecord(paths.review, name2), name2);
   const leftAlone = assertCleanBase(ctx.git, project.root, base, head);
   if (ctx.git(["merge-base", "--is-ancestor", head, "HEAD"], project.root).code === 0) throw refuse(`${head} is already in ${base}`);
-  if (existsSync17(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
+  if (existsSync21(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
   const branchAt = branchHead(ctx.git, project.root, paths.branch);
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
@@ -7748,6 +8683,7 @@ async function runLand(argv2, ctx) {
     integrationHead: head,
     mergeSha,
     landedAt: isoAt(ctx.clock),
+    owner: sessionOf(ctx.hostEnv),
     pushed: false,
     squash,
     lanes: record2.merged.map((m) => ({ lane: m.lane, sha: m.sha }))
@@ -7817,9 +8753,9 @@ function deleteSquashedBranches(ctx, root, branches, landedHead, out) {
 }
 
 // src/commands/plan.ts
-import { join as join36 } from "node:path";
+import { join as join42 } from "node:path";
 var phaseNames = (plan) => [...new Set(plan.phases.map((p) => p.name))];
-var plansDir = (project, plan) => join36(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
+var plansDir = (project, plan) => join42(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
 function checkPlanFile(ctx, project, planPath) {
   const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
   const issues = checkPlan(plan);
@@ -7889,7 +8825,7 @@ async function planNext(ctx, project, planPath, opts = {}) {
       prepared = true;
     }
     const lane = check2.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
-    const laneFile = join36(plansDir(project, plan.name), `${phase}.json`);
+    const laneFile = join42(plansDir(project, plan.name), `${phase}.json`);
     try {
       writeJsonAtomic(laneFile, lane);
       const launched = await launchLane(ctx, project, laneFile, { onlyNew });
@@ -7909,12 +8845,12 @@ async function planNext(ctx, project, planPath, opts = {}) {
   for (const phase of next.launch) await launch(phase, true);
   return out;
 }
-function table(rows) {
+function table2(rows) {
   const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
   return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd()).join("\n");
 }
 function formatPlanStatus(rows) {
-  return table([
+  return table2([
     ["PHASE", "WAVE", "STATE", "END", "DEPENDS ON"],
     ...rows.map((r) => [r.phase, String(r.wave), r.state ?? "-", r.endState ?? "-", r.dependsOn.length > 0 ? r.dependsOn.join(", ") : "-"])
   ]);
@@ -8003,248 +8939,6 @@ async function runPlan(argv2, ctx) {
   return command(rest, ctx);
 }
 
-// src/quota/quota.ts
-import { existsSync as existsSync18, rmSync as rmSync8 } from "node:fs";
-import { join as join37 } from "node:path";
-var quotaPath = (home) => join37(home, "quota.json");
-var resetFile = (home) => join37(home, "quota-reset.json");
-function isWindow(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value;
-  return Number.isFinite(v["utilization"]) && Number.isFinite(v["resetsAt"]);
-}
-function isSnapshot(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const v = value;
-  const nullableString = (x) => x === null || typeof x === "string";
-  return typeof v["observedAt"] === "string" && !Number.isNaN(Date.parse(v["observedAt"])) && nullableString(v["status"]) && nullableString(v["type"]) && (v["fiveHour"] === null || isWindow(v["fiveHour"])) && (v["sevenDay"] === null || isWindow(v["sevenDay"]));
-}
-function readQuota(home) {
-  let value;
-  try {
-    value = readJson(quotaPath(home));
-  } catch (err) {
-    if (err instanceof ArbabError) return null;
-    throw err;
-  }
-  return isSnapshot(value) ? value : null;
-}
-function updateQuota(home, snapshot) {
-  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
-  const stored = readQuota(home);
-  if (stored && Date.parse(snapshot.observedAt) <= Date.parse(stored.observedAt)) return false;
-  writeJsonAtomic(quotaPath(home), snapshot);
-  return true;
-}
-function resetQuota(home, clock) {
-  const path = quotaPath(home);
-  const existed = existsSync18(path);
-  try {
-    rmSync8(path, { force: true });
-  } catch (err) {
-    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
-  }
-  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
-  return existed;
-}
-function replaceQuota(home, snapshot, clock) {
-  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
-  writeJsonAtomic(quotaPath(home), snapshot);
-  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
-}
-function lastQuotaReset(home) {
-  let value;
-  try {
-    value = readJson(resetFile(home));
-  } catch (err) {
-    if (err instanceof ArbabError) return null;
-    throw err;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const resetAt = value["resetAt"];
-  if (typeof resetAt !== "string") return null;
-  const ms = Date.parse(resetAt);
-  return Number.isNaN(ms) ? null : ms;
-}
-var pct = (utilization) => `${Math.round(utilization * 100)}%`;
-var WINDOWS = [
-  { key: "fiveHour", name: "five-hour", label: "5h" },
-  { key: "sevenDay", name: "seven-day", label: "7d" }
-];
-function rejectedWindow(type) {
-  if (type?.startsWith("five_hour")) return "fiveHour";
-  if (type?.startsWith("seven_day")) return "sevenDay";
-  return null;
-}
-function holdDecision(snapshot, holdAbove, nowSec) {
-  if (!snapshot) return { hold: false, reason: null, until: null };
-  const reasons = [];
-  let until = null;
-  const named2 = snapshot.status === "rejected" ? rejectedWindow(snapshot.type) : null;
-  for (const { key, name: name2 } of WINDOWS) {
-    const window = snapshot[key];
-    if (!window || window.resetsAt <= nowSec) continue;
-    let reason = null;
-    if (snapshot.status === "rejected" && (named2 === null || named2 === key)) {
-      reason = `rate limit rejected (${name2} window at ${pct(window.utilization)})`;
-    } else if (window.utilization >= holdAbove[key]) {
-      reason = `${name2} window at ${pct(window.utilization)} (hold above ${pct(holdAbove[key])})`;
-    }
-    if (reason) {
-      reasons.push(reason);
-      until = Math.max(until ?? 0, window.resetsAt);
-    }
-  }
-  return reasons.length > 0 ? { hold: true, reason: reasons.join("; "), until } : { hold: false, reason: null, until: null };
-}
-function resumeAt(resetsAt, jitterSec) {
-  if (!Number.isFinite(jitterSec) || jitterSec < 0 || jitterSec > 60) {
-    throw new ArbabError("usage", `jitter ${jitterSec} must be between 0 and 60 seconds`);
-  }
-  return resetsAt + 60 + jitterSec;
-}
-var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-function formatReset(resetsAt, nowSec) {
-  const at = new Date(resetsAt * 1e3);
-  const now = new Date(nowSec * 1e3);
-  const two = (n) => String(n).padStart(2, "0");
-  const time = `${two(at.getUTCHours())}:${two(at.getUTCMinutes())}Z`;
-  const sameDay = at.getUTCFullYear() === now.getUTCFullYear() && at.getUTCMonth() === now.getUTCMonth() && at.getUTCDate() === now.getUTCDate();
-  return sameDay ? time : `${MONTHS[at.getUTCMonth()]} ${at.getUTCDate()} ${time}`;
-}
-function formatQuota(snapshot, nowSec) {
-  if (!snapshot) return "quota unknown";
-  const parts = [];
-  for (const { key, label } of WINDOWS) {
-    const window = snapshot[key];
-    if (!window) continue;
-    parts.push(
-      window.resetsAt > nowSec ? `${label} ${pct(window.utilization)} (resets ${formatReset(window.resetsAt, nowSec)})` : `${label} \u2014 (reset ${formatReset(window.resetsAt, nowSec)})`
-    );
-  }
-  if (parts.length === 0) return "quota unknown";
-  if (snapshot.status === "rejected") parts.push("rejected");
-  return parts.join(" \xB7 ");
-}
-
-// src/quota/refresh.ts
-import { mkdtempSync, rmSync as rmSync9 } from "node:fs";
-import { join as join38 } from "node:path";
-var REFRESH_PROMPT = "Reply with the single word: ok";
-var REFRESH_TIMEOUT_MS = 6e4;
-var STDERR_TAIL_LINES = 5;
-var STDERR_KEEP_CHARS = 16384;
-var TAIL_LINE_CHARS = 500;
-function refreshArgs() {
-  return [
-    "-p",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--model",
-    "haiku",
-    "--max-turns",
-    "1",
-    "--tools",
-    "",
-    // The same empty source list as a worker's: no user, project or local settings.
-    "--setting-sources",
-    "",
-    "--strict-mcp-config"
-  ];
-}
-function makeRefreshSpawn(spawnImpl, graceMs = 2e3) {
-  return (binary, args, opts) => new Promise((resolve19) => {
-    const out = [];
-    let err = "";
-    let timedOut = false;
-    let exit = null;
-    const timers = [];
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      for (const t of timers) clearTimeout(t);
-      resolve19({ code: exit?.code ?? null, signal: exit?.signal ?? null, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: err });
-    };
-    let child2;
-    try {
-      child2 = spawnImpl(binary, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
-    } catch (e) {
-      err = `cannot start ${binary}: ${e.message}`;
-      finish();
-      return;
-    }
-    const kill = (sig) => {
-      try {
-        child2.kill(sig);
-      } catch {
-      }
-    };
-    child2.stdout?.on("data", (chunk) => out.push(chunk));
-    child2.stderr?.on("data", (chunk) => {
-      err = (err + chunk.toString("utf8")).slice(-STDERR_KEEP_CHARS);
-    });
-    child2.once("error", (e) => {
-      err += `${err === "" || err.endsWith("\n") ? "" : "\n"}${e.message}
-`;
-      if (child2.pid === void 0) finish();
-    });
-    child2.once("exit", (code4, signal) => {
-      exit = { code: code4, signal };
-      if (!timedOut) for (const t of timers.splice(0)) clearTimeout(t);
-      timers.push(setTimeout(finish, graceMs));
-    });
-    child2.once("close", finish);
-    timers.push(
-      setTimeout(() => {
-        timedOut = true;
-        kill("SIGTERM");
-        timers.push(
-          setTimeout(() => {
-            kill("SIGKILL");
-            timers.push(setTimeout(finish, graceMs));
-          }, graceMs)
-        );
-      }, opts.timeoutMs)
-    );
-    child2.stdin?.on("error", () => void 0);
-    child2.stdin?.end(opts.input);
-  });
-}
-function stderrTail(stderr) {
-  return stderr.split("\n").map((line2) => line2.trimEnd()).filter((line2) => line2.trim() !== "").slice(-STDERR_TAIL_LINES).map((line2) => line2.length > TAIL_LINE_CHARS ? `${line2.slice(0, TAIL_LINE_CHARS)}\u2026` : line2);
-}
-async function refreshQuota(input) {
-  const timeoutMs = input.timeoutMs ?? REFRESH_TIMEOUT_MS;
-  const tmpRoot = join38(input.home, "tmp");
-  let cwd;
-  try {
-    ensureDir(tmpRoot);
-    cwd = mkdtempSync(join38(tmpRoot, "quota-refresh-"));
-  } catch (err) {
-    throw new ArbabError("io", `cannot create a working directory under ${tmpRoot}: ${err.message}`, { cause: err });
-  }
-  let run;
-  try {
-    run = await input.spawn(input.binary, refreshArgs(), { cwd, env: input.env, input: REFRESH_PROMPT, timeoutMs });
-  } finally {
-    rmSync9(cwd, { recursive: true, force: true });
-  }
-  const fail2 = (what) => {
-    const tail = stderrTail(run.stderr);
-    const lines = tail.length === 0 ? ["  (stderr empty)"] : tail.map((line2) => `  ${line2}`);
-    return new ArbabError("runtime", [`refresh failed: ${what}; ${quotaPath(input.home)} is unchanged`, "stderr:", ...lines].join("\n"));
-  };
-  if (run.timedOut) throw fail2(`claude did not finish within ${Math.round(timeoutMs / 1e3)} s`);
-  if (run.code !== 0) throw fail2(`claude exited with ${run.code === null ? `signal ${run.signal ?? "unknown"}` : `code ${run.code}`}`);
-  const parsed2 = parseStream(run.stdout);
-  const snapshot = digestStream(parsed2.events, isoAt(input.clock), parsed2.unparsedLines).rateLimit;
-  if (snapshot === null) throw fail2("claude's stream had no rate_limit_event");
-  replaceQuota(input.home, snapshot, input.clock);
-  return snapshot;
-}
-
 // src/commands/quota.ts
 function formatHold(hold) {
   if (!hold.hold) return "hold: no";
@@ -8304,7 +8998,7 @@ ${formatHold(hold)}
 }
 
 // src/commands/readiness.ts
-import { join as join39 } from "node:path";
+import { join as join43 } from "node:path";
 
 // src/readiness/notes.ts
 var FENCE_KINDS = [
@@ -8321,11 +9015,11 @@ function fenceKind(text2) {
 function noteKey(text2) {
   return text2.trim().toLowerCase().replace(/\d+/g, "N").replace(/\s+/g, " ");
 }
-function flat(text2) {
+function flat2(text2) {
   return text2.trim().replace(/\s+/g, " ");
 }
 function example(note) {
-  const text2 = flat(note.text);
+  const text2 = flat2(note.text);
   return `${note.lane}: ${text2.length > EXAMPLE_CHARS ? `${text2.slice(0, EXAMPLE_CHARS - 1)}\u2026` : text2}`;
 }
 function groupLaneNotes(entries3) {
@@ -8369,7 +9063,7 @@ function groupLaneNotes(entries3) {
     }
     if (emitted.has(`notes:${key}`)) continue;
     emitted.add(`notes:${key}`);
-    out.push({ id: `notes:${note.id}`, text: `${lanes} lanes: ${flat(note.text)}` });
+    out.push({ id: `notes:${note.id}`, text: `${lanes} lanes: ${flat2(note.text)}` });
   }
   return out;
 }
@@ -8400,7 +9094,26 @@ function reviewCarriesOver(git, cwd, reviewed, head, baseBranch) {
   return merged !== void 0 && tree !== null && SHA6.test(tree) && merged === tree;
 }
 
+// src/readiness/moved.ts
+var SHA7 = /^[0-9a-f]{40,64}$/;
+function baseMoved(git, projectRoot, base, head) {
+  if (base === "" || base.startsWith("-") || !SHA7.test(head)) return null;
+  if (git(["merge-base", "--is-ancestor", base, head], projectRoot).code !== 1) return null;
+  const listed = git(["rev-list", `${head}..${base}`, "--"], projectRoot);
+  if (listed.code !== 0) return { base, landings: [], commits: null };
+  const commits = new Set(listed.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== ""));
+  const landings = landingsSince(projectRoot, -Infinity).filter((l) => l.into === base && commits.has(l.mergeSha));
+  return { base, landings, commits: commits.size };
+}
+
 // src/readiness/index.ts
+function baseMovedRisk(name2, moved) {
+  const what = moved.landings.length > 0 ? `${moved.landings.map(landingText).join(", ")} landed` : moved.commits === null ? "it has new commits" : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
+  return {
+    id: "base-moved",
+    text: `${moved.base} moved since this integration started: ${what}. Merge ${moved.base} into integrate/${name2} before landing.`
+  };
+}
 function exitText(code4) {
   return code4 === null ? "missing (counts as a failure)" : `exit ${code4}`;
 }
@@ -8633,6 +9346,7 @@ function computeReadiness(input) {
   if (input.sessionsUnknown !== void 0) {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }
+  if (input.baseMoved !== void 0 && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.baseMoved));
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,
@@ -8659,12 +9373,12 @@ function inline(text2) {
   return text2.replace(/\s*[\r\n]+\s*/g, " ");
 }
 function code2(text2) {
-  const flat2 = inline(text2);
+  const flat3 = inline(text2);
   let longest = 0;
-  for (const run of flat2.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
+  for (const run of flat3.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
   const fence2 = "`".repeat(longest + 1);
-  const pad = flat2.startsWith("`") || flat2.endsWith("`") ? " " : "";
-  return `${fence2}${pad}${flat2}${pad}${fence2}`;
+  const pad = flat3.startsWith("`") || flat3.endsWith("`") ? " " : "";
+  return `${fence2}${pad}${flat3}${pad}${fence2}`;
 }
 function cell(text2) {
   return text2.replace(/\|/g, "\\|");
@@ -8783,10 +9497,11 @@ async function runReadiness(argv2, ctx) {
     now: isoAt(ctx.clock),
     reviewCarryOver: carried && review !== null ? { from: review.headSha, base } : null,
     hostGates: project.config.hostGates,
-    hostChecks: readHostCheckRecord(join39(paths.dir, HOST_CHECKS_FILE), name2),
+    hostChecks: readHostCheckRecord(join43(paths.dir, HOST_CHECKS_FILE), name2),
     reviewRounds: reviewRounds2(paths.dir, name2),
     ...otherSessions2 !== void 0 && { otherSessions: otherSessions2 },
-    ...sessionsUnknown !== void 0 && { sessionsUnknown }
+    ...sessionsUnknown !== void 0 && { sessionsUnknown },
+    baseMoved: baseMoved(ctx.git, project.root, base, record2.headSha)
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);
@@ -8794,514 +9509,6 @@ async function runReadiness(argv2, ctx) {
   if (values.json === true) printJson(ctx, report);
   else ctx.stdout(markdown);
   return report.ready ? 0 : 1;
-}
-
-// src/summary/advice.ts
-var ATTENTION_END_STATES = /* @__PURE__ */ new Set([
-  "failed",
-  "invalid-report",
-  "no-result",
-  "budget",
-  "max-turns",
-  "unsupported-cli"
-]);
-function needsAttention(endState) {
-  if (endState === null) return false;
-  return ATTENTION_END_STATES.has(endState) || endState.startsWith("killed:");
-}
-var ADVICE = {
-  "killed:wall": "ran past wallMin: read the last events; split the task or name the timeout, then relaunch or resume",
-  "killed:idle": "no stream growth for idleMin (often a foreground server or watcher): fix the brief, then resume or relaunch",
-  "killed:hang-after-result": "the work ended but the process hung: read report.json as for success; check the reaped pids in exit.json",
-  "killed:hang-after-error": "treat as the error it followed: read stderr.log and the last result",
-  "killed:stopped": "stopped by arbab stop: resume or relaunch when you have the correction",
-  "no-result": "crashed before a result: read stderr.log and exit.json, then decide as for failed",
-  "unsupported-cli": "the claude binary is too old for the model: run arbab doctor, upgrade or pin it, then relaunch",
-  budget: "spent budgetUsd: check the report and checkpoint, split or decide more, then resume or relaunch",
-  "max-turns": "hit the turn cap: check the report and checkpoint, split or decide more, then resume or relaunch",
-  "invalid-report": "the report is not usable: check the diff and reportErrors in summary.json; resume asking only for the report",
-  failed: "read the report, stderr.log and the last events; then arbab resume <lane> --prompt <file>, arbab resume <lane> --digest, or relaunch with a corrected brief",
-  orphaned: "the shepherd died before finishing: arbab cleanup, then decide as for failed"
-};
-function adviceFor(state) {
-  return Object.hasOwn(ADVICE, state) ? ADVICE[state] : "see references/end-states.md";
-}
-
-// src/summary/integrations.ts
-import { existsSync as existsSync19 } from "node:fs";
-var SHORT_SHA = 7;
-var short = (sha) => sha.slice(0, SHORT_SHA);
-function integrationLine(projectRoot, config, name2) {
-  const paths = integrationPaths(projectRoot, config, name2);
-  const record2 = readIntegration(paths);
-  if (record2 === null) return null;
-  const head = record2.headSha;
-  const verify = readVerifyRecord(paths.verify, name2);
-  const review = readReviewRecord(paths.review, name2);
-  const readiness = readReadinessReport(paths.readiness, name2);
-  const readinessOnHead = readiness !== null && readiness.headSha === head ? readiness : null;
-  const verified = verify !== null && verify.headSha === head && verify.passed;
-  const reviewed = review !== null && (review.headSha === head || readinessOnHead?.reviewCarriedOverFrom === review.headSha);
-  const ready = readinessOnHead?.ready === true;
-  const landed = existsSync19(paths.landing);
-  const stage = landed ? "landed" : ready ? "ready" : reviewed ? "reviewed" : verified ? "verified" : "integrated";
-  const waitsFor = [];
-  if (!landed) {
-    if (!record2.depsConfirmed) waitsFor.push(`dependencies to confirm: ${confirmCommand(name2, head)}`);
-    if (verify === null) waitsFor.push("verify has not run");
-    else if (verify.headSha !== head) waitsFor.push(`verify is stale (ran on ${short(verify.headSha)})`);
-    else if (!verify.passed) waitsFor.push(`verify failed${verify.reason === void 0 ? "" : `: ${verify.reason}`}`);
-    if (review === null) waitsFor.push("review missing");
-    else if (!reviewed) waitsFor.push(`review is stale (ran on ${short(review.headSha)})`);
-    if (readinessOnHead === null) waitsFor.push(readiness === null ? "readiness has not run" : "readiness is stale");
-    else {
-      const open2 = readinessOnHead.skipped.filter((s) => !s.waived).map((s) => s.id);
-      if (open2.length > 0) waitsFor.push(`readiness skipped, not waived: ${open2.join(", ")}`);
-    }
-    if (ready) waitsFor.push("ready: ask the human to land");
-  }
-  return { name: name2, stage, head, waitsFor };
-}
-function integrationOverview(projectRoot, config) {
-  const integrations = [];
-  const errors = [];
-  for (const name2 of listIntegrations(projectRoot)) {
-    try {
-      const line2 = integrationLine(projectRoot, config, name2);
-      if (line2 !== null) integrations.push(line2);
-    } catch (err) {
-      errors.push(`integration ${name2}: ${err.message}`);
-    }
-  }
-  return { integrations, errors };
-}
-
-// src/summary/format.ts
-var NONE2 = "-";
-var INDENT = "  ";
-function table2(rows) {
-  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
-  return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd());
-}
-function formatCounts(counts) {
-  const parts = [];
-  const s = counts.byState;
-  for (const state of ["running", "held", "preparing", "waiting-reset", "queued"]) {
-    if (s[state] > 0) parts.push(`${s[state]} ${state}`);
-  }
-  const finished = Object.entries(counts.finished).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const total = finished.reduce((n, [, c]) => n + c, 0);
-  if (total > 0) parts.push(`${total} finished (${finished.map(([end, c]) => `${c} ${end}`).join(", ")})`);
-  if (s.orphaned > 0) parts.push(`${s.orphaned} orphaned`);
-  return parts.join(" \xB7 ");
-}
-function phaseText(p) {
-  return p.status === "failed" && p.endState !== null ? `failed (${p.endState})` : p.status;
-}
-var isoAt2 = (sec) => new Date(sec * 1e3).toISOString().replace(/\.000Z$/, "Z");
-function formatSummary(s, nowSec) {
-  const out = [];
-  const section2 = (title, lines) => {
-    if (out.length > 0) out.push("");
-    out.push(title, ...lines.map((l) => INDENT + l));
-  };
-  if (s.lanes.total > 0) {
-    const lines = [formatCounts(s.lanes.counts)];
-    if (s.lanes.active.length > 0) {
-      lines.push(
-        ...table2([
-          ["LANE", "STATE", "ELAPSED", "ATTEMPT", "OWNER", "REASON"],
-          ...s.lanes.active.map((l) => [
-            l.lane,
-            l.state,
-            l.elapsedMs === null ? NONE2 : formatElapsed(l.elapsedMs),
-            String(l.attempt),
-            l.owner ?? NONE2,
-            l.reason ?? NONE2
-          ])
-        ])
-      );
-    }
-    section2(`Lanes (${s.lanes.total})`, lines);
-  }
-  if (s.plans.length > 0) {
-    const lines = [];
-    for (const plan of s.plans) {
-      lines.push(`${plan.plan}:`);
-      lines.push(...table2(plan.phases.map((p) => [phaseText(p), p.phase])).map((l) => INDENT + l));
-    }
-    lines.push("run `arbab plan status <plan file>` for the phases not launched yet");
-    section2("Plans", lines);
-  }
-  if (s.integrations.length > 0) {
-    section2(
-      "Integrations",
-      table2(
-        s.integrations.map((i) => [
-          i.name,
-          i.stage,
-          i.head.slice(0, SHORT_SHA),
-          i.waitsFor.length > 0 ? `waits for: ${i.waitsFor.join("; ")}` : NONE2
-        ])
-      )
-    );
-  }
-  if (s.attention.length > 0) {
-    const lines = [];
-    for (const a of s.attention) {
-      lines.push(`${a.lane}: ${a.state} (attempt ${a.attempt})${a.reason === null ? "" : `: ${a.reason}`}`);
-      lines.push(`${INDENT}${a.todo}`);
-    }
-    section2("Needs attention", lines);
-  }
-  const q = s.quota;
-  const machine = q.slots.machineMaxParallel === null ? "" : `, machine cap ${q.slots.machineMaxParallel}`;
-  section2("Quota and slots", [
-    `quota: ${formatQuota(q.snapshot, nowSec)}`,
-    q.hold.hold ? `hold: yes, ${q.hold.reason ?? "quota"}${q.hold.until === null ? "" : ` (until ${isoAt2(q.hold.until)})`}` : "hold: no",
-    `slots: ${q.slots.inUse.length} in use machine-wide of ${q.slots.cap} (maxParallel ${q.slots.projectMaxParallel}${machine})`
-  ]);
-  if (s.errors.length > 0) section2("Unreadable records", s.errors);
-  return out.join("\n");
-}
-
-// src/summary/lanes.ts
-import { existsSync as existsSync20 } from "node:fs";
-var OWNER_CHARS = 8;
-var emptyCounts = () => ({
-  byState: { running: 0, held: 0, preparing: 0, "waiting-reset": 0, queued: 0, orphaned: 0 },
-  finished: {}
-});
-function attemptSummary(runsRoot, lane, attempt) {
-  if (attempt < 1) return null;
-  const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-  return existsSync20(dir) ? readAttempt(dir).summary : null;
-}
-function laneOverview(runsRoot, alive, nowMs) {
-  const out = { total: 0, counts: emptyCounts(), active: [], attention: [], errors: [] };
-  for (const lane of listLanes(runsRoot)) {
-    try {
-      const record2 = readState(runsRoot, lane);
-      if (record2 === null) continue;
-      const state = effectiveState(record2, alive);
-      const summary = attemptSummary(runsRoot, lane, record2.attempt);
-      const reason = record2.reason ?? null;
-      out.total++;
-      if (state === "finished") {
-        const end = record2.endState ?? summary?.state ?? null;
-        const key = end ?? "unknown";
-        out.counts.finished[key] = (out.counts.finished[key] ?? 0) + 1;
-        if (needsAttention(end)) {
-          const endState = end;
-          out.attention.push({ lane, state: endState, attempt: record2.attempt, reason, todo: adviceFor(endState) });
-        }
-        continue;
-      }
-      out.counts.byState[state]++;
-      const owner = readShepherdRecord(runsRoot, lane)?.owner ?? null;
-      out.active.push({
-        lane,
-        state,
-        attempt: record2.attempt,
-        elapsedMs: statusRow({ ...record2, state }, summary, nowMs).elapsedMs,
-        owner: owner === null ? null : owner.slice(0, OWNER_CHARS),
-        reason
-      });
-      if (state === "orphaned") {
-        out.attention.push({ lane, state: "orphaned", attempt: record2.attempt, reason, todo: adviceFor("orphaned") });
-      }
-    } catch (err) {
-      out.errors.push(`lane ${lane}: ${err.message}`);
-    }
-  }
-  return out;
-}
-
-// src/summary/plans.ts
-import { readdirSync as readdirSync12 } from "node:fs";
-import { join as join40 } from "node:path";
-var PLANS_DIR = join40(".arbab", "plans");
-function names(dir, keep) {
-  try {
-    return readdirSync12(dir, { withFileTypes: true }).filter(keep).map((e) => e.name).sort();
-  } catch {
-    return [];
-  }
-}
-function phaseLine(runsRoot, phase, alive) {
-  const record2 = readState(runsRoot, phase);
-  if (record2 === null) return { phase, status: "launched", endState: null };
-  const state = effectiveState(record2, alive);
-  if (state === "orphaned") return { phase, status: "failed", endState: "orphaned" };
-  if (state !== "finished") return { phase, status: state, endState: null };
-  let end = record2.endState ?? null;
-  if (end === null && record2.attempt >= 1) end = readAttempt(runPaths(runsRoot, phase).attemptDir(record2.attempt)).summary?.state ?? null;
-  return { phase, status: end === "success" ? "done" : "failed", endState: end };
-}
-function planOverview(projectRoot, runsRoot, alive) {
-  const root = join40(projectRoot, PLANS_DIR);
-  const plans = [];
-  const errors = [];
-  for (const plan of names(root, (e) => e.isDirectory() && isValidName(e.name))) {
-    const phases = [];
-    for (const file of names(join40(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
-      const phase = file.slice(0, -".json".length);
-      if (!isValidName(phase)) continue;
-      try {
-        phases.push(phaseLine(runsRoot, phase, alive));
-      } catch (err) {
-        errors.push(`plan ${plan} phase ${phase}: ${err.message}`);
-      }
-    }
-    if (phases.length > 0) plans.push({ plan, phases });
-  }
-  return { plans, errors };
-}
-
-// src/summary/slots.ts
-import { readdirSync as readdirSync13, readFileSync as readFileSync8 } from "node:fs";
-import { join as join41 } from "node:path";
-var SLOT_FILE = /^(0|[1-9][0-9]*)\.json$/;
-function holder(path) {
-  let v;
-  try {
-    v = JSON.parse(readFileSync8(path, "utf8"));
-  } catch {
-    return null;
-  }
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
-  const o = v;
-  if (!Number.isSafeInteger(o.pid) || o.pid < 1 || typeof o.lane !== "string" || typeof o.project !== "string") return null;
-  return { pid: o.pid, lane: o.lane, project: o.project };
-}
-function slotsInUse(home, alive) {
-  let files;
-  try {
-    files = readdirSync13(join41(home, "slots"));
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const file of files) {
-    const match = SLOT_FILE.exec(file);
-    if (match === null) continue;
-    const h = holder(join41(home, "slots", file));
-    if (h !== null && alive(h.pid)) out.push({ slot: Number(match[1]), ...h });
-  }
-  return out.sort((a, b) => a.slot - b.slot);
-}
-function effectiveCap(projectMaxParallel, machine) {
-  return machine.maxParallel === null ? projectMaxParallel : Math.min(projectMaxParallel, machine.maxParallel);
-}
-function quotaOverview(input) {
-  const snapshot = readQuota(input.home);
-  return {
-    snapshot,
-    hold: holdDecision(snapshot, input.config.quota.holdAbove, input.nowSec),
-    slots: {
-      inUse: slotsInUse(input.home, input.alive),
-      cap: effectiveCap(input.config.maxParallel, input.machine),
-      projectMaxParallel: input.config.maxParallel,
-      machineMaxParallel: input.machine.maxParallel
-    }
-  };
-}
-
-// src/summary/project.ts
-function projectSummary(input) {
-  const { project, alive, nowMs } = input;
-  const lanes = laneOverview(project.runsRoot, alive, nowMs);
-  const plans = planOverview(project.root, project.runsRoot, alive);
-  const integrations = integrationOverview(project.root, project.config);
-  return {
-    root: project.root,
-    lanes: { total: lanes.total, counts: lanes.counts, active: lanes.active },
-    plans: plans.plans,
-    integrations: integrations.integrations,
-    attention: lanes.attention,
-    quota: quotaOverview({ home: input.home, config: project.config, machine: input.machine, alive, nowSec: Math.floor(nowMs / 1e3) }),
-    errors: [...lanes.errors, ...plans.errors, ...integrations.errors]
-  };
-}
-
-// src/summary/report.ts
-import { existsSync as existsSync21, statSync as statSync6 } from "node:fs";
-var FILES_SHOWN = 10;
-function size(path) {
-  try {
-    return statSync6(path).size;
-  } catch {
-    return null;
-  }
-}
-function laneFileRole(path) {
-  try {
-    const spec = readJson(path);
-    const role2 = typeof spec === "object" && spec !== null ? spec["role"] : void 0;
-    return ROLES.includes(role2) ? role2 : null;
-  } catch {
-    return null;
-  }
-}
-function readLaneReport(runsRoot, lane, n) {
-  const paths = runPaths(runsRoot, lane);
-  if (!existsSync21(paths.laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
-  const attempts = listAttempts(runsRoot, lane);
-  const latest = attempts.at(-1);
-  if (latest === void 0) throw new ArbabError("usage", `lane ${lane} has no attempt yet`);
-  const attempt = n ?? latest;
-  if (!attempts.includes(attempt)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt} (attempts: ${attempts.join(", ")})`);
-  const dir = paths.attemptDir(attempt);
-  const files = attemptFiles(dir);
-  const record2 = readAttempt(dir);
-  let report = null;
-  let reportError = null;
-  try {
-    report = readJson(files.report);
-  } catch (err) {
-    reportError = err.message;
-  }
-  const summaryRole = record2.summary !== null && ROLES.includes(record2.summary.role) ? record2.summary.role : null;
-  return {
-    lane,
-    role: summaryRole ?? laneFileRole(paths.laneFile),
-    attempt,
-    latest,
-    record: record2,
-    report,
-    reportError,
-    stderr: { path: files.stderr, bytes: size(files.stderr) },
-    stream: { path: files.stream, bytes: size(files.stream) }
-  };
-}
-var isObject6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-var str = (v) => typeof v === "string" ? v : null;
-var strings = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : null;
-var objects = (v) => Array.isArray(v) ? v.filter(isObject6) : null;
-var INDENT2 = "  ";
-var block = (text2, indent = INDENT2) => text2.split("\n").join(`
-${indent}`);
-function formatTokens2(t) {
-  return `${t.input} in \xB7 ${t.cacheCreation} cache write \xB7 ${t.cacheRead} cache read \xB7 ${t.output} out`;
-}
-function isTokens(v) {
-  return isObject6(v) && ["input", "cacheCreation", "cacheRead", "output"].every((k) => Number.isFinite(v[k]));
-}
-function costLine(s) {
-  if (typeof s.costUsd === "number") {
-    const delta = typeof s.costDeltaUsd === "number" && s.costDeltaUsd.toFixed(2) !== s.costUsd.toFixed(2) ? ` (\u0394$${s.costDeltaUsd.toFixed(2)})` : "";
-    return `cost:      $${s.costUsd.toFixed(2)}${delta}`;
-  }
-  return isTokens(s.tokens) ? `tokens:    ${formatTokens2(s.tokens)}` : "cost:      -";
-}
-function effortText(s) {
-  const measured = isObject6(s.measuredEffort) ? Object.entries(s.measuredEffort).filter(([, n]) => Number.isFinite(n)).map(([e, n]) => `${e} ${n}`) : [];
-  const requested = s.requestedEffort ?? "-";
-  return measured.length > 0 ? `${requested} (measured: ${measured.join(", ")})` : requested;
-}
-function formatHeader(r, live = null) {
-  const s = r.record.summary ?? live;
-  const lines = [
-    `lane:      ${r.lane}`,
-    `role:      ${r.role ?? "-"}`,
-    `attempt:   ${r.attempt}${r.attempt === r.latest ? "" : ` (latest ${r.latest})`}`
-  ];
-  if (s === null) {
-    lines.push("end state: - (no summary.json)");
-    return lines;
-  }
-  const wallMs = s.wallMs ?? r.record.exit?.wallMs ?? null;
-  lines.push(
-    `end state: ${s.state}${r.record.summary === null ? " (live, no summary.json yet)" : ""}`,
-    `wall:      ${typeof wallMs === "number" ? formatElapsed(wallMs) : "-"}`,
-    `turns:     ${s.turns}`,
-    costLine(s),
-    `effort:    ${effortText(s)}`
-  );
-  return lines;
-}
-function listSection(title, items) {
-  if (items === null) return [];
-  if (items.length === 0) return [`${title}: none`];
-  return [`${title}:`, ...items.map((i) => `${INDENT2}- ${block(i, INDENT2 + "  ")}`)];
-}
-function workerBody(rep) {
-  const lines = [];
-  const status = str(rep["status"]);
-  if (status !== null) lines.push(`status: ${status}`);
-  const summary = str(rep["summary"]);
-  if (summary !== null) lines.push(`summary: ${block(summary)}`);
-  const files = strings(rep["files_changed"]);
-  if (files !== null) {
-    const more = files.length > FILES_SHOWN ? `, \u2026 ${files.length - FILES_SHOWN} more` : "";
-    lines.push(`files changed (${files.length})${files.length > 0 ? `: ${files.slice(0, FILES_SHOWN).join(", ")}${more}` : ""}`);
-  }
-  const checks = objects(rep["checks"]);
-  if (checks !== null) {
-    if (checks.length === 0) lines.push("checks: none");
-    else {
-      lines.push("checks:");
-      for (const c of checks) {
-        const code4 = Number.isInteger(c["exit_code"]) ? String(c["exit_code"]) : "?";
-        const result = str(c["result"]);
-        lines.push(`${INDENT2}${str(c["command"]) ?? "?"} \u2192 ${code4}${result === null || result === "" ? "" : `  ${block(result, INDENT2 + "  ")}`}`);
-      }
-    }
-  }
-  lines.push(...listSection("decisions", strings(rep["decisions"])));
-  lines.push(...listSection("open questions", strings(rep["open_questions"])));
-  lines.push(...listSection("not verified", strings(rep["not_verified"])));
-  const notes = str(rep["notes_for_reviewer"]);
-  if (notes !== null) lines.push(`notes for reviewer: ${block(notes)}`);
-  return lines;
-}
-function reviewerBody(rep, findings) {
-  const lines = [];
-  const coverage = str(rep["coverage"]);
-  if (coverage !== null) lines.push(`coverage: ${block(coverage)}`);
-  const paths = strings(rep["paths_checked"]);
-  if (paths !== null) lines.push(`paths checked: ${paths.length}`);
-  lines.push(findings.length === 0 ? "findings: none" : `findings (${findings.length}):`);
-  findings.forEach((f, i) => {
-    const line2 = Number.isInteger(f["line"]) ? `:${f["line"]}` : "";
-    const id = str(f["id"]) ?? String(i + 1);
-    lines.push(`${INDENT2}${id}  ${str(f["severity"]) ?? "?"}  ${str(f["title"]) ?? "?"}  ${str(f["file"]) ?? "?"}${line2}`);
-  });
-  return lines;
-}
-function skepticBody(verdicts) {
-  const lines = [verdicts.length === 0 ? "verdicts: none" : `verdicts (${verdicts.length}):`];
-  for (const v of verdicts) {
-    const refuted = v["refuted"] === true ? "refuted" : v["refuted"] === false ? "stands" : "?";
-    const reasoning = str(v["reasoning"]);
-    lines.push(
-      `${INDENT2}${str(v["id"]) ?? "?"}  ${refuted}  ${str(v["corrected_severity"]) ?? "?"}${reasoning === null ? "" : `  ${block(reasoning, INDENT2 + "  ")}`}`
-    );
-  }
-  return lines;
-}
-function formatReportBody(report) {
-  if (!isObject6(report)) return ["report.json is not an object (see --json)"];
-  const findings = objects(report["findings"]);
-  if (findings !== null) return reviewerBody(report, findings);
-  const verdicts = objects(report["verdicts"]);
-  if (verdicts !== null) return skepticBody(verdicts);
-  const worker = workerBody(report);
-  if (worker.length > 0) return worker;
-  return [`report fields: ${Object.keys(report).join(", ") || "none"} (see --json)`];
-}
-var bytes = (n) => n === null ? "missing" : `${n} bytes`;
-function formatLaneReport(r, live = null) {
-  const lines = formatHeader(r, live);
-  lines.push("");
-  if (r.reportError !== null) {
-    lines.push(`report.json cannot be read: ${r.reportError}`);
-  } else if (r.report === null) {
-    lines.push(`no report.json; see ${r.stderr.path} (${bytes(r.stderr.bytes)}); stream.jsonl: ${bytes(r.stream.bytes)}`);
-  } else {
-    lines.push(...formatReportBody(r.report));
-  }
-  return lines.join("\n");
 }
 
 // src/commands/status.ts
@@ -9426,21 +9633,21 @@ async function runReport(argv2, ctx) {
 }
 
 // src/commands/resume.ts
-import { existsSync as existsSync24, realpathSync as realpathSync16 } from "node:fs";
-import { join as join46 } from "node:path";
+import { existsSync as existsSync24, realpathSync as realpathSync17 } from "node:fs";
+import { join as join48 } from "node:path";
 
 // src/shepherd/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname as dirname11, join as join45 } from "node:path";
+import { dirname as dirname11, join as join47 } from "node:path";
 
 // src/shepherd/lifecycle.ts
-import { existsSync as existsSync23, mkdirSync as mkdirSync6, realpathSync as realpathSync15 } from "node:fs";
-import { dirname as dirname10, join as join44, resolve as resolve17 } from "node:path";
+import { existsSync as existsSync23, mkdirSync as mkdirSync6, realpathSync as realpathSync16 } from "node:fs";
+import { dirname as dirname10, join as join46, resolve as resolve18 } from "node:path";
 
 // src/shepherd/attempt.ts
 import { randomUUID } from "node:crypto";
-import { join as join42 } from "node:path";
+import { join as join44 } from "node:path";
 
 // src/report/schemas.ts
 var str2 = { type: "string" };
@@ -9552,7 +9759,7 @@ function check(schema, value, path, errors) {
   if (schema.enum !== void 0 && !schema.enum.some((option) => option === value)) {
     errors.push({ path, message: `must be one of ${schema.enum.map((o) => JSON.stringify(o)).join(", ")}` });
   }
-  if (isObject7(value)) checkObject(schema, value, path, errors);
+  if (isObject9(value)) checkObject(schema, value, path, errors);
   if (Array.isArray(value)) checkArray(schema, value, path, errors);
 }
 function checkObject(schema, value, path, errors) {
@@ -9580,7 +9787,7 @@ function checkArray(schema, value, path, errors) {
 function hasType(type, value) {
   switch (type) {
     case "object":
-      return isObject7(value);
+      return isObject9(value);
     case "array":
       return Array.isArray(value);
     case "string":
@@ -9595,7 +9802,7 @@ function hasType(type, value) {
       return value === null;
   }
 }
-function isObject7(value) {
+function isObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function describe(value) {
@@ -9609,7 +9816,7 @@ function child(path, key) {
 }
 
 // src/shepherd/prompt.ts
-import { realpathSync as realpathSync13 } from "node:fs";
+import { realpathSync as realpathSync14 } from "node:fs";
 import { isAbsolute as isAbsolute13, relative as relative12 } from "node:path";
 
 // src/digest/index.ts
@@ -9643,14 +9850,14 @@ function json(value, indent) {
 }
 function resultText(content) {
   if (typeof content === "string") return content;
-  return arrayOrEmpty(content).map((item) => isRecord4(item) && typeof item.text === "string" ? item.text : "").filter((t) => t !== "").join("\n");
+  return arrayOrEmpty(content).map((item) => isRecord3(item) && typeof item.text === "string" ? item.text : "").filter((t) => t !== "").join("\n");
 }
 function blocks(event) {
-  return isRecord4(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord4) : [];
+  return isRecord3(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord3) : [];
 }
 function headingName(name2) {
-  const flat2 = name2.replace(/\s+/g, " ").trim();
-  return flat2 === "" ? "?" : cut(flat2, 100);
+  const flat3 = name2.replace(/\s+/g, " ").trim();
+  return flat3 === "" ? "?" : cut(flat3, 100);
 }
 function renderDigest(events, opts = {}) {
   const maxChars = limit(opts.maxChars, DEFAULTS.maxChars);
@@ -9662,7 +9869,7 @@ function renderDigest(events, opts = {}) {
   const reportCalls = /* @__PURE__ */ new Set();
   let lastResult = null;
   for (const e of Array.isArray(events) ? events : []) {
-    if (!isRecord4(e)) continue;
+    if (!isRecord3(e)) continue;
     if (e.type === "assistant") {
       for (const block3 of blocks(e)) {
         if (block3.type === "text" && typeof block3.text === "string") {
@@ -9754,8 +9961,8 @@ function resumePrompt(laneDir, mode) {
   let real2;
   let base;
   try {
-    real2 = realpathSync13(file);
-    base = realpathSync13(laneDir);
+    real2 = realpathSync14(file);
+    base = realpathSync14(laneDir);
   } catch (err) {
     throw new ArbabError("io", `cannot resolve prompt file ${file}: ${err.message}`, { cause: err });
   }
@@ -9880,7 +10087,7 @@ function readRegistration(path) {
   return { kind: str3(v["kind"]), entrypoint: str3(v["entrypoint"]), name: str3(v["name"]) };
 }
 function worktreeUsedFile(runsRoot, owner) {
-  return join42(runPaths(runsRoot, owner).laneDir, "worktree-used");
+  return join44(runPaths(runsRoot, owner).laneDir, "worktree-used");
 }
 function writeOnce(path, text2) {
   if (!createExclusive(path, text2)) throw new ArbabError("io", `${path} already exists (attempt files are never overwritten)`);
@@ -10068,7 +10275,7 @@ async function runAttempt(ctx, request) {
   });
   try {
     writeOnce(files.started, json2(started));
-    const registrationFile = join42(deps.claudeHome, "sessions", `${pid}.json`);
+    const registrationFile = join44(deps.claudeHome, "sessions", `${pid}.json`);
     const ended = worker.exited.then(() => true);
     const nextTick = () => ctx.stop.aborted ? deps.sleep(deps.tickMs) : ctx.pause(deps.tickMs);
     while (!await Promise.race([ended, nextTick().then(() => false)])) {
@@ -10145,7 +10352,7 @@ async function runAttempt(ctx, request) {
     }
   }
   let effort2 = null;
-  const transcript = findTranscript(join42(deps.claudeHome, "projects"), digest.sessionId ?? sessionId2);
+  const transcript = findTranscript(join44(deps.claudeHome, "projects"), digest.sessionId ?? sessionId2);
   const transcriptText = transcript === null ? null : readOptional2(transcript);
   if (transcriptText !== null) {
     try {
@@ -10155,7 +10362,7 @@ async function runAttempt(ctx, request) {
     }
   }
   if (registration === null) {
-    registration = readRegistration(join42(deps.claudeHome, "sessions", `${pid}.json`));
+    registration = readRegistration(join44(deps.claudeHome, "sessions", `${pid}.json`));
     if (registration !== null) writeOnce(files.registration, json2(registration));
   }
   const summary = buildAttemptSummary({
@@ -10181,13 +10388,13 @@ async function runAttempt(ctx, request) {
 }
 
 // src/shepherd/inputs.ts
-import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync14, readFileSync as readFileSync9, realpathSync as realpathSync14, rmSync as rmSync10, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename as basename4, dirname as dirname9, isAbsolute as isAbsolute14, join as join43, relative as relative13, resolve as resolve16, sep as sep12 } from "node:path";
+import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync15, readFileSync as readFileSync11, realpathSync as realpathSync15, rmSync as rmSync11, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { basename as basename4, dirname as dirname9, isAbsolute as isAbsolute14, join as join45, relative as relative13, resolve as resolve17, sep as sep12 } from "node:path";
 var MAX_INPUTS_BYTES = 50 * 1024 * 1024;
 var LIBRARY = "~/Library/**";
 function realOr(path) {
   try {
-    return realpathSync14.native(path);
+    return realpathSync15.native(path);
   } catch {
     return path;
   }
@@ -10201,11 +10408,11 @@ function inputRoots(roots, path, real2) {
   };
 }
 function copyInputs(input) {
-  const home = resolve16(input.userHome);
+  const home = resolve17(input.userHome);
   const homes = homeSpellings(home);
-  const worktree = realOr(resolve16(input.worktree));
+  const worktree = realOr(resolve17(input.worktree));
   const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
-  const projectRoot = resolve16(input.projectRoot);
+  const projectRoot = resolve17(input.projectRoot);
   const roots = { lexical: projectRoot, real: realOr(projectRoot) };
   const names2 = /* @__PURE__ */ new Map();
   const planned = [];
@@ -10215,9 +10422,9 @@ function copyInputs(input) {
       throw new ArbabError("usage", `input ${raw} ${why}`);
     };
     let path;
-    if (raw === "~" || raw.startsWith("~/")) path = join43(home, raw.slice(2));
+    if (raw === "~" || raw.startsWith("~/")) path = join45(home, raw.slice(2));
     else if (raw.startsWith("~")) path = refuse2("names another user's home; write the full path");
-    else path = resolve16(projectRoot, raw);
+    else path = resolve17(projectRoot, raw);
     const name2 = basename4(path);
     if (name2 === "") refuse2("has no name to copy it under");
     const clash = names2.get(name2);
@@ -10250,13 +10457,13 @@ function copyInputs(input) {
     } else {
       entries3.push({ rel: "", dir: true });
       const walk = (rel) => {
-        for (const child2 of readdirSync14(join43(real2, rel)).sort()) {
-          const childRel = join43(rel, child2);
-          const full = join43(real2, childRel);
+        for (const child2 of readdirSync15(join45(real2, rel)).sort()) {
+          const childRel = join45(rel, child2);
+          const full = join45(real2, childRel);
           const s = lstatSync4(full);
           if (s.isSymbolicLink()) continue;
           if (!s.isDirectory() && !s.isFile()) continue;
-          const hit = credential(full, realRoot) ?? credential(join43(path, childRel), pathRoot);
+          const hit = credential(full, realRoot) ?? credential(join45(path, childRel), pathRoot);
           if (hit !== null) {
             if (hit.kind === "dir") refuse2(`holds ${hit.label}, where credentials live`);
             if (hit.kind === "file") refuse2(`holds ${hit.label}, a credential file`);
@@ -10287,15 +10494,15 @@ function copyInputs(input) {
     const refuse2 = (why) => {
       throw new ArbabError("usage", `input ${p.raw} ${why}`);
     };
-    const target = join43(dest, p.name);
+    const target = join45(dest, p.name);
     try {
       for (const e of p.entries) {
-        const to = join43(target, e.rel);
+        const to = join45(target, e.rel);
         if (e.dir) {
           mkdirSync5(to);
           continue;
         }
-        const from = join43(p.source, e.rel);
+        const from = join45(p.source, e.rel);
         if (realOr(dirname9(from)) !== dirname9(from)) refuse2(`changed while it was copied (${e.rel || p.name} moved)`);
         let fd;
         try {
@@ -10311,7 +10518,7 @@ function copyInputs(input) {
           if (copied > MAX_INPUTS_BYTES) refuse2("grew over the inputs' limit while it was copied");
           const out = openSync5(to, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, s.mode & 511);
           try {
-            writeFileSync3(out, readFileSync9(fd));
+            writeFileSync3(out, readFileSync11(fd));
           } finally {
             closeSync5(out);
           }
@@ -10327,8 +10534,8 @@ function copyInputs(input) {
   return planned.map((p) => p.name);
 }
 function clearInputs(worktree) {
-  const rel = join43(WORKER_TMP_DIR, "inputs");
-  const dest = join43(realDir(worktree, WORKER_TMP_DIR), "inputs");
+  const rel = join45(WORKER_TMP_DIR, "inputs");
+  const dest = join45(realDir(worktree, WORKER_TMP_DIR), "inputs");
   let stat = null;
   try {
     stat = lstatSync4(dest);
@@ -10336,7 +10543,7 @@ function clearInputs(worktree) {
     if (err.code !== "ENOENT") throw new ArbabError("io", `cannot read ${dest}: ${err.message}`, { cause: err });
   }
   try {
-    if (stat?.isDirectory() === true) rmSync10(dest, { recursive: true, force: true });
+    if (stat?.isDirectory() === true) rmSync11(dest, { recursive: true, force: true });
     else if (stat !== null) unlinkSync2(dest);
   } catch (err) {
     throw new ArbabError("io", `cannot remove ${dest}: ${err.message}`, { cause: err });
@@ -10434,7 +10641,7 @@ function releaseAll(home, held, holder2) {
 }
 async function runShepherd(projectRoot, laneName2, mode, deps, stop) {
   assertValidName(laneName2, "lane");
-  const root = resolve17(projectRoot);
+  const root = resolve18(projectRoot);
   const config = loadConfig(root);
   const runsRoot = confine(root, config.runsRoot);
   const paths = runPaths(runsRoot, laneName2);
@@ -10593,7 +10800,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
   ensureArbabMarkers(root);
   const owner = lane.worktree ?? lane.name;
-  if (owner !== lane.name && !existsSync23(join44(confine(root, config.worktreeRoot), owner))) {
+  if (owner !== lane.name && !existsSync23(join46(confine(root, config.worktreeRoot), owner))) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist`);
   }
   const base = lane.base ?? config.baseBranch;
@@ -10611,7 +10818,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   };
   const worktreeRoot = confine(root, config.worktreeRoot);
   mkdirSync6(worktreeRoot, { recursive: true });
-  const worktree = join44(realpathSync15(worktreeRoot), owner);
+  const worktree = join46(realpathSync16(worktreeRoot), owner);
   held.leases = await acquireLeases({
     home: deps.home,
     requests: lane.resources ?? {},
@@ -10636,7 +10843,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   while (!acquireWriterLock(deps.home, key, holder2, deps.alive)) await wait("waiting for the writer lock");
   held.lockKey = key;
   let wt = createWorktree(worktreeInput);
-  if (realpathSync15(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
+  if (realpathSync16(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
   let merged = [];
   const runsRoot = confine(root, config.runsRoot);
   const pristine = wt.created || !existsSync23(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
@@ -10653,7 +10860,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
     });
     discardWorktree({ projectRoot: root, root: config.worktreeRoot, lane: owner, sources, gitCommonDir: wt.gitCommonDir, git: deps.git });
     wt = createWorktree(worktreeInput);
-    if (realpathSync15(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} moved while it was built again`);
+    if (realpathSync16(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} moved while it was built again`);
   }
   if (pristine) {
     const { merge } = planned();
@@ -10688,8 +10895,8 @@ function defaultDeps() {
   const pnpm = findOnPath("pnpm", pathEnv, pathExists);
   const explicit = process.env["ARBAB_CLAUDE"];
   return {
-    home: join45(home, ".arbab"),
-    claudeHome: join45(home, ".claude"),
+    home: join47(home, ".arbab"),
+    claudeHome: join47(home, ".claude"),
     clock: systemClock,
     sleep,
     random: Math.random,
@@ -10721,12 +10928,12 @@ var MAX_PROMPT_BYTES = 64 * 1024;
 function readPrompt(project, file) {
   let path;
   try {
-    path = realpathSync16(confine(project.root, file));
+    path = realpathSync17(confine(project.root, file));
   } catch (err) {
     if (err instanceof ArbabError) throw err;
     throw new ArbabError("usage", `cannot read prompt ${file}: ${err.message}`, { cause: err });
   }
-  confine(realpathSync16(project.root), path);
+  confine(realpathSync17(project.root), path);
   const text2 = readText(path);
   if (text2 === null) throw new ArbabError("usage", `cannot read prompt ${file}: no such file`);
   if (text2.trim() === "") throw new ArbabError("usage", `prompt ${file} is empty`);
@@ -10738,7 +10945,7 @@ function readPrompt(project, file) {
 function writeResumePrompt(project, lane, text2) {
   const laneDir = runPaths(project.runsRoot, lane).laneDir;
   for (let n = (listAttempts(project.runsRoot, lane).at(-1) ?? 0) + 1; ; n++) {
-    const path = join46(laneDir, `resume-prompt-${n}.md`);
+    const path = join48(laneDir, `resume-prompt-${n}.md`);
     if (createExclusive(path, text2)) return path;
   }
 }
@@ -10820,10 +11027,10 @@ async function runResume(argv2, ctx) {
 }
 
 // src/commands/review.ts
-import { realpathSync as realpathSync17 } from "node:fs";
+import { realpathSync as realpathSync18 } from "node:fs";
 import { dirname as dirname12 } from "node:path";
 var DEFAULT_TIMEOUT_MIN2 = 120;
-var SHA7 = /^[0-9a-f]{40,64}$/;
+var SHA8 = /^[0-9a-f]{40,64}$/;
 function reviewLenses(option, configLenses) {
   const known = lensNames(configLenses);
   if (option === void 0) return known;
@@ -10847,8 +11054,8 @@ function lensFilePath(root, name2, file, credential) {
   let real2;
   let realRoot;
   try {
-    real2 = realpathSync17(path);
-    realRoot = realpathSync17(root);
+    real2 = realpathSync18(path);
+    realRoot = realpathSync18(root);
   } catch (err) {
     if (err.code === "ENOENT") throw new ArbabError("usage", `the file of lens ${name2}, ${file}, does not exist`);
     throw new ArbabError("usage", `cannot read the file of lens ${name2}, ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -10883,7 +11090,7 @@ function sinceCommit(git, root, since, head) {
   if (since === "" || since.startsWith("-")) throw new ArbabError("usage", `--since ${JSON.stringify(since)} is not a commit`);
   const r = git(["rev-parse", "--verify", "--quiet", `${since}^{commit}`], root);
   const sha = r.stdout.trim();
-  if (r.code !== 0 || !SHA7.test(sha)) throw new ArbabError("usage", `--since ${since} does not name a commit`);
+  if (r.code !== 0 || !SHA8.test(sha)) throw new ArbabError("usage", `--since ${since} does not name a commit`);
   if (sha === head) throw new ArbabError("usage", `--since ${since} is the integration head itself: nothing changed since`);
   const ancestor = git(["merge-base", "--is-ancestor", sha, head], root);
   if (ancestor.code === 1) throw new ArbabError("usage", `--since ${since} (${sha}) is not an ancestor of the integration head ${head}`);
@@ -11093,9 +11300,21 @@ function machineConfig(ctx, errors) {
     return { maxParallel: null };
   }
 }
-function summarize(ctx, project, machine, machineErrors, nowMs) {
-  const summary = projectSummary({ project, home: ctx.home, machine, alive: ctx.alive, nowMs });
+function summarize(ctx, project, machine, machineErrors, nowMs, sinceMs) {
+  const summary = projectSummary({ project, home: ctx.home, machine, alive: ctx.alive, nowMs, ...sinceMs !== void 0 && { sinceMs } });
   return { ...summary, errors: [...machineErrors, ...summary.errors] };
+}
+var UNIT_MS = { m: 6e4, h: 36e5, d: 864e5 };
+var ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+function parseSince(text2, nowMs) {
+  const relative15 = /^(\d{1,9})([mhd])$/.exec(text2);
+  if (relative15 !== null) return nowMs - Number(relative15[1]) * (UNIT_MS[relative15[2] ?? ""] ?? 0);
+  const ms = ISO_TIME.test(text2) ? Date.parse(text2) : NaN;
+  if (Number.isFinite(ms)) return ms;
+  throw new ArbabError(
+    "usage",
+    `--since takes an ISO time (2026-10-09T12:00:00Z) or <n>m, <n>h, <n>d back from now, not ${JSON.stringify(text2)} (see arbab summary --help)`
+  );
 }
 function openRoot(root) {
   const config = loadConfig(root);
@@ -11104,15 +11323,16 @@ function openRoot(root) {
 async function runSummary(argv2, ctx) {
   const { values } = parse("summary", {
     args: argv2,
-    options: { all: { type: "boolean" }, json: { type: "boolean" } },
+    options: { all: { type: "boolean" }, since: { type: "string" }, json: { type: "boolean" } },
     allowPositionals: false
   });
   const nowMs = ctx.clock.now();
+  const sinceMs = values.since === void 0 ? void 0 : parseSince(values.since, nowMs);
   const nowSec = Math.floor(nowMs / 1e3);
   const machineErrors = [];
   const machine = machineConfig(ctx, machineErrors);
   if (values.all !== true) {
-    const summary = summarize(ctx, openProject(ctx), machine, machineErrors, nowMs);
+    const summary = summarize(ctx, openProject(ctx), machine, machineErrors, nowMs, sinceMs);
     if (values.json === true) printJson(ctx, summary);
     else ctx.stdout(formatSummary(summary, nowSec) + "\n");
     return 0;
@@ -11129,7 +11349,7 @@ async function runSummary(argv2, ctx) {
 `);
       continue;
     }
-    summaries.push(summarize(ctx, project, machine, machineErrors, nowMs));
+    summaries.push(summarize(ctx, project, machine, machineErrors, nowMs, sinceMs));
   }
   if (values.json === true) printJson(ctx, summaries);
   else if (summaries.length === 0) ctx.stdout("no projects recorded on this machine\n");
@@ -11947,7 +12167,7 @@ Content-Length: 0\r
 \r
 `);
   });
-  return new Promise((resolve19, reject) => {
+  return new Promise((resolve20, reject) => {
     server.once("error", (err) => {
       reject(new ArbabError("runtime", `cannot listen on 127.0.0.1:${options.port}: ${err.message}`, { cause: err }));
     });
@@ -11960,7 +12180,7 @@ Content-Length: 0\r
       }
       port = address.port;
       let closing = null;
-      resolve19({
+      resolve20({
         url: `http://127.0.0.1:${port}/#${UI_TOKEN_PARAM}=${options.token}`,
         port,
         close: () => {
@@ -11979,14 +12199,14 @@ Content-Length: 0\r
 }
 
 // src/ui/server/snapshot.ts
-import { statSync as statSync7 } from "node:fs";
-import { basename as basename5, isAbsolute as isAbsolute16, join as join47, relative as relative14, sep as sep13 } from "node:path";
+import { statSync as statSync8 } from "node:fs";
+import { basename as basename5, isAbsolute as isAbsolute16, join as join49, relative as relative14, sep as sep13 } from "node:path";
 var MAX_LANES = 300;
 var LANDED_KEPT = 5;
 var REASON_MAX = 200;
 var TOOL_NAME2 = /^[A-Za-z0-9_.:-]{1,64}$/;
 var REPORT_STATUSES = ["done", "partial", "blocked"];
-var isObject8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isObject10 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var finiteOrNull = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
 var countOrZero = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0;
 var tokenOrNull = (v) => typeof v === "string" && TOOL_NAME2.test(v) ? v : null;
@@ -11998,7 +12218,7 @@ var parsedMs = (v) => {
 var stateKey = (r) => JSON.stringify([r.state, r.attempt, r.since, r.shepherdPid, r.endState ?? null, r.reason ?? null]);
 function briefUnderPreflight(root, brief) {
   if (typeof brief !== "string" || brief === "") return false;
-  const rel = relative14(join47(root, PREFLIGHT_DIR), isAbsolute16(brief) ? brief : join47(root, brief));
+  const rel = relative14(join49(root, PREFLIGHT_DIR), isAbsolute16(brief) ? brief : join49(root, brief));
   return rel !== "" && !isAbsolute16(rel) && rel.split(sep13)[0] !== "..";
 }
 function laneKind(name2, generatedBy, preflightBrief) {
@@ -12013,28 +12233,28 @@ function laneKind(name2, generatedBy, preflightBrief) {
 function readSummary(runsRoot, lane, attempt) {
   const value = readJson(attemptFiles(runPaths(runsRoot, lane).attemptDir(attempt)).summary);
   if (value === null) return null;
-  if (!isObject8(value)) throw new ArbabError("io", `the summary of ${lane} attempt ${attempt} is not a JSON object`);
+  if (!isObject10(value)) throw new ArbabError("io", `the summary of ${lane} attempt ${attempt} is not a JSON object`);
   return value;
 }
 function readLane(source, name2, record2, state, nowMs) {
   const { runsRoot } = source;
   const paths = runPaths(runsRoot, name2);
   const spec = readJson(paths.laneFile);
-  const role2 = isObject8(spec) ? spec["role"] : void 0;
+  const role2 = isObject10(spec) ? spec["role"] : void 0;
   if (!ROLES.includes(role2)) throw new ArbabError("io", `the lane file of ${name2} has no valid role`);
-  const worktree = isObject8(spec) ? spec["worktree"] : void 0;
-  const preflightBrief = briefUnderPreflight(source.root, isObject8(spec) ? spec["brief"] : void 0);
+  const worktree = isObject10(spec) ? spec["worktree"] : void 0;
+  const preflightBrief = briefUnderPreflight(source.root, isObject10(spec) ? spec["brief"] : void 0);
   const generatedBy = generatingIntegration(readGenerated(runsRoot, name2)?.by ?? null);
   const attempts = listAttempts(runsRoot, name2);
   const files = (n) => attemptFiles(paths.attemptDir(n));
   let firstMs = null;
   if (attempts[0] !== void 0) {
     const started = readJson(files(attempts[0]).started);
-    firstMs = isObject8(started) ? parsedMs(started["startedAt"]) : null;
+    firstMs = isObject10(started) ? parsedMs(started["startedAt"]) : null;
   }
   if (firstMs === null) {
     const shepherd = readJson(paths.shepherdFile);
-    firstMs = isObject8(shepherd) ? parsedMs(shepherd["startedAt"]) : null;
+    firstMs = isObject10(shepherd) ? parsedMs(shepherd["startedAt"]) : null;
   }
   firstMs ??= parsedMs(record2.since);
   const current = record2.attempt >= 1 && attempts.includes(record2.attempt) ? record2.attempt : null;
@@ -12058,9 +12278,9 @@ function readLane(source, name2, record2, state, nowMs) {
   if (reported && (role2 === "implementer" || role2 === "verifier" || role2 === "reviewer")) {
     const report = latestReport(runsRoot, name2);
     if (role2 === "reviewer") {
-      findings = isObject8(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
+      findings = isObject10(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
     } else {
-      const status = isObject8(report) ? report["status"] : void 0;
+      const status = isObject10(report) ? report["status"] : void 0;
       reportStatus = REPORT_STATUSES.find((s) => s === status) ?? null;
     }
   }
@@ -12096,7 +12316,7 @@ function readLane(source, name2, record2, state, nowMs) {
 }
 function integrationSignature(files) {
   return files.map((file) => {
-    const st = statSync7(file, { throwIfNoEntry: false });
+    const st = statSync8(file, { throwIfNoEntry: false });
     return st === void 0 ? "-" : `${st.size}:${st.mtimeMs}`;
   }).join("|");
 }
@@ -12114,7 +12334,7 @@ function readUiIntegration(source, name2) {
     reviewCounts = { lenses: review.lenses.length, confirmed: 0, refuted: 0, unverified: 0 };
     for (const finding of review.findings) reviewCounts[finding.verdict]++;
   }
-  const landedAt = isObject8(landing) && landing["name"] === name2 && parsedMs(landing["landedAt"]) !== null ? landing["landedAt"] : null;
+  const landedAt = isObject10(landing) && landing["name"] === name2 && parsedMs(landing["landedAt"]) !== null ? landing["landedAt"] : null;
   return {
     name: name2,
     lanes: record2.merged.map((m) => m.lane),
@@ -12529,15 +12749,22 @@ var USAGE = {
       JSON_OPT
     ]
   ),
-  summary: block2(["summary [--all] [--json]"], [["--all", "every project that launched a lane on this machine"], JSON_OPT]),
+  summary: block2(
+    ["summary [--all] [--since <when>] [--json]"],
+    [
+      ["--all", "every project that launched a lane on this machine"],
+      ["--since <when>", "also list what landed after <when>: an ISO time, or <n>m, <n>h, <n>d ago"],
+      JSON_OPT
+    ]
+  ),
   report: block2(["report <lane> [--attempt <n>] [--json]"], [["--attempt <n>", "this attempt instead of the latest"], JSON_OPT]),
-  hook: block2(["hook <pre-tool-use|stop>"]),
+  hook: block2(["hook <pre-tool-use|stop|user-prompt-submit|session-start>"]),
   "host-check": block2(["host-check <name>"])
 };
 
 // src/commands/verify.ts
-import { createHash as createHash5 } from "node:crypto";
-import { join as join48 } from "node:path";
+import { createHash as createHash6 } from "node:crypto";
+import { join as join50 } from "node:path";
 var DEFAULT_TIMEOUT_MIN3 = 90;
 var REFS_DIR = ".arbab/refs";
 var REF_SLUG_MAX = 22;
@@ -12550,7 +12777,7 @@ function refSlug(branch) {
   return branch.toLowerCase().replace(/[^a-z0-9]/g, "-").slice(0, REF_SLUG_MAX);
 }
 function refId(branch) {
-  const hash = createHash5("sha1").update(branch).digest("hex").slice(0, REF_HASH_HEX);
+  const hash = createHash6("sha1").update(branch).digest("hex").slice(0, REF_HASH_HEX);
   return `ref-${refSlug(branch)}-${hash}`;
 }
 function refHead(ctx, project, branch) {
@@ -12594,12 +12821,12 @@ async function runVerify(argv2, ctx) {
     const branch = ref2 ?? "";
     const head = refHead(ctx, project, branch);
     const prefix = refId(branch);
-    const dir = confine(project.root, join48(REFS_DIR, prefix));
+    const dir = confine(project.root, join50(REFS_DIR, prefix));
     target = {
       label: `ref:${branch}`,
       prefix,
-      lanesDir: join48(dir, "lanes"),
-      recordPath: join48(dir, "verify.json"),
+      lanesDir: join50(dir, "lanes"),
+      recordPath: join50(dir, "verify.json"),
       // The branch head is landed code, so the install runs on it: nothing is merged on top.
       start: { base: head },
       owner: { integration: prefix, branch: `refs/heads/${branch}`, head },
@@ -12658,7 +12885,7 @@ async function verifyTarget(ctx, project, target, timeoutMs, json3) {
 }
 var MAX_LISTED = 5;
 function worktreeChanges(ctx, project, lane) {
-  const worktree = join48(project.worktreeRoot, lane);
+  const worktree = join50(project.worktreeRoot, lane);
   const gitCommonDir2 = resolveGitCommonDir(ctx.git, project.root);
   if (gitCommonDir2 === void 0) return `the git directory of ${project.root} could not be resolved, so ${worktree} was not checked`;
   const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: gitCommonDir2 });
@@ -12678,7 +12905,7 @@ function worktreeChanges(ctx, project, lane) {
 import { execFile, execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
 import { closeSync as closeSync7, openSync as openSync7 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join49 } from "node:path";
+import { join as join51 } from "node:path";
 var NOTIFY_TIMEOUT_MS = 5e3;
 var nodeNotifyExec = (file, args, opts, done) => {
   execFile(file, args, { timeout: opts.timeout, windowsHide: true }, (err) => done(err));
@@ -12696,11 +12923,11 @@ function makeNotify(platform, execFileImpl = nodeNotifyExec) {
     } else {
       return Promise.resolve(false);
     }
-    return new Promise((resolve19) => {
+    return new Promise((resolve20) => {
       try {
-        execFileImpl(argv2[0], argv2[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve19(err === null || err === void 0));
+        execFileImpl(argv2[0], argv2[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve20(err === null || err === void 0));
       } catch {
-        resolve19(false);
+        resolve20(false);
       }
     });
   };
@@ -12708,10 +12935,10 @@ function makeNotify(platform, execFileImpl = nodeNotifyExec) {
 function makeReadStdin(stdin) {
   return () => {
     if (stdin.isTTY === true) return Promise.resolve("");
-    return new Promise((resolve19, reject) => {
+    return new Promise((resolve20, reject) => {
       const chunks = [];
       stdin.on("data", (chunk) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
-      stdin.once("end", () => resolve19(Buffer.concat(chunks).toString("utf8")));
+      stdin.once("end", () => resolve20(Buffer.concat(chunks).toString("utf8")));
       stdin.once("error", (err) => reject(new ArbabError("io", `cannot read stdin: ${err.message}`, { cause: err })));
     });
   };
@@ -12721,12 +12948,12 @@ function makeOpenUrl(platform, spawnFn = spawn3) {
   const opener = platform === "darwin" ? "open" : platform === "linux" ? "xdg-open" : null;
   return (url) => {
     if (opener === null) return Promise.resolve(false);
-    return new Promise((resolve19) => {
-      const timer = setTimeout(() => resolve19(true), OPENER_WAIT_MS);
+    return new Promise((resolve20) => {
+      const timer = setTimeout(() => resolve20(true), OPENER_WAIT_MS);
       timer.unref();
       const settle = (opened) => {
         clearTimeout(timer);
-        resolve19(opened);
+        resolve20(opened);
       };
       let child2;
       try {
@@ -12748,7 +12975,7 @@ function makeSpawnShepherd(execPath, scriptPath2, env2) {
   return (root, lane, mode) => {
     const laneDir = runPaths(confine(root, loadConfig(root).runsRoot), lane).laneDir;
     ensureDir(laneDir);
-    const log = openSync7(join49(laneDir, "shepherd.log"), "a");
+    const log = openSync7(join51(laneDir, "shepherd.log"), "a");
     try {
       const child2 = spawn3(execPath, shepherdArgv(scriptPath2, root, lane, mode), {
         cwd: root,
@@ -12790,8 +13017,8 @@ function defaultContext(opts) {
     stdout: (text2) => process.stdout.write(text2),
     stderr: (text2) => process.stderr.write(text2),
     hostEnv: { ...process.env },
-    home: join49(home, ".arbab"),
-    claudeHome: join49(home, ".claude"),
+    home: join51(home, ".arbab"),
+    claudeHome: join51(home, ".claude"),
     clock: systemClock,
     sleep,
     alive: isAlive,
@@ -12893,7 +13120,9 @@ var HELP = `usage: arbab [-C <dir>] <command> [options]
                                           unless --keep-worktrees
   ui [--port N] [--hours N] [--no-open] [--json]
                                           serve the pyramid scene on 127.0.0.1 until stopped (read-only)
-  summary [--all] [--json]                plans, lanes by state, integrations by stage and what needs you
+  summary [--all] [--since <when>] [--json]
+                                          plans, lanes by state, integrations by stage and what needs you;
+                                          --since: what landed after <when> (ISO time, or <n>m, <n>h, <n>d ago)
   report <lane> [--attempt <n>] [--json]  an attempt's summary and report, the latest unless --attempt
   host-check <name>                       run hostGates on the integration head from a terminal
   help [<command>], --help                this text, or a command's options
@@ -12908,8 +13137,8 @@ function globalDir(argv2, cwd) {
   const dir = argv2[1];
   if (dir === void 0 || dir === "") throw new ArbabError("usage", "-C needs a directory");
   if (dir === "-C" || argv2[2] === "-C") throw new ArbabError("usage", "-C given twice");
-  const abs = resolve18(cwd, dir);
-  const stat = statSync8(abs, { throwIfNoEntry: false });
+  const abs = resolve19(cwd, dir);
+  const stat = statSync9(abs, { throwIfNoEntry: false });
   if (stat === void 0) throw new ArbabError("usage", `-C ${JSON.stringify(dir)}: no such directory ${abs}`);
   if (!stat.isDirectory()) throw new ArbabError("usage", `-C ${JSON.stringify(dir)}: not a directory: ${abs}`);
   return { cwd: abs, argv: argv2.slice(2) };
@@ -12957,9 +13186,9 @@ ${HELP}`);
 
 // src/cli.ts
 function readVersion2() {
-  if (true) return "0.2.1";
+  if (true) return "0.2.2";
   try {
-    const pkg = JSON.parse(readFileSync10(new URL("../package.json", import.meta.url), "utf8"));
+    const pkg = JSON.parse(readFileSync12(new URL("../package.json", import.meta.url), "utf8"));
     return typeof pkg.version === "string" ? pkg.version : "0.0.0";
   } catch {
     return "0.0.0";

@@ -1,6 +1,6 @@
 {
   "name": "arbab",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "A Claude Code plugin that runs fenced headless Claude Code workers from your interactive session: one git worktree per lane, sandboxed role fences, quota-aware launches, usage-limit auto-resume, and a verify, review, readiness and land pipeline that never runs worker code on your host.",
   "keywords": [

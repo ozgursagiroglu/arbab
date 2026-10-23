@@ -624,7 +624,7 @@ function loadLane(projectRoot, lanePath, credentialPaths = []) {
 // src/hook/catchup.ts
 import { createHash as createHash4 } from "node:crypto";
 import { readdirSync as readdirSync10, readFileSync as readFileSync7, realpathSync as realpathSync6, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
-import { basename, isAbsolute as isAbsolute7, join as join22, relative as relative8, sep as sep8 } from "node:path";
+import { basename, isAbsolute as isAbsolute7, join as join22, normalize, relative as relative8, sep as sep8 } from "node:path";
 
 // src/registry/paths.ts
 import { existsSync, mkdirSync as mkdirSync2, readdirSync } from "node:fs";
@@ -4252,22 +4252,25 @@ function readWatermarks(path) {
       const mark = parseWatermark(value);
       if (root !== "" && mark !== null) marks.set(root, mark);
     }
-    return { projects: marks, every: null };
+    const own2 = parseWatermark({ seenAt: raw["seenAt"] });
+    const latest = Math.max(...[...marks.values()].map((m) => m.seenMs));
+    const session2 = own2 ?? (marks.size > 0 ? { seenMs: latest, reported: [] } : null);
+    return { projects: marks, session: session2 };
   }
-  const every = parseWatermark(raw);
-  return every === null ? null : { projects: /* @__PURE__ */ new Map(), every };
+  const session = parseWatermark(raw);
+  return session === null ? null : { projects: /* @__PURE__ */ new Map(), session };
 }
 function watermarkOf(marks, root) {
   const folded = foldPath(root);
   for (const entry of marks) if (foldPath(entry[0]) === folded) return entry;
   return null;
 }
-function writeWatermarks(path, marks) {
+function writeWatermarks(path, nowMs, marks) {
   const projects = {};
   for (const [root, { seenMs, reported }] of marks) {
     projects[root] = { seenAt: new Date(seenMs).toISOString(), reported: [...new Set(reported)].slice(-REPORTED_KEPT) };
   }
-  writeJsonAtomic(path, { projects });
+  writeJsonAtomic(path, { seenAt: new Date(nowMs).toISOString(), projects });
 }
 function isObject5(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -4295,8 +4298,10 @@ function registeredAround(home, cwd, real2) {
 }
 function projectName(root, cwd, real2) {
   const from = [cwd, real2].find((dir) => dir !== null && sameOrInside(dir, root));
-  const rel = from === void 0 ? "" : relative8(from, root);
-  return rel === "" || rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute7(rel) ? basename(root) : rel;
+  const rel = from === void 0 ? "" : relative8(foldPath(from), foldPath(root));
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute7(rel)) return basename(root);
+  const parts = normalize(root).split(sep8).filter((part) => part !== "");
+  return parts.slice(-rel.split(sep8).length).join(sep8);
 }
 function sameRoot(a, b, realpath2) {
   if (foldPath(a) === foldPath(b)) return true;
@@ -4336,14 +4341,14 @@ function catchUpDecision(input, event, opts) {
   for (const root of below) if (!roots.some((r) => sameRoot(r.root, root, realpath2))) roots.push({ root, key: root });
   if (roots.length === 0) return null;
   const path = watermarkPath(opts.home, session);
-  const marks = readWatermarks(path) ?? { projects: /* @__PURE__ */ new Map(), every: null };
+  const marks = readWatermarks(path) ?? { projects: /* @__PURE__ */ new Map(), session: null };
   const next = new Map(marks.projects);
   const nowMs = opts.clock.now();
   const landings = [];
   for (const { root, key } of roots) {
     const found = watermarkOf(marks.projects, key);
     if (found !== null) next.delete(found[0]);
-    const mark = found?.[1] ?? marks.every;
+    const mark = found?.[1] ?? marks.session;
     if (mark === null) {
       next.set(key, { seenMs: nowMs, reported: landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey) });
       continue;
@@ -4356,7 +4361,7 @@ function catchUpDecision(input, event, opts) {
     const project = roots.length > 1 ? projectName(root, cwd, real2) : void 0;
     landings.push(...news.map((l) => project === void 0 ? l : { ...l, project }));
   }
-  writeWatermarks(path, next);
+  writeWatermarks(path, nowMs, next);
   if (landings.length === 0) return null;
   landings.sort((a, b) => (Date.parse(a.landedAt) || 0) - (Date.parse(b.landedAt) || 0));
   return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(landings) } });

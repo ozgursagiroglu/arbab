@@ -2,14 +2,17 @@
 // or `claude --resume` is told what other sessions landed in its project meanwhile, before it builds on a stale base.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { basename, isAbsolute, join, normalize, relative, sep } from "node:path";
 import { listProjects } from "../registry";
 import { landingsSince, landingText, type LandingSince } from "../summary";
 import { writeJsonAtomic } from "../util/fs";
 import { foldPath, sameOrInside } from "../util/pathcase";
 import type { Clock } from "../util/proc";
 
-/** Under ~/.arbab: one watermark file per session, `<sha256 of the session id>.json`, a watermark per project inside. */
+/**
+ * Under ~/.arbab: one watermark file per session, `<sha256 of the session id>.json`: the session's last message and a
+ * watermark per project inside.
+ */
 export const SESSIONS_DIR = "sessions";
 /** How many landings the context names; the rest are counted. */
 export const NAMED_LANDINGS = 5;
@@ -53,13 +56,14 @@ export interface Watermark {
   reported: string[];
 }
 
-/**
- * A session's watermarks by project root, as its file holds them. `every` is a file in the earlier single-watermark
- * shape, which answers for every project the session now sees.
- */
+/** A session's watermarks by project root, as its file holds them, and the session's own. */
 export interface SessionWatermarks {
   projects: Map<string, Watermark>;
-  every: Watermark | null;
+  /**
+   * When the hooks last answered the session, for a project without its own watermark. Keys only from a file in the
+   * earlier single-watermark shape, whose watermark it is.
+   */
+  session: Watermark | null;
 }
 
 /** `<name>@<mergeSha>`: one landing, even if the integration name is reused later. */
@@ -79,7 +83,8 @@ function parseWatermark(raw: unknown): Watermark | null {
 
 /**
  * A session's watermarks, or null when the file is missing or reads as neither shape. A project whose time does not
- * read is left out, as are keys that are not strings.
+ * read is left out, as are keys that are not strings. Without a session time that reads, the latest project's stands
+ * in: a file written before the session kept one (0.2.2) last answered then.
  */
 export function readWatermarks(path: string): SessionWatermarks | null {
   let raw: unknown;
@@ -96,10 +101,14 @@ export function readWatermarks(path: string): SessionWatermarks | null {
       const mark = parseWatermark(value);
       if (root !== "" && mark !== null) marks.set(root, mark);
     }
-    return { projects: marks, every: null };
+    // Keys stay with the projects: only a single-watermark file gives the session any.
+    const own = parseWatermark({ seenAt: raw["seenAt"] });
+    const latest = Math.max(...[...marks.values()].map((m) => m.seenMs));
+    const session = own ?? (marks.size > 0 ? { seenMs: latest, reported: [] } : null);
+    return { projects: marks, session };
   }
-  const every = parseWatermark(raw);
-  return every === null ? null : { projects: new Map(), every };
+  const session = parseWatermark(raw);
+  return session === null ? null : { projects: new Map(), session };
 }
 
 /** The watermark of `root`, compared as the file system does, with the key it is stored under. */
@@ -109,12 +118,12 @@ function watermarkOf(marks: ReadonlyMap<string, Watermark>, root: string): [stri
   return null;
 }
 
-function writeWatermarks(path: string, marks: ReadonlyMap<string, Watermark>): void {
+function writeWatermarks(path: string, nowMs: number, marks: ReadonlyMap<string, Watermark>): void {
   const projects: Record<string, { seenAt: string; reported: string[] }> = {};
   for (const [root, { seenMs, reported }] of marks) {
     projects[root] = { seenAt: new Date(seenMs).toISOString(), reported: [...new Set(reported)].slice(-REPORTED_KEPT) };
   }
-  writeJsonAtomic(path, { projects });
+  writeJsonAtomic(path, { seenAt: new Date(nowMs).toISOString(), projects });
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -166,13 +175,17 @@ function registeredAround(
 
 /**
  * A project's name in the text: its path from the session's directory, in the spelling it lies under, so two
- * repositories with the same directory name read differently. The basename for the project the directory lies in,
- * whose path from there (empty, or `..` steps) is no name.
+ * repositories with the same directory name read differently, measured through foldPath and spelled as the root is.
+ * The basename for the project the directory lies in, whose path from there (empty, or `..` steps) is no name.
  */
 export function projectName(root: string, cwd: string, real: string | null): string {
   const from = [cwd, real].find((dir): dir is string => dir !== null && sameOrInside(dir, root));
-  const rel = from === undefined ? "" : relative(from, root);
-  return rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? basename(root) : rel;
+  // Folded, so a directory spelled in another case or normalisation than the root still measures a path.
+  const rel = from === undefined ? "" : relative(foldPath(from), foldPath(root));
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return basename(root);
+  // Folding changes no separator, so the root's last as many components are that path in its own spelling.
+  const parts = normalize(root).split(sep).filter((part) => part !== "");
+  return parts.slice(-rel.split(sep).length).join(sep);
 }
 
 function sameRoot(a: string, b: string, realpath: (path: string) => string): boolean {
@@ -188,11 +201,11 @@ function sameRoot(a: string, b: string, realpath: (path: string) => string): boo
  * The hook's answer to its input (raw stdin): one JSON object whose additionalContext names the landings other
  * sessions made in its project and in every registered project inside its directory, each since the session's
  * watermark for that project (less LANDING_SLACK_MS, without the landings it already reported), or null. Null too for
- * malformed input, a directory with no registered project at, above or below it, and a lane worktree. A project the
- * session has not seen yet only gets its watermark: a new session, or one that moves to a new project, gets no history
- * of it. Each answer moves the watermarks of the projects it covers to the clock and adds the keys it reported; the
- * others are kept, so a session that comes back to a project hears what landed there meanwhile. Never loads a
- * project's config.
+ * malformed input, a directory with no registered project at, above or below it, and a lane worktree. A project
+ * without its own watermark is read from the session's (its last answer), so one registered while the session was away
+ * is heard of; only a session with no file gets no history, its projects only watermarks. Each answer moves the
+ * session's watermark and those of the projects it covers to the clock and adds the keys it reported; the others are
+ * kept, so a session that comes back to a project hears what landed there meanwhile. Never loads a project's config.
  */
 export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchUpOptions): string | null {
   let parsed: unknown;
@@ -230,16 +243,16 @@ export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchU
   if (roots.length === 0) return null;
 
   const path = watermarkPath(opts.home, session);
-  const marks = readWatermarks(path) ?? { projects: new Map<string, Watermark>(), every: null };
+  const marks = readWatermarks(path) ?? { projects: new Map<string, Watermark>(), session: null };
   const next = new Map(marks.projects);
   const nowMs = opts.clock.now();
   const landings: CaughtLanding[] = [];
   for (const { root, key } of roots) {
     const found = watermarkOf(marks.projects, key);
     if (found !== null) next.delete(found[0]);
-    const mark = found?.[1] ?? marks.every;
+    const mark = found?.[1] ?? marks.session;
     if (mark === null) {
-      // A project this session has not seen: what is on disk now is history, slack window included.
+      // A new session: what is on disk now is history, slack window included.
       next.set(key, { seenMs: nowMs, reported: landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey) });
       continue;
     }
@@ -252,7 +265,7 @@ export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchU
     landings.push(...news.map((l) => (project === undefined ? l : { ...l, project })));
   }
   // Moved first: a watermark that cannot be written would repeat the same news at every message.
-  writeWatermarks(path, next);
+  writeWatermarks(path, nowMs, next);
   if (landings.length === 0) return null;
   // Stable: each project's own order holds among equal times.
   landings.sort((a, b) => (Date.parse(a.landedAt) || 0) - (Date.parse(b.landedAt) || 0));

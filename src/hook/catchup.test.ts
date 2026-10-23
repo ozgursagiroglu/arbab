@@ -62,7 +62,10 @@ const prompt = (over: Record<string, unknown> = {}, o: Partial<CatchUpOptions> =
 
 const seenAt = (session = SESSION): unknown => JSON.parse(readFileSync(watermarkPath(home, session), "utf8"));
 /** The watermark file of a session that saw `at` only: by default, the one project. */
-const at = (ms: number, reported: string[], project = root): unknown => ({ projects: { [project]: { seenAt: iso(ms), reported } } });
+const at = (ms: number, reported: string[], project = root): unknown => ({
+  seenAt: iso(ms),
+  projects: { [project]: { seenAt: iso(ms), reported } },
+});
 /** The key of a landing writeLanding wrote with its default merge sha. */
 const key = (name: string): string => `${name}@${"c".repeat(40)}`;
 
@@ -159,11 +162,77 @@ describe("catchUpDecision", () => {
     expect(out).toContain(`ui at ${iso(T0 + MIN)} (session bbbbbbbb) in app, auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in api.`);
     expect(out).not.toContain("seen at");
     expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 3 * MIN),
       projects: {
         [app]: { seenAt: iso(T0 + 3 * MIN), reported: [key("seen"), key("ui")] },
         [api]: { seenAt: iso(T0 + 3 * MIN), reported: [key("seen"), key("auth")] },
       },
     });
+  });
+
+  it("reads a single-watermark file as the session's watermark, so a project its first message did not cover is heard of", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0), reported: [key("seen")] }));
+    writeLanding(app, "seen", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(app, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    const o = { findRoot: () => app };
+    expect(prompt({ cwd: app }, o)).toContain(`landed into main here: ui at ${iso(T0 + MIN)} (session bbbbbbbb).`);
+    expect(seenAt()).toEqual(at(T0 + 2 * MIN, [key("seen"), key("ui")], app));
+    writeLanding(api, "auth", { landedAt: iso(T0 + 3 * MIN), owner: OTHER });
+    now.ms = T0 + 4 * MIN;
+    const out = prompt({ cwd: parent }, o) ?? "";
+    expect(out).toContain(`landed into main: auth at ${iso(T0 + 3 * MIN)} (session bbbbbbbb) in api.`);
+    expect(out).not.toContain("ui at");
+  });
+
+  it("tells a parent-folder session about a landing in a project registered after its last message", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) mkdirSync(project, { recursive: true });
+    registerProject(home, app, iso(T0));
+    expect(prompt({ cwd: parent })).toBeNull();
+    // Registered by another session while this one was away, which then landed there.
+    registerProject(home, api, iso(T0 + MIN));
+    writeLanding(api, "before", { landedAt: iso(T0 - LANDING_SLACK_MS - MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    const out = prompt({ cwd: parent }) ?? "";
+    expect(out).toContain(`landed into main: auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in api.`);
+    expect(out).not.toContain("before at");
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 3 * MIN),
+      projects: {
+        [app]: { seenAt: iso(T0 + 3 * MIN), reported: [] },
+        [api]: { seenAt: iso(T0 + 3 * MIN), reported: [key("auth")] },
+      },
+    });
+    now.ms = T0 + 4 * MIN;
+    expect(prompt({ cwd: parent })).toBeNull();
+  });
+
+  it("tells a new session in a parent folder nothing of what is on disk", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    writeLanding(app, "ui", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 - 2 * LANDING_SLACK_MS), owner: OTHER });
+    expect(prompt({ cwd: parent })).toBeNull();
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0),
+      projects: { [app]: { seenAt: iso(T0), reported: [key("ui")] }, [api]: { seenAt: iso(T0), reported: [] } },
+    });
+    now.ms = T0 + MIN;
+    expect(prompt({ cwd: parent })).toBeNull();
   });
 
   it("keeps the latest keys only, at most REPORTED_KEPT", () => {
@@ -230,6 +299,7 @@ describe("catchUpDecision", () => {
     });
     expect(rootsAsked).toEqual([]);
     expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 5 * MIN),
       projects: {
         [app]: { seenAt: iso(T0 + 5 * MIN), reported: [key("ui")] },
         [api]: { seenAt: iso(T0 + 5 * MIN), reported: [key("auth")] },
@@ -354,11 +424,13 @@ describe("catchUpDecision", () => {
     expect(prompt({}, o)).toBeNull();
     now.ms = T0 + MIN;
     current = b;
-    // B is new to the session: it starts at the clock, and A keeps its watermark.
-    writeLanding(b, "old-b", { landedAt: iso(T0), owner: OTHER });
-    expect(prompt({ cwd: b }, o)).toBeNull();
+    // B is new to the session: it is read from the session's watermark, and A keeps its own.
+    writeLanding(b, "old-b", { landedAt: iso(T0 - LANDING_SLACK_MS - MIN), owner: OTHER });
+    writeLanding(b, "new-b", { landedAt: iso(T0 + MIN / 2), owner: OTHER });
+    expect(prompt({ cwd: b }, o)).toContain(`landed into main here: new-b at ${iso(T0 + MIN / 2)} (session bbbbbbbb).`);
     expect(seenAt()).toEqual({
-      projects: { [root]: { seenAt: iso(T0), reported: [] }, [b]: { seenAt: iso(T0 + MIN), reported: [key("old-b")] } },
+      seenAt: iso(T0 + MIN),
+      projects: { [root]: { seenAt: iso(T0), reported: [] }, [b]: { seenAt: iso(T0 + MIN), reported: [key("new-b")] } },
     });
     writeLanding(root, "while-away", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
     now.ms = T0 + 30 * MIN;
@@ -367,9 +439,10 @@ describe("catchUpDecision", () => {
     now.ms = T0 + 40 * MIN;
     expect(prompt({}, o)).toContain(`landed into main here: while-away at ${iso(T0 + 2 * MIN)} (session bbbbbbbb).`);
     expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 40 * MIN),
       projects: {
         [root]: { seenAt: iso(T0 + 40 * MIN), reported: [key("while-away")] },
-        [b]: { seenAt: iso(T0 + 30 * MIN), reported: [key("old-b")] },
+        [b]: { seenAt: iso(T0 + 30 * MIN), reported: [key("new-b")] },
       },
     });
     now.ms = T0 + 41 * MIN;
@@ -401,6 +474,24 @@ describe("catchUpDecision", () => {
       `ui at ${iso(T0 + MIN)} (session bbbbbbbb) in ${join("client", "app")}, auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in ${join("server", "app")}.`,
     );
   });
+
+  it("names two projects with the same directory name apart when the session's directory is spelled in another case", () => {
+    const parent = join(dir, "Work");
+    const [one, two] = [join(parent, "Client", "app"), join(parent, "server", "app")];
+    for (const project of [one, two]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    // Where the file system does not fold, the other spelling is no directory: its spelling alone matches.
+    const cwd = parent.toUpperCase();
+    expect(prompt({ cwd })).toBeNull();
+    writeLanding(one, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    writeLanding(two, "auth", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    expect(prompt({ cwd })).toContain(
+      `ui at ${iso(T0 + MIN)} (session bbbbbbbb) in ${join("Client", "app")}, auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in ${join("server", "app")}.`,
+    );
+  });
 });
 
 describe("projectName", () => {
@@ -415,6 +506,16 @@ describe("projectName", () => {
   it("measures from the directory's spelling on disk when the project lies under that one only", () => {
     expect(projectName("/disk/w/a/app", "/link/w", "/disk/w")).toBe(join("a", "app"));
     expect(projectName("/elsewhere/app", "/link/w", "/disk/w")).toBe("app");
+  });
+
+  it("measures through foldPath and spells the path as the root does", () => {
+    expect(projectName("/w/client/app", "/W", null)).toBe(join("client", "app"));
+    expect(projectName("/W/Client/App", "/w/client", null)).toBe("App");
+    expect(projectName("/w/café/a/app", "/w/café", null)).toBe(join("a", "app"));
+    // Folding turns ß into ss: the tail is counted in components, not characters.
+    expect(projectName("/w/Straße/App", "/W", null)).toBe(join("Straße", "App"));
+    expect(projectName("/w/a/app/", "/W/", null)).toBe(join("a", "app"));
+    expect(projectName("/W/Repo", "/w/repo/src", null)).toBe("Repo");
   });
 });
 
@@ -461,9 +562,9 @@ describe("watermarks", () => {
     expect(watermarkPath("/h", "x")).toBe(join("/h", "sessions", "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881.json"));
   });
 
-  it("reads a single-watermark file's time and keys as every project's, and null for a missing or malformed one", () => {
+  it("reads a single-watermark file's time and keys as the session's, and null for a missing or malformed one", () => {
     const path = join(dir, "w.json");
-    const every = (seenMs: number, reported: string[]) => ({ projects: new Map(), every: { seenMs, reported } });
+    const every = (seenMs: number, reported: string[]) => ({ projects: new Map(), session: { seenMs, reported } });
     expect(readWatermarks(path)).toBeNull();
     for (const text of ["x", "[]", "{}", '{"seenAt": 5}', '{"seenAt": "soon"}', '{"reported": []}', '{"projects": []}']) {
       writeFileSync(path, text);
@@ -478,31 +579,32 @@ describe("watermarks", () => {
     expect(readWatermarks(path)).toEqual(every(T0, ["a@1", "b@2"]));
   });
 
-  it("reads a watermark per project, leaving out those that do not read", () => {
+  it("reads the session's watermark and one per project, leaving out those that do not read", () => {
     const path = join(dir, "w.json");
     const many = Array.from({ length: REPORTED_KEPT + 3 }, (_, i) => `k${i}@1`);
-    writeFileSync(
-      path,
-      JSON.stringify({
-        projects: {
-          "/w/a": { seenAt: iso(T0), reported: ["a@1", 7] },
-          "/w/b": { seenAt: iso(T0 + MIN), reported: many },
-          "/w/c": { seenAt: "soon" },
-          "/w/d": "x",
-          "": { seenAt: iso(T0) },
-        },
-        seenAt: iso(T0),
-      }),
-    );
-    expect(readWatermarks(path)).toEqual({
-      projects: new Map([
-        ["/w/a", { seenMs: T0, reported: ["a@1"] }],
-        ["/w/b", { seenMs: T0 + MIN, reported: many.slice(-REPORTED_KEPT) }],
-      ]),
-      every: null,
-    });
+    const projects = {
+      "/w/a": { seenAt: iso(T0), reported: ["a@1", 7] },
+      "/w/b": { seenAt: iso(T0 + MIN), reported: many },
+      "/w/c": { seenAt: "soon" },
+      "/w/d": "x",
+      "": { seenAt: iso(T0) },
+    };
+    const marks = new Map([
+      ["/w/a", { seenMs: T0, reported: ["a@1"] }],
+      ["/w/b", { seenMs: T0 + MIN, reported: many.slice(-REPORTED_KEPT) }],
+    ]);
+    // The session's keys, if any, are not read: they stay with its projects.
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0 + 2 * MIN), reported: ["x@1"], projects }));
+    expect(readWatermarks(path)).toEqual({ projects: marks, session: { seenMs: T0 + 2 * MIN, reported: [] } });
+    // Without a session time that reads, the latest project's.
+    for (const seenAt of [undefined, "soon", 5]) {
+      writeFileSync(path, JSON.stringify({ seenAt, projects }));
+      expect(readWatermarks(path), String(seenAt)).toEqual({ projects: marks, session: { seenMs: T0 + MIN, reported: [] } });
+    }
     writeFileSync(path, JSON.stringify({ projects: {} }));
-    expect(readWatermarks(path)).toEqual({ projects: new Map(), every: null });
+    expect(readWatermarks(path)).toEqual({ projects: new Map(), session: null });
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0), projects: {} }));
+    expect(readWatermarks(path)).toEqual({ projects: new Map(), session: { seenMs: T0, reported: [] } });
   });
 
   it("keys a landing by name and merge commit", () => {

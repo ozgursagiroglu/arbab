@@ -161,9 +161,10 @@ waiters/<pid>.json                {pid, project, owner, startedAt, runner} while
                                   `review` or `preflight` waits for its lanes (`runner`: §21, absent before 0.2.1)
 projects/<sha1(root)>.json        {root, lastLaunchAt}: a project that launched a lane (`summary --all`, the hook's
                                   `-C` check, the catch-up hooks, §21)
-sessions/<sha256(session)>.json   {seenAt, reported}: when the catch-up hooks last answered that Claude Code session
-                                  and the last 100 landing keys they reported (§21); `cleanup` removes one not
-                                  modified for 30 days
+sessions/<sha256(session)>.json   {seenAt, projects: {<root>: {seenAt, reported}}}: when the catch-up hooks last
+                                  answered that Claude Code session, and per project root when they last answered for
+                                  it and the last 100 landing keys they reported there (§21); `cleanup` removes one
+                                  not modified for 30 days
 tmp/                              `quota --refresh`'s working directory, removed after the call
 ```
 
@@ -1203,23 +1204,27 @@ each works on its own base; the orchestrator does, before it builds on a stale o
   §21 Orchestrator approvals) hears about each (the working directory as written or by real path, through foldPath,
   §3). Never in a lane worktree, nor of the projects inside one. A directory with no registered project at, above or
   below it costs no git call, nor does a parent folder; no project's config is ever loaded. Per session it keeps one
-  file, `~/.arbab/sessions/<sha256 of the session id>.json`, holding a watermark per project root (the registered
-  root, matched through foldPath): `{"projects": {"<root>": {seenAt, reported}}}`, `reported` the keys
-  (`<name>@<mergeSha>`) of the landings already reported there, the last 100. The set of projects a message covers
-  depends on the working directory, so each keeps its own: a session that moves to project B and comes back to A
-  hears what landed in A meanwhile. A project the session has not seen yet (its first message included) only gets a
-  watermark, with the keys of the landings on disk since 10 minutes before: a new session gets no history. Later, it
-  lists each project's landings since its `seenAt` minus 10 minutes whose key is not in its `reported` and whose
-  `owner` is not this session (an ownerless or pre-0.2.2 landing counts as another's): `land` stamps `landedAt`
-  before it writes `landing.json`, so a record written while a hook ran can fall just behind the watermark, and the
-  keys say it once. A file in the earlier single-watermark shape (`{seenAt, reported}`, `reported` possibly missing)
-  reads as that watermark for every project the message covers, and is rewritten in the per-project shape.
-  It moves the watermarks of the projects it covers to now, keeps the others, adds the keys it reported, and, when
+  file, `~/.arbab/sessions/<sha256 of the session id>.json`, holding the session's watermark (its last message the
+  hooks answered) and one per project root (the registered root, matched through foldPath):
+  `{"seenAt": "<ISO>", "projects": {"<root>": {seenAt, reported}}}`, `reported` the keys (`<name>@<mergeSha>`) of
+  the landings already reported there, the last 100. The set of projects a message covers depends on the working
+  directory, so each keeps its own: a session that moves to project B and comes back to A hears what landed in A
+  meanwhile. A project without its own watermark (one registered while a parent-folder session was away, or one the
+  session moves to) is read from the session's. Only a session with no file (its first message) gets no history: each
+  project it covers only gets a watermark, with the keys of the landings on disk since 10 minutes before. Otherwise
+  it lists each project's landings since its watermark's `seenAt` minus 10 minutes whose key is not in its
+  `reported` and whose `owner` is not this session (an ownerless or pre-0.2.2 landing counts as another's): `land`
+  stamps `landedAt` before it writes `landing.json`, so a record written while a hook ran can fall just behind the
+  watermark, and the keys say it once. A file in the earlier single-watermark shape (`{seenAt, reported}`,
+  `reported` possibly missing) reads as the session's watermark, its keys those of every project it answers for; a
+  per-project file without the session's `seenAt` takes the latest project's. Either is rewritten in the current
+  shape. It moves the session's watermark and those of the projects it covers to now, keeps the others, adds the
+  keys it reported, and, when
   there are any, answers with `additionalContext`: what other sessions landed "while this session was away" (no time
   of its own: the 10 minutes of slack can list a landing stamped before the session's last message), up to five
   landings by name, time and owner, oldest first across projects, each followed by `in <project>` when there is more
-  than one project (its path from the working directory, so two repositories named `app` read differently; the
-  basename for the project the directory lies in), the rest counted, and that lanes keep their own base while an integration started before them must merge
+  than one project (its path from the working directory, measured through foldPath and spelled as the root is, so
+  two repositories named `app` read differently; the basename for the project the directory lies in), the rest counted, and that lanes keep their own base while an integration started before them must merge
   the base in before it can land. Record text reaches the model's context with control characters and line breaks
   replaced by spaces. SessionStart's `source` (startup,
   resume, clear, compact) changes nothing: the watermark says what the session saw. As with the other hooks, a hook

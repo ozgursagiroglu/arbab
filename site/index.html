@@ -110,7 +110,7 @@
       "name": "Does it work on Linux?",
       "acceptedAnswer": {
         "@type": "Answer",
-        "text": "macOS is tested: the fence uses Claude Code's sandbox. Linux should work wherever Claude Code's sandbox works, but it is untested so far."
+        "text": "macOS is tested: the fence uses Claude Code's sandbox. Linux is untested. One known limit: loopback services do not work under the Linux sandbox, because allowLocalBinding has no effect there."
       }
     },
     {
@@ -367,8 +367,9 @@
             <span>Writes to the repository's shared <code>.git</code>. The runner, not the worker, commits, merges and
               creates branches.</span></li>
           <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
-            <span>"Any code" command prefixes such as bare <code>node</code> or <code>pnpm</code>, and background
-              shells.</span></li>
+            <span>With the default <code>strict</code> fence: "any code" command prefixes such as bare <code>node</code>
+              or <code>pnpm</code>, and background shells. A lane can opt in to <code>fence: "sandbox-auto"</code>, where
+              the sandbox is the only wall and sandboxed Bash runs without the allowlist.</span></li>
           <li><svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path class="icon-no" d="M5 5 L15 15 M15 5 L5 15" fill="none" stroke-width="2.5"/></svg>
             <span>Running its tests on your host. The gates run inside the fence, in a lane without file-editing
               tools, never on your host.</span></li>
@@ -677,8 +678,8 @@ claude plugin update arbab@arbab</code></pre>
     </details>
     <details>
       <summary>Does it work on Linux?</summary>
-      <p>macOS is tested: the fence uses Claude Code's sandbox. Linux should work wherever Claude Code's sandbox works,
-        but it is untested so far.</p>
+      <p>macOS is tested: the fence uses Claude Code's sandbox. Linux is untested. One known limit: loopback services
+        do not work under the Linux sandbox, because <code>allowLocalBinding</code> has no effect there.</p>
     </details>
     <details>
       <summary>What does it cost to run?</summary>

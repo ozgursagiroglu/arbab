@@ -1,9 +1,9 @@
 // arbab hook <pre-tool-use|stop|user-prompt-submit|session-start>
 //
 // The plugin's Claude Code hooks: approve bare runner calls, keep an orchestrator with live shepherds from stopping
-// unwatched, and tell a returning session what other sessions landed in its project since its last message
-// (user-prompt-submit, session-start: additionalContext; DESIGN.md §21). A hook that cannot decide prints nothing and
-// exits 0, so Claude Code goes on as without it.
+// unwatched, and tell a returning session what other sessions landed while it was away, in its project or in the
+// registered projects inside its directory (user-prompt-submit, session-start: additionalContext; DESIGN.md §21). A
+// hook that cannot decide prints nothing and exits 0, so Claude Code goes on as without it.
 import { realpathSync } from "node:fs";
 import { approves, APPROVAL, TEMP_DIRS } from "../hook/approve";
 import { catchUpDecision } from "../hook/catchup";

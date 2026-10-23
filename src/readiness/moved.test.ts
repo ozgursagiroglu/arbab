@@ -37,6 +37,12 @@ describe("baseMergeInstruction", () => {
         "then arbab integrate rel --refresh to record the new head, and verify, review and readiness for rel again",
     );
   });
+
+  it("quotes the worktree and the base as one shell word each", () => {
+    const text = baseMergeInstruction("feat/it's", "rel", "/work/my repo/wt");
+    expect(text).toContain(`git -C '/work/my repo/wt' ${untrustedTree().join(" ")} merge --no-verify --no-edit "feat/it's"; then`);
+    expect(baseMergeInstruction("main", "rel", "/work/$HOME's")).toContain(`git -C "/work/\\$HOME's" `);
+  });
 });
 
 describe("baseMoved", () => {

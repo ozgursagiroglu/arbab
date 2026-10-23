@@ -378,8 +378,9 @@ history are in [DESIGN.md](DESIGN.md). Found a hole? See [SECURITY.md](SECURITY.
   orchestrator's own included.
 - **A returning session catches up.** Each landing records the session that made it. When a session comes back
   after a pause, a usage limit or `claude --resume`, the plugin's hooks tell it, with its next message, what other
-  sessions landed in the project since its last one; a new session gets no history. `arbab summary --since <when>`
-  (`2h`, `1d` or an ISO time) lists the landings on demand. When the base moved under an integration, readiness
+  sessions landed while it was away, in its project or, started in a parent folder, in each registered project inside
+  it; a new session gets no history. `arbab summary --since <when>` (`2h`, `1d`, a date `YYYY-MM-DD` as midnight UTC,
+  or an ISO date-time with `Z` or an offset) lists the landings on demand. When the base moved under an integration, readiness
   says so as its first risk, `base-moved`, naming the landings it lacks, before `land` refuses it.
 - **A skipped check blocks the landing.** `land` refuses while one is left, unless it is waived by its id; `verify`
   cannot be waived. Only you can waive one: `--waive` needs a terminal.
@@ -456,7 +457,7 @@ clink as a finished worker takes its pay.
 | `plan next <plan.json> [--retry <phase>]` | Launches every phase whose dependencies all succeeded and that never ran. `--retry` first relaunches a phase that failed or was orphaned. |
 | `plan status <plan.json>` | One row per phase: wave, state, end state, dependencies. |
 | `status [lane…] [--active] [--mine]` | One row per lane, then the quota. `--active`: lanes not finished; `--mine`: this session's runs and ownerless ones. |
-| `summary [--all] [--since <when>]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota and slots. `--all`: every project that launched a lane on this machine. `--since`: what landed after `<when>` (an ISO time, or `<n>m`, `<n>h`, `<n>d` ago) and which session landed it. |
+| `summary [--all] [--since <when>]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota and slots. `--all`: every project that launched a lane on this machine. `--since`: what landed after `<when>` (`<n>m`, `<n>h`, `<n>d` ago, a date `YYYY-MM-DD` as midnight UTC, or an ISO date-time with `Z` or an offset) and which session landed it. |
 | `report <lane> [--attempt <n>]` | An attempt's metrics and the worker's report, the latest unless `--attempt`. |
 | `wait [lane… \| --any \| --all] [--all-sessions] [--timeout-min N] [--notify]` | Reports finished lanes not yet acknowledged. Without lanes it covers this session's runs and ownerless ones, every session's with `--all-sessions`. `--notify` sends a desktop notification. Exit 3 on timeout. |
 | `resume <lane> [--prompt <file> \| --digest]` | Starts a new attempt in the latest session. `--digest` starts a fresh session seeded with the latest attempt's digest. |

@@ -2,7 +2,7 @@
 // or `claude --resume` is told what other sessions landed in its project meanwhile, before it builds on a stale base.
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { listProjects } from "../registry";
 import { landingsSince, landingText, type LandingSince } from "../summary";
 import { writeJsonAtomic } from "../util/fs";
@@ -86,30 +86,46 @@ function isObject(v: unknown): v is Record<string, unknown> {
 /** Record text is the project's, not ours: no control character or line break may shape the model's context. */
 const flat = (text: string): string => text.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
 
-/** The context paragraph for landings by other sessions since `seenAt`, oldest first. */
-export function catchUpText(seenAt: string, landings: readonly LandingSince[]): string {
+/** A landing, with its project's directory name when the session sees more than one project. */
+export type CaughtLanding = LandingSince & { project?: string };
+
+/**
+ * The context paragraph for landings by other sessions while this session was away, oldest first. No time of its own:
+ * the slack window can list a landing stamped before the session's last message; each landing keeps its time.
+ */
+export function catchUpText(landings: readonly CaughtLanding[]): string {
   const intos = [...new Set(landings.map((l) => l.into))];
-  const named = landings.slice(0, NAMED_LANDINGS).map(landingText);
+  const named = landings
+    .slice(0, NAMED_LANDINGS)
+    .map((l) => (l.project === undefined ? landingText(l) : `${landingText(l)} in ${l.project}`));
   const more = landings.length > NAMED_LANDINGS ? ` and ${landings.length - NAMED_LANDINGS} more` : "";
   const into = intos.join(", ");
+  const here = landings.some((l) => l.project !== undefined) ? "" : " here";
   const merge = intos.length === 1 ? into : `its base (${into})`;
   return flat(
-    `arbab: since this session's last message (${seenAt}), other sessions landed into ${into} here: ${named.join(", ")}${more}. ` +
+    `arbab: while this session was away, other sessions landed into ${into}${here}: ${named.join(", ")}${more}. ` +
       `Lanes keep their own base; an integration started before these must merge ${merge} in before it can land.`,
   );
 }
 
-/** The registered project roots `cwd` lies in, as written or on disk. */
-function registeredAround(home: string, cwd: string, realpath: (path: string) => string): string[] {
+/**
+ * The registered project roots around `cwd`, as written or on disk: those it lies in (`around`) and those inside it
+ * (`below`), so an orchestrator started in a parent folder of several repositories hears about each.
+ */
+function registeredAround(home: string, cwd: string, realpath: (path: string) => string): { around: string[]; below: string[] } {
   let real: string | null = null;
   try {
     real = realpath(cwd);
   } catch {
     // A directory that is gone matches by its spelling only.
   }
-  return listProjects(home)
-    .map((entry) => entry.root)
-    .filter((root) => sameOrInside(root, cwd) || (real !== null && sameOrInside(root, real)));
+  const around: string[] = [];
+  const below: string[] = [];
+  for (const { root } of listProjects(home)) {
+    if (sameOrInside(root, cwd) || (real !== null && sameOrInside(root, real))) around.push(root);
+    else if (sameOrInside(cwd, root) || (real !== null && sameOrInside(real, root))) below.push(root);
+  }
+  return { around, below };
 }
 
 function sameRoot(a: string, b: string, realpath: (path: string) => string): boolean {
@@ -123,10 +139,11 @@ function sameRoot(a: string, b: string, realpath: (path: string) => string): boo
 
 /**
  * The hook's answer to its input (raw stdin): one JSON object whose additionalContext names the landings other
- * sessions made in this project since the session's watermark (less LANDING_SLACK_MS, without the landings it already
- * reported), or null. Null too for malformed input, a directory in no registered project or in a lane worktree, and a
- * session's first message, which only sets the watermark: a new session gets no history. Each answer moves the
- * watermark to the clock and adds the keys it reported. Never loads the project's config.
+ * sessions made since the session's watermark (less LANDING_SLACK_MS, without the landings it already reported) in its
+ * project and in every registered project inside its directory, or null. Null too for malformed input, a directory
+ * with no registered project at, above or below it, a lane worktree, and a session's first message, which only sets
+ * the watermark: a new session gets no history. Each answer moves the watermark to the clock and adds the keys it
+ * reported. Never loads a project's config.
  */
 export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchUpOptions): string | null {
   let parsed: unknown;
@@ -143,30 +160,40 @@ export function catchUpDecision(input: string, event: CatchUpEvent, opts: CatchU
   if (source !== undefined && typeof source !== "string") return null;
 
   const realpath = opts.realpath ?? ((path: string) => realpathSync.native(path));
-  const roots = registeredAround(opts.home, cwd, realpath);
+  const { around, below } = registeredAround(opts.home, cwd, realpath);
+  if (around.length === 0 && below.length === 0) return null;
+  const roots: string[] = [];
+  if (around.length > 0) {
+    // Null in a lane worktree, which lies inside its project: a worker hears nothing, of that project or any other.
+    const root = opts.findRoot(cwd);
+    if (root === null) return null;
+    if (around.some((r) => sameRoot(r, root, realpath))) roots.push(root);
+  }
+  for (const root of below) if (!roots.some((r) => sameRoot(r, root, realpath))) roots.push(root);
   if (roots.length === 0) return null;
-  const root = opts.findRoot(cwd);
-  if (root === null || !roots.some((r) => sameRoot(r, root, realpath))) return null;
 
+  const since = (sinceMs: number): CaughtLanding[] => {
+    const all: CaughtLanding[] = roots.flatMap((root) =>
+      landingsSince(root, sinceMs).map((l) => (roots.length > 1 ? { ...l, project: basename(root) } : l)),
+    );
+    // Stable: each project's own order holds among equal times.
+    return all.sort((a, b) => (Date.parse(a.landedAt) || 0) - (Date.parse(b.landedAt) || 0));
+  };
   const path = watermarkPath(opts.home, session);
   const watermark = readWatermark(path);
   const nowMs = opts.clock.now();
   const now = isoAt(opts.clock);
   if (watermark === null) {
     // What is on disk now is history, slack window included: only a record written after this counts as news.
-    writeWatermark(path, now, landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey));
+    writeWatermark(path, now, since(nowMs - LANDING_SLACK_MS).map(landingKey));
     return null;
   }
   const reported = new Set(watermark.reported);
-  const landings = landingsSince(root, watermark.seenMs - LANDING_SLACK_MS).filter(
-    (l) => l.owner !== session && !reported.has(landingKey(l)),
-  );
+  const landings = since(watermark.seenMs - LANDING_SLACK_MS).filter((l) => l.owner !== session && !reported.has(landingKey(l)));
   // Moved first: a watermark that cannot be written would repeat the same news at every message.
   writeWatermark(path, now, [...watermark.reported, ...landings.map(landingKey)]);
   if (landings.length === 0) return null;
-  return JSON.stringify({
-    hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(new Date(watermark.seenMs).toISOString(), landings) },
-  });
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(landings) } });
 }
 
 /** Removes the watermarks under `home` not modified for `maxAgeMs`; returns how many went. */

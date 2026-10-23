@@ -4,6 +4,7 @@ import { formatElapsed } from "../registry";
 import type { PhaseLine } from "./plans";
 import type { ProjectSummary } from "./project";
 import { SHORT_SHA } from "./integrations";
+import { landingOwner } from "./landings";
 
 const NONE = "-";
 const INDENT = "  ";
@@ -82,6 +83,24 @@ export function formatSummary(s: ProjectSummary, nowSec: number): string {
           i.waitsFor.length > 0 ? `waits for: ${i.waitsFor.join("; ")}` : NONE,
         ]),
       ),
+    );
+  }
+
+  // Asked for with --since, so said even when nothing landed.
+  if (s.landedSince !== undefined && s.since !== undefined) {
+    section(
+      `Landed since ${s.since}`,
+      s.landedSince.length === 0
+        ? ["nothing landed"]
+        : table(
+            s.landedSince.map((l) => [
+              l.name,
+              `into ${l.into}`,
+              l.landedAt,
+              landingOwner(l.owner),
+              `${l.lanes} ${l.lanes === 1 ? "lane" : "lanes"}${l.squash ? ", squashed" : ""}`,
+            ]),
+          ),
     );
   }
 

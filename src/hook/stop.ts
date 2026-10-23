@@ -24,11 +24,16 @@ function runnerWord(path: string): string {
   return /[$`\\!"]/.test(path) ? shellWord(path) : `"${path}"`;
 }
 
+/** A project path as shellWord writes it, but double-quoted when it holds a `'` they keep literal: tokenize reads that. */
+function projectWord(path: string): string {
+  return path.includes("'") && !/[$`\\!"]/.test(path) ? `"${path}"` : shellWord(path);
+}
+
 /** The command that starts a waiter for `lanes`, with `-C` when they share one project other than `cwd`. */
 export function waitCommand(scriptPath: string, lanes: readonly ShepherdEntry[], cwd: string): string {
   const projects = new Set(lanes.map((l) => l.project));
   const [project] = projects;
-  const dir = projects.size === 1 && project !== undefined && project !== cwd ? ` -C ${shellWord(project)}` : "";
+  const dir = projects.size === 1 && project !== undefined && project !== cwd ? ` -C ${projectWord(project)}` : "";
   return `node ${runnerWord(scriptPath)}${dir} wait --any`;
 }
 

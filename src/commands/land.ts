@@ -10,7 +10,8 @@
 // for the head, when the head is already in the base or landing.json exists, when the branch moved since, unless the main checkout (the
 // project root) is on the recorded base with no tracked change and no untracked file where the merge writes, and
 // unless the base's HEAD is in the verified head (otherwise the merge would hold a tree nobody verified).
-// Writes .arbab/integrations/<name>/landing.json (LandingRecord, pushed: false, with squash and the lanes it carried).
+// Writes .arbab/integrations/<name>/landing.json (LandingRecord, pushed: false, with squash, the lanes it carried and
+// the landing session as owner, null outside Claude Code).
 // Then, unless --keep-worktrees, it removes the worktrees of the finished merged lanes, of the lanes generated for the
 // integration and of the integration itself, by `cleanup --worktrees`' rules (after a squash, against the landed head),
 // and deletes the generated lanes' branches and integrate/<name>. Merged lanes keep arbab/<lane>: a later plan phase
@@ -30,6 +31,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { credentialMatcher, credentialReason, homeSpellings, type CredentialHit } from "../profile";
+import { baseMergeInstruction } from "../readiness";
 import { otherSessions, sessionOf, sessionText } from "../registry";
 import { untrustedTree, type GitRunner } from "../run";
 import { TIERS } from "../types";
@@ -165,13 +167,9 @@ export function assertBaseInHead(git: GitRunner, root: string, base: string, hea
   const r = git(["merge-base", "--is-ancestor", "HEAD", head], root);
   if (r.code === 0) return;
   if (r.code !== 1) throw new ArbabError("git", `git merge-base --is-ancestor HEAD ${head} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  // The integration worktree holds worker code: the merge the human runs there gets the same git options as arbab's
-  // own, or a worker-written hook (a relative core.hooksPath) would run on the host.
   throw refuse(
     `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree ` +
-      `nobody verified. Merge ${base} into integrate/${name} with hooks off: git -C ${worktree} ${untrustedTree().join(" ")} ` +
-      `merge --no-verify --no-edit ${base}; then arbab integrate ${name} --refresh to record the new head, and verify, ` +
-      `review and readiness for ${name} again`,
+      `nobody verified. ${baseMergeInstruction(base, name, worktree)}`,
   );
 }
 
@@ -274,6 +272,7 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
     integrationHead: head,
     mergeSha,
     landedAt: isoAt(ctx.clock),
+    owner: sessionOf(ctx.hostEnv),
     pushed: false,
     squash,
     lanes: record.merged.map((m) => ({ lane: m.lane, sha: m.sha })),

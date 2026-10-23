@@ -1,8 +1,9 @@
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { APPROVAL } from "../hook/approve";
 import { registerProject, registerShepherd, registerWaiter } from "../registry";
+import { writeLanding } from "../summary/testkit";
 import { runHook } from "./hook";
 import { dispatch } from "./index";
 import { makeProject, type TestProject } from "./testkit";
@@ -216,10 +217,132 @@ describe("hook stop", () => {
   });
 });
 
+describe("hook user-prompt-submit and session-start", () => {
+  const OTHER = "bbbbbbbb-1111-2222-3333-444444444444";
+  const iso = (ms: number): string => new Date(ms).toISOString();
+  const prompt = (cwd: string): string => JSON.stringify({ session_id: SESSION, cwd, hook_event_name: "UserPromptSubmit", prompt: "go on" });
+
+  async function hook(t: TestProject, event: string, stdin: string): Promise<string> {
+    t.stdin.text = stdin;
+    t.out.length = 0;
+    expect(await runHook([event], t.ctx)).toBe(0);
+    expect(t.stderr()).toBe("");
+    return t.stdout();
+  }
+
+  /** Counts the git calls the hook makes. */
+  function countGit(t: TestProject): { calls: number } {
+    const count = { calls: 0 };
+    const git = t.ctx.git;
+    t.ctx.git = (args, cwd) => {
+      count.calls++;
+      return git(args, cwd);
+    };
+    return count;
+  }
+
+  it("says nothing at a session's first message, then tells it once of another session's landing", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    expect(await hook(p, "user-prompt-submit", prompt(p.root))).toBe("");
+    const start = p.now.ms;
+    writeLanding(p.root, "rel", { landedAt: iso(start + 60_000), owner: OTHER });
+    writeLanding(p.root, "mine", { landedAt: iso(start + 120_000), owner: SESSION });
+    p.now.ms = start + 300_000;
+
+    const out = JSON.parse(await hook(p, "user-prompt-submit", prompt(p.root))) as {
+      hookSpecificOutput: { hookEventName: string; additionalContext: string };
+    };
+    expect(out.hookSpecificOutput).toEqual({
+      hookEventName: "UserPromptSubmit",
+      additionalContext:
+        "arbab: while this session was away, other sessions landed into main here: " +
+        `rel at ${iso(start + 60_000)} (session bbbbbbbb). Lanes keep their own base; an integration started before ` +
+        "these must merge main in before it can land.",
+    });
+    expect(await hook(p, "user-prompt-submit", prompt(p.root))).toBe("");
+  });
+
+  it("tells a session in the project's parent folder too, with no git call", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    const git = countGit(p);
+    expect(await hook(p, "user-prompt-submit", prompt(dirname(p.root)))).toBe("");
+    writeLanding(p.root, "rel", { landedAt: iso(p.now.ms + 1000), owner: OTHER });
+    p.now.ms += 2000;
+    expect(await hook(p, "user-prompt-submit", prompt(dirname(p.root)))).toContain("landed into main here: rel at");
+    expect(git.calls).toBe(0);
+  });
+
+  it("answers SessionStart with its own event name", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    const start = JSON.stringify({ session_id: SESSION, cwd: p.root, hook_event_name: "SessionStart", source: "resume" });
+    expect(await hook(p, "session-start", start)).toBe("");
+    writeLanding(p.root, "rel", { landedAt: iso(p.now.ms + 1000), owner: OTHER });
+    p.now.ms += 2000;
+    const out = JSON.parse(await hook(p, "session-start", start)) as { hookSpecificOutput: { hookEventName: string } };
+    expect(out.hookSpecificOutput.hookEventName).toBe("SessionStart");
+  });
+
+  it("makes no git call and writes no watermark in a project arbab never ran in", async () => {
+    p = project();
+    writeLanding(p.root, "rel", { landedAt: iso(p.now.ms + 1000), owner: OTHER });
+    const git = countGit(p);
+    expect(await hook(p, "user-prompt-submit", prompt(p.root))).toBe("");
+    p.now.ms += 2000;
+    expect(await hook(p, "user-prompt-submit", prompt(p.root))).toBe("");
+    expect(git.calls).toBe(0);
+    expect(existsSync(join(p.home, "sessions"))).toBe(false);
+  });
+
+  it("prints nothing in a lane worktree of a registered project", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    const lane = join(p.worktreeRoot, "demo");
+    mkdirSync(lane, { recursive: true });
+    writeLanding(p.root, "rel", { landedAt: iso(p.now.ms + 1000), owner: OTHER });
+    const git = countGit(p);
+    expect(await hook(p, "user-prompt-submit", prompt(lane))).toBe("");
+    p.now.ms += 2000;
+    expect(await hook(p, "user-prompt-submit", prompt(lane))).toBe("");
+    expect(git.calls).toBe(0);
+    expect(existsSync(join(p.home, "sessions"))).toBe(false);
+  });
+
+  it("prints nothing for bad stdin, or stdin that cannot be read", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    for (const stdin of ["", "not json", "{}", JSON.stringify({ session_id: SESSION, cwd: p.root, hook_event_name: "Stop" })]) {
+      expect(await hook(p, "user-prompt-submit", stdin), stdin).toBe("");
+    }
+    p.ctx.readStdin = () => Promise.reject(new Error("closed"));
+    expect(await runHook(["session-start"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("");
+  });
+
+  it("prints nothing when the watermark cannot be written", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    // A file where the sessions directory belongs.
+    writeFileSync(join(p.home, "sessions"), "");
+    expect(await hook(p, "user-prompt-submit", prompt(p.root))).toBe("");
+  });
+
+  it("runs through dispatch, as the hook process runs it", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    p.stdin.text = prompt(p.root);
+    expect(await dispatch(["hook", "user-prompt-submit"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("");
+    expect(existsSync(join(p.home, "sessions"))).toBe(true);
+  });
+});
+
 describe("hook usage", () => {
   it("rejects a missing or unknown event and extra arguments", async () => {
     p = project();
-    await expect(runHook([], p.ctx)).rejects.toThrow(/pre-tool-use, stop/);
+    await expect(runHook([], p.ctx)).rejects.toThrow(/pre-tool-use, stop, user-prompt-submit, session-start/);
     await expect(runHook(["post-tool-use"], p.ctx)).rejects.toThrow(/post-tool-use/);
     await expect(runHook(["stop", "x"], p.ctx)).rejects.toThrow(/no arguments/);
     expect(p.stdin.reads).toBe(0);

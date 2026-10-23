@@ -1,0 +1,631 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { registerProject } from "../registry";
+import type { LandingSince } from "../summary";
+import { writeLanding } from "../summary/testkit";
+import {
+  LANDING_SLACK_MS,
+  NAMED_LANDINGS,
+  REPORTED_KEPT,
+  WATERMARK_MAX_AGE_MS,
+  catchUpDecision,
+  catchUpText,
+  landingKey,
+  projectName,
+  readWatermarks,
+  removeStaleWatermarks,
+  watermarkPath,
+  type CatchUpOptions,
+} from "./catchup";
+
+const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
+const OTHER = "bbbbbbbb-1111-2222-3333-444444444444";
+const T0 = Date.parse("2026-10-09T12:00:00.000Z");
+const MIN = 60_000;
+const iso = (ms: number): string => new Date(ms).toISOString();
+
+let dir: string;
+let home: string;
+let root: string;
+let now: { ms: number };
+let rootsAsked: string[];
+
+beforeEach(() => {
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "arbab-")));
+  home = join(dir, "arbab-home");
+  root = join(dir, "repo");
+  mkdirSync(join(root, "src"), { recursive: true });
+  now = { ms: T0 };
+  rootsAsked = [];
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+function opts(over: Partial<CatchUpOptions> = {}): CatchUpOptions {
+  return {
+    home,
+    clock: { now: () => now.ms },
+    findRoot: (cwd) => {
+      rootsAsked.push(cwd);
+      return root;
+    },
+    ...over,
+  };
+}
+
+const input = (over: Record<string, unknown> = {}): string =>
+  JSON.stringify({ session_id: SESSION, cwd: root, hook_event_name: "UserPromptSubmit", prompt: "go on", ...over });
+
+const prompt = (over: Record<string, unknown> = {}, o: Partial<CatchUpOptions> = {}): string | null =>
+  catchUpDecision(input(over), "UserPromptSubmit", opts(o));
+
+const seenAt = (session = SESSION): unknown => JSON.parse(readFileSync(watermarkPath(home, session), "utf8"));
+/** The watermark file of a session that saw `at` only: by default, the one project. */
+const at = (ms: number, reported: string[], project = root): unknown => ({
+  seenAt: iso(ms),
+  projects: { [project]: { seenAt: iso(ms), reported } },
+});
+/** The key of a landing writeLanding wrote with its default merge sha. */
+const key = (name: string): string => `${name}@${"c".repeat(40)}`;
+
+describe("catchUpDecision", () => {
+  it("writes the watermark on a session's first message and prints nothing, then or later", () => {
+    registerProject(home, root, iso(T0));
+    writeLanding(root, "old", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(root, "older", { landedAt: iso(T0 - LANDING_SLACK_MS - MIN), owner: OTHER });
+    expect(prompt()).toBeNull();
+    // What lies in the slack window already is history too.
+    expect(seenAt()).toEqual(at(T0, [key("old")]));
+    now.ms = T0 + MIN;
+    expect(prompt()).toBeNull();
+  });
+
+  it("reports another session's landing after the watermark once, then not again", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER, lanes: [{ lane: "a", sha: "1".repeat(40) }] });
+    now.ms = T0 + 5 * MIN;
+
+    const out = prompt();
+    expect(out).not.toBeNull();
+    expect(JSON.parse(out ?? "")).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext:
+          "arbab: while this session was away, other sessions landed into main here: " +
+          `rel at ${iso(T0 + MIN)} (session bbbbbbbb). Lanes keep their own base; an integration started before these ` +
+          "must merge main in before it can land.",
+      },
+    });
+    expect(seenAt()).toEqual(at(T0 + 5 * MIN, [key("rel")]));
+
+    now.ms = T0 + 6 * MIN;
+    expect(prompt()).toBeNull();
+    expect(seenAt()).toEqual(at(T0 + 6 * MIN, [key("rel")]));
+  });
+
+  it("reports once a landing stamped just before the watermark but written after it, then not again", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    now.ms = T0 + 5 * MIN;
+    expect(prompt()).toBeNull();
+    // land stamped landedAt, the hook answered at T0 + 5 min, then land wrote landing.json.
+    writeLanding(root, "race", { landedAt: iso(T0 + 5 * MIN - 1000), owner: OTHER });
+    now.ms = T0 + 6 * MIN;
+    const out = prompt();
+    expect(out).toContain(`race at ${iso(T0 + 5 * MIN - 1000)} (session bbbbbbbb)`);
+    expect(seenAt()).toEqual(at(T0 + 6 * MIN, [key("race")]));
+    now.ms = T0 + 7 * MIN;
+    expect(prompt()).toBeNull();
+    now.ms = T0 + 20 * MIN;
+    expect(prompt()).toBeNull();
+  });
+
+  it("looks back no further than the slack before the watermark", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "late", { landedAt: iso(T0 - LANDING_SLACK_MS - 1000), owner: OTHER });
+    writeLanding(root, "near", { landedAt: iso(T0 - LANDING_SLACK_MS + 1000), owner: OTHER });
+    now.ms = T0 + MIN;
+    const out = prompt() ?? "";
+    expect(out).toContain("near at");
+    expect(out).not.toContain("late at");
+  });
+
+  it("reads a watermark from 0.2.2 without keys, and writes the keys from then on", () => {
+    registerProject(home, root, iso(T0));
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0) }));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    expect(prompt()).toContain("rel at");
+    expect(seenAt()).toEqual(at(T0 + 2 * MIN, [key("rel")]));
+    now.ms = T0 + 3 * MIN;
+    expect(prompt()).toBeNull();
+  });
+
+  it("reads a single-watermark file as that watermark for every project it now answers for", () => {
+    const parent = join(dir, "work");
+    const [app, api, far] = [join(parent, "app"), join(parent, "api"), join(dir, "far")];
+    for (const project of [app, api, far]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0), reported: [key("seen")] }));
+    writeLanding(app, "seen", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(app, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    const out = prompt({ cwd: parent }) ?? "";
+    expect(out).toContain(`ui at ${iso(T0 + MIN)} (session bbbbbbbb) in app, auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in api.`);
+    expect(out).not.toContain("seen at");
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 3 * MIN),
+      projects: {
+        [app]: { seenAt: iso(T0 + 3 * MIN), reported: [key("seen"), key("ui")] },
+        [api]: { seenAt: iso(T0 + 3 * MIN), reported: [key("seen"), key("auth")] },
+      },
+    });
+  });
+
+  it("reads a single-watermark file as the session's watermark, so a project its first message did not cover is heard of", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0), reported: [key("seen")] }));
+    writeLanding(app, "seen", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(app, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    const o = { findRoot: () => app };
+    expect(prompt({ cwd: app }, o)).toContain(`landed into main here: ui at ${iso(T0 + MIN)} (session bbbbbbbb).`);
+    expect(seenAt()).toEqual(at(T0 + 2 * MIN, [key("seen"), key("ui")], app));
+    writeLanding(api, "auth", { landedAt: iso(T0 + 3 * MIN), owner: OTHER });
+    now.ms = T0 + 4 * MIN;
+    const out = prompt({ cwd: parent }, o) ?? "";
+    expect(out).toContain(`landed into main: auth at ${iso(T0 + 3 * MIN)} (session bbbbbbbb) in api.`);
+    expect(out).not.toContain("ui at");
+  });
+
+  it("tells a parent-folder session about a landing in a project registered after its last message", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) mkdirSync(project, { recursive: true });
+    registerProject(home, app, iso(T0));
+    expect(prompt({ cwd: parent })).toBeNull();
+    // Registered by another session while this one was away, which then landed there.
+    registerProject(home, api, iso(T0 + MIN));
+    writeLanding(api, "before", { landedAt: iso(T0 - LANDING_SLACK_MS - MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    const out = prompt({ cwd: parent }) ?? "";
+    expect(out).toContain(`landed into main: auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in api.`);
+    expect(out).not.toContain("before at");
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 3 * MIN),
+      projects: {
+        [app]: { seenAt: iso(T0 + 3 * MIN), reported: [] },
+        [api]: { seenAt: iso(T0 + 3 * MIN), reported: [key("auth")] },
+      },
+    });
+    now.ms = T0 + 4 * MIN;
+    expect(prompt({ cwd: parent })).toBeNull();
+  });
+
+  it("tells a new session in a parent folder nothing of what is on disk", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    writeLanding(app, "ui", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 - 2 * LANDING_SLACK_MS), owner: OTHER });
+    expect(prompt({ cwd: parent })).toBeNull();
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0),
+      projects: { [app]: { seenAt: iso(T0), reported: [key("ui")] }, [api]: { seenAt: iso(T0), reported: [] } },
+    });
+    now.ms = T0 + MIN;
+    expect(prompt({ cwd: parent })).toBeNull();
+  });
+
+  it("keeps the latest keys only, at most REPORTED_KEPT", () => {
+    registerProject(home, root, iso(T0));
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    const old = Array.from({ length: REPORTED_KEPT }, (_, i) => `gone${i}@${"1".repeat(40)}`);
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0), reported: old }));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    expect(prompt()).not.toBeNull();
+    expect(seenAt()).toEqual(at(T0 + 2 * MIN, [...old.slice(1), key("rel")]));
+  });
+
+  it("leaves out this session's own landing and one before the watermark, and only moves the watermark", () => {
+    registerProject(home, root, iso(T0));
+    writeLanding(root, "before", { landedAt: iso(T0 - MIN), owner: OTHER });
+    expect(prompt()).toBeNull();
+    writeLanding(root, "mine", { landedAt: iso(T0 + MIN), owner: SESSION });
+    now.ms = T0 + 2 * MIN;
+    expect(prompt()).toBeNull();
+    expect(seenAt()).toEqual(at(T0 + 2 * MIN, [key("before")]));
+  });
+
+  it("names landings from outside Claude Code and from before 0.2.2, and answers SessionStart as such", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "outside", { landedAt: iso(T0 + MIN), owner: null });
+    writeLanding(root, "legacy", { landedAt: iso(T0 + 2 * MIN) });
+    const out = catchUpDecision(input({ hook_event_name: "SessionStart", source: "resume" }), "SessionStart", opts());
+    const parsed = JSON.parse(out ?? "") as { hookSpecificOutput: { hookEventName: string; additionalContext: string } };
+    expect(parsed.hookSpecificOutput.hookEventName).toBe("SessionStart");
+    expect(parsed.hookSpecificOutput.additionalContext).toContain(
+      `outside at ${iso(T0 + MIN)} (outside Claude Code), legacy at ${iso(T0 + 2 * MIN)} (session unknown).`,
+    );
+  });
+
+  it("works from a subdirectory of the project", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt({ cwd: join(root, "src") })).toBeNull();
+    expect(rootsAsked).toEqual([join(root, "src")]);
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(true);
+  });
+
+  it("tells a session in a parent folder of several registered projects about each, by name, without asking for a root", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    expect(prompt({ cwd: parent })).toBeNull();
+    writeLanding(app, "ui", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 + MIN), owner: OTHER, into: "dev" });
+    now.ms = T0 + 5 * MIN;
+    const out = prompt({ cwd: parent });
+    expect(JSON.parse(out ?? "")).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext:
+          "arbab: while this session was away, other sessions landed into dev, main: " +
+          `auth at ${iso(T0 + MIN)} (session bbbbbbbb) in api, ui at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in app. ` +
+          "Lanes keep their own base; an integration started before these must merge its base (dev, main) in before it can land.",
+      },
+    });
+    expect(rootsAsked).toEqual([]);
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 5 * MIN),
+      projects: {
+        [app]: { seenAt: iso(T0 + 5 * MIN), reported: [key("ui")] },
+        [api]: { seenAt: iso(T0 + 5 * MIN), reported: [key("auth")] },
+      },
+    });
+    now.ms = T0 + 6 * MIN;
+    expect(prompt({ cwd: parent })).toBeNull();
+  });
+
+  it("finds the projects below a parent folder by its path on disk too", () => {
+    const parent = join(dir, "work");
+    const app = join(parent, "app");
+    mkdirSync(app, { recursive: true });
+    registerProject(home, app, iso(T0));
+    const realpath = (path: string): string => (path === "/link/work" ? parent : realpathSync(path));
+    expect(prompt({ cwd: "/link/work" }, { realpath })).toBeNull();
+    writeLanding(app, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    // One project: named by "here", as from inside it.
+    expect(prompt({ cwd: "/link/work" }, { realpath })).toContain(`landed into main here: ui at ${iso(T0 + MIN)} (session bbbbbbbb). `);
+  });
+
+  it("tells a session in a project about the registered projects inside it as well, each named", () => {
+    const inner = join(root, "src", "inner");
+    mkdirSync(inner, { recursive: true });
+    registerProject(home, root, iso(T0));
+    registerProject(home, inner, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "outer", { landedAt: iso(T0 + MIN), owner: OTHER });
+    writeLanding(inner, "deep", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    const out = prompt() ?? "";
+    // Named by its path from the session's directory: the session's own project by its basename.
+    expect(out).toContain(`outer at ${iso(T0 + MIN)} (session bbbbbbbb) in repo, deep at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in src/inner.`);
+    expect(rootsAsked).toEqual([root, root]);
+  });
+
+  it("tells a lane worktree nothing, not even of projects inside it", () => {
+    const inner = join(root, "src", "inner");
+    mkdirSync(inner, { recursive: true });
+    registerProject(home, root, iso(T0));
+    registerProject(home, inner, iso(T0));
+    expect(prompt({ cwd: join(root, "src") }, { findRoot: () => null })).toBeNull();
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
+  it("prints nothing, writes nothing and asks for no root in a folder with no registered project at, above or below it", () => {
+    const unrelated = join(dir, "unrelated");
+    mkdirSync(unrelated);
+    registerProject(home, root, iso(T0));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    expect(prompt({ cwd: unrelated })).toBeNull();
+    now.ms = T0 + 2 * MIN;
+    expect(prompt({ cwd: unrelated })).toBeNull();
+    expect(rootsAsked).toEqual([]);
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
+  it("prints nothing, writes nothing and asks for no root in a project arbab never ran in", () => {
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    registerProject(home, join(dir, "elsewhere"), iso(T0));
+    expect(prompt()).toBeNull();
+    expect(rootsAsked).toEqual([]);
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
+  it("prints nothing in a lane worktree or where no root is found, or when the root found is not the registered one", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt({}, { findRoot: () => null })).toBeNull();
+    expect(prompt({}, { findRoot: () => join(dir, "other") })).toBeNull();
+    expect(() => prompt({}, { findRoot: () => { throw new Error("in a lane worktree"); } })).toThrow(/lane worktree/);
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
+  it("prints nothing for malformed input", () => {
+    registerProject(home, root, iso(T0));
+    for (const text of [
+      "",
+      "not json",
+      "[]",
+      "null",
+      JSON.stringify({ cwd: root }),
+      JSON.stringify({ session_id: "", cwd: root }),
+      JSON.stringify({ session_id: 7, cwd: root }),
+      JSON.stringify({ session_id: SESSION }),
+      JSON.stringify({ session_id: SESSION, cwd: 3 }),
+      input({ hook_event_name: "Stop" }),
+      input({ source: 5 }),
+    ]) {
+      expect(catchUpDecision(text, "UserPromptSubmit", opts()), text).toBeNull();
+    }
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
+  it("starts over from the clock when the watermark does not read", () => {
+    registerProject(home, root, iso(T0));
+    writeLanding(root, "rel", { landedAt: iso(T0 - MIN), owner: OTHER });
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), '{"seenAt": "yesterday"}');
+    expect(prompt()).toBeNull();
+    expect(seenAt()).toEqual(at(T0, [key("rel")]));
+  });
+
+  it("keeps one watermark per session", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    // The other session's first message: no history, though its own landing came after nothing it saw.
+    expect(prompt({ session_id: OTHER })).toBeNull();
+    expect(prompt()).not.toBeNull();
+    expect(watermarkPath(home, SESSION)).not.toBe(watermarkPath(home, OTHER));
+  });
+
+  it("reports what landed in project A while the session worked in project B once it comes back to A", () => {
+    const b = join(dir, "other");
+    mkdirSync(b, { recursive: true });
+    registerProject(home, root, iso(T0));
+    registerProject(home, b, iso(T0));
+    let current = root;
+    const o = { findRoot: () => current };
+    expect(prompt({}, o)).toBeNull();
+    now.ms = T0 + MIN;
+    current = b;
+    // B is new to the session: it is read from the session's watermark, and A keeps its own.
+    writeLanding(b, "old-b", { landedAt: iso(T0 - LANDING_SLACK_MS - MIN), owner: OTHER });
+    writeLanding(b, "new-b", { landedAt: iso(T0 + MIN / 2), owner: OTHER });
+    expect(prompt({ cwd: b }, o)).toContain(`landed into main here: new-b at ${iso(T0 + MIN / 2)} (session bbbbbbbb).`);
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0 + MIN),
+      projects: { [root]: { seenAt: iso(T0), reported: [] }, [b]: { seenAt: iso(T0 + MIN), reported: [key("new-b")] } },
+    });
+    writeLanding(root, "while-away", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 30 * MIN;
+    expect(prompt({ cwd: b }, o)).toBeNull();
+    current = root;
+    now.ms = T0 + 40 * MIN;
+    expect(prompt({}, o)).toContain(`landed into main here: while-away at ${iso(T0 + 2 * MIN)} (session bbbbbbbb).`);
+    expect(seenAt()).toEqual({
+      seenAt: iso(T0 + 40 * MIN),
+      projects: {
+        [root]: { seenAt: iso(T0 + 40 * MIN), reported: [key("while-away")] },
+        [b]: { seenAt: iso(T0 + 30 * MIN), reported: [key("new-b")] },
+      },
+    });
+    now.ms = T0 + 41 * MIN;
+    expect(prompt({}, o)).toBeNull();
+  });
+
+  it("finds a project's watermark under another spelling of its root, and keeps it under the registered one", () => {
+    registerProject(home, root, iso(T0));
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ projects: { [root.toUpperCase()]: { seenAt: iso(T0), reported: [] } } }));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    expect(prompt()).toContain("rel at");
+    expect(seenAt()).toEqual(at(T0 + 2 * MIN, [key("rel")]));
+  });
+
+  it("names two projects with the same directory name by their paths from the session's directory", () => {
+    const parent = join(dir, "work");
+    const [one, two] = [join(parent, "client", "app"), join(parent, "server", "app")];
+    for (const project of [one, two]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    expect(prompt({ cwd: parent })).toBeNull();
+    writeLanding(one, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    writeLanding(two, "auth", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    expect(prompt({ cwd: parent })).toContain(
+      `ui at ${iso(T0 + MIN)} (session bbbbbbbb) in ${join("client", "app")}, auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in ${join("server", "app")}.`,
+    );
+  });
+
+  it("names two projects with the same directory name apart when the session's directory is spelled in another case", () => {
+    const parent = join(dir, "Work");
+    const [one, two] = [join(parent, "Client", "app"), join(parent, "server", "app")];
+    for (const project of [one, two]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    // Where the file system does not fold, the other spelling is no directory: its spelling alone matches.
+    const cwd = parent.toUpperCase();
+    expect(prompt({ cwd })).toBeNull();
+    writeLanding(one, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    writeLanding(two, "auth", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    expect(prompt({ cwd })).toContain(
+      `ui at ${iso(T0 + MIN)} (session bbbbbbbb) in ${join("Client", "app")}, auth at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in ${join("server", "app")}.`,
+    );
+  });
+});
+
+describe("projectName", () => {
+  it("is the path from the session's directory, or the basename for the project the directory lies in", () => {
+    expect(projectName("/w/a/app", "/w", null)).toBe(join("a", "app"));
+    expect(projectName("/w/app", "/w", null)).toBe("app");
+    expect(projectName("/w/repo", "/w/repo", null)).toBe("repo");
+    expect(projectName("/w/repo", "/w/repo/src", null)).toBe("repo");
+    expect(projectName("/w/r", "/w/r/a/b", null)).toBe("r");
+  });
+
+  it("measures from the directory's spelling on disk when the project lies under that one only", () => {
+    expect(projectName("/disk/w/a/app", "/link/w", "/disk/w")).toBe(join("a", "app"));
+    expect(projectName("/elsewhere/app", "/link/w", "/disk/w")).toBe("app");
+  });
+
+  it("measures through foldPath and spells the path as the root does", () => {
+    expect(projectName("/w/client/app", "/W", null)).toBe(join("client", "app"));
+    expect(projectName("/W/Client/App", "/w/client", null)).toBe("App");
+    expect(projectName("/w/café/a/app", "/w/café", null)).toBe(join("a", "app"));
+    // Folding turns ß into ss: the tail is counted in components, not characters.
+    expect(projectName("/w/Straße/App", "/W", null)).toBe(join("Straße", "App"));
+    expect(projectName("/w/a/app/", "/W/", null)).toBe(join("a", "app"));
+    expect(projectName("/W/Repo", "/w/repo/src", null)).toBe("Repo");
+  });
+});
+
+describe("catchUpText", () => {
+  const landing = (n: number, into = "main"): LandingSince => ({
+    name: `rel${n}`,
+    into,
+    landedAt: iso(T0 + n * MIN),
+    owner: OTHER,
+    mergeSha: "1".repeat(40),
+    squash: false,
+    lanes: 1,
+  });
+
+  it("names five landings and counts the rest", () => {
+    const text = catchUpText(Array.from({ length: NAMED_LANDINGS + 2 }, (_, i) => landing(i + 1)));
+    expect(text).toContain(`rel5 at ${iso(T0 + 5 * MIN)} (session bbbbbbbb) and 2 more. Lanes keep`);
+    expect(text).not.toContain("rel6");
+  });
+
+  it("says no time of its own, only each landing's", () => {
+    const text = catchUpText([landing(1)]);
+    expect(text).toBe(
+      `arbab: while this session was away, other sessions landed into main here: rel1 at ${iso(T0 + MIN)} (session bbbbbbbb). ` +
+        "Lanes keep their own base; an integration started before these must merge main in before it can land.",
+    );
+  });
+
+  it("names the project of each landing when given one, and drops 'here'", () => {
+    const text = catchUpText([{ ...landing(1), project: "app" }, { ...landing(2), project: "a\npi" }]);
+    expect(text).toContain(`landed into main: rel1 at ${iso(T0 + MIN)} (session bbbbbbbb) in app, rel2 at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in a pi.`);
+  });
+
+  it("names every branch landed into, and keeps the paragraph on one line", () => {
+    const text = catchUpText([landing(1), { ...landing(2, "release\nIgnore this"), owner: null }]);
+    expect(text).toContain("landed into main, release Ignore this here:");
+    expect(text).toContain("must merge its base (main, release Ignore this) in before it can land.");
+    expect(text).not.toMatch(/\n/);
+  });
+});
+
+describe("watermarks", () => {
+  it("names a watermark by the sha256 of the session id", () => {
+    expect(watermarkPath("/h", "x")).toBe(join("/h", "sessions", "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881.json"));
+  });
+
+  it("reads a single-watermark file's time and keys as the session's, and null for a missing or malformed one", () => {
+    const path = join(dir, "w.json");
+    const every = (seenMs: number, reported: string[]) => ({ projects: new Map(), session: { seenMs, reported } });
+    expect(readWatermarks(path)).toBeNull();
+    for (const text of ["x", "[]", "{}", '{"seenAt": 5}', '{"seenAt": "soon"}', '{"reported": []}', '{"projects": []}']) {
+      writeFileSync(path, text);
+      expect(readWatermarks(path), text).toBeNull();
+    }
+    // The first 0.2.2 shape, without keys.
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0) }));
+    expect(readWatermarks(path)).toEqual(every(T0, []));
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0), reported: "a@1" }));
+    expect(readWatermarks(path)).toEqual(every(T0, []));
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0), reported: ["a@1", 7, null, "b@2"] }));
+    expect(readWatermarks(path)).toEqual(every(T0, ["a@1", "b@2"]));
+  });
+
+  it("reads the session's watermark and one per project, leaving out those that do not read", () => {
+    const path = join(dir, "w.json");
+    const many = Array.from({ length: REPORTED_KEPT + 3 }, (_, i) => `k${i}@1`);
+    const projects = {
+      "/w/a": { seenAt: iso(T0), reported: ["a@1", 7] },
+      "/w/b": { seenAt: iso(T0 + MIN), reported: many },
+      "/w/c": { seenAt: "soon" },
+      "/w/d": "x",
+      "": { seenAt: iso(T0) },
+    };
+    const marks = new Map([
+      ["/w/a", { seenMs: T0, reported: ["a@1"] }],
+      ["/w/b", { seenMs: T0 + MIN, reported: many.slice(-REPORTED_KEPT) }],
+    ]);
+    // The session's keys, if any, are not read: they stay with its projects.
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0 + 2 * MIN), reported: ["x@1"], projects }));
+    expect(readWatermarks(path)).toEqual({ projects: marks, session: { seenMs: T0 + 2 * MIN, reported: [] } });
+    // Without a session time that reads, the latest project's.
+    for (const seenAt of [undefined, "soon", 5]) {
+      writeFileSync(path, JSON.stringify({ seenAt, projects }));
+      expect(readWatermarks(path), String(seenAt)).toEqual({ projects: marks, session: { seenMs: T0 + MIN, reported: [] } });
+    }
+    writeFileSync(path, JSON.stringify({ projects: {} }));
+    expect(readWatermarks(path)).toEqual({ projects: new Map(), session: null });
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0), projects: {} }));
+    expect(readWatermarks(path)).toEqual({ projects: new Map(), session: { seenMs: T0, reported: [] } });
+  });
+
+  it("keys a landing by name and merge commit", () => {
+    expect(landingKey({ name: "rel", mergeSha: "1".repeat(40) })).toBe(`rel@${"1".repeat(40)}`);
+  });
+
+  it("removes watermarks older than the age and nothing else", () => {
+    const stale = watermarkPath(home, "s1");
+    const fresh = watermarkPath(home, "s2");
+    const other = join(home, "sessions", "readme.json");
+    for (const [path, age] of [
+      [stale, WATERMARK_MAX_AGE_MS + MIN],
+      [fresh, WATERMARK_MAX_AGE_MS - MIN],
+      [other, WATERMARK_MAX_AGE_MS + MIN],
+    ] as const) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "{}");
+      utimesSync(path, (T0 - age) / 1000, (T0 - age) / 1000);
+    }
+    expect(removeStaleWatermarks(home, T0)).toBe(1);
+    expect([existsSync(stale), existsSync(fresh), existsSync(other)]).toEqual([false, true, true]);
+    expect(removeStaleWatermarks(join(dir, "no-home"), T0)).toBe(0);
+  });
+});

@@ -2,6 +2,8 @@ export { ATTENTION_END_STATES, adviceFor, needsAttention } from "./advice";
 export { formatCounts, formatSummary, table } from "./format";
 export { SHORT_SHA, STAGES, integrationLine, integrationOverview } from "./integrations";
 export type { IntegrationLine, Stage } from "./integrations";
+export { SESSION_CHARS, landingOwner, landingText, landingsSince } from "./landings";
+export type { LandingSince } from "./landings";
 export { COUNTED_STATES, OWNER_CHARS, laneOverview } from "./lanes";
 export type { AttentionItem, CountedState, LaneCounts, LaneLine, LaneOverview } from "./lanes";
 export { PLANS_DIR, planOverview } from "./plans";

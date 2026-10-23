@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { shellWord, tokenize } from "./command";
 
@@ -78,9 +79,18 @@ describe("shellWord", () => {
     expect(values(shellWord("/work/my $repo"))).toEqual(["/work/my $repo"]);
   });
 
-  it("double-quotes and escapes a word holding a single quote", () => {
-    expect(shellWord(`it's "$x"`)).toBe(`"it's \\"\\$x\\""`);
-    expect(shellWord("it's")).toBe(`"it's"`);
-    expect(values(shellWord("it's"))).toEqual(["it's"]);
+  it("single-quotes a word holding a single quote, each one as '\\''", () => {
+    expect(shellWord(`it's "$x"`)).toBe(`'it'\\''s "$x"'`);
+    expect(shellWord("it's!")).toBe(`'it'\\''s!'`);
+    expect(shellWord("''")).toBe(`''\\'''\\'''`);
+    expect(shellWord("")).toBe("''");
+  });
+
+  it("round-trips through bash", () => {
+    for (const word of ["/work/repo", "it's", "it's!", "a!b", "$HOME", "`id`", "my repo", "a\\b", "x'y'z", `'!$ \\"`, "''", ""]) {
+      const run = spawnSync("bash", ["-c", `printf %s ${shellWord(word)}`], { encoding: "utf8" });
+      expect(run.status, word).toBe(0);
+      expect(run.stdout, word).toBe(word);
+    }
   });
 });

@@ -422,8 +422,8 @@ arbab status [--active] [--mine] [lane…]
 arbab summary [--all] [--since <when>]
                                      lanes by state, plans, integrations by stage, what needs attention, quota and
                                      slots; --all: every project in ~/.arbab/projects/; --since: what landed after
-                                     <when>: <n>m, <n>h, <n>d back (up to 3650 days), a date (UTC) or an ISO
-                                     time with Z or an offset (§21)
+                                     <when>: <n>m, <n>h, <n>d back (up to 3650 days), a date YYYY-MM-DD
+                                     (midnight UTC) or an ISO date-time with Z or an offset (§21)
 arbab report <lane> [--attempt <n>]  one attempt's summary and report, the latest by default (§21)
 arbab wait [--any|--all] [--all-sessions] [--timeout-min N] [--notify] [lane…]
                                      level-triggered: prints the finished lane runs not yet acked (end state, reason,
@@ -1137,7 +1137,8 @@ The decisions below answer what that use showed.
   as another, the orchestrator's own included, so its lanes and waiters are named too.
   - `readiness` checks the paths the integration changes since its merge base with the base, and lists each such
     session as a risk `session:<id>` (`<id>` is the first 8 characters of the session id, or `outside` for
-    processes started outside Claude Code), first among the risks; it is never a skipped item and no waiver answers
+    processes started outside Claude Code), first among the risks after `base-moved` (§21 Catching up), which comes
+    before everything; it is never a skipped item and no waiver answers
     it. The report, `readiness.json` and `--json`, also carries them as `otherSessions`. It is advisory, as in
     `land`: when the registries cannot be read, the report holds one risk `session:unknown` ("cannot tell which
     other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same. An empty
@@ -1187,26 +1188,33 @@ each works on its own base; the orchestrator does, before it builds on a stale o
   head lacks (name, time, owner), or else how many commits that is ("it has new commits" when git cannot count
   them), and asks for the merge `land`'s refusal asks for, in the same words (`baseMergeInstruction`,
   src/readiness/moved.ts): the base merged into `integrate/<name>` in its worktree with hooks off (`untrustedTree()`,
-  `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again.
+  `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again. Both
+  name the worktree from `integrationPaths`, and quote it and the base as shell words (`shellWord`), since the human
+  pastes the command into a shell.
   `integration.json` keeps no start time, so the commits, not a time, say which landings the integration lacks. The
   integration's own landing record is never among them, and once it landed (its `landing.json` exists) there is no
   such risk: its own merge commit is what the base gained. It is advisory: when git cannot tell there is no risk, and
   `land` checks again. Like every risk it takes no waiver.
 - The plugin's `hooks/hooks.json` adds UserPromptSubmit and SessionStart entries, running `arbab hook
   user-prompt-submit` and `arbab hook session-start` (src/hook/catchup.ts). Each reads the hook input's `session_id`
-  and `cwd` and answers only in a project registered in `~/.arbab/projects/` (the working directory as written or by
-  real path, through foldPath, §3), never in a lane worktree; a directory in no registered project costs no git call,
-  and the project's config is never loaded. Per session it keeps a watermark, `~/.arbab/sessions/<sha256 of the
-  session id>.json` holding `{seenAt, reported}`, `reported` the keys (`<name>@<mergeSha>`) of the landings already
-  reported, the last 100. A session's first message only sets it, with the keys of the landings on disk since 10
+  and `cwd` and answers only for projects registered in `~/.arbab/projects/`: the one the working directory lies in,
+  and every one that lies inside it, so an orchestrator started in a parent folder of several repositories (`-C`,
+  §21 Orchestrator approvals) hears about each (the working directory as written or by real path, through foldPath,
+  §3). Never in a lane worktree, nor of the projects inside one. A directory with no registered project at, above or
+  below it costs no git call, nor does a parent folder; no project's config is ever loaded. Per session it keeps one
+  watermark for all of them, `~/.arbab/sessions/<sha256 of the session id>.json` holding `{seenAt, reported}`,
+  `reported` the keys (`<name>@<mergeSha>`) of the landings already reported, the last 100. A session's first message only sets it, with the keys of the landings on disk since 10
   minutes before: a new session gets no history. Later, it lists the landings since `seenAt` minus 10 minutes whose
   key is not in `reported` and whose `owner` is not this session (an ownerless or pre-0.2.2 landing counts as
   another's): `land` stamps `landedAt` before it writes `landing.json`, so a record written while a hook ran can fall
   just behind the watermark, and the keys say it once. A watermark of 0.2.2 without `reported` reads as having none.
   It moves the watermark to now, adds the keys it reported, and, when there are any, answers with
-  `additionalContext`: up to five landings by name, time and owner, the rest counted, and that lanes keep their own
-  base while an integration started before them must merge the base in before it can land. Record text reaches the
-  model's context with control characters and line breaks replaced by spaces. SessionStart's `source` (startup,
+  `additionalContext`: what other sessions landed "while this session was away" (no time of its own: the 10 minutes
+  of slack can list a landing stamped before the session's last message), up to five landings by name, time and
+  owner, oldest first across projects, each followed by `in <project directory name>` when there is more than one
+  project, the rest counted, and that lanes keep their own base while an integration started before them must merge
+  the base in before it can land. Record text reaches the model's context with control characters and line breaks
+  replaced by spaces. SessionStart's `source` (startup,
   resume, clear, compact) changes nothing: the watermark says what the session saw. As with the other hooks, a hook
   that cannot decide prints nothing and exits 0.
 - `cleanup` removes watermarks not modified for 30 days, prints `removed <n> session watermarks unused for 30 days`,

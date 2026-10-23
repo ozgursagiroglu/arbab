@@ -608,6 +608,17 @@ describe("runLand", () => {
     expect(risk?.text).toBe(`main moved since this integration started: 1 new commit, so land would refuse. ${instruction}.`);
     p.out.length = 0;
 
+    // From the same source too: a worktree integration.json spells otherwise changes neither.
+    const record = join(dir(p), "integration.json");
+    const saved = readFileSync(record, "utf8");
+    writeJsonAtomic(record, { ...readRecord<IntegrationRecord>(record), worktree: "/elsewhere/integrate-rel" });
+    expect(await runReadiness(["rel"], p.ctx)).toBe(0);
+    const again = readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks.find((r) => r.id === "base-moved");
+    expect(again?.text).toBe(risk?.text);
+    await expect(runLand(["rel"], p.ctx)).rejects.toThrow(`. ${instruction}`);
+    writeFileSync(record, saved);
+    p.out.length = 0;
+
     const newHead = await mergeMainAndVerify(p);
     expect(await runLand(["rel"], p.ctx)).toBe(0);
     // The merge commit holds exactly the verified tree.

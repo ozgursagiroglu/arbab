@@ -256,11 +256,22 @@ describe("hook user-prompt-submit and session-start", () => {
     expect(out.hookSpecificOutput).toEqual({
       hookEventName: "UserPromptSubmit",
       additionalContext:
-        `arbab: since this session's last message (${iso(start)}), other sessions landed into main here: ` +
+        "arbab: while this session was away, other sessions landed into main here: " +
         `rel at ${iso(start + 60_000)} (session bbbbbbbb). Lanes keep their own base; an integration started before ` +
         "these must merge main in before it can land.",
     });
     expect(await hook(p, "user-prompt-submit", prompt(p.root))).toBe("");
+  });
+
+  it("tells a session in the project's parent folder too, with no git call", async () => {
+    p = project();
+    registerProject(p.home, p.root, AT);
+    const git = countGit(p);
+    expect(await hook(p, "user-prompt-submit", prompt(dirname(p.root)))).toBe("");
+    writeLanding(p.root, "rel", { landedAt: iso(p.now.ms + 1000), owner: OTHER });
+    p.now.ms += 2000;
+    expect(await hook(p, "user-prompt-submit", prompt(dirname(p.root)))).toContain("landed into main here: rel at");
+    expect(git.calls).toBe(0);
   });
 
   it("answers SessionStart with its own event name", async () => {

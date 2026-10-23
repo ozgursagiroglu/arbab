@@ -83,6 +83,7 @@ function input(over: Partial<ReadinessInput> = {}): ReadinessInput {
     name: "m3",
     tier: "medium",
     integration: integration(),
+    worktree: WORKTREE,
     verify: verify(),
     review: review(),
     laneReports: [{ lane: "lane-a", report: GOOD_REPORT }],
@@ -424,6 +425,15 @@ describe("computeReadiness: risks", () => {
     expect(risk(null)).toBe(`dev moved since this integration started: it has new commits${merge}`);
     expect(riskIds({ baseMoved: null })).not.toContain("base-moved");
     expect(riskIds({})).not.toContain("base-moved");
+  });
+
+  it("names the worktree it is given, as land does, not integration.json's copy", () => {
+    const report = computeReadiness(
+      input({ integration: integration({ worktree: "/elsewhere" }), worktree: "/my repo/wt", baseMoved: { base: "main", landings: [], commits: 1 } }),
+    );
+    expect(report.risks[0]?.text).toContain(`${baseMergeInstruction("main", "m3", "/my repo/wt")}.`);
+    expect(report.risks[0]?.text).toContain("git -C '/my repo/wt' ");
+    expect(report.risks[0]?.text).not.toContain("/elsewhere");
   });
 
   it("records an empty otherSessions when given none, and leaves it out of a report computed without", () => {

@@ -129,7 +129,7 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["summary [--all] [--since <when>] [--json]"],
     [
       ["--all", "every project that launched a lane on this machine"],
-      ["--since <when>", "also list what landed after <when>: <n>m, <n>h, <n>d ago (up to 3650d), YYYY-MM-DD (UTC) or an ISO time with Z or an offset"],
+      ["--since <when>", "also list what landed after <when>: <n>m, <n>h, <n>d ago (up to 3650d), YYYY-MM-DD (midnight UTC) or an ISO date-time with Z or an offset"],
       JSON_OPT,
     ],
   ),

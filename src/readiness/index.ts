@@ -31,6 +31,11 @@ export interface ReadinessInput {
   name: string;
   tier: Tier;
   integration: IntegrationRecord;
+  /**
+   * The integration's worktree as land names it (integrationPaths), not integration.json's copy: the merge the
+   * `base-moved` risk asks for is then the one land's refusal asks for, word for word.
+   */
+  worktree: string;
   verify: VerifyRecord | null;
   review: ReviewRecord | null;
   /**
@@ -380,7 +385,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }
   // Before the sessions: land refuses until it is answered.
-  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, integration.worktree, input.baseMoved));
+  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.worktree, input.baseMoved));
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,

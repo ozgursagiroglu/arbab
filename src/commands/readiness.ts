@@ -129,6 +129,7 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     name,
     tier,
     integration: record,
+    worktree: paths.worktree,
     verify: readVerifyRecord(paths.verify, name),
     review,
     laneReports: laneReports(project.runsRoot, [...new Set(record.merged.map((m) => m.lane))]),

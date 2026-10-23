@@ -87,7 +87,7 @@ describe("catchUpDecision", () => {
       hookSpecificOutput: {
         hookEventName: "UserPromptSubmit",
         additionalContext:
-          `arbab: since this session's last message (${iso(T0)}), other sessions landed into main here: ` +
+          "arbab: while this session was away, other sessions landed into main here: " +
           `rel at ${iso(T0 + MIN)} (session bbbbbbbb). Lanes keep their own base; an integration started before these ` +
           "must merge main in before it can land.",
       },
@@ -180,6 +180,81 @@ describe("catchUpDecision", () => {
     expect(existsSync(watermarkPath(home, SESSION))).toBe(true);
   });
 
+  it("tells a session in a parent folder of several registered projects about each, by name, without asking for a root", () => {
+    const parent = join(dir, "work");
+    const [app, api] = [join(parent, "app"), join(parent, "api")];
+    for (const project of [app, api]) {
+      mkdirSync(project, { recursive: true });
+      registerProject(home, project, iso(T0));
+    }
+    expect(prompt({ cwd: parent })).toBeNull();
+    writeLanding(app, "ui", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    writeLanding(api, "auth", { landedAt: iso(T0 + MIN), owner: OTHER, into: "dev" });
+    now.ms = T0 + 5 * MIN;
+    const out = prompt({ cwd: parent });
+    expect(JSON.parse(out ?? "")).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext:
+          "arbab: while this session was away, other sessions landed into dev, main: " +
+          `auth at ${iso(T0 + MIN)} (session bbbbbbbb) in api, ui at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in app. ` +
+          "Lanes keep their own base; an integration started before these must merge its base (dev, main) in before it can land.",
+      },
+    });
+    expect(rootsAsked).toEqual([]);
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 5 * MIN), reported: [key("auth"), key("ui")] });
+    now.ms = T0 + 6 * MIN;
+    expect(prompt({ cwd: parent })).toBeNull();
+  });
+
+  it("finds the projects below a parent folder by its path on disk too", () => {
+    const parent = join(dir, "work");
+    const app = join(parent, "app");
+    mkdirSync(app, { recursive: true });
+    registerProject(home, app, iso(T0));
+    const realpath = (path: string): string => (path === "/link/work" ? parent : realpathSync(path));
+    expect(prompt({ cwd: "/link/work" }, { realpath })).toBeNull();
+    writeLanding(app, "ui", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    // One project: named by "here", as from inside it.
+    expect(prompt({ cwd: "/link/work" }, { realpath })).toContain(`landed into main here: ui at ${iso(T0 + MIN)} (session bbbbbbbb). `);
+  });
+
+  it("tells a session in a project about the registered projects inside it as well, each named", () => {
+    const inner = join(root, "src", "inner");
+    mkdirSync(inner, { recursive: true });
+    registerProject(home, root, iso(T0));
+    registerProject(home, inner, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "outer", { landedAt: iso(T0 + MIN), owner: OTHER });
+    writeLanding(inner, "deep", { landedAt: iso(T0 + 2 * MIN), owner: OTHER });
+    now.ms = T0 + 3 * MIN;
+    const out = prompt() ?? "";
+    expect(out).toContain(`outer at ${iso(T0 + MIN)} (session bbbbbbbb) in repo, deep at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in inner.`);
+    expect(rootsAsked).toEqual([root, root]);
+  });
+
+  it("tells a lane worktree nothing, not even of projects inside it", () => {
+    const inner = join(root, "src", "inner");
+    mkdirSync(inner, { recursive: true });
+    registerProject(home, root, iso(T0));
+    registerProject(home, inner, iso(T0));
+    expect(prompt({ cwd: join(root, "src") }, { findRoot: () => null })).toBeNull();
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
+  it("prints nothing, writes nothing and asks for no root in a folder with no registered project at, above or below it", () => {
+    const unrelated = join(dir, "unrelated");
+    mkdirSync(unrelated);
+    registerProject(home, root, iso(T0));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    expect(prompt({ cwd: unrelated })).toBeNull();
+    now.ms = T0 + 2 * MIN;
+    expect(prompt({ cwd: unrelated })).toBeNull();
+    expect(rootsAsked).toEqual([]);
+    expect(existsSync(watermarkPath(home, SESSION))).toBe(false);
+  });
+
   it("prints nothing, writes nothing and asks for no root in a project arbab never ran in", () => {
     writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
     registerProject(home, join(dir, "elsewhere"), iso(T0));
@@ -249,13 +324,26 @@ describe("catchUpText", () => {
   });
 
   it("names five landings and counts the rest", () => {
-    const text = catchUpText(iso(T0), Array.from({ length: NAMED_LANDINGS + 2 }, (_, i) => landing(i + 1)));
+    const text = catchUpText(Array.from({ length: NAMED_LANDINGS + 2 }, (_, i) => landing(i + 1)));
     expect(text).toContain(`rel5 at ${iso(T0 + 5 * MIN)} (session bbbbbbbb) and 2 more. Lanes keep`);
     expect(text).not.toContain("rel6");
   });
 
+  it("says no time of its own, only each landing's", () => {
+    const text = catchUpText([landing(1)]);
+    expect(text).toBe(
+      `arbab: while this session was away, other sessions landed into main here: rel1 at ${iso(T0 + MIN)} (session bbbbbbbb). ` +
+        "Lanes keep their own base; an integration started before these must merge main in before it can land.",
+    );
+  });
+
+  it("names the project of each landing when given one, and drops 'here'", () => {
+    const text = catchUpText([{ ...landing(1), project: "app" }, { ...landing(2), project: "a\npi" }]);
+    expect(text).toContain(`landed into main: rel1 at ${iso(T0 + MIN)} (session bbbbbbbb) in app, rel2 at ${iso(T0 + 2 * MIN)} (session bbbbbbbb) in a pi.`);
+  });
+
   it("names every branch landed into, and keeps the paragraph on one line", () => {
-    const text = catchUpText(iso(T0), [landing(1), { ...landing(2, "release\nIgnore this"), owner: null }]);
+    const text = catchUpText([landing(1), { ...landing(2, "release\nIgnore this"), owner: null }]);
     expect(text).toContain("landed into main, release Ignore this here:");
     expect(text).toContain("must merge its base (main, release Ignore this) in before it can land.");
     expect(text).not.toMatch(/\n/);

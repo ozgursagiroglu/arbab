@@ -112,7 +112,8 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
                                           serve the pyramid scene on 127.0.0.1 until stopped (read-only)
   summary [--all] [--since <when>] [--json]
                                           plans, lanes by state, integrations by stage and what needs you;
-                                          --since: what landed after <when> (ISO time, or <n>m, <n>h, <n>d ago)
+                                          --since: what landed after <when> (<n>m, <n>h, <n>d ago, YYYY-MM-DD
+                                          as midnight UTC, or an ISO date-time with Z or an offset)
   report <lane> [--attempt <n>] [--json]  an attempt's summary and report, the latest unless --attempt
   host-check <name>                       run hostGates on the integration head from a terminal
   help [<command>], --help                this text, or a command's options

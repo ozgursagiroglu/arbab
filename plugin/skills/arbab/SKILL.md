@@ -219,8 +219,8 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
   launched them. `wait --notify` also sends a desktop notification per finished lane.
 - The plugin's Stop hook blocks ending your turn while lanes this session launched run and no `wait` of this session
   watches them (`verify`, `review` and `preflight` count while they wait); it names the `wait` command to start.
-- A returning session is told, with its next message, what other sessions landed in the project since its last
-  one; `arbab summary --since <when>` (`2h`, `1d` or an ISO time) lists the landings on demand.
+- With its next message, a returning session hears what landed while it was away, here or in projects below its folder;
+  `summary --since <when>` (`2h`, `1d`, `YYYY-MM-DD` as midnight UTC, ISO with `Z` or an offset) lists them on demand.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
 - When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
   what needs attention, quota and slots; `--all` across every repository that launched a lane on this machine) and

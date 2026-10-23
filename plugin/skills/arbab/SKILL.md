@@ -198,12 +198,10 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 2. Before the **first wave of a project** (and after a CLI upgrade or a fence change), run
    `arbab preflight lanes/<name>.json`. A cheap probe attempt checks the toolchain, the fence, the isolation
    flags and the pinned version, and makes one call on the lane's own model. Do not launch a wave until it passes.
-3. Once per session, before the first launch, start `arbab ui` as a **background** Bash call
-   (`run_in_background: true`).
+3. Once per session, before launching, start `arbab ui` as a **background** Bash call (`run_in_background: true`).
    - It serves a read-only scene of the lanes on 127.0.0.1: each lane a worker building a pyramid. It opens the scene
      in the human's browser, and then its output carries no token.
-   - When no browser could be opened, it prints the URL with this session's token instead: give that URL to the
-     human.
+   - When no browser opens, it prints the URL with this session's token instead: give that URL to the human.
    - The scene is for the human. You still react to `wait` and read `arbab report <lane>`.
 4. `arbab launch lanes/<name>.json` for each lane. It returns as soon as the lane's shepherd has started and prints
    the lane, its run dir and the shepherd pid. A lane without a free slot, or launched above the quota threshold,
@@ -221,6 +219,8 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
   launched them. `wait --notify` also sends a desktop notification per finished lane.
 - The plugin's Stop hook blocks ending your turn while lanes this session launched run and no `wait` of this session
   watches them (`verify`, `review` and `preflight` count while they wait); it names the `wait` command to start.
+- With its next message, a returning session hears what **other** sessions landed while it was away (its own are left
+  out), here or below its folder; `summary --since <when>` (`2h`, `1d`, `YYYY-MM-DD` as midnight UTC, ISO with `Z` or an offset) lists them.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
 - When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
   what needs attention, quota and slots; `--all` across every repository that launched a lane on this machine) and

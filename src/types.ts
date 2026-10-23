@@ -737,7 +737,8 @@ export const HOST_CHECKS_FILE = "host-checks.json";
 /**
  * A line of the readiness report. Skipped items carry stable ids a human may waive: "review", "review:<lens>",
  * "skeptic", "smoke", "deps" ("verify" is listed but cannot be waived: land needs it passed). Verified items and risks
- * carry ids too ("verify:<command>", "finding:<id>", "manifest:<path>", "report:<lane>", "stale:verify", …).
+ * carry ids too ("verify:<command>", "finding:<id>", "manifest:<path>", "report:<lane>", "stale:verify", "base-moved",
+ * "session:<id>", …).
  */
 export interface ReadinessItem {
   id: string;
@@ -777,6 +778,11 @@ export interface LandingRecord {
   /** The merge commit, or the single commit of a squash landing. */
   mergeSha: string;
   landedAt: string;
+  /**
+   * The Claude Code session that landed it (CLAUDE_CODE_SESSION_ID); null outside Claude Code. Absent before 0.2.2.
+   * How a returning session tells another session's landing from its own (DESIGN.md §21).
+   */
+  owner?: string | null;
   pushed: false;
   /** One commit on the base instead of a merge (`land --squash`, config landing.squash). Absent before §21. */
   squash?: boolean;

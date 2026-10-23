@@ -2,7 +2,7 @@
 // entries as the runner leaves them. Not part of the bundle; only *.test.ts files import it.
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { IntegrationRecord, ReadinessReport, ReviewRecord, VerifyRecord } from "../types";
+import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord, VerifyRecord } from "../types";
 
 export const SHA_BASE = "a".repeat(40);
 export const SHA_HEAD = "b".repeat(40);
@@ -74,7 +74,7 @@ export function writeReadiness(root: string, name: string, over: Partial<Readine
   } satisfies ReadinessReport);
 }
 
-export function writeLanding(root: string, name: string): void {
+export function writeLanding(root: string, name: string, over: Partial<LandingRecord> = {}): void {
   writeRecord(root, name, "landing.json", {
     name,
     into: "main",
@@ -82,6 +82,7 @@ export function writeLanding(root: string, name: string): void {
     mergeSha: SHA_OLD,
     landedAt: "2026-10-09T11:40:00.000Z",
     pushed: false,
+    ...over,
   });
 }
 

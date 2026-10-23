@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 // src/cli.ts
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync12 } from "node:fs";
 
 // src/commands/index.ts
-import { statSync as statSync8 } from "node:fs";
-import { resolve as resolve18 } from "node:path";
+import { statSync as statSync9 } from "node:fs";
+import { resolve as resolve19 } from "node:path";
 
 // src/util/errors.ts
 var ArbabError = class extends Error {
@@ -32,8 +32,8 @@ function exitCodeFor(err) {
 }
 
 // src/commands/cleanup.ts
-import { existsSync as existsSync15, readdirSync as readdirSync10, rmdirSync as rmdirSync2, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
-import { join as join33 } from "node:path";
+import { existsSync as existsSync19, readdirSync as readdirSync14, rmdirSync as rmdirSync2, rmSync as rmSync10, statSync as statSync7 } from "node:fs";
+import { join as join40 } from "node:path";
 
 // src/config/lane.ts
 import { resolve as resolve3 } from "node:path";
@@ -621,1519 +621,47 @@ function loadLane(projectRoot, lanePath, credentialPaths = []) {
   return lane;
 }
 
-// src/integrate/integrate.ts
-import { existsSync as existsSync2, readdirSync as readdirSync3, realpathSync as realpathSync4, renameSync as renameSync3 } from "node:fs";
-import { dirname as dirname3, join as join9, resolve as resolve8 } from "node:path";
-
-// src/run/git.ts
-import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, realpathSync as realpathSync3, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname2, isAbsolute as isAbsolute4, join as join3, relative as relative4, resolve as resolve4, sep as sep4 } from "node:path";
-function makeGitRunner(env2) {
-  return (args, cwd) => {
-    const r = spawnSync("git", args, { cwd, env: env2, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-    if (r.error) return { code: 127, stdout: "", stderr: r.error.message };
-    return { code: r.status ?? 128, stdout: r.stdout, stderr: r.stderr };
-  };
-}
-var nodeGit = makeGitRunner();
-function must(git, args, cwd, options = []) {
-  const r = git([...options, ...args], cwd);
-  if (r.code !== 0) {
-    throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  }
-  return r.stdout;
-}
-function ensureIgnored(projectRoot, entries3, git) {
-  const excludeRel = must(git, ["rev-parse", "--git-path", "info/exclude"], projectRoot).trim();
-  if (excludeRel === "") throw new ArbabError("git", "git rev-parse --git-path info/exclude printed nothing");
-  const exclude = resolve4(projectRoot, excludeRel);
-  const text2 = readText(exclude) ?? "";
-  const present = new Set(text2.split(/\r?\n/).map((line2) => line2.trim()));
-  const missing = entries3.filter((entry) => !present.has(entry));
-  if (missing.length > 0) {
-    const prefix = text2 === "" || text2.endsWith("\n") ? "" : "\n";
-    ensureDir(dirname2(exclude));
-    writeFileSync2(exclude, text2 + prefix + missing.join("\n") + "\n");
-  }
-  for (const entry of entries3) {
-    const probe = `${entry.replace(/\/+$/, "")}/x`;
-    const r = git(["check-ignore", "-q", "--", probe], projectRoot);
-    if (r.code !== 0) throw new ArbabError("git", `${entry} is not ignored by git in ${projectRoot}`);
-  }
-}
-function canonical(path) {
-  try {
-    return realpathSync3(path);
-  } catch {
-    return resolve4(path);
-  }
-}
-function listWorktrees(projectRoot, git) {
-  const out = /* @__PURE__ */ new Map();
-  for (const block3 of must(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
-    const lines = block3.split("\n");
-    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === void 0) continue;
-    out.set(canonical(path), lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null);
-  }
-  return out;
-}
-function branchExists(projectRoot, branch, git) {
-  return git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectRoot).code === 0;
-}
-function refuseWorkerBranch(projectRoot, branch, base, path, git) {
-  const r = git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, base], projectRoot);
-  if (r.code === 0) return;
-  if (r.code !== 1) {
-    throw new ArbabError("git", `git merge-base --is-ancestor refs/heads/${branch} ${base} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  }
-  throw new ArbabError(
-    "git",
-    `the worktree ${path} is missing, and its branch ${branch} holds worker commits that are not on ${base}; arbab installs dependencies only on a trusted base. Restore the worktree at ${path}, or delete the branch ${branch}`
-  );
-}
-function assertRevision(rev, what) {
-  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
-  return rev;
-}
-function commonDir(projectRoot, git) {
-  const out = must(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
-  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
-  return canonical(resolve4(projectRoot, out));
-}
-function createWorktree(input) {
-  const lane = assertValidName(input.lane, "lane");
-  const path = join3(confine(input.projectRoot, input.root), lane);
-  const branch = `arbab/${lane}`;
-  if (existsSync(path)) {
-    const ref2 = listWorktrees(input.projectRoot, input.git).get(canonical(path));
-    if (ref2 !== void 0) {
-      if (ref2 !== `refs/heads/${branch}`) {
-        throw new ArbabError("git", `${path} is a worktree on ${ref2 ?? "a detached HEAD"}, not on ${branch}; lane ${lane} cannot run there`);
-      }
-      return { path, branch, created: false, gitCommonDir: commonDir(input.projectRoot, input.git) };
-    }
-  }
-  const trusted = assertRevision(input.trustedBase, "trusted base");
-  if (typeof input.base === "string") assertRevision(input.base, "base");
-  must(input.git, ["worktree", "prune"], input.projectRoot);
-  ensureDir(dirname2(path));
-  if (branchExists(input.projectRoot, branch, input.git)) {
-    refuseWorkerBranch(input.projectRoot, branch, trusted, path, input.git);
-    must(input.git, ["worktree", "add", path, branch], input.projectRoot, untrustedTree());
-  } else {
-    const base = assertRevision(typeof input.base === "string" ? input.base : input.base(), "base");
-    must(input.git, ["worktree", "add", "-b", branch, path, base], input.projectRoot, untrustedTree());
-  }
-  return { path, branch, created: true, gitCommonDir: commonDir(input.projectRoot, input.git) };
-}
-function discardWorktree(input) {
-  const lane = assertValidName(input.lane, "lane");
-  const path = join3(confine(input.projectRoot, input.root), lane);
-  const branch = `arbab/${lane}`;
-  const sources = input.sources.map((s) => assertRevision(s, "source"));
-  const head = branchExists(input.projectRoot, branch, input.git);
-  const keeps = [];
-  if (head) {
-    const extra = must(input.git, ["rev-list", `refs/heads/${branch}`, "--not", ...sources, "--"], input.projectRoot).split("\n").filter((l) => l !== "");
-    if (extra.length > 0) {
-      const shown = extra.slice(0, 3).join(", ") + (extra.length > 3 ? ` and ${extra.length - 3} more` : "");
-      keeps.push(`commits on ${branch} that are not on its base, its merge branches or the trusted base: ${shown}`);
-    }
-  }
-  if (existsSync(path)) {
-    const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: input.gitCommonDir });
-    if (verified.gitDir === null) {
-      keeps.push(`a git dir that cannot be verified (${verified.error})`);
-    } else {
-      const changes = worktreeStatus(path, verified.gitDir, input.git);
-      if (changes.length > 0) {
-        const shown = changes.slice(0, 5).join("; ") + (changes.length > 5 ? `; and ${changes.length - 5} more` : "");
-        keeps.push(`uncommitted changes (${shown})`);
-      }
-    }
-  }
-  if (keeps.length > 0) {
-    throw new ArbabError(
-      "git",
-      `no worker has run in ${path}, but it holds what arbab cannot rebuild: ${keeps.join("; ")}. arbab will neither install dependencies there nor remove it. Keep what you need, remove the worktree and the branch ${branch}, then launch ${lane} again`
-    );
-  }
-  if (existsSync(path)) must(input.git, ["worktree", "remove", "--force", path], input.projectRoot, untrustedTree());
-  must(input.git, ["worktree", "prune"], input.projectRoot);
-  if (head) must(input.git, ["branch", "-D", branch], input.projectRoot, untrustedTree());
-}
-function verifyWorktreeGit(input) {
-  const fail2 = (error) => ({ gitDir: null, error });
-  const read2 = (path) => {
-    try {
-      return readText(path);
-    } catch {
-      return null;
-    }
-  };
-  const common = canonical(input.gitCommonDir);
-  const pointer = /^gitdir: (.+)$/.exec((read2(join3(input.worktree, ".git")) ?? "").trim());
-  if (pointer?.[1] === void 0) return fail2(`${join3(input.worktree, ".git")} is not a worktree's gitdir pointer`);
-  const gitDir = canonical(resolve4(input.worktree, pointer[1]));
-  const rel = relative4(join3(common, "worktrees"), gitDir);
-  if (rel === "" || rel.startsWith("..") || isAbsolute4(rel) || rel.includes(sep4)) {
-    return fail2(`git dir ${gitDir} is not under ${join3(common, "worktrees")}`);
-  }
-  const head = read2(join3(gitDir, "HEAD"))?.trim();
-  if (head !== `ref: refs/heads/${input.branch}`) return fail2(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ref: refs/heads/${input.branch}`);
-  const commondir = read2(join3(gitDir, "commondir"))?.trim();
-  if (commondir === void 0 || commondir === "" || canonical(resolve4(gitDir, commondir)) !== common) {
-    return fail2(`commondir of ${gitDir} does not lead to ${common}`);
-  }
-  return { gitDir, error: null };
-}
-function explicitGit(gitDir, worktree) {
-  return [`--git-dir=${gitDir}`, `--work-tree=${worktree}`];
-}
-function untrustedTree() {
-  return [
-    "-c",
-    "core.hooksPath=/dev/null",
-    "-c",
-    "core.fsmonitor=false",
-    "-c",
-    "diff.ignoreSubmodules=all",
-    "-c",
-    "submodule.recurse=false"
-  ];
-}
-function holdsGit(path) {
-  try {
-    lstatSync(join3(path, ".git"));
-    return true;
-  } catch {
-    return false;
-  }
-}
-function indexGitlinks(worktree, gitDir, git) {
-  return must(git, [...explicitGit(gitDir, worktree), "ls-files", "-s", "-z"], worktree, untrustedTree()).split("\0").filter((entry) => entry.startsWith("160000 ")).map((entry) => entry.slice(entry.indexOf("	") + 1)).filter((path) => path !== "");
-}
-function worktreeStatus(worktree, gitDir, git) {
-  const args = [...explicitGit(gitDir, worktree), "status", "--porcelain", "--ignore-submodules=all"];
-  const lines = must(git, args, worktree, untrustedTree()).split("\n").filter((line2) => line2.trim() !== "");
-  const nested = indexGitlinks(worktree, gitDir, git).filter((path) => holdsGit(join3(worktree, path))).map((path) => `?? ${path}/`);
-  return [...lines, ...nested.filter((line2) => !lines.includes(line2))];
-}
-
-// src/run/deps.ts
-import { spawnSync as spawnSync2 } from "node:child_process";
-var DEPENDENCY_MANIFESTS = [
-  "package.json",
-  "package-lock.json",
-  "npm-shrinkwrap.json",
-  "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
-  "yarn.lock",
-  "bun.lock",
-  "bun.lockb",
-  ".npmrc",
-  ".yarnrc",
-  ".yarnrc.yml",
-  ".pnpmfile.cjs",
-  ".pnpmfile.mjs",
-  // bun's install config: registries, scopes.
-  "bunfig.toml",
-  // yarn PnP's loader, which yarn loads into the scripts it runs.
-  ".pnp.cjs",
-  ".pnp.loader.mjs"
-];
-var MANIFEST_NAMES = new Set(DEPENDENCY_MANIFESTS.map((name2) => name2.toLowerCase()));
-var PATCH_SUFFIX = ".patch";
-var YARN_DIRECTORIES = ["releases", "plugins", "patches"];
-function isDependencyManifest(path) {
-  const segments = path.toLowerCase().split("/");
-  const base = segments.at(-1) ?? "";
-  if (MANIFEST_NAMES.has(base) || base.endsWith(PATCH_SUFFIX)) return true;
-  for (let i = 0; i + 2 < segments.length; i++) {
-    if (segments[i] === ".yarn" && YARN_DIRECTORIES.includes(segments[i + 1] ?? "")) return true;
-  }
-  return false;
-}
-var INSTALL_FIELDS = [
-  "dependencies",
-  "devDependencies",
-  "optionalDependencies",
-  "peerDependencies",
-  "bundledDependencies",
-  "bundleDependencies",
-  "overrides",
-  "resolutions",
-  "pnpm",
-  "workspaces",
-  "packageManager",
-  "dependenciesMeta",
-  "peerDependenciesMeta",
-  // Linked into node_modules/.bin, where scripts run them.
-  "bin",
-  // engine-strict, os, cpu and libc decide what installs; trustedDependencies which packages' scripts run (bun).
-  "engines",
-  "os",
-  "cpu",
-  "libc",
-  "trustedDependencies",
-  // It can make the package manager fetch and use another runtime.
-  "devEngines"
-];
-var INSTALL_SCRIPTS = [
-  "preinstall",
-  "install",
-  "postinstall",
-  "preprepare",
-  "prepare",
-  "postprepare",
-  "prepublish",
-  "dependencies",
-  "pnpm:devPreinstall"
-];
-var isPlainObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function canonical2(v) {
-  if (Array.isArray(v)) return `[${v.map(canonical2).join(",")}]`;
-  if (isPlainObject(v)) {
-    const keys = Object.keys(v).filter((k) => v[k] !== void 0).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical2(v[k])}`).join(",")}}`;
-  }
-  return JSON.stringify(v) ?? "undefined";
-}
-var own = (o, key) => Object.hasOwn(o, key) ? o[key] : void 0;
-function installView(text2) {
-  let pkg;
-  try {
-    pkg = JSON.parse(text2);
-  } catch {
-    return null;
-  }
-  if (!isPlainObject(pkg)) return null;
-  const scripts = own(pkg, "scripts");
-  const lifecycle = scripts === void 0 ? {} : isPlainObject(scripts) ? Object.fromEntries(INSTALL_SCRIPTS.map((s) => [s, own(scripts, s)])) : scripts;
-  return canonical2({ fields: Object.fromEntries(INSTALL_FIELDS.map((f) => [f, own(pkg, f)])), lifecycle });
-}
-function installRelevantChange(path, before, after) {
-  if (before === after) return false;
-  const base = (path.split("/").at(-1) ?? "").toLowerCase();
-  if (base !== "package.json") return isDependencyManifest(path);
-  if (before === null || after === null) return true;
-  const a = installView(before);
-  const b = installView(after);
-  return a === null || b === null || a !== b;
-}
-function fileAt(git, rev, path) {
-  const r = git(["show", "--no-textconv", `${rev}:${path}`]);
-  return r.code === 0 ? r.stdout : null;
-}
-function installRelevantPaths(git, from, to, paths) {
-  const out = /* @__PURE__ */ new Set();
-  for (const path of paths) {
-    if (!isDependencyManifest(path)) continue;
-    if ((path.split("/").at(-1) ?? "").toLowerCase() !== "package.json") {
-      out.add(path);
-      continue;
-    }
-    const before = fileAt(git, from, path);
-    const after = fileAt(git, to, path);
-    if (before === null && after === null || installRelevantChange(path, before, after)) out.add(path);
-  }
-  return [...out].sort();
-}
-var runArgv = (argv2, cwd) => {
-  const [command, ...args] = argv2;
-  if (command === void 0) return { code: 127, output: "empty command" };
-  const r = spawnSync2(command, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (r.error) return { code: 127, output: r.error.message };
-  return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
-};
-function prepareDependencies(strategy, worktree, run) {
-  if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
-  if (strategy.strategy === "command") {
-    const argv2 = strategy.command;
-    if (!Array.isArray(argv2) || argv2.length === 0 || !argv2.every((a) => typeof a === "string") || argv2[0] === "") {
-      throw new ArbabError("config", "dependencies.command must be a non-empty argv array of strings");
-    }
-    const r = run(argv2, worktree);
-    return { ok: r.code === 0, code: r.code, output: r.output };
-  }
-  throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify(strategy.strategy)}`);
-}
-
-// src/run/pool.ts
-import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-import { linkSync, readdirSync, renameSync as renameSync2, rmdirSync, rmSync as rmSync2 } from "node:fs";
-import { join as join4, resolve as resolve5 } from "node:path";
-function isHolder(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value;
-  return Number.isInteger(v.pid) && v.pid > 0 && typeof v.lane === "string" && typeof v.project === "string" && typeof v.createdAt === "string";
-}
-function assertHolder(holder2) {
-  if (!isHolder(holder2)) throw new ArbabError("usage", "pool holder needs a positive pid, lane, project and createdAt");
-}
-function entryPath(dir, value) {
-  if (!Number.isSafeInteger(value) || value < 0) throw new ArbabError("usage", `pool value ${value} is not a non-negative integer`);
-  return join4(dir, `${value}.json`);
-}
-function parseHolder(text2) {
-  try {
-    const value = JSON.parse(text2);
-    return isHolder(value) ? value : null;
-  } catch {
-    return null;
-  }
-}
-function releaseIfStale(path, alive, unparsedIsStale = false) {
-  const text2 = readText(path);
-  if (text2 === null) return true;
-  const holder2 = parseHolder(text2);
-  if (holder2 === null ? !unparsedIsStale : alive(holder2.pid)) return false;
-  const tomb = `${path}.${randomBytes2(6).toString("hex")}.stale`;
-  try {
-    renameSync2(path, tomb);
-  } catch (err) {
-    if (err.code === "ENOENT") return true;
-    throw new ArbabError("io", `cannot reclaim ${path}: ${err.message}`, { cause: err });
-  }
-  const moved = readText(tomb);
-  if (moved !== text2) {
-    try {
-      linkSync(tomb, path);
-    } catch {
-    }
-    rmSync2(tomb, { force: true });
-    return false;
-  }
-  rmSync2(tomb, { force: true });
-  return true;
-}
-function acquireFromPool(dir, values, holder2, alive) {
-  assertHolder(holder2);
-  const data = JSON.stringify(holder2);
-  for (const value of values) {
-    const path = entryPath(dir, value);
-    if (createExclusive(path, data)) return value;
-    if (!releaseIfStale(path, alive) || !createExclusive(path, data)) continue;
-    if (readText(path) === data) return value;
-  }
-  return null;
-}
-function releaseToPool(dir, value, holder2) {
-  const path = entryPath(dir, value);
-  const text2 = readText(path);
-  if (text2 === null) return false;
-  const current = parseHolder(text2);
-  if (current === null || current.pid !== holder2.pid || current.lane !== holder2.lane) return false;
-  rmSync2(path, { force: true });
-  return true;
-}
-function list(dir) {
-  try {
-    return readdirSync(dir).sort();
-  } catch {
-    return [];
-  }
-}
-var POOL_FILE = /^\d+\.json(\.[0-9a-f]+\.stale)?$/;
-function listPoolEntries(home) {
-  const root = resolve5(home);
-  const dirs = [join4(root, "slots")];
-  for (const kind of ["semaphores", "leases", "locks"]) {
-    for (const name2 of list(join4(root, kind))) dirs.push(join4(root, kind, name2));
-  }
-  return dirs.flatMap((dir) => list(dir).filter((name2) => POOL_FILE.test(name2)).map((name2) => join4(dir, name2)));
-}
-var range = (n) => Array.from({ length: n }, (_, i) => i);
-function assertCount(n, what) {
-  if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("config", `${what} must be a positive integer, got ${n}`);
-}
-function acquireSlot(home, maxParallel, holder2, alive) {
-  assertCount(maxParallel, "maxParallel");
-  return acquireFromPool(join4(resolve5(home), "slots"), range(maxParallel), holder2, alive);
-}
-function releaseSlot(home, slot, holder2) {
-  return releaseToPool(join4(resolve5(home), "slots"), slot, holder2);
-}
-function acquireSemaphore(home, name2, capacity, holder2, alive) {
-  assertValidName(name2, "semaphore");
-  assertCount(capacity, `semaphore ${name2} capacity`);
-  return acquireFromPool(join4(resolve5(home), "semaphores", name2), range(capacity), holder2, alive);
-}
-function releaseSemaphore(home, name2, slot, holder2) {
-  assertValidName(name2, "semaphore");
-  return releaseToPool(join4(resolve5(home), "semaphores", name2), slot, holder2);
-}
-function writerLockKey(worktreeRealpath) {
-  return createHash("sha1").update(worktreeRealpath).digest("hex");
-}
-function lockDir(home, key) {
-  if (!/^[0-9a-f]{40}$/.test(key)) throw new ArbabError("usage", `writer lock key ${JSON.stringify(key)} is not a sha1`);
-  return join4(resolve5(home), "locks", key);
-}
-var LOCK_DIR_RETRIES = 5;
-function vanished(err) {
-  return err instanceof ArbabError && err.cause?.code === "ENOENT";
-}
-function acquireWriterLock(home, key, holder2, alive) {
-  const dir = lockDir(home, key);
-  for (let tries = 1; ; tries++) {
-    try {
-      return acquireFromPool(dir, [0], holder2, alive) === 0;
-    } catch (err) {
-      if (!vanished(err) || tries >= LOCK_DIR_RETRIES) throw err;
-    }
-  }
-}
-function releaseWriterLock(home, key, holder2) {
-  const dir = lockDir(home, key);
-  const released = releaseToPool(dir, 0, holder2);
-  if (released) {
-    try {
-      rmdirSync(dir);
-    } catch {
-    }
-  }
-  return released;
-}
-
-// src/run/leases.ts
-import { createServer } from "node:net";
-import { join as join5, resolve as resolve6 } from "node:path";
-function isPortFree(port) {
-  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.resolve(false);
-  return new Promise((done) => {
-    const server = createServer();
-    server.once("error", () => done(false));
-    server.listen({ port, host: "127.0.0.1", exclusive: true }, () => {
-      server.close(() => done(true));
-    });
-  });
-}
-function leaseDir(home, type) {
-  return join5(resolve6(home), "leases", assertValidName(type, "resource type"));
-}
-function checkedRange(type, ranges) {
-  const spec = Object.hasOwn(ranges, type) ? ranges[type] : void 0;
-  const r = typeof spec === "object" && spec !== null ? spec.range : void 0;
-  if (!Array.isArray(r) || r.length !== 2) throw new ArbabError("lease", `no range configured for resource ${type}`);
-  const [lo, hi] = r;
-  if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi) || lo < 0 || lo > hi) {
-    throw new ArbabError("lease", `resource ${type} has an invalid range ${JSON.stringify(r)}`);
-  }
-  if (type === "port" && (lo < 1 || hi > 65535)) {
-    throw new ArbabError("lease", `port range ${JSON.stringify(r)} is outside 1..65535`);
-  }
-  return [lo, hi];
-}
-async function acquireLeases(req) {
-  const plan = [];
-  for (const type of Object.keys(req.requests).sort()) {
-    assertValidName(type, "resource type");
-    const count = req.requests[type];
-    if (count === void 0 || !Number.isSafeInteger(count) || count < 0) {
-      throw new ArbabError("lease", `resource ${type} count must be a non-negative integer`);
-    }
-    if (count === 0) continue;
-    const [lo, hi] = checkedRange(type, req.ranges);
-    plan.push({ type, count, lo, hi });
-  }
-  const taken = [];
-  try {
-    for (const { type, count, lo, hi } of plan) {
-      const dir = leaseDir(req.home, type);
-      let got = 0;
-      for (let value = lo; value <= hi && got < count; value++) {
-        if (acquireFromPool(dir, [value], req.holder, req.alive) === null) continue;
-        if (type === "port") {
-          let isFree;
-          try {
-            isFree = await req.probePort(value);
-          } catch (err) {
-            releaseToPool(dir, value, req.holder);
-            throw err;
-          }
-          if (!isFree) {
-            releaseToPool(dir, value, req.holder);
-            continue;
-          }
-        }
-        const { pid, lane, project, createdAt } = req.holder;
-        taken.push({ type, value, lane, project, pid, createdAt });
-        got++;
-      }
-      if (got < count) throw new ArbabError("lease", `only ${got} of ${count} ${type} values free in ${lo}..${hi}`);
-    }
-  } catch (err) {
-    releaseLeases(req.home, taken, req.holder);
-    throw err instanceof ArbabError ? err : new ArbabError("lease", err.message, { cause: err });
-  }
-  return taken;
-}
-function releaseLeases(home, leases, holder2) {
-  for (const lease of leases) releaseToPool(leaseDir(home, lease.type), lease.value, holder2);
-}
-function leaseEnv(leases) {
-  const env2 = {};
-  const next = /* @__PURE__ */ new Map();
-  for (const lease of leases) {
-    const i = next.get(lease.type) ?? 0;
-    next.set(lease.type, i + 1);
-    env2[`ARBAB_${envSuffix(lease.type)}_${i}`] = String(lease.value);
-  }
-  return env2;
-}
-
-// src/run/spawn.ts
-import { spawn } from "node:child_process";
-import { closeSync as closeSync2, openSync as openSync2 } from "node:fs";
-function open(path, flags, opened) {
-  try {
-    const fd = openSync2(path, flags);
-    opened.push(fd);
-    return fd;
-  } catch (err) {
-    const code4 = err.code;
-    const why = code4 === "EEXIST" ? "already exists (attempt files are never overwritten)" : err.message;
-    throw new ArbabError("io", `cannot open ${path}: ${why}`, { cause: err });
-  }
-}
-function spawnWorker(input) {
-  const opened = [];
-  let child2;
-  try {
-    const stdin = open(input.promptFile, "r", opened);
-    const stdout = open(input.streamFile, "wx", opened);
-    const stderr = open(input.stderrFile, "wx", opened);
-    child2 = (input.spawnImpl ?? spawn)(input.binary, input.args, {
-      cwd: input.cwd,
-      env: input.env,
-      detached: true,
-      stdio: [stdin, stdout, stderr]
-    });
-  } finally {
-    for (const fd of opened) closeSync2(fd);
-  }
-  const exited = new Promise((done) => {
-    child2.once("error", () => {
-      if (child2.pid === void 0) done({ code: null, signal: null });
-    });
-    child2.once("exit", (code4, signal) => done({ code: code4, signal }));
-  });
-  if (child2.pid === void 0) throw new ArbabError("runtime", `cannot start ${input.binary}`);
-  return { pid: child2.pid, exited };
-}
-
-// src/run/tree.ts
-import { execFileSync } from "node:child_process";
-
-// src/util/proc.ts
-function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-function sendSignal(target, signal) {
-  if (!Number.isInteger(target) || target === 0 || target === -1) {
-    throw new RangeError(`refusing to signal ${target}`);
-  }
-  try {
-    process.kill(target, signal);
-    return true;
-  } catch (err) {
-    if (err.code === "ESRCH") return false;
-    throw err;
-  }
-}
-var sleep = (ms) => new Promise((done) => setTimeout(done, ms));
-var systemClock = { now: () => Date.now() };
-var isoAt = (clock) => new Date(clock.now()).toISOString();
-
-// src/run/tree.ts
-function parsePs(output4) {
-  const rows = [];
-  for (const line2 of output4.split("\n")) {
-    const parts = line2.trim().split(/\s+/);
-    if (parts.length !== 3 || !parts.every((p) => /^\d+$/.test(p))) continue;
-    const [pid, ppid, pgid] = parts.map(Number);
-    rows.push({ pid, ppid, pgid });
-  }
-  return rows;
-}
-var execText = (file, args) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
-function readPs(exec = execText) {
-  return exec("ps", ["-A", "-o", "pid=,ppid=,pgid="]);
-}
-function descendantsOf(root, table3, known) {
-  const children = /* @__PURE__ */ new Map();
-  for (const row of table3) {
-    const list3 = children.get(row.ppid);
-    if (list3) list3.push(row.pid);
-    else children.set(row.ppid, [row.pid]);
-  }
-  const found = /* @__PURE__ */ new Set();
-  const queue = [root, ...known, ...table3.filter((r) => r.pgid === root).map((r) => r.pid)];
-  for (const pid of queue) {
-    if (pid !== root && pid > 1) found.add(pid);
-  }
-  while (queue.length > 0) {
-    const pid = queue.pop();
-    for (const child2 of children.get(pid) ?? []) {
-      if (child2 === root || child2 <= 1 || found.has(child2)) continue;
-      found.add(child2);
-      queue.push(child2);
-    }
-  }
-  return found;
-}
-function trackDescendants(root, table3, tracked, rootRunning) {
-  const present = new Set(table3.map((row) => row.pid));
-  const rows = rootRunning ? table3 : table3.filter((row) => row.ppid !== root);
-  return new Set([...descendantsOf(root, rows, tracked)].filter((pid) => present.has(pid)));
-}
-function signalTargets(root, table3, tracked, rootRunning) {
-  const present = new Set(table3.map((row) => row.pid));
-  const parents = new Set([...tracked].filter((pid) => present.has(pid)));
-  if (rootRunning) parents.add(root);
-  const out = /* @__PURE__ */ new Set();
-  for (const row of table3) {
-    if (row.pid === root || row.pid <= 1) continue;
-    if (row.pgid === root || parents.has(row.ppid)) out.add(row.pid);
-  }
-  return out;
-}
-async function reap(input) {
-  const signal = input.signal ?? sendSignal;
-  const alive = input.alive ?? isAlive;
-  const sleep2 = input.sleep ?? sleep;
-  const graceMs = input.graceMs ?? 1e4;
-  const self = input.selfPid ?? process.pid;
-  const safe = (pid) => Number.isInteger(pid) && pid > 1 && pid !== self;
-  const vouched = (pids) => {
-    if (input.verify === void 0) return pids;
-    const ok = input.verify(pids);
-    return ok === null ? [] : pids.filter((pid) => ok.has(pid));
-  };
-  const targets = [.../* @__PURE__ */ new Set([input.pgid, ...input.pids])].filter(safe);
-  const living = vouched(targets.filter((pid) => alive(pid)));
-  const group = safe(input.pgid) ? -input.pgid : null;
-  const send = (target, sig) => {
-    try {
-      return signal(target, sig);
-    } catch {
-      return false;
-    }
-  };
-  let sent = group !== null && send(group, "SIGTERM");
-  for (const pid of living) sent = send(pid, "SIGTERM") || sent;
-  if (!sent) return living;
-  await sleep2(graceMs);
-  if (group !== null) send(group, "SIGKILL");
-  for (const pid of vouched(living.filter((p) => alive(p)))) send(pid, "SIGKILL");
-  return living;
-}
-
-// src/run/watch.ts
-import { closeSync as closeSync3, openSync as openSync3, readSync, statSync as statSync2 } from "node:fs";
-function fileSize(path) {
-  try {
-    return statSync2(path).size;
-  } catch (err) {
-    if (err.code === "ENOENT") return 0;
-    throw new ArbabError("io", `cannot stat ${path}: ${err.message}`, { cause: err });
-  }
-}
-function fileRange(path, start, end) {
-  const buf = Buffer.alloc(Math.max(0, end - start));
-  if (buf.length === 0) return buf;
-  const fd = openSync3(path, "r");
-  try {
-    let done = 0;
-    while (done < buf.length) {
-      const n = readSync(fd, buf, done, buf.length - done, start + done);
-      if (n === 0) break;
-      done += n;
-    }
-    return buf.subarray(0, done);
-  } finally {
-    closeSync3(fd);
-  }
-}
-var NEWLINE = 10;
-function createWatcher(input) {
-  const hangAfterResultMs = input.hangAfterResultMs ?? 15 * 6e4;
-  const hangAfterErrorMs = input.hangAfterErrorMs ?? 2 * 6e4;
-  const readSize = input.readSize ?? fileSize;
-  const readRange = input.readRange ?? fileRange;
-  let offset = 0;
-  let carry = Buffer.alloc(0);
-  let lastGrowthMs = input.startedAtMs;
-  let resultSeen = false;
-  let lastResultIsError = false;
-  let rateLimitEvent = null;
-  const consume2 = (line2) => {
-    let event;
-    try {
-      event = JSON.parse(line2.toString("utf8"));
-    } catch {
-      return;
-    }
-    if (typeof event !== "object" || event === null || Array.isArray(event)) return;
-    const e = event;
-    if (e.type === "rate_limit_event") rateLimitEvent = e;
-    if (e.type !== "result") return;
-    resultSeen = true;
-    lastResultIsError = e.is_error === true;
-  };
-  const read2 = (now) => {
-    const size2 = readSize(input.streamPath);
-    if (size2 < offset) {
-      offset = 0;
-      carry = Buffer.alloc(0);
-    }
-    if (size2 <= offset) return;
-    const chunk = readRange(input.streamPath, offset, size2);
-    if (chunk.length === 0) return;
-    offset += chunk.length;
-    lastGrowthMs = now;
-    let data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
-    let nl = data.indexOf(NEWLINE);
-    while (nl !== -1) {
-      consume2(data.subarray(0, nl));
-      data = data.subarray(nl + 1);
-      nl = data.indexOf(NEWLINE);
-    }
-    carry = Buffer.from(data);
-  };
-  return {
-    tick() {
-      const now = input.clock.now();
-      rateLimitEvent = null;
-      read2(now);
-      const quiet = now - lastGrowthMs;
-      let kill = null;
-      if (now - input.startedAtMs > input.wallMs) kill = "wall";
-      else if (resultSeen && lastResultIsError && quiet > hangAfterErrorMs) kill = "hang-after-error";
-      else if (resultSeen && quiet > hangAfterResultMs) kill = "hang-after-result";
-      else if (quiet > input.idleMs) kill = "idle";
-      return { kill, rateLimitEvent };
-    },
-    state: () => ({ offset, lastGrowthMs, resultSeen, lastResultIsError })
-  };
-}
-
-// src/run/checkpoint.ts
-import { readdirSync as readdirSync2 } from "node:fs";
-import { join as join6 } from "node:path";
-function nestedUnder(worktree, rel, out) {
-  const abs = join6(worktree, rel);
-  if (holdsGit(abs)) {
-    out.push(rel);
-    return;
-  }
-  let entries3;
-  try {
-    entries3 = readdirSync2(abs, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const e of entries3) if (e.isDirectory()) nestedUnder(worktree, `${rel}/${e.name}`, out);
-}
-function untrackedRepositories(git, worktree) {
-  const others = git(["ls-files", "--others", "--exclude-standard", "--directory", "-z"]);
-  if (others.code !== 0) return others;
-  const out = [];
-  for (const entry of others.stdout.split("\0")) {
-    if (entry.endsWith("/")) nestedUnder(worktree, entry.replace(/\/+$/, ""), out);
-  }
-  return out;
-}
-function stagedGitlinks(raw) {
-  const fields = raw.split("\0");
-  const out = [];
-  for (let i = 0; i + 1 < fields.length; i += 2) {
-    const [src, dst] = (fields[i] ?? "").replace(/^:/, "").split(" ");
-    const path = fields[i + 1] ?? "";
-    if ((src === "160000" || dst === "160000") && path !== "") out.push(path);
-  }
-  return out.sort();
-}
-var ARBAB_STATE = [".arbab", ".arbab-tmp"];
-function checkpoint(input) {
-  const lane = assertValidName(input.lane, "lane");
-  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
-    throw new ArbabError("usage", `attempt ${input.attempt} is not a positive integer`);
-  }
-  const verified = verifyWorktreeGit({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir });
-  if (verified.gitDir === null) return { sha: null, error: `checkpoint skipped: ${verified.error}` };
-  const gitDir = verified.gitDir;
-  const prefix = [...explicitGit(gitDir, input.worktree), ...untrustedTree()];
-  const git = (args) => input.git([...prefix, ...args], input.worktree);
-  let tracked;
-  try {
-    if (worktreeStatus(input.worktree, gitDir, input.git).length === 0) return { sha: null, error: null };
-    tracked = indexGitlinks(input.worktree, gitDir, input.git);
-  } catch (err) {
-    return { sha: null, error: err.message };
-  }
-  const failed = (step, r) => ({
-    sha: null,
-    error: `${step} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`
-  });
-  const untracked = untrackedRepositories(git, input.worktree);
-  if (!Array.isArray(untracked)) return failed("git ls-files --others", untracked);
-  const left = [.../* @__PURE__ */ new Set([...tracked.filter((p) => holdsGit(join6(input.worktree, p))), ...untracked])].sort();
-  const leftOut = left.length === 0 ? null : `nested repositories were not committed: ${left.join(", ")}; arbab never commits or inspects them`;
-  const state = ARBAB_STATE.filter((path) => git(["check-ignore", "-q", "--", path]).code !== 0);
-  const add = git([
-    "add",
-    "-A",
-    "--",
-    ".",
-    ...[.../* @__PURE__ */ new Set([...tracked, ...untracked])].map((p) => `:(exclude,literal)${p}`),
-    ...state.map((p) => `:(exclude,icase,literal)${p}`)
-  ]);
-  if (add.code !== 0) return failed("git add -A", add);
-  const cached = git(["diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none"]);
-  if (cached.code !== 0) return failed("git diff --cached", cached);
-  const staged = stagedGitlinks(cached.stdout);
-  if (staged.length > 0) {
-    return {
-      sha: null,
-      error: `nested repositories are staged in the index: ${staged.join(", ")}; arbab never commits or inspects them, so nothing was committed. Unstage them to let the checkpoint commit the rest`
-    };
-  }
-  if (cached.stdout === "") return { sha: null, error: leftOut };
-  const message5 = `arbab(${lane}): checkpoint attempt ${input.attempt} (${input.endState})
-
-Co-Authored-By: Claude <noreply@anthropic.com>`;
-  const commit = git(["commit", "--no-verify", "-m", message5]);
-  if (commit.code !== 0) return failed("git commit", commit);
-  const head = git(["rev-parse", "HEAD"]);
-  if (head.code !== 0) return failed("git rev-parse HEAD", head);
-  return { sha: head.stdout.trim(), error: leftOut };
-}
-
-// src/run/workertmp.ts
-import { closeSync as closeSync4, constants, lstatSync as lstatSync2, mkdirSync as mkdirSync2, openSync as openSync4, rmSync as rmSync3, unlinkSync } from "node:fs";
-import { join as join7 } from "node:path";
-var WORKER_TMP_DIR = ".arbab-tmp";
-function workerTmpPaths(worktree) {
-  const root = join7(worktree, WORKER_TMP_DIR);
-  return {
-    root,
-    xdgConfig: join7(root, "xdg-config"),
-    yarnCache: join7(root, "yarn-cache"),
-    npmrc: join7(root, "npmrc"),
-    inputs: join7(root, "inputs")
-  };
-}
-function lstatOrNull(path) {
-  try {
-    return lstatSync2(path);
-  } catch (err) {
-    if (err.code === "ENOENT") return null;
-    throw new ArbabError("io", `cannot read ${path}: ${err.message}`, { cause: err });
-  }
-}
-function removeEntry(path, stat) {
-  try {
-    if (stat.isDirectory()) rmSync3(path, { recursive: true, force: true });
-    else unlinkSync(path);
-  } catch (err) {
-    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
-  }
-}
-function realDir(worktree, rel) {
-  let at = worktree;
-  for (const part of rel.split(/[\\/]+/)) {
-    if (part === "" || part === ".") continue;
-    if (part === "..") throw new ArbabError("usage", `${rel} leaves the worktree`);
-    at = join7(at, part);
-    const stat = lstatOrNull(at);
-    if (stat?.isDirectory() === true) continue;
-    if (stat !== null) removeEntry(at, stat);
-    try {
-      mkdirSync2(at);
-    } catch (err) {
-      throw new ArbabError("io", `cannot create ${at}: ${err.message}`, { cause: err });
-    }
-  }
-  return at;
-}
-function ensureWorkerTmp(worktree) {
-  const paths = workerTmpPaths(worktree);
-  for (const dir of ["xdg-config", "yarn-cache", "inputs"]) realDir(worktree, join7(WORKER_TMP_DIR, dir));
-  const stat = lstatOrNull(paths.npmrc);
-  if (stat?.isFile() === true) return paths;
-  if (stat !== null) removeEntry(paths.npmrc, stat);
-  let fd;
-  try {
-    fd = openSync4(paths.npmrc, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
-  } catch (err) {
-    throw new ArbabError("io", `cannot create ${paths.npmrc}: ${err.message}`, { cause: err });
-  }
-  closeSync4(fd);
-  return paths;
-}
-
-// src/run/project-files.ts
-import { join as join8, relative as relative5, resolve as resolve7, sep as sep5 } from "node:path";
-var ARBAB_DIR = ".arbab";
-var ESLINT_MARKER = ".eslintrc.json";
-function arbabIgnoreEntries(projectRoot, config) {
-  const rel = (p) => `${relative5(resolve7(projectRoot), confine(projectRoot, p)).split(sep5).join("/")}/`;
-  const own2 = `${ARBAB_DIR}/`;
-  const outside = [rel(config.worktreeRoot), rel(config.runsRoot)].filter((r) => !r.startsWith(own2));
-  return [.../* @__PURE__ */ new Set([own2, `${WORKER_TMP_DIR}/`, ...outside])];
-}
-function ensureArbabMarkers(projectRoot) {
-  createExclusive(join8(projectRoot, ARBAB_DIR, ESLINT_MARKER), `${JSON.stringify({ root: true }, null, 2)}
-`);
-}
-
-// src/shepherd/trust.ts
-var SHA = /^[0-9a-f]{40,64}$/;
-var output = (r) => (r.stderr || r.stdout).trim();
-function confirmedHeads(projectRoot, config, git) {
-  const heads = /* @__PURE__ */ new Set();
-  const listed = git(["ls-files", "-z", "--", `:(icase)${INTEGRATIONS_DIR}`], projectRoot);
-  if (listed.code !== 0) return heads;
-  const depth = INTEGRATIONS_DIR.split("/").length;
-  const trackedNames = new Set(
-    listed.stdout.split("\0").filter((p) => p !== "").map((p) => (p.split("/")[depth] ?? "").toLowerCase())
-  );
-  for (const name2 of listIntegrations(projectRoot)) {
-    if (trackedNames.has(name2)) continue;
-    try {
-      const at = readIntegration(integrationPaths(projectRoot, config, name2))?.depsConfirmedAt ?? null;
-      if (at !== null) heads.add(at);
-    } catch {
-    }
-  }
-  return heads;
-}
-function assertRevision2(rev, what) {
-  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
-}
-function resolveCommit(projectRoot, rev, git) {
-  assertRevision2(rev, "revision");
-  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], projectRoot);
-  const sha = r.stdout.trim();
-  return r.code === 0 && SHA.test(sha) ? sha : null;
-}
-function isTrustedInstallPoint(sha, input) {
-  if (input.confirmed.has(sha)) return true;
-  assertRevision2(input.baseBranch, "baseBranch");
-  const r = input.git(["merge-base", "--is-ancestor", sha, input.baseBranch], input.projectRoot);
-  if (r.code === 0) return true;
-  if (r.code === 1) return false;
-  throw new ArbabError("git", `git merge-base --is-ancestor ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
-}
-function distance(ancestor, sha, input) {
-  const r = input.git(["rev-list", "--count", `${ancestor}..${sha}`], input.projectRoot);
-  const n = Number(r.stdout.trim());
-  if (r.code !== 0 || !Number.isInteger(n)) {
-    throw new ArbabError("git", `git rev-list --count ${ancestor}..${sha} failed (${r.code}): ${output(r)}`);
-  }
-  return n;
-}
-function installPlan(base, input) {
-  assertRevision2(base, "base");
-  assertRevision2(input.baseBranch, "baseBranch");
-  const sha = resolveCommit(input.projectRoot, base, input.git);
-  if (sha === null) return { start: base, merge: null };
-  if (isTrustedInstallPoint(sha, input)) return { start: sha, merge: null };
-  const candidates = [...input.confirmed].filter((c) => SHA.test(c) && input.git(["merge-base", "--is-ancestor", c, sha], input.projectRoot).code === 0).sort();
-  const r = input.git(["merge-base", sha, input.baseBranch], input.projectRoot);
-  const fork = r.stdout.trim();
-  if (r.code === 0 && SHA.test(fork)) {
-    candidates.push(fork);
-  } else if (r.code !== 1) {
-    throw new ArbabError("git", `git merge-base ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
-  }
-  if (candidates.length === 0) {
-    throw new ArbabError(
-      "git",
-      `base ${base} shares no history with ${input.baseBranch}, so the lane has no trusted commit to install its dependencies on; base it on ${input.baseBranch} or on a commit that descends from it`
-    );
-  }
-  let start = candidates[0];
-  let least = distance(start, sha, input);
-  for (const c of candidates.slice(1)) {
-    const d = distance(c, sha, input);
-    if (d < least) [start, least] = [c, d];
-  }
-  return { start, merge: sha };
-}
-
-// src/integrate/integrate.ts
-function listIntegrations(projectRoot) {
-  try {
-    return readdirSync3(join9(resolve8(projectRoot), INTEGRATIONS_DIR), { withFileTypes: true }).filter((e) => e.isDirectory() && isValidName(e.name)).map((e) => e.name).sort();
-  } catch {
-    return [];
-  }
-}
-function integrationPaths(projectRoot, config, name2) {
-  const valid = assertValidName(name2, "integration");
-  if (valid === "integrate" || valid.startsWith("integrate-")) {
-    throw new ArbabError("usage", `integration name ${valid} may not be integrate or start with integrate-`);
-  }
-  const root = resolve8(projectRoot);
-  const dir = join9(root, INTEGRATIONS_DIR, valid);
-  return {
-    name: valid,
-    projectRoot: root,
-    dir,
-    integration: join9(dir, "integration.json"),
-    verify: join9(dir, "verify.json"),
-    review: join9(dir, "review.json"),
-    readiness: join9(dir, "readiness.json"),
-    readinessMd: join9(dir, "readiness.md"),
-    landing: join9(dir, "landing.json"),
-    lanesDir: join9(dir, "lanes"),
-    worktree: join9(confine(root, config.worktreeRoot), `${INTEGRATION_WORKTREE_PREFIX}${valid}`),
-    branch: `integrate/${valid}`
-  };
-}
-var SHA2 = /^[0-9a-f]{40,64}$/;
-var output2 = (r) => (r.stderr || r.stdout).trim();
-function must2(git, args, cwd) {
-  const r = git(args, cwd);
-  if (r.code !== 0) throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${output2(r)}`);
-  return r.stdout;
-}
-function canonical3(path) {
-  try {
-    return realpathSync4(path);
-  } catch {
-    return resolve8(path);
-  }
-}
-function commitOf(git, rev, cwd) {
-  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd);
-  const sha = r.stdout.trim();
-  return r.code === 0 && SHA2.test(sha) ? sha : null;
-}
-function isAncestor(git, ancestor, of, cwd) {
-  const r = git(["merge-base", "--is-ancestor", ancestor, of], cwd);
-  if (r.code === 0) return true;
-  if (r.code === 1) return false;
-  throw new ArbabError("git", `git merge-base --is-ancestor ${ancestor} ${of} failed (${r.code}): ${output2(r)}`);
-}
-function worktreeBranches(projectRoot, git) {
-  const out = /* @__PURE__ */ new Map();
-  for (const block3 of must2(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
-    const lines = block3.split("\n");
-    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
-    if (path === void 0) continue;
-    const ref2 = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null;
-    out.set(canonical3(path), ref2);
-  }
-  return out;
-}
-function gitCommonDir(projectRoot, git) {
-  const out = must2(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
-  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
-  return canonical3(resolve8(projectRoot, out));
-}
-function refuseLaneWorktree(paths, git) {
-  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
-  const lanePrefix = "refs/heads/arbab/";
-  if (typeof ref2 !== "string" || !ref2.startsWith(lanePrefix)) return;
-  throw new ArbabError(
-    "usage",
-    `${paths.worktree} is the worktree of lane ${ref2.slice(lanePrefix.length)}, where a worker runs, so integration ${paths.name} cannot use it. Lane names starting with ${INTEGRATION_WORKTREE_PREFIX} are reserved: rename that lane and remove its worktree, or choose another integration name`
-  );
-}
-function ownedGitDir(paths, git) {
-  const refused = (why) => new ArbabError("git", `${paths.worktree} exists but is not a worktree of this repository on ${paths.branch}: ${why}`);
-  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
-  if (ref2 === void 0) throw refused("git does not list it as a worktree");
-  if (ref2 !== `refs/heads/${paths.branch}`) throw refused(`it is on ${ref2 ?? "a detached HEAD"}`);
-  const verified = verifyWorktreeGit({
-    worktree: paths.worktree,
-    branch: paths.branch,
-    gitCommonDir: gitCommonDir(paths.projectRoot, git)
-  });
-  if (verified.gitDir === null) throw refused(verified.error);
-  return verified.gitDir;
-}
-function refuseLanded(paths) {
-  if (!existsSync2(paths.landing)) return;
-  let landedAt;
-  try {
-    const landing = readJson(paths.landing);
-    landedAt = isRecord2(landing) ? landing["landedAt"] : void 0;
-  } catch {
-  }
-  const when = typeof landedAt === "string" && landedAt !== "" ? `at ${landedAt}` : `(${paths.landing} does not say when)`;
-  throw new ArbabError(
-    "usage",
-    `integration ${paths.name} landed ${when}; its records stay as that landing's measurement. Choose a new name for a new integration`
-  );
-}
-function supersedeRecord(paths) {
-  if (!existsSync2(paths.integration)) return;
-  let updatedAt;
-  try {
-    const old = readJson(paths.integration);
-    updatedAt = isRecord2(old) ? old["updatedAt"] : void 0;
-  } catch {
-  }
-  const stamp = typeof updatedAt === "string" && updatedAt !== "" ? updatedAt.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-") : "unknown";
-  let target = join9(paths.dir, `integration.superseded-${stamp}.json`);
-  for (let n = 2; existsSync2(target); n++) target = join9(paths.dir, `integration.superseded-${stamp}-${n}.json`);
-  renameSync3(paths.integration, target);
-}
-function createIntegrationWorktree(input, paths) {
-  const { git, projectRoot } = input;
-  const base = input.config.baseBranch;
-  if (base === "" || base.startsWith("-")) {
-    throw new ArbabError("config", `baseBranch ${JSON.stringify(base)} is not a valid revision`);
-  }
-  const baseSha = commitOf(git, base, projectRoot);
-  if (baseSha === null) throw new ArbabError("git", `base ${base} does not name a commit`);
-  must2(git, ["worktree", "prune"], projectRoot);
-  ensureDir(dirname3(paths.worktree));
-  const existing = commitOf(git, `refs/heads/${paths.branch}`, projectRoot);
-  if (existing === null) {
-    must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, base], projectRoot);
-    supersedeRecord(paths);
-  } else {
-    if (!isAncestor(git, existing, baseSha, projectRoot)) {
-      throw new ArbabError(
-        "git",
-        `${paths.branch} exists without its worktree and holds commits that are not on ${base}; arbab prepares dependencies only on the trusted base. Restore the worktree at ${paths.worktree}, or delete the branch and integrate again`
-      );
-    }
-    must2(git, ["worktree", "add", paths.worktree, paths.branch], projectRoot);
-  }
-  let deps;
-  try {
-    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
-  } catch (err) {
-    removeWorktree(git, paths);
-    throw err;
-  }
-  if (!deps.ok) {
-    removeWorktree(git, paths);
-    const tail = deps.output.trim().split("\n").slice(-5).join("\n");
-    throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
-  }
-}
-function refuseDirtyLanes(input, lanes) {
-  const { git, projectRoot } = input;
-  const root = confine(projectRoot, input.config.worktreeRoot);
-  let common = null;
-  for (const lane of lanes) {
-    const worktree = join9(root, lane);
-    if (!existsSync2(worktree)) continue;
-    common ??= gitCommonDir(projectRoot, git);
-    const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: common });
-    if (verified.gitDir === null) {
-      throw new ArbabError("git", `cannot check lane ${lane}'s worktree ${worktree} for uncommitted changes: ${verified.error}`);
-    }
-    const status = worktreeStatus(worktree, verified.gitDir, git).map((l) => l.slice(3));
-    if (status.length === 0) continue;
-    const shown = status.slice(0, 5).join(", ") + (status.length > 5 ? ` and ${status.length - 5} more` : "");
-    throw new ArbabError(
-      "usage",
-      `lane ${lane} has uncommitted changes in ${worktree} (${shown}): its checkpoint did not commit them, and integrating its branch would leave them behind. Commit or discard them, then integrate again`
-    );
-  }
-}
-function removeWorktree(git, paths) {
-  git(["worktree", "remove", "--force", paths.worktree], paths.projectRoot);
-}
-function oneEntryPerLane(entries3) {
-  const out = [];
-  for (const e of entries3) {
-    const i = out.findIndex((o) => o.lane === e.lane);
-    const prior = i < 0 ? void 0 : out[i];
-    if (prior === void 0) out.push({ ...e, manifests: [...e.manifests] });
-    else out[i] = { ...e, manifests: [.../* @__PURE__ */ new Set([...prior.manifests, ...e.manifests])].sort() };
-  }
-  return out;
-}
-function integrate(input) {
-  const paths = integrationPaths(input.projectRoot, input.config, input.name);
-  const lanes = input.lanes.map((lane) => assertValidName(lane, "lane"));
-  const { git, config } = input;
-  refuseLanded(paths);
-  refuseLaneWorktree(paths, git);
-  refuseDirtyLanes(input, lanes);
-  if (!existsSync2(paths.worktree)) createIntegrationWorktree(input, paths);
-  const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
-  ensureIgnored(paths.projectRoot, arbabIgnoreEntries(paths.projectRoot, config), git);
-  ensureArbabMarkers(paths.projectRoot);
-  const wt = (args) => git([...prefix, ...args], paths.worktree);
-  const head = () => {
-    const sha = commitOf(wt, "HEAD", paths.worktree);
-    if (sha === null) throw new ArbabError("git", `cannot read HEAD of ${paths.worktree}`);
-    return sha;
-  };
-  const previous = readIntegration(paths);
-  let headSha = head();
-  const present = (sha) => SHA2.test(sha) && commitOf(wt, sha, paths.worktree) !== null;
-  let merged = oneEntryPerLane(
-    (previous?.merged ?? []).filter((m) => present(m.sha) && isAncestor(wt, m.sha, headSha, paths.worktree))
-  );
-  const keptBase = previous !== null && present(previous.baseSha) && isAncestor(wt, previous.baseSha, headSha, paths.worktree);
-  const base = keptBase ? previous.base : config.baseBranch;
-  if (base === "" || base.startsWith("-")) {
-    const from = keptBase ? `${paths.integration} records base` : "baseBranch";
-    throw new ArbabError(keptBase ? "io" : "config", `${from} ${JSON.stringify(base)} is not a valid revision`);
-  }
-  const mergeBase = () => must2(wt, ["merge-base", headSha, base], paths.worktree).trim();
-  let baseSha = mergeBase();
-  let confirmedAt = previous?.depsConfirmedAt ?? null;
-  const manifestsBetween = (from, to, what) => {
-    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", from, to, "--"]);
-    if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${what} (${diff.code}): ${output2(diff)}`);
-    return installRelevantPaths(wt, from, to, diff.stdout.split("\0").filter((p) => p !== ""));
-  };
-  const stillConfirmed = (at) => commitOf(wt, at, paths.worktree) !== null && isAncestor(wt, at, headSha, paths.worktree) && manifestsBetween(at, headSha, `${paths.branch} changed since ${at}`).length === 0;
-  const record2 = () => {
-    baseSha = mergeBase();
-    const manifests = manifestsBetween(baseSha, headSha, `${paths.branch} changed since ${baseSha}`);
-    if (confirmedAt !== null && !stillConfirmed(confirmedAt)) confirmedAt = null;
-    const depsConfirmedAt = confirmedAt;
-    const rec = {
-      name: paths.name,
-      branch: paths.branch,
-      worktree: paths.worktree,
-      base,
-      baseSha,
-      merged: [...merged],
-      manifests,
-      depsConfirmedAt,
-      depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null,
-      headSha,
-      updatedAt: isoAt(input.clock)
-    };
-    writeJsonAtomic(paths.integration, rec);
-    return rec;
-  };
-  record2();
-  const alreadyIn = [];
-  for (const lane of lanes) {
-    const branch = `arbab/${lane}`;
-    const sha = commitOf(wt, `refs/heads/${branch}`, paths.worktree);
-    if (sha === null) throw new ArbabError("git", `cannot integrate ${lane}: branch ${branch} does not exist`);
-    if (isAncestor(wt, sha, headSha, paths.worktree)) {
-      alreadyIn.push(lane);
-      if (merged.some((m) => m.lane === lane && m.sha === sha)) continue;
-      const fork = must2(wt, ["merge-base", baseSha, sha], paths.worktree).trim();
-      const manifests2 = manifestsBetween(fork, sha, `${lane} changed since ${baseSha}`);
-      merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests: manifests2 }]);
-      record2();
-      continue;
-    }
-    const r = wt(["merge", "--no-ff", "--no-edit", "--no-verify", "-m", `arbab: integrate ${lane} into ${paths.branch}`, sha]);
-    if (r.code !== 0) {
-      const unmerged = wt(["diff", "--name-only", "-z", "--diff-filter=U"]);
-      const conflicts = unmerged.code === 0 ? unmerged.stdout.split("\0").filter((p) => p !== "") : [];
-      wt(["merge", "--abort"]);
-      const kept = merged.length > 0 ? `; ${merged.map((m) => m.lane).join(", ")} stay merged` : "";
-      if (conflicts.length > 0) {
-        throw new ArbabError("git", `integrating ${lane} into ${paths.branch} conflicts in ${conflicts.join(", ")}; the merge was aborted${kept}`);
-      }
-      throw new ArbabError("git", `integrating ${lane} into ${paths.branch} failed (${r.code}): ${output2(r)}; the merge was aborted${kept}`);
-    }
-    const before = headSha;
-    headSha = head();
-    const manifests = manifestsBetween(before, headSha, `${lane} changed in ${paths.branch}`);
-    merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests }]);
-    record2();
-  }
-  return { record: record2(), alreadyIn };
-}
-function assertRevision3(rev, what) {
-  if (rev === "" || rev.startsWith("-") || /\s/.test(rev)) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
-}
-function adoptIntegration(input) {
-  const paths = integrationPaths(input.projectRoot, input.config, input.name);
-  const { git, projectRoot } = input;
-  const base = input.base ?? input.config.baseBranch;
-  assertRevision3(input.ref, "--adopt");
-  assertRevision3(base, input.base === void 0 ? "baseBranch" : "--base");
-  refuseLanded(paths);
-  refuseLaneWorktree(paths, git);
-  const existing = [
-    existsSync2(paths.integration) ? paths.integration : null,
-    commitOf(git, `refs/heads/${paths.branch}`, projectRoot) !== null ? `branch ${paths.branch}` : null,
-    existsSync2(paths.worktree) ? paths.worktree : null
-  ].filter((e) => e !== null);
-  if (existing.length > 0) {
-    throw new ArbabError("usage", `integration ${paths.name} already exists (${existing.join(", ")}); choose a new name to adopt ${input.ref}`);
-  }
-  const sha = commitOf(git, input.ref, projectRoot);
-  if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
-  const baseSha = commitOf(git, base, projectRoot);
-  if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
-  if (git(["show-ref", "--verify", "--quiet", `refs/heads/${base}`], projectRoot).code !== 0) {
-    throw new ArbabError(
-      "usage",
-      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not a branch: land merges the integration into its base, so the base must be a branch`
-    );
-  }
-  const trusted = input.config.baseBranch;
-  assertRevision3(trusted, "baseBranch");
-  if (!isAncestor(git, baseSha, trusted, projectRoot)) {
-    throw new ArbabError(
-      "usage",
-      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ${base} may hold worker code. Adopt against ${trusted}, or a branch it contains`
-    );
-  }
-  const fork = git(["merge-base", sha, baseSha], projectRoot);
-  if (fork.code !== 0 || !SHA2.test(fork.stdout.trim())) {
-    if (fork.code === 1) throw new ArbabError("usage", `${input.ref} shares no history with ${base}: there is nothing to land it into`);
-    throw new ArbabError("git", `git merge-base ${sha} ${baseSha} failed (${fork.code}): ${output2(fork)}`);
-  }
-  const start = fork.stdout.trim();
-  const trust = { projectRoot, baseBranch: trusted, confirmed: confirmedHeads(projectRoot, input.config, git), git };
-  if (!isTrustedInstallPoint(start, trust)) {
-    throw new ArbabError(
-      "usage",
-      `the fork point ${start} of ${input.ref} and ${base} is not a trusted install point (a commit of ${trusted} or an integration head a human confirmed), so arbab will not install dependencies there`
-    );
-  }
-  must2(git, ["worktree", "prune"], projectRoot);
-  ensureDir(dirname3(paths.worktree));
-  must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
-  try {
-    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
-    if (!deps.ok) {
-      const tail = deps.output.trim().split("\n").slice(-5).join("\n");
-      throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
-    }
-    if (sha !== start) {
-      const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
-      must2(git, [...prefix, "merge", "--ff-only", "--no-verify", sha], paths.worktree);
-    }
-  } catch (err) {
-    removeWorktree(git, paths);
-    git([...untrustedTree(), "branch", "-D", paths.branch], projectRoot);
-    throw err;
-  }
-  return integrate({ ...input, config: { ...input.config, baseBranch: base }, lanes: [] });
-}
-function refreshIntegration(input) {
-  const paths = integrationPaths(input.projectRoot, input.config, input.name);
-  refuseLanded(paths);
-  if (readIntegration(paths) === null) {
-    throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
-  }
-  if (!existsSync2(paths.worktree)) {
-    throw new ArbabError("usage", `integration ${paths.name} has no worktree at ${paths.worktree}; restore it on ${paths.branch} to refresh`);
-  }
-  const tracked = worktreeStatus(paths.worktree, ownedGitDir(paths, input.git), input.git).filter((l) => !l.startsWith("?? ")).map((l) => l.slice(3));
-  if (tracked.length > 0) {
-    const shown = tracked.slice(0, 5).join(", ") + (tracked.length > 5 ? ` and ${tracked.length - 5} more` : "");
-    throw new ArbabError(
-      "usage",
-      `integration ${paths.name} has uncommitted changes in ${paths.worktree} (${shown}); commit or discard them, then refresh`
-    );
-  }
-  return integrate({ ...input, lanes: [] });
-}
-function isRecord2(v) {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-var isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === "string");
-function isMergedEntry(v) {
-  return isRecord2(v) && typeof v["lane"] === "string" && typeof v["branch"] === "string" && typeof v["sha"] === "string" && isStringArray(v["manifests"]);
-}
-function mergedManifests(merged) {
-  return [...new Set(merged.flatMap((m) => m.manifests))].sort();
-}
-var isOptional = (v, check2) => v === void 0 || check2(v);
-function readIntegration(paths) {
-  const raw = readJson(paths.integration);
-  if (raw === null) return null;
-  const ok = isRecord2(raw) && raw["name"] === paths.name && typeof raw["branch"] === "string" && typeof raw["worktree"] === "string" && typeof raw["base"] === "string" && typeof raw["baseSha"] === "string" && Array.isArray(raw["merged"]) && raw["merged"].every(isMergedEntry) && isOptional(raw["manifests"], isStringArray) && isOptional(raw["depsConfirmedAt"], (v) => v === null || typeof v === "string" && SHA2.test(v)) && typeof raw["depsConfirmed"] === "boolean" && typeof raw["headSha"] === "string" && typeof raw["updatedAt"] === "string";
-  if (!ok) throw new ArbabError("io", `${paths.integration} is not an integration record for ${paths.name}`);
-  const stored = raw;
-  const manifests = stored.manifests ?? mergedManifests(stored.merged);
-  const depsConfirmedAt = stored.depsConfirmedAt ?? null;
-  return { ...stored, manifests, depsConfirmedAt, depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null };
-}
-function confirmCommand(name2, sha) {
-  return `arbab integrate ${name2} --deps-installed ${sha}`;
-}
-function confirmDeps(paths, sha, git, clock) {
-  refuseLanded(paths);
-  const previous = readIntegration(paths);
-  if (previous === null) throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate first`);
-  if (!SHA2.test(sha)) {
-    throw new ArbabError(
-      "usage",
-      `--deps-installed takes the full head sha arbab integrate printed, not ${JSON.stringify(sha)}; the recorded head is ${previous.headSha}: review its manifests, then run ${confirmCommand(paths.name, previous.headSha)}`
-    );
-  }
-  if (sha !== previous.headSha) {
-    throw new ArbabError(
-      "usage",
-      `integration ${paths.name} records head ${previous.headSha}, not ${sha}: it moved since you reviewed it. Review the manifests arbab integrate ${paths.name} lists for ${previous.headSha} (run it again with its lanes), then run ` + confirmCommand(paths.name, previous.headSha)
-    );
-  }
-  const headSha = commitOf(git, `refs/heads/${paths.branch}`, paths.projectRoot);
-  if (headSha === null) throw new ArbabError("git", `branch ${paths.branch} does not exist`);
-  if (headSha !== previous.headSha) {
-    throw new ArbabError(
-      "usage",
-      `${paths.branch} is at ${headSha}, not ${previous.headSha}, the head whose manifests arbab integrate listed; run arbab integrate ${paths.name} --refresh (or with its lanes) again, review the manifests it lists, then run the arbab integrate ${paths.name} --deps-installed <sha> it prints`
-    );
-  }
-  if (previous.manifests.length === 0) return previous;
-  const rec = { ...previous, depsConfirmedAt: headSha, depsConfirmed: true, updatedAt: isoAt(clock) };
-  writeJsonAtomic(paths.integration, rec);
-  return rec;
-}
+// src/hook/catchup.ts
+import { createHash as createHash4 } from "node:crypto";
+import { readdirSync as readdirSync10, readFileSync as readFileSync7, realpathSync as realpathSync6, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
+import { basename, isAbsolute as isAbsolute7, join as join22, normalize, relative as relative8, sep as sep8 } from "node:path";
 
 // src/registry/paths.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync4 } from "node:fs";
-import { join as join10 } from "node:path";
+import { existsSync, mkdirSync as mkdirSync2, readdirSync } from "node:fs";
+import { join as join3 } from "node:path";
 var ATTEMPT_DIR = /^attempt-([1-9][0-9]*)$/;
 function runPaths(runsRoot, lane) {
   assertValidName(lane, "lane");
   const laneDir = confine(runsRoot, lane);
   return {
     laneDir,
-    laneFile: join10(laneDir, "lane.json"),
-    stateFile: join10(laneDir, "state.json"),
-    shepherdFile: join10(laneDir, "shepherd.json"),
+    laneFile: join3(laneDir, "lane.json"),
+    stateFile: join3(laneDir, "state.json"),
+    shepherdFile: join3(laneDir, "shepherd.json"),
     attemptDir(n) {
       if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("usage", `attempt ${n} must be a positive integer`);
-      return join10(laneDir, `attempt-${n}`);
+      return join3(laneDir, `attempt-${n}`);
     }
   };
 }
 function attemptFiles(dir) {
   return {
-    brief: join10(dir, "brief.md"),
-    settings: join10(dir, "settings.json"),
-    args: join10(dir, "args.json"),
-    started: join10(dir, "started.json"),
-    stream: join10(dir, "stream.jsonl"),
-    stderr: join10(dir, "stderr.log"),
-    registration: join10(dir, "registration.json"),
-    exit: join10(dir, "exit.json"),
-    summary: join10(dir, "summary.json"),
-    report: join10(dir, "report.json"),
-    acked: join10(dir, "acked")
+    brief: join3(dir, "brief.md"),
+    settings: join3(dir, "settings.json"),
+    args: join3(dir, "args.json"),
+    started: join3(dir, "started.json"),
+    stream: join3(dir, "stream.jsonl"),
+    stderr: join3(dir, "stderr.log"),
+    registration: join3(dir, "registration.json"),
+    exit: join3(dir, "exit.json"),
+    summary: join3(dir, "summary.json"),
+    report: join3(dir, "report.json"),
+    acked: join3(dir, "acked")
   };
 }
 function entries(dir) {
   try {
-    return readdirSync4(dir, { withFileTypes: true });
+    return readdirSync(dir, { withFileTypes: true });
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw new ArbabError("io", `cannot list ${dir}: ${err.message}`, { cause: err });
@@ -2157,7 +685,7 @@ function createAttempt(runsRoot, lane) {
   for (; ; ) {
     const dir = paths.attemptDir(n);
     try {
-      mkdirSync3(dir);
+      mkdirSync2(dir);
       return { n, dir };
     } catch (err) {
       if (err.code !== "EEXIST") {
@@ -2179,13 +707,13 @@ function readAttempt(dir) {
     started: readObject(files.started),
     exit: readObject(files.exit),
     summary: readObject(files.summary),
-    acked: existsSync3(files.acked)
+    acked: existsSync(files.acked)
   };
 }
 
 // src/registry/events.ts
-import { appendFileSync, mkdirSync as mkdirSync4, readFileSync as readFileSync2 } from "node:fs";
-import { join as join11 } from "node:path";
+import { appendFileSync, mkdirSync as mkdirSync3, readFileSync as readFileSync2 } from "node:fs";
+import { join as join4 } from "node:path";
 
 // src/registry/state.ts
 var LANE_STATES = [
@@ -2197,20 +725,20 @@ var LANE_STATES = [
   "finished",
   "orphaned"
 ];
-function isRecord3(value) {
+function isRecord2(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const v = value;
   return isValidName(v["lane"]) && typeof v["state"] === "string" && LANE_STATES.includes(v["state"]) && Number.isSafeInteger(v["attempt"]) && typeof v["since"] === "string" && Number.isSafeInteger(v["shepherdPid"]);
 }
 function writeState(runsRoot, record2) {
-  if (!isRecord3(record2)) throw new ArbabError("usage", "invalid lane state record");
+  if (!isRecord2(record2)) throw new ArbabError("usage", "invalid lane state record");
   writeJsonAtomic(runPaths(runsRoot, record2.lane).stateFile, record2);
 }
 function readState(runsRoot, lane) {
   const path = runPaths(runsRoot, lane).stateFile;
   const value = readJson(path);
   if (value === null) return null;
-  if (!isRecord3(value) || value.lane !== lane) throw new ArbabError("io", `${path} is not a valid state record`);
+  if (!isRecord2(value) || value.lane !== lane) throw new ArbabError("io", `${path} is not a valid state record`);
   return value;
 }
 function effectiveState(record2, alive) {
@@ -2221,12 +749,12 @@ function effectiveState(record2, alive) {
 // src/registry/events.ts
 var EVENTS_FILE = "events.jsonl";
 function eventsFile(runsRoot, lane) {
-  return join11(runPaths(runsRoot, lane).laneDir, EVENTS_FILE);
+  return join4(runPaths(runsRoot, lane).laneDir, EVENTS_FILE);
 }
 function appendLaneEvent(runsRoot, lane, event) {
   try {
     const file = eventsFile(runsRoot, lane);
-    mkdirSync4(join11(file, ".."), { recursive: true });
+    mkdirSync3(join4(file, ".."), { recursive: true });
     appendFileSync(file, `${JSON.stringify(event)}
 `);
   } catch {
@@ -2234,26 +762,26 @@ function appendLaneEvent(runsRoot, lane, event) {
 }
 
 // src/registry/machine.ts
-import { createHash as createHash2 } from "node:crypto";
-import { readdirSync as readdirSync5, readFileSync as readFileSync3, rmSync as rmSync4 } from "node:fs";
-import { join as join12 } from "node:path";
+import { createHash } from "node:crypto";
+import { readdirSync as readdirSync2, readFileSync as readFileSync3, rmSync as rmSync2 } from "node:fs";
+import { join as join5 } from "node:path";
 var SHEPHERDS_DIR = "shepherds";
 var WAITERS_DIR = "waiters";
 var PROJECTS_DIR = "projects";
 var ENTRY_FILE = /^([1-9][0-9]*)\.json$/;
 function pidFile(home, dir, pid) {
   if (!Number.isSafeInteger(pid) || pid < 1) throw new ArbabError("usage", `pid ${pid} must be a positive integer`);
-  return join12(home, dir, `${pid}.json`);
+  return join5(home, dir, `${pid}.json`);
 }
 function remove(path) {
   try {
-    rmSync4(path, { force: true });
+    rmSync2(path, { force: true });
   } catch {
   }
 }
 function fileNames(dir) {
   try {
-    return readdirSync5(dir);
+    return readdirSync2(dir);
   } catch (err) {
     if (err.code === "ENOENT") return [];
     throw new ArbabError("io", `cannot list ${dir}: ${err.message}`, { cause: err });
@@ -2291,10 +819,10 @@ function asProject(v) {
 }
 function listByPid(home, dir, as, alive) {
   const out = [];
-  for (const file of fileNames(join12(home, dir))) {
+  for (const file of fileNames(join5(home, dir))) {
     const match = ENTRY_FILE.exec(file);
     if (match === null) continue;
-    const path = join12(home, dir, file);
+    const path = join5(home, dir, file);
     const entry = as(parsed(path));
     if (entry === null || entry.pid !== Number(match[1])) continue;
     if (!alive(entry.pid)) {
@@ -2324,7 +852,7 @@ function listWaiters(home, alive) {
   return listByPid(home, WAITERS_DIR, asWaiter, alive);
 }
 function projectFile(home, root) {
-  return join12(home, PROJECTS_DIR, `${createHash2("sha1").update(root).digest("hex")}.json`);
+  return join5(home, PROJECTS_DIR, `${createHash("sha1").update(root).digest("hex")}.json`);
 }
 function registerProject(home, root, at) {
   const entry = { root, lastLaunchAt: at };
@@ -2332,9 +860,9 @@ function registerProject(home, root, at) {
 }
 function listProjects(home) {
   const out = [];
-  for (const file of fileNames(join12(home, PROJECTS_DIR))) {
+  for (const file of fileNames(join5(home, PROJECTS_DIR))) {
     if (!/^[0-9a-f]{40}\.json$/.test(file)) continue;
-    const entry = asProject(parsed(join12(home, PROJECTS_DIR, file)));
+    const entry = asProject(parsed(join5(home, PROJECTS_DIR, file)));
     if (entry !== null) out.push(entry);
   }
   return out.sort((a, b) => a.root < b.root ? -1 : a.root > b.root ? 1 : 0);
@@ -2368,9 +896,9 @@ function ownedBy(record2, session, opts = {}) {
 }
 
 // src/registry/sessions.ts
-import { realpathSync as realpathSync5 } from "node:fs";
-import { isAbsolute as isAbsolute5, join as join13, relative as relative6, sep as sep6 } from "node:path";
-function runnerPath(path, realpath2 = (p) => realpathSync5.native(p)) {
+import { realpathSync as realpathSync3 } from "node:fs";
+import { isAbsolute as isAbsolute4, join as join6, relative as relative4, sep as sep4 } from "node:path";
+function runnerPath(path, realpath2 = (p) => realpathSync3.native(p)) {
   try {
     return realpath2(path);
   } catch {
@@ -2379,8 +907,8 @@ function runnerPath(path, realpath2 = (p) => realpathSync5.native(p)) {
 }
 function inside(root, path) {
   if (!sameOrInside(root, path)) return null;
-  const rel = relative6(foldPath(root), foldPath(path));
-  return rel === "" ? null : rel.split(sep6).join("/");
+  const rel = relative4(foldPath(root), foldPath(path));
+  return rel === "" ? null : rel.split(sep4).join("/");
 }
 var sorted = (values) => [...values].sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
 function otherSessions(input) {
@@ -2390,11 +918,11 @@ function otherSessions(input) {
   const base = input.changedBase === void 0 ? root : real2(input.changedBase);
   const changed = /* @__PURE__ */ new Map();
   for (const path of input.changed) {
-    const full = join13(base, path);
+    const full = join6(base, path);
     const key = inside(root, full);
     if (key === null) continue;
-    const rel = relative6(root, full);
-    changed.set(key, rel === ".." || rel.startsWith(`..${sep6}`) || isAbsolute5(rel) ? key : rel.split(sep6).join("/"));
+    const rel = relative4(root, full);
+    changed.set(key, rel === ".." || rel.startsWith(`..${sep4}`) || isAbsolute4(rel) ? key : rel.split(sep4).join("/"));
   }
   const byOwner = /* @__PURE__ */ new Map();
   const tally = (owner) => {
@@ -2572,9 +1100,9 @@ function formatStatusTable(rows, nowSec) {
 }
 
 // src/registry/wait.ts
-import { createHash as createHash3 } from "node:crypto";
-import { existsSync as existsSync4 } from "node:fs";
-import { join as join14 } from "node:path";
+import { createHash as createHash2 } from "node:crypto";
+import { existsSync as existsSync2 } from "node:fs";
+import { join as join7 } from "node:path";
 var isDone = (state) => state === "finished" || state === "orphaned";
 function doneRecord(runsRoot, lane, alive) {
   const record2 = readState(runsRoot, lane);
@@ -2589,11 +1117,11 @@ function isRunning(runsRoot, lane, alive) {
   return shepherd !== null && alive(shepherd.pid);
 }
 function ackedFile(runsRoot, lane) {
-  return join14(runPaths(runsRoot, lane).laneDir, "acked.json");
+  return join7(runPaths(runsRoot, lane).laneDir, "acked.json");
 }
 function runMarker(runsRoot, lane, run) {
-  const since = createHash3("sha256").update(run.since).digest("hex").slice(0, 16);
-  return join14(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
+  const since = createHash2("sha256").update(run.since).digest("hex").slice(0, 16);
+  return join7(runPaths(runsRoot, lane).laneDir, "acks", `${run.shepherdPid}-${since}`);
 }
 var sameRun = (a, b) => typeof a === "object" && a !== null && a["shepherdPid"] === b.shepherdPid && a["since"] === b.since;
 function isAcked(runsRoot, lane, run) {
@@ -2602,7 +1130,7 @@ function isAcked(runsRoot, lane, run) {
     recorded = readJson(ackedFile(runsRoot, lane));
   } catch {
   }
-  return sameRun(recorded, run) || existsSync4(runMarker(runsRoot, lane, run));
+  return sameRun(recorded, run) || existsSync2(runMarker(runsRoot, lane, run));
 }
 function ackRun(runsRoot, lane, run, attempt = null) {
   if (!Number.isSafeInteger(run.shepherdPid) || typeof run.since !== "string") throw new ArbabError("usage", "invalid lane run");
@@ -2611,7 +1139,7 @@ function ackRun(runsRoot, lane, run, attempt = null) {
   writeJsonAtomic(ackedFile(runsRoot, lane), { shepherdPid: run.shepherdPid, since: run.since, attempt });
   if (attempt !== null) {
     const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-    if (existsSync4(dir)) createExclusive(attemptFiles(dir).acked, `${attempt}
+    if (existsSync2(dir)) createExclusive(attemptFiles(dir).acked, `${attempt}
 `);
   }
   return true;
@@ -2625,7 +1153,7 @@ function pendingFinished(runsRoot, lanes, alive) {
     const run = { shepherdPid: record2.shepherdPid, since: record2.since };
     if (isAcked(runsRoot, lane, run)) continue;
     const dir = record2.attempt >= 1 ? runPaths(runsRoot, lane).attemptDir(record2.attempt) : null;
-    const attempt = dir !== null && existsSync4(dir) ? record2.attempt : null;
+    const attempt = dir !== null && existsSync2(dir) ? record2.attempt : null;
     const summary = attempt === null || dir === null ? null : readAttempt(dir).summary;
     const finished = record2.state === "finished";
     out.push({
@@ -2642,7 +1170,7 @@ function pendingFinished(runsRoot, lanes, alive) {
 }
 function ack(runsRoot, lane, attempt) {
   const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-  if (!existsSync4(dir)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt}`);
+  if (!existsSync2(dir)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt}`);
   const marked = createExclusive(attemptFiles(dir).acked, `${attempt}
 `);
   const record2 = readState(runsRoot, lane);
@@ -2657,7 +1185,7 @@ async function waitForFinished(options) {
   if (lanes) {
     for (const lane of lanes) {
       assertValidName(lane, "lane");
-      if (!existsSync4(runPaths(runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+      if (!existsSync2(runPaths(runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
     }
   }
   const start = clock.now();
@@ -2681,56 +1209,192 @@ async function waitForFinished(options) {
   }
 }
 
-// src/commands/generated.ts
-import { existsSync as existsSync5 } from "node:fs";
-import { join as join15 } from "node:path";
-var GENERATED = "generated.json";
-var BY = "integration:";
-var SHA3 = /^[0-9a-f]{40,64}$/;
-var ownerTag = (owner) => `${BY}${owner.integration}`;
-var markerPath = (runsRoot, lane) => join15(runsRoot, assertValidName(lane, "lane"), GENERATED);
-function markGenerated(runsRoot, lane, owner, now) {
-  const marker = { by: ownerTag(owner), createdAt: now, baseSha: owner.head };
-  writeJsonAtomic(markerPath(runsRoot, lane), marker);
+// src/summary/advice.ts
+var ATTENTION_END_STATES = /* @__PURE__ */ new Set([
+  "failed",
+  "invalid-report",
+  "no-result",
+  "budget",
+  "max-turns",
+  "unsupported-cli"
+]);
+function needsAttention(endState) {
+  if (endState === null) return false;
+  return ATTENTION_END_STATES.has(endState) || endState.startsWith("killed:");
 }
-function readGenerated(runsRoot, lane) {
-  const path = markerPath(runsRoot, lane);
-  if (!existsSync5(path)) return null;
-  let raw;
-  try {
-    raw = readJson(path);
-  } catch {
-    raw = null;
-  }
-  const fields = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
-  return {
-    by: typeof fields["by"] === "string" ? fields["by"] : null,
-    baseSha: typeof fields["baseSha"] === "string" && SHA3.test(fields["baseSha"]) ? fields["baseSha"] : null
-  };
-}
-function lanesGeneratedBy(runsRoot, integration) {
-  const tag = ownerTag({ integration });
-  return listLanes(runsRoot).filter((lane) => readGenerated(runsRoot, lane)?.by === tag);
-}
-function generatingIntegration(by) {
-  if (by?.startsWith(BY) !== true) return null;
-  const name2 = by.slice(BY.length);
-  return isValidName(name2) ? name2 : null;
-}
-function assertNotGenerated(runsRoot, lane) {
-  const marker = readGenerated(runsRoot, lane);
-  if (marker === null) return;
-  const owner = generatingIntegration(marker.by);
-  throw new ArbabError(
-    "usage",
-    `lane ${lane} was generated by ${owner === null ? "an integration" : `integration ${owner}`}, which owns the name; only its arbab verify or arbab review runs it. Give your lane another name`
-  );
+var ADVICE = {
+  "killed:wall": "ran past wallMin: read the last events; split the task or name the timeout, then relaunch or resume",
+  "killed:idle": "no stream growth for idleMin (often a foreground server or watcher): fix the brief, then resume or relaunch",
+  "killed:hang-after-result": "the work ended but the process hung: read report.json as for success; check the reaped pids in exit.json",
+  "killed:hang-after-error": "treat as the error it followed: read stderr.log and the last result",
+  "killed:stopped": "stopped by arbab stop: resume or relaunch when you have the correction",
+  "no-result": "crashed before a result: read stderr.log and exit.json, then decide as for failed",
+  "unsupported-cli": "the claude binary is too old for the model: run arbab doctor, upgrade or pin it, then relaunch",
+  budget: "spent budgetUsd: check the report and checkpoint, split or decide more, then resume or relaunch",
+  "max-turns": "hit the turn cap: check the report and checkpoint, split or decide more, then resume or relaunch",
+  "invalid-report": "the report is not usable: check the diff and reportErrors in summary.json; resume asking only for the report",
+  failed: "read the report, stderr.log and the last events; then arbab resume <lane> --prompt <file>, arbab resume <lane> --digest, or relaunch with a corrected brief",
+  orphaned: "the shepherd died before finishing: arbab cleanup, then decide as for failed"
+};
+function adviceFor(state) {
+  return Object.hasOwn(ADVICE, state) ? ADVICE[state] : "see references/end-states.md";
 }
 
-// src/commands/integration.ts
-import { createHash as createHash4 } from "node:crypto";
-import { existsSync as existsSync14 } from "node:fs";
-import { join as join32 } from "node:path";
+// src/quota/quota.ts
+import { existsSync as existsSync3, rmSync as rmSync3 } from "node:fs";
+import { join as join8 } from "node:path";
+
+// src/util/proc.ts
+function isAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+function sendSignal(target, signal) {
+  if (!Number.isInteger(target) || target === 0 || target === -1) {
+    throw new RangeError(`refusing to signal ${target}`);
+  }
+  try {
+    process.kill(target, signal);
+    return true;
+  } catch (err) {
+    if (err.code === "ESRCH") return false;
+    throw err;
+  }
+}
+var sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+var systemClock = { now: () => Date.now() };
+var isoAt = (clock) => new Date(clock.now()).toISOString();
+
+// src/quota/quota.ts
+var quotaPath = (home) => join8(home, "quota.json");
+var resetFile = (home) => join8(home, "quota-reset.json");
+function isWindow(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  return Number.isFinite(v["utilization"]) && Number.isFinite(v["resetsAt"]);
+}
+function isSnapshot(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value;
+  const nullableString = (x) => x === null || typeof x === "string";
+  return typeof v["observedAt"] === "string" && !Number.isNaN(Date.parse(v["observedAt"])) && nullableString(v["status"]) && nullableString(v["type"]) && (v["fiveHour"] === null || isWindow(v["fiveHour"])) && (v["sevenDay"] === null || isWindow(v["sevenDay"]));
+}
+function readQuota(home) {
+  let value;
+  try {
+    value = readJson(quotaPath(home));
+  } catch (err) {
+    if (err instanceof ArbabError) return null;
+    throw err;
+  }
+  return isSnapshot(value) ? value : null;
+}
+function updateQuota(home, snapshot) {
+  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
+  const stored = readQuota(home);
+  if (stored && Date.parse(snapshot.observedAt) <= Date.parse(stored.observedAt)) return false;
+  writeJsonAtomic(quotaPath(home), snapshot);
+  return true;
+}
+function resetQuota(home, clock) {
+  const path = quotaPath(home);
+  const existed = existsSync3(path);
+  try {
+    rmSync3(path, { force: true });
+  } catch (err) {
+    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
+  }
+  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
+  return existed;
+}
+function replaceQuota(home, snapshot, clock) {
+  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
+  writeJsonAtomic(quotaPath(home), snapshot);
+  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
+}
+function lastQuotaReset(home) {
+  let value;
+  try {
+    value = readJson(resetFile(home));
+  } catch (err) {
+    if (err instanceof ArbabError) return null;
+    throw err;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const resetAt = value["resetAt"];
+  if (typeof resetAt !== "string") return null;
+  const ms = Date.parse(resetAt);
+  return Number.isNaN(ms) ? null : ms;
+}
+var pct = (utilization) => `${Math.round(utilization * 100)}%`;
+var WINDOWS = [
+  { key: "fiveHour", name: "five-hour", label: "5h" },
+  { key: "sevenDay", name: "seven-day", label: "7d" }
+];
+function rejectedWindow(type) {
+  if (type?.startsWith("five_hour")) return "fiveHour";
+  if (type?.startsWith("seven_day")) return "sevenDay";
+  return null;
+}
+function holdDecision(snapshot, holdAbove, nowSec) {
+  if (!snapshot) return { hold: false, reason: null, until: null };
+  const reasons = [];
+  let until = null;
+  const named2 = snapshot.status === "rejected" ? rejectedWindow(snapshot.type) : null;
+  for (const { key, name: name2 } of WINDOWS) {
+    const window = snapshot[key];
+    if (!window || window.resetsAt <= nowSec) continue;
+    let reason = null;
+    if (snapshot.status === "rejected" && (named2 === null || named2 === key)) {
+      reason = `rate limit rejected (${name2} window at ${pct(window.utilization)})`;
+    } else if (window.utilization >= holdAbove[key]) {
+      reason = `${name2} window at ${pct(window.utilization)} (hold above ${pct(holdAbove[key])})`;
+    }
+    if (reason) {
+      reasons.push(reason);
+      until = Math.max(until ?? 0, window.resetsAt);
+    }
+  }
+  return reasons.length > 0 ? { hold: true, reason: reasons.join("; "), until } : { hold: false, reason: null, until: null };
+}
+function resumeAt(resetsAt, jitterSec) {
+  if (!Number.isFinite(jitterSec) || jitterSec < 0 || jitterSec > 60) {
+    throw new ArbabError("usage", `jitter ${jitterSec} must be between 0 and 60 seconds`);
+  }
+  return resetsAt + 60 + jitterSec;
+}
+var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function formatReset(resetsAt, nowSec) {
+  const at = new Date(resetsAt * 1e3);
+  const now = new Date(nowSec * 1e3);
+  const two = (n) => String(n).padStart(2, "0");
+  const time = `${two(at.getUTCHours())}:${two(at.getUTCMinutes())}Z`;
+  const sameDay = at.getUTCFullYear() === now.getUTCFullYear() && at.getUTCMonth() === now.getUTCMonth() && at.getUTCDate() === now.getUTCDate();
+  return sameDay ? time : `${MONTHS[at.getUTCMonth()]} ${at.getUTCDate()} ${time}`;
+}
+function formatQuota(snapshot, nowSec) {
+  if (!snapshot) return "quota unknown";
+  const parts = [];
+  for (const { key, label } of WINDOWS) {
+    const window = snapshot[key];
+    if (!window) continue;
+    parts.push(
+      window.resetsAt > nowSec ? `${label} ${pct(window.utilization)} (resets ${formatReset(window.resetsAt, nowSec)})` : `${label} \u2014 (reset ${formatReset(window.resetsAt, nowSec)})`
+    );
+  }
+  if (parts.length === 0) return "quota unknown";
+  if (snapshot.status === "rejected") parts.push("rejected");
+  return parts.join(" \xB7 ");
+}
+
+// src/quota/refresh.ts
+import { mkdtempSync, rmSync as rmSync4 } from "node:fs";
+import { join as join10 } from "node:path";
 
 // src/stream/classify.ts
 var UNSUPPORTED_CLI = /does not support this model|or newer is required/i;
@@ -2756,7 +1420,7 @@ function classifyAttempt(input) {
 }
 
 // src/stream/json.ts
-function isRecord4(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function stringOrNull(value) {
@@ -2819,16 +1483,16 @@ function failureCause(text2, deniedType) {
   return "real";
 }
 function quotaWindow(value) {
-  if (!isRecord4(value)) return null;
+  if (!isRecord3(value)) return null;
   const utilization = numberOrNull(value.utilization);
   const resetsAt = numberOrNull(value.resetsAt);
   return utilization === null || resetsAt === null ? null : { utilization, resetsAt };
 }
 function rateLimitFromEvent(event, observedAt) {
-  if (!isRecord4(event) || event.type !== "rate_limit_event") return null;
+  if (!isRecord3(event) || event.type !== "rate_limit_event") return null;
   const info = event.rate_limit_info;
-  if (!isRecord4(info)) return null;
-  const windows = isRecord4(info.unifiedWindows) ? info.unifiedWindows : {};
+  if (!isRecord3(info)) return null;
+  const windows = isRecord3(info.unifiedWindows) ? info.unifiedWindows : {};
   return {
     observedAt,
     status: stringOrNull(info.status),
@@ -2841,9 +1505,9 @@ function initFacts(event) {
   const plugins = [];
   for (const p of arrayOrEmpty(event.plugins)) {
     if (typeof p === "string") plugins.push(p);
-    else if (isRecord4(p) && typeof p.name === "string") plugins.push(p.name);
+    else if (isRecord3(p) && typeof p.name === "string") plugins.push(p.name);
   }
-  const timing = isRecord4(event.startup_timing) ? event.startup_timing : {};
+  const timing = isRecord3(event.startup_timing) ? event.startup_timing : {};
   return {
     tools: arrayOrEmpty(event.tools).filter((t) => typeof t === "string"),
     permissionMode: stringOrNull(event.permissionMode),
@@ -2872,7 +1536,7 @@ function resultFacts(event) {
   };
 }
 function tokenUsageOf(usage) {
-  if (!isRecord4(usage)) return null;
+  if (!isRecord3(usage)) return null;
   return {
     input: numberOrNull(usage.input_tokens) ?? 0,
     cacheCreation: numberOrNull(usage.cache_creation_input_tokens) ?? 0,
@@ -2895,7 +1559,7 @@ function maxGapMs(events) {
   let previous = null;
   let max = null;
   for (const e of events) {
-    if (!isRecord4(e) || typeof e.timestamp !== "string") continue;
+    if (!isRecord3(e) || typeof e.timestamp !== "string") continue;
     const ms = Date.parse(e.timestamp);
     if (Number.isNaN(ms)) continue;
     if (previous !== null) max = Math.max(max ?? 0, ms - previous, 0);
@@ -2905,13 +1569,13 @@ function maxGapMs(events) {
 }
 function toolResultText(content) {
   if (typeof content === "string") return content;
-  return arrayOrEmpty(content).map((item) => isRecord4(item) && typeof item.text === "string" ? item.text : "").join("\n");
+  return arrayOrEmpty(content).map((item) => isRecord3(item) && typeof item.text === "string" ? item.text : "").join("\n");
 }
 function contentBlocks(event) {
-  return isRecord4(event) && isRecord4(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord4) : [];
+  return isRecord3(event) && isRecord3(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord3) : [];
 }
 function toolUses(event) {
-  if (!isRecord4(event) || event.type !== "assistant") return [];
+  if (!isRecord3(event) || event.type !== "assistant") return [];
   const out = [];
   for (const block3 of contentBlocks(event)) {
     if (block3.type === "tool_use" && typeof block3.name === "string") out.push({ id: stringOrNull(block3.id), name: block3.name });
@@ -2919,7 +1583,7 @@ function toolUses(event) {
   return out;
 }
 function digestStream(events, observedAt, unparsedLines = 0) {
-  const records = events.filter(isRecord4);
+  const records = events.filter(isRecord3);
   let sessionId2 = null;
   let init = null;
   const results = [];
@@ -2944,7 +1608,7 @@ function digestStream(events, observedAt, unparsedLines = 0) {
       const type = stringOrNull(e.decision_reason_type);
       if (typeof e.tool_use_id === "string" && type) deniedTypes.set(e.tool_use_id, type);
     } else if (e.type === "assistant") {
-      if (isRecord4(e.message) && typeof e.message.id === "string") {
+      if (isRecord3(e.message) && typeof e.message.id === "string") {
         messageIds.add(e.message.id);
         const usage = tokenUsageOf(e.message.usage);
         if (usage !== null) usageById.set(e.message.id, usage);
@@ -3040,41 +1704,2748 @@ function buildAttemptSummary(input) {
 }
 
 // src/stream/transcript.ts
-import { readdirSync as readdirSync6, statSync as statSync3 } from "node:fs";
-import { join as join16 } from "node:path";
+import { readdirSync as readdirSync3, statSync as statSync2 } from "node:fs";
+import { join as join9 } from "node:path";
 var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function findTranscript(projectsDir, sessionId2) {
   if (!UUID.test(sessionId2)) return null;
   let dirs;
   try {
-    dirs = readdirSync6(projectsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
+    dirs = readdirSync3(projectsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort();
   } catch {
     return null;
   }
   const file = `${sessionId2}.jsonl`;
   for (const dir of dirs) {
-    const candidate = join16(projectsDir, dir, file);
-    if (statSync3(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
+    const candidate = join9(projectsDir, dir, file);
+    if (statSync2(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
   }
   return null;
 }
 function measuredEffort(transcriptText) {
   const counts = new Counter();
   for (const entry of parseStream(transcriptText).events) {
-    if (isRecord4(entry) && entry.type === "assistant" && typeof entry.effort === "string" && entry.effort !== "") {
+    if (isRecord3(entry) && entry.type === "assistant" && typeof entry.effort === "string" && entry.effort !== "") {
       counts.add(entry.effort);
     }
   }
   return counts.toObject();
 }
 
+// src/quota/refresh.ts
+var REFRESH_PROMPT = "Reply with the single word: ok";
+var REFRESH_TIMEOUT_MS = 6e4;
+var STDERR_TAIL_LINES = 5;
+var STDERR_KEEP_CHARS = 16384;
+var TAIL_LINE_CHARS = 500;
+function refreshArgs() {
+  return [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--model",
+    "haiku",
+    "--max-turns",
+    "1",
+    "--tools",
+    "",
+    // The same empty source list as a worker's: no user, project or local settings.
+    "--setting-sources",
+    "",
+    "--strict-mcp-config"
+  ];
+}
+function makeRefreshSpawn(spawnImpl, graceMs = 2e3) {
+  return (binary, args, opts) => new Promise((resolve20) => {
+    const out = [];
+    let err = "";
+    let timedOut = false;
+    let exit = null;
+    const timers = [];
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
+      resolve20({ code: exit?.code ?? null, signal: exit?.signal ?? null, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: err });
+    };
+    let child2;
+    try {
+      child2 = spawnImpl(binary, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
+    } catch (e) {
+      err = `cannot start ${binary}: ${e.message}`;
+      finish();
+      return;
+    }
+    const kill = (sig) => {
+      try {
+        child2.kill(sig);
+      } catch {
+      }
+    };
+    child2.stdout?.on("data", (chunk) => out.push(chunk));
+    child2.stderr?.on("data", (chunk) => {
+      err = (err + chunk.toString("utf8")).slice(-STDERR_KEEP_CHARS);
+    });
+    child2.once("error", (e) => {
+      err += `${err === "" || err.endsWith("\n") ? "" : "\n"}${e.message}
+`;
+      if (child2.pid === void 0) finish();
+    });
+    child2.once("exit", (code4, signal) => {
+      exit = { code: code4, signal };
+      if (!timedOut) for (const t of timers.splice(0)) clearTimeout(t);
+      timers.push(setTimeout(finish, graceMs));
+    });
+    child2.once("close", finish);
+    timers.push(
+      setTimeout(() => {
+        timedOut = true;
+        kill("SIGTERM");
+        timers.push(
+          setTimeout(() => {
+            kill("SIGKILL");
+            timers.push(setTimeout(finish, graceMs));
+          }, graceMs)
+        );
+      }, opts.timeoutMs)
+    );
+    child2.stdin?.on("error", () => void 0);
+    child2.stdin?.end(opts.input);
+  });
+}
+function stderrTail(stderr) {
+  return stderr.split("\n").map((line2) => line2.trimEnd()).filter((line2) => line2.trim() !== "").slice(-STDERR_TAIL_LINES).map((line2) => line2.length > TAIL_LINE_CHARS ? `${line2.slice(0, TAIL_LINE_CHARS)}\u2026` : line2);
+}
+async function refreshQuota(input) {
+  const timeoutMs = input.timeoutMs ?? REFRESH_TIMEOUT_MS;
+  const tmpRoot = join10(input.home, "tmp");
+  let cwd;
+  try {
+    ensureDir(tmpRoot);
+    cwd = mkdtempSync(join10(tmpRoot, "quota-refresh-"));
+  } catch (err) {
+    throw new ArbabError("io", `cannot create a working directory under ${tmpRoot}: ${err.message}`, { cause: err });
+  }
+  let run;
+  try {
+    run = await input.spawn(input.binary, refreshArgs(), { cwd, env: input.env, input: REFRESH_PROMPT, timeoutMs });
+  } finally {
+    rmSync4(cwd, { recursive: true, force: true });
+  }
+  const fail2 = (what) => {
+    const tail = stderrTail(run.stderr);
+    const lines = tail.length === 0 ? ["  (stderr empty)"] : tail.map((line2) => `  ${line2}`);
+    return new ArbabError("runtime", [`refresh failed: ${what}; ${quotaPath(input.home)} is unchanged`, "stderr:", ...lines].join("\n"));
+  };
+  if (run.timedOut) throw fail2(`claude did not finish within ${Math.round(timeoutMs / 1e3)} s`);
+  if (run.code !== 0) throw fail2(`claude exited with ${run.code === null ? `signal ${run.signal ?? "unknown"}` : `code ${run.code}`}`);
+  const parsed2 = parseStream(run.stdout);
+  const snapshot = digestStream(parsed2.events, isoAt(input.clock), parsed2.unparsedLines).rateLimit;
+  if (snapshot === null) throw fail2("claude's stream had no rate_limit_event");
+  replaceQuota(input.home, snapshot, input.clock);
+  return snapshot;
+}
+
+// src/summary/integrations.ts
+import { existsSync as existsSync6 } from "node:fs";
+
+// src/review/findings.ts
+var SEVERITIES = ["HIGH", "MEDIUM", "LOW"];
+function text(v) {
+  return typeof v === "string" && v.trim() !== "" ? v : null;
+}
+function severity(v) {
+  return SEVERITIES.includes(v) ? v : null;
+}
+function parseFinding(lens, raw) {
+  if (!isRecord3(raw)) return null;
+  const title = text(raw.title);
+  const sev = severity(raw.severity);
+  const file = text(raw.file);
+  const failureScenario = text(raw.failure_scenario);
+  const evidence = text(raw.evidence);
+  if (title === null || sev === null || file === null || failureScenario === null || evidence === null) return null;
+  const finding = { lens, title, severity: sev, file, failureScenario, evidence, verdict: "unverified" };
+  if (Number.isInteger(raw.line) && raw.line >= 1) finding.line = raw.line;
+  if (text(raw.suggested_fix) !== null) finding.suggestedFix = raw.suggested_fix;
+  return finding;
+}
+function collectFindings(reports) {
+  const out = [];
+  const counts = /* @__PURE__ */ new Map();
+  for (const { lens, report } of reports) {
+    if (!isRecord3(report) || !Array.isArray(report.findings)) continue;
+    for (const raw of report.findings) {
+      const finding = parseFinding(lens, raw);
+      if (finding === null) continue;
+      const n = (counts.get(lens) ?? 0) + 1;
+      counts.set(lens, n);
+      out.push({ id: `${lens}-${n}`, ...finding });
+    }
+  }
+  return out;
+}
+function reviewerCoverage(report) {
+  if (!isRecord3(report)) return { coverage: null, pathsChecked: 0 };
+  const paths = Array.isArray(report.paths_checked) ? report.paths_checked.filter((p) => text(p) !== null) : [];
+  return { coverage: text(report.coverage), pathsChecked: new Set(paths).size };
+}
+function parseVerdicts(raw) {
+  const list3 = Array.isArray(raw) ? raw : isRecord3(raw) && Array.isArray(raw.verdicts) ? raw.verdicts : [];
+  const out = /* @__PURE__ */ new Map();
+  for (const v of list3) {
+    if (!isRecord3(v) || typeof v.id !== "string" || typeof v.refuted !== "boolean" || typeof v.reasoning !== "string") {
+      continue;
+    }
+    const sev = v.corrected_severity === "NONE" ? "NONE" : severity(v.corrected_severity);
+    if (sev === null) continue;
+    if (!out.has(v.id)) out.set(v.id, { refuted: v.refuted, severity: sev, reasoning: v.reasoning });
+  }
+  return out;
+}
+function applyVerdicts(findings, verdicts) {
+  const byId = parseVerdicts(verdicts);
+  return findings.map((f) => {
+    const v = byId.get(f.id);
+    if (v === void 0 || f.severity === "LOW") return { ...f };
+    if (v.refuted || v.severity === "NONE") return { ...f, verdict: "refuted", verdictReason: v.reasoning };
+    return { ...f, severity: v.severity, verdict: "confirmed", verdictReason: v.reasoning };
+  });
+}
+function reviewRecord(input) {
+  return {
+    name: input.name,
+    headSha: input.headSha,
+    lenses: input.lenses.map((l) => ({ ...l })),
+    skeptics: input.skeptics.map((s) => ({ ...s })),
+    findings: input.findings.map((f) => ({ ...f })),
+    finishedAt: new Date(input.now).toISOString(),
+    ...input.since !== void 0 && { since: input.since }
+  };
+}
+
+// src/review/history.ts
+import { readdirSync as readdirSync4 } from "node:fs";
+import { join as join11 } from "node:path";
+var ROUND_FILE = /^([1-9][0-9]{0,8})\.json$/;
+function reviewRoundPath(integrationDir, round) {
+  if (!Number.isInteger(round) || round < 1) throw new ArbabError("usage", `review round ${round} is not a positive integer`);
+  return join11(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
+}
+function reviewRounds(integrationDir) {
+  let names2;
+  try {
+    names2 = readdirSync4(join11(integrationDir, REVIEW_HISTORY_DIR));
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw new ArbabError("io", `cannot list ${join11(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
+  }
+  return names2.flatMap((n) => {
+    const round = ROUND_FILE.exec(n)?.[1];
+    return round === void 0 ? [] : [Number(round)];
+  }).sort((a, b) => a - b);
+}
+function writeReviewRound(integrationDir, record2) {
+  for (let round = (reviewRounds(integrationDir).at(-1) ?? 0) + 1; ; round++) {
+    const numbered = { ...record2, round };
+    if (createExclusive(reviewRoundPath(integrationDir, round), JSON.stringify(numbered, null, 2) + "\n")) return numbered;
+  }
+}
+function keepOtherLenses(previous, current, ran) {
+  if (previous === null || previous.headSha !== current.headSha) return current;
+  const rerun = new Set(ran);
+  const fresh2 = new Map(current.lenses.map((l) => [l.lens, l]));
+  const lenses2 = [];
+  for (const entry of previous.lenses) {
+    if (!rerun.has(entry.lens)) lenses2.push({ ...entry });
+    else {
+      const now = fresh2.get(entry.lens);
+      if (now !== void 0 && !lenses2.includes(now)) lenses2.push(now);
+    }
+  }
+  for (const entry of current.lenses) if (!lenses2.includes(entry)) lenses2.push(entry);
+  const order = new Map(lenses2.map((l, i) => [l.lens, i]));
+  const byLens = (items) => items.map((item, i) => ({ item, i })).sort((a, b) => (order.get(a.item.lens) ?? order.size) - (order.get(b.item.lens) ?? order.size) || a.i - b.i).map((x) => x.item);
+  const kept = (items) => items.filter((x) => !rerun.has(x.lens)).map((x) => ({ ...x }));
+  return {
+    ...current,
+    lenses: lenses2,
+    skeptics: byLens([...kept(previous.skeptics), ...current.skeptics]),
+    findings: byLens([...kept(previous.findings), ...current.findings])
+  };
+}
+
+// src/review/lanes.ts
+import { isAbsolute as isAbsolute5, relative as relative5, sep as sep5 } from "node:path";
+var MAX_LANE_NAME = 48;
+var MAX_FINDINGS = 10;
+var REF = /^[A-Za-z0-9._/@^~{}-]+$/;
+function reviewLaneFiles(paths, lane) {
+  const name2 = assertValidName(lane, "lane name");
+  const rel = relative5(paths.projectRoot, paths.lanesDir);
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep5}`) || isAbsolute5(rel)) {
+    throw new ArbabError("usage", `the lanes directory ${paths.lanesDir} is not inside the project ${paths.projectRoot}`);
+  }
+  const dir = rel.split(sep5).join("/");
+  return { brief: `${dir}/${name2}.md`, schema: `${dir}/${name2}.schema.json` };
+}
+function startFields(start) {
+  const base = checkRef(start.base, "base");
+  if (start.mergeBranches === void 0) return { base };
+  return { base, mergeBranches: start.mergeBranches.map((ref2) => checkRef(ref2, "merge branch")) };
+}
+function laneName(name2, kind, lens) {
+  assertValidName(name2, "integration name");
+  assertValidName(lens, "lens");
+  const lane = `${name2}-${kind}-${lens}`;
+  if (lane.length > MAX_LANE_NAME) {
+    throw new ArbabError(
+      "usage",
+      `lane name ${lane} has ${lane.length} characters (at most ${MAX_LANE_NAME}): shorten the integration name or the lens`
+    );
+  }
+  return assertValidName(lane, "lane name");
+}
+function assertReviewLaneNames(name2, lenses2) {
+  for (const lens of lenses2) for (const kind of ["review", "skeptic"]) laneName(name2, kind, lens);
+}
+function checkRef(ref2, what) {
+  if (ref2.startsWith("-") || ref2.includes("..") || !REF.test(ref2)) {
+    throw new ArbabError("usage", `${what} ${JSON.stringify(ref2)} is not a plain git ref`);
+  }
+  return ref2;
+}
+function quote(text2) {
+  return text2.trim().split(/\r?\n/).map((line2) => line2 === "" ? ">" : `> ${line2}`).join("\n");
+}
+function reviewLane(input) {
+  const name2 = input.paths.name;
+  const lane = laneName(name2, "review", input.lens);
+  const base = checkRef(input.diffBase, "diff base");
+  if (input.text.trim() === "") throw new ArbabError("usage", `lens ${input.lens} has no text`);
+  const start = startFields(input);
+  const range2 = `${base}..HEAD`;
+  const since = input.since === true ? `
+
+The branch's earlier commits were reviewed in an earlier round: this round covers only what changed since
+\`${base}\`.` : "";
+  const brief = `# Review ${name2}: ${input.lens}
+
+## Task
+
+Review the change on this branch through the **${input.lens}** lens. Run \`git diff ${range2}\` to see the change, and
+\`git diff --stat ${range2}\` for the files it touches.${since}
+
+The ${input.lens} lens looks for:
+
+${quote(input.text)}
+
+Depth floor:
+
+- Read in full every file the diff changes, not only the hunks.
+- Where a finding depends on code the changed files call, read that code too; do not assume what it does.
+
+Findings:
+
+- Every finding names a file, a line, a concrete failure scenario (the inputs or events, and what goes wrong) and
+  evidence (the code that does it, quoted or cited by line).
+- At most ${MAX_FINDINGS} findings, strongest first. Severity: HIGH loses or corrupts work, escapes the fence or
+  leaks secrets; MEDIUM is wrong behaviour on a reachable path; LOW is a real but minor defect.
+- No style remarks. Report no finding rather than a speculative one.
+
+## Scope
+
+Read-only. Do not edit, create or delete files, and do not commit.
+
+## Acceptance
+
+- \`paths_checked\` lists every file you read in full.
+- \`coverage\` says what you verified and how, and what you did not check.
+- Each finding has a file, a line, a failure scenario and evidence.
+`;
+  const spec = {
+    name: lane,
+    role: "reviewer",
+    brief: reviewLaneFiles(input.paths, lane).brief,
+    ...start
+  };
+  return { spec, brief };
+}
+var SEVERITY_VERDICTS = ["HIGH", "MEDIUM", "LOW", "NONE"];
+var SKEPTIC_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    verdicts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          refuted: { type: "boolean" },
+          corrected_severity: { type: "string", enum: SEVERITY_VERDICTS },
+          reasoning: { type: "string" }
+        },
+        required: ["id", "refuted", "corrected_severity", "reasoning"]
+      }
+    }
+  },
+  required: ["verdicts"]
+};
+function skepticFindings(lens, findings) {
+  return findings.filter((f) => f.lens === lens && (f.severity === "HIGH" || f.severity === "MEDIUM"));
+}
+function skepticLane(input) {
+  const name2 = input.paths.name;
+  const lane = laneName(name2, "skeptic", input.lens);
+  const findings = skepticFindings(input.lens, input.findings);
+  if (findings.length === 0) {
+    throw new ArbabError("usage", `lens ${input.lens} has no MEDIUM or HIGH findings: no skeptic lane is needed`);
+  }
+  const base = input.diffBase === void 0 ? null : checkRef(input.diffBase, "diff base");
+  const start = startFields(input);
+  const listed = findings.map((f) => ({
+    id: f.id,
+    severity: f.severity,
+    title: f.title,
+    file: f.file,
+    ...f.line === void 0 ? {} : { line: f.line },
+    failure_scenario: f.failureScenario,
+    evidence: f.evidence
+  }));
+  const provenance = base === null ? "use the file's history (`git log` and `git blame`) to tell" : `run \`git diff ${base}..HEAD\` and the file's history to tell`;
+  const brief = `# Skeptic ${name2}: ${input.lens}
+
+## Task
+
+A reviewer reported the findings below about the change on this branch, through the **${input.lens}** lens. Try to
+refute each one. Check every finding from three angles:
+
+- Trace: does the code do what the finding says? Read the cited file and line and follow the calls.
+- Reachability: can it happen with real inputs, callers and configuration, not only in theory?
+- Provenance: was it introduced by this change or was it there before? To check, ${provenance}. A pre-existing defect
+  is still real: do not refute it for that, but say "pre-existing" in the reasoning.
+
+Give one verdict per finding id: \`refuted\` true when the finding is wrong or cannot happen, and the severity it
+really has (\`NONE\` when it is not a defect). If still uncertain after checking the code, refute it.
+
+The findings:
+
+\`\`\`json
+${JSON.stringify(listed, null, 2)}
+\`\`\`
+
+## Scope
+
+Read-only. Do not edit, create or delete files, and do not commit.
+
+## Acceptance
+
+- \`verdicts\` has exactly one entry for each finding id listed in the Task.
+- Each \`reasoning\` names the code it checked (file and line) for the trace, reachability and provenance angles.
+`;
+  const files = reviewLaneFiles(input.paths, lane);
+  const spec = {
+    name: lane,
+    role: "reviewer",
+    brief: files.brief,
+    ...start,
+    schema: files.schema
+  };
+  return { spec, brief, schema: SKEPTIC_SCHEMA };
+}
+
+// src/review/lenses.ts
+var BUILTIN_LENSES = Object.freeze({
+  correctness: "Wrong behaviour on reachable paths, lost or duplicated work, wrong end states, time and unit errors, resource leaks.",
+  security: "Fence escapes, code from workers running on the host, path traversal and symlinks, argument injection, secrets on disk or in logs, signals to the wrong processes, races.",
+  contracts: "Files and fields modules disagree on, behaviour against DESIGN.md, duplicated logic, untested exports, bundle-only breakage."
+});
+function lensNames(configLenses) {
+  const names2 = Object.keys(BUILTIN_LENSES);
+  for (const name2 of Object.keys(configLenses)) if (!names2.includes(name2)) names2.push(name2);
+  return names2;
+}
+function lensText(lens, configLenses) {
+  if (Object.hasOwn(configLenses, lens)) return configLenses[lens] ?? null;
+  return Object.hasOwn(BUILTIN_LENSES, lens) ? BUILTIN_LENSES[lens] ?? null : null;
+}
+var MAX_LENS_FILE_TEXT = 8e3;
+function parseLensFileOption(option) {
+  const at = option.indexOf("=");
+  if (at <= 0 || at === option.length - 1) {
+    throw new ArbabError("usage", `--lens-file ${JSON.stringify(option)} must be <name>=<file>`);
+  }
+  return { name: assertValidName(option.slice(0, at), "lens"), file: option.slice(at + 1) };
+}
+function lensFileText(name2, text2) {
+  const trimmed = text2.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_LENS_FILE_TEXT) {
+    throw new ArbabError("usage", `the file of lens ${name2} has ${trimmed.length} characters; a lens text has 1 to ${MAX_LENS_FILE_TEXT}`);
+  }
+  return trimmed;
+}
+
+// src/commands/records.ts
+var isObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isString = (v) => typeof v === "string";
+var isStringOrNull = (v) => v === null || typeof v === "string";
+var isNumberOrNull = (v) => v === null || Number.isFinite(v);
+var listOf = (v, item) => Array.isArray(v) && v.every(item);
+function read(path, name2, what, valid) {
+  const raw = readJson(path);
+  if (raw === null) return null;
+  if (!isObject2(raw) || raw["name"] !== name2 || !valid(raw)) {
+    throw new ArbabError("io", `${path} is not a ${what} for ${name2}`);
+  }
+  return raw;
+}
+var isGateResult = (v) => isObject2(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && listOf(v["argv"], isString) && isString(v["command"]) && isNumberOrNull(v["exitCode"]);
+function readVerifyRecord(path, name2) {
+  return read(
+    path,
+    name2,
+    "verify record",
+    (v) => isString(v["lane"]) && isNumberOrNull(v["attempt"]) && isString(v["headSha"]) && listOf(v["results"], isGateResult) && typeof v["passed"] === "boolean" && (v["reason"] === void 0 || isString(v["reason"])) && isString(v["finishedAt"])
+  );
+}
+var SEVERITIES2 = ["HIGH", "MEDIUM", "LOW"];
+var VERDICTS = ["confirmed", "refuted", "unverified"];
+var isFinding = (v) => isObject2(v) && isString(v["id"]) && isString(v["lens"]) && isString(v["title"]) && SEVERITIES2.includes(v["severity"]) && isString(v["file"]) && (v["line"] === void 0 || Number.isInteger(v["line"])) && isString(v["failureScenario"]) && isString(v["evidence"]) && VERDICTS.includes(v["verdict"]);
+var isLensEntry = (v) => isObject2(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]) && isStringOrNull(v["coverage"]) && Number.isInteger(v["pathsChecked"]);
+var isSkepticEntry = (v) => isObject2(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]);
+function readReviewRecord(path, name2) {
+  return read(
+    path,
+    name2,
+    "review record",
+    (v) => isString(v["headSha"]) && listOf(v["lenses"], isLensEntry) && listOf(v["skeptics"], isSkepticEntry) && listOf(v["findings"], isFinding) && isString(v["finishedAt"]) && (v["round"] === void 0 || Number.isInteger(v["round"]) && v["round"] >= 1) && (v["since"] === void 0 || isStringOrNull(v["since"]))
+  );
+}
+var isItem = (v) => isObject2(v) && isString(v["id"]) && isString(v["text"]);
+function readReadinessReport(path, name2) {
+  return read(
+    path,
+    name2,
+    "readiness report",
+    (v) => TIERS.includes(v["tier"]) && isString(v["headSha"]) && listOf(v["verified"], isItem) && listOf(v["skipped"], (s) => isItem(s) && typeof s["waived"] === "boolean") && listOf(v["risks"], isItem) && typeof v["ready"] === "boolean" && isString(v["createdAt"])
+  );
+}
+
+// src/integrate/integrate.ts
+import { existsSync as existsSync5, readdirSync as readdirSync7, realpathSync as realpathSync5, renameSync as renameSync3 } from "node:fs";
+import { dirname as dirname3, join as join18, resolve as resolve8 } from "node:path";
+
+// src/run/git.ts
+import { spawnSync } from "node:child_process";
+import { existsSync as existsSync4, lstatSync, realpathSync as realpathSync4, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname2, isAbsolute as isAbsolute6, join as join12, relative as relative6, resolve as resolve4, sep as sep6 } from "node:path";
+function makeGitRunner(env2) {
+  return (args, cwd) => {
+    const r = spawnSync("git", args, { cwd, env: env2, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    if (r.error) return { code: 127, stdout: "", stderr: r.error.message };
+    return { code: r.status ?? 128, stdout: r.stdout, stderr: r.stderr };
+  };
+}
+var nodeGit = makeGitRunner();
+function must(git, args, cwd, options = []) {
+  const r = git([...options, ...args], cwd);
+  if (r.code !== 0) {
+    throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
+  }
+  return r.stdout;
+}
+function ensureIgnored(projectRoot, entries3, git) {
+  const excludeRel = must(git, ["rev-parse", "--git-path", "info/exclude"], projectRoot).trim();
+  if (excludeRel === "") throw new ArbabError("git", "git rev-parse --git-path info/exclude printed nothing");
+  const exclude = resolve4(projectRoot, excludeRel);
+  const text2 = readText(exclude) ?? "";
+  const present = new Set(text2.split(/\r?\n/).map((line2) => line2.trim()));
+  const missing = entries3.filter((entry) => !present.has(entry));
+  if (missing.length > 0) {
+    const prefix = text2 === "" || text2.endsWith("\n") ? "" : "\n";
+    ensureDir(dirname2(exclude));
+    writeFileSync2(exclude, text2 + prefix + missing.join("\n") + "\n");
+  }
+  for (const entry of entries3) {
+    const probe = `${entry.replace(/\/+$/, "")}/x`;
+    const r = git(["check-ignore", "-q", "--", probe], projectRoot);
+    if (r.code !== 0) throw new ArbabError("git", `${entry} is not ignored by git in ${projectRoot}`);
+  }
+}
+function canonical(path) {
+  try {
+    return realpathSync4(path);
+  } catch {
+    return resolve4(path);
+  }
+}
+function listWorktrees(projectRoot, git) {
+  const out = /* @__PURE__ */ new Map();
+  for (const block3 of must(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
+    const lines = block3.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === void 0) continue;
+    out.set(canonical(path), lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null);
+  }
+  return out;
+}
+function branchExists(projectRoot, branch, git) {
+  return git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], projectRoot).code === 0;
+}
+function refuseWorkerBranch(projectRoot, branch, base, path, git) {
+  const r = git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, base], projectRoot);
+  if (r.code === 0) return;
+  if (r.code !== 1) {
+    throw new ArbabError("git", `git merge-base --is-ancestor refs/heads/${branch} ${base} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
+  }
+  throw new ArbabError(
+    "git",
+    `the worktree ${path} is missing, and its branch ${branch} holds worker commits that are not on ${base}; arbab installs dependencies only on a trusted base. Restore the worktree at ${path}, or delete the branch ${branch}`
+  );
+}
+function assertRevision(rev, what) {
+  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+  return rev;
+}
+function commonDir(projectRoot, git) {
+  const out = must(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
+  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
+  return canonical(resolve4(projectRoot, out));
+}
+function createWorktree(input) {
+  const lane = assertValidName(input.lane, "lane");
+  const path = join12(confine(input.projectRoot, input.root), lane);
+  const branch = `arbab/${lane}`;
+  if (existsSync4(path)) {
+    const ref2 = listWorktrees(input.projectRoot, input.git).get(canonical(path));
+    if (ref2 !== void 0) {
+      if (ref2 !== `refs/heads/${branch}`) {
+        throw new ArbabError("git", `${path} is a worktree on ${ref2 ?? "a detached HEAD"}, not on ${branch}; lane ${lane} cannot run there`);
+      }
+      return { path, branch, created: false, gitCommonDir: commonDir(input.projectRoot, input.git) };
+    }
+  }
+  const trusted = assertRevision(input.trustedBase, "trusted base");
+  if (typeof input.base === "string") assertRevision(input.base, "base");
+  must(input.git, ["worktree", "prune"], input.projectRoot);
+  ensureDir(dirname2(path));
+  if (branchExists(input.projectRoot, branch, input.git)) {
+    refuseWorkerBranch(input.projectRoot, branch, trusted, path, input.git);
+    must(input.git, ["worktree", "add", path, branch], input.projectRoot, untrustedTree());
+  } else {
+    const base = assertRevision(typeof input.base === "string" ? input.base : input.base(), "base");
+    must(input.git, ["worktree", "add", "-b", branch, path, base], input.projectRoot, untrustedTree());
+  }
+  return { path, branch, created: true, gitCommonDir: commonDir(input.projectRoot, input.git) };
+}
+function discardWorktree(input) {
+  const lane = assertValidName(input.lane, "lane");
+  const path = join12(confine(input.projectRoot, input.root), lane);
+  const branch = `arbab/${lane}`;
+  const sources = input.sources.map((s) => assertRevision(s, "source"));
+  const head = branchExists(input.projectRoot, branch, input.git);
+  const keeps = [];
+  if (head) {
+    const extra = must(input.git, ["rev-list", `refs/heads/${branch}`, "--not", ...sources, "--"], input.projectRoot).split("\n").filter((l) => l !== "");
+    if (extra.length > 0) {
+      const shown = extra.slice(0, 3).join(", ") + (extra.length > 3 ? ` and ${extra.length - 3} more` : "");
+      keeps.push(`commits on ${branch} that are not on its base, its merge branches or the trusted base: ${shown}`);
+    }
+  }
+  if (existsSync4(path)) {
+    const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: input.gitCommonDir });
+    if (verified.gitDir === null) {
+      keeps.push(`a git dir that cannot be verified (${verified.error})`);
+    } else {
+      const changes = worktreeStatus(path, verified.gitDir, input.git);
+      if (changes.length > 0) {
+        const shown = changes.slice(0, 5).join("; ") + (changes.length > 5 ? `; and ${changes.length - 5} more` : "");
+        keeps.push(`uncommitted changes (${shown})`);
+      }
+    }
+  }
+  if (keeps.length > 0) {
+    throw new ArbabError(
+      "git",
+      `no worker has run in ${path}, but it holds what arbab cannot rebuild: ${keeps.join("; ")}. arbab will neither install dependencies there nor remove it. Keep what you need, remove the worktree and the branch ${branch}, then launch ${lane} again`
+    );
+  }
+  if (existsSync4(path)) must(input.git, ["worktree", "remove", "--force", path], input.projectRoot, untrustedTree());
+  must(input.git, ["worktree", "prune"], input.projectRoot);
+  if (head) must(input.git, ["branch", "-D", branch], input.projectRoot, untrustedTree());
+}
+function verifyWorktreeGit(input) {
+  const fail2 = (error) => ({ gitDir: null, error });
+  const read2 = (path) => {
+    try {
+      return readText(path);
+    } catch {
+      return null;
+    }
+  };
+  const common = canonical(input.gitCommonDir);
+  const pointer = /^gitdir: (.+)$/.exec((read2(join12(input.worktree, ".git")) ?? "").trim());
+  if (pointer?.[1] === void 0) return fail2(`${join12(input.worktree, ".git")} is not a worktree's gitdir pointer`);
+  const gitDir = canonical(resolve4(input.worktree, pointer[1]));
+  const rel = relative6(join12(common, "worktrees"), gitDir);
+  if (rel === "" || rel.startsWith("..") || isAbsolute6(rel) || rel.includes(sep6)) {
+    return fail2(`git dir ${gitDir} is not under ${join12(common, "worktrees")}`);
+  }
+  const head = read2(join12(gitDir, "HEAD"))?.trim();
+  if (head !== `ref: refs/heads/${input.branch}`) return fail2(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ref: refs/heads/${input.branch}`);
+  const commondir = read2(join12(gitDir, "commondir"))?.trim();
+  if (commondir === void 0 || commondir === "" || canonical(resolve4(gitDir, commondir)) !== common) {
+    return fail2(`commondir of ${gitDir} does not lead to ${common}`);
+  }
+  return { gitDir, error: null };
+}
+function explicitGit(gitDir, worktree) {
+  return [`--git-dir=${gitDir}`, `--work-tree=${worktree}`];
+}
+function untrustedTree() {
+  return [
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "diff.ignoreSubmodules=all",
+    "-c",
+    "submodule.recurse=false"
+  ];
+}
+function holdsGit(path) {
+  try {
+    lstatSync(join12(path, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function indexGitlinks(worktree, gitDir, git) {
+  return must(git, [...explicitGit(gitDir, worktree), "ls-files", "-s", "-z"], worktree, untrustedTree()).split("\0").filter((entry) => entry.startsWith("160000 ")).map((entry) => entry.slice(entry.indexOf("	") + 1)).filter((path) => path !== "");
+}
+function worktreeStatus(worktree, gitDir, git) {
+  const args = [...explicitGit(gitDir, worktree), "status", "--porcelain", "--ignore-submodules=all"];
+  const lines = must(git, args, worktree, untrustedTree()).split("\n").filter((line2) => line2.trim() !== "");
+  const nested = indexGitlinks(worktree, gitDir, git).filter((path) => holdsGit(join12(worktree, path))).map((path) => `?? ${path}/`);
+  return [...lines, ...nested.filter((line2) => !lines.includes(line2))];
+}
+
+// src/run/deps.ts
+import { spawnSync as spawnSync2 } from "node:child_process";
+var DEPENDENCY_MANIFESTS = [
+  "package.json",
+  "package-lock.json",
+  "npm-shrinkwrap.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+  ".npmrc",
+  ".yarnrc",
+  ".yarnrc.yml",
+  ".pnpmfile.cjs",
+  ".pnpmfile.mjs",
+  // bun's install config: registries, scopes.
+  "bunfig.toml",
+  // yarn PnP's loader, which yarn loads into the scripts it runs.
+  ".pnp.cjs",
+  ".pnp.loader.mjs"
+];
+var MANIFEST_NAMES = new Set(DEPENDENCY_MANIFESTS.map((name2) => name2.toLowerCase()));
+var PATCH_SUFFIX = ".patch";
+var YARN_DIRECTORIES = ["releases", "plugins", "patches"];
+function isDependencyManifest(path) {
+  const segments = path.toLowerCase().split("/");
+  const base = segments.at(-1) ?? "";
+  if (MANIFEST_NAMES.has(base) || base.endsWith(PATCH_SUFFIX)) return true;
+  for (let i = 0; i + 2 < segments.length; i++) {
+    if (segments[i] === ".yarn" && YARN_DIRECTORIES.includes(segments[i + 1] ?? "")) return true;
+  }
+  return false;
+}
+var INSTALL_FIELDS = [
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+  "bundledDependencies",
+  "bundleDependencies",
+  "overrides",
+  "resolutions",
+  "pnpm",
+  "workspaces",
+  "packageManager",
+  "dependenciesMeta",
+  "peerDependenciesMeta",
+  // Linked into node_modules/.bin, where scripts run them.
+  "bin",
+  // engine-strict, os, cpu and libc decide what installs; trustedDependencies which packages' scripts run (bun).
+  "engines",
+  "os",
+  "cpu",
+  "libc",
+  "trustedDependencies",
+  // It can make the package manager fetch and use another runtime.
+  "devEngines"
+];
+var INSTALL_SCRIPTS = [
+  "preinstall",
+  "install",
+  "postinstall",
+  "preprepare",
+  "prepare",
+  "postprepare",
+  "prepublish",
+  "dependencies",
+  "pnpm:devPreinstall"
+];
+var isPlainObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function canonical2(v) {
+  if (Array.isArray(v)) return `[${v.map(canonical2).join(",")}]`;
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).filter((k) => v[k] !== void 0).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical2(v[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "undefined";
+}
+var own = (o, key) => Object.hasOwn(o, key) ? o[key] : void 0;
+function installView(text2) {
+  let pkg;
+  try {
+    pkg = JSON.parse(text2);
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(pkg)) return null;
+  const scripts = own(pkg, "scripts");
+  const lifecycle = scripts === void 0 ? {} : isPlainObject(scripts) ? Object.fromEntries(INSTALL_SCRIPTS.map((s) => [s, own(scripts, s)])) : scripts;
+  return canonical2({ fields: Object.fromEntries(INSTALL_FIELDS.map((f) => [f, own(pkg, f)])), lifecycle });
+}
+function installRelevantChange(path, before, after) {
+  if (before === after) return false;
+  const base = (path.split("/").at(-1) ?? "").toLowerCase();
+  if (base !== "package.json") return isDependencyManifest(path);
+  if (before === null || after === null) return true;
+  const a = installView(before);
+  const b = installView(after);
+  return a === null || b === null || a !== b;
+}
+function fileAt(git, rev, path) {
+  const r = git(["show", "--no-textconv", `${rev}:${path}`]);
+  return r.code === 0 ? r.stdout : null;
+}
+function installRelevantPaths(git, from, to, paths) {
+  const out = /* @__PURE__ */ new Set();
+  for (const path of paths) {
+    if (!isDependencyManifest(path)) continue;
+    if ((path.split("/").at(-1) ?? "").toLowerCase() !== "package.json") {
+      out.add(path);
+      continue;
+    }
+    const before = fileAt(git, from, path);
+    const after = fileAt(git, to, path);
+    if (before === null && after === null || installRelevantChange(path, before, after)) out.add(path);
+  }
+  return [...out].sort();
+}
+var runArgv = (argv2, cwd) => {
+  const [command, ...args] = argv2;
+  if (command === void 0) return { code: 127, output: "empty command" };
+  const r = spawnSync2(command, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) return { code: 127, output: r.error.message };
+  return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
+};
+function prepareDependencies(strategy, worktree, run) {
+  if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
+  if (strategy.strategy === "command") {
+    const argv2 = strategy.command;
+    if (!Array.isArray(argv2) || argv2.length === 0 || !argv2.every((a) => typeof a === "string") || argv2[0] === "") {
+      throw new ArbabError("config", "dependencies.command must be a non-empty argv array of strings");
+    }
+    const r = run(argv2, worktree);
+    return { ok: r.code === 0, code: r.code, output: r.output };
+  }
+  throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify(strategy.strategy)}`);
+}
+
+// src/run/pool.ts
+import { createHash as createHash3, randomBytes as randomBytes2 } from "node:crypto";
+import { linkSync, readdirSync as readdirSync5, renameSync as renameSync2, rmdirSync, rmSync as rmSync5 } from "node:fs";
+import { join as join13, resolve as resolve5 } from "node:path";
+function isHolder(value) {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value;
+  return Number.isInteger(v.pid) && v.pid > 0 && typeof v.lane === "string" && typeof v.project === "string" && typeof v.createdAt === "string";
+}
+function assertHolder(holder2) {
+  if (!isHolder(holder2)) throw new ArbabError("usage", "pool holder needs a positive pid, lane, project and createdAt");
+}
+function entryPath(dir, value) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new ArbabError("usage", `pool value ${value} is not a non-negative integer`);
+  return join13(dir, `${value}.json`);
+}
+function parseHolder(text2) {
+  try {
+    const value = JSON.parse(text2);
+    return isHolder(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+function releaseIfStale(path, alive, unparsedIsStale = false) {
+  const text2 = readText(path);
+  if (text2 === null) return true;
+  const holder2 = parseHolder(text2);
+  if (holder2 === null ? !unparsedIsStale : alive(holder2.pid)) return false;
+  const tomb = `${path}.${randomBytes2(6).toString("hex")}.stale`;
+  try {
+    renameSync2(path, tomb);
+  } catch (err) {
+    if (err.code === "ENOENT") return true;
+    throw new ArbabError("io", `cannot reclaim ${path}: ${err.message}`, { cause: err });
+  }
+  const moved = readText(tomb);
+  if (moved !== text2) {
+    try {
+      linkSync(tomb, path);
+    } catch {
+    }
+    rmSync5(tomb, { force: true });
+    return false;
+  }
+  rmSync5(tomb, { force: true });
+  return true;
+}
+function acquireFromPool(dir, values, holder2, alive) {
+  assertHolder(holder2);
+  const data = JSON.stringify(holder2);
+  for (const value of values) {
+    const path = entryPath(dir, value);
+    if (createExclusive(path, data)) return value;
+    if (!releaseIfStale(path, alive) || !createExclusive(path, data)) continue;
+    if (readText(path) === data) return value;
+  }
+  return null;
+}
+function releaseToPool(dir, value, holder2) {
+  const path = entryPath(dir, value);
+  const text2 = readText(path);
+  if (text2 === null) return false;
+  const current = parseHolder(text2);
+  if (current === null || current.pid !== holder2.pid || current.lane !== holder2.lane) return false;
+  rmSync5(path, { force: true });
+  return true;
+}
+function list(dir) {
+  try {
+    return readdirSync5(dir).sort();
+  } catch {
+    return [];
+  }
+}
+var POOL_FILE = /^\d+\.json(\.[0-9a-f]+\.stale)?$/;
+function listPoolEntries(home) {
+  const root = resolve5(home);
+  const dirs = [join13(root, "slots")];
+  for (const kind of ["semaphores", "leases", "locks"]) {
+    for (const name2 of list(join13(root, kind))) dirs.push(join13(root, kind, name2));
+  }
+  return dirs.flatMap((dir) => list(dir).filter((name2) => POOL_FILE.test(name2)).map((name2) => join13(dir, name2)));
+}
+var range = (n) => Array.from({ length: n }, (_, i) => i);
+function assertCount(n, what) {
+  if (!Number.isSafeInteger(n) || n < 1) throw new ArbabError("config", `${what} must be a positive integer, got ${n}`);
+}
+function acquireSlot(home, maxParallel, holder2, alive) {
+  assertCount(maxParallel, "maxParallel");
+  return acquireFromPool(join13(resolve5(home), "slots"), range(maxParallel), holder2, alive);
+}
+function releaseSlot(home, slot, holder2) {
+  return releaseToPool(join13(resolve5(home), "slots"), slot, holder2);
+}
+function acquireSemaphore(home, name2, capacity, holder2, alive) {
+  assertValidName(name2, "semaphore");
+  assertCount(capacity, `semaphore ${name2} capacity`);
+  return acquireFromPool(join13(resolve5(home), "semaphores", name2), range(capacity), holder2, alive);
+}
+function releaseSemaphore(home, name2, slot, holder2) {
+  assertValidName(name2, "semaphore");
+  return releaseToPool(join13(resolve5(home), "semaphores", name2), slot, holder2);
+}
+function writerLockKey(worktreeRealpath) {
+  return createHash3("sha1").update(worktreeRealpath).digest("hex");
+}
+function lockDir(home, key) {
+  if (!/^[0-9a-f]{40}$/.test(key)) throw new ArbabError("usage", `writer lock key ${JSON.stringify(key)} is not a sha1`);
+  return join13(resolve5(home), "locks", key);
+}
+var LOCK_DIR_RETRIES = 5;
+function vanished(err) {
+  return err instanceof ArbabError && err.cause?.code === "ENOENT";
+}
+function acquireWriterLock(home, key, holder2, alive) {
+  const dir = lockDir(home, key);
+  for (let tries = 1; ; tries++) {
+    try {
+      return acquireFromPool(dir, [0], holder2, alive) === 0;
+    } catch (err) {
+      if (!vanished(err) || tries >= LOCK_DIR_RETRIES) throw err;
+    }
+  }
+}
+function releaseWriterLock(home, key, holder2) {
+  const dir = lockDir(home, key);
+  const released = releaseToPool(dir, 0, holder2);
+  if (released) {
+    try {
+      rmdirSync(dir);
+    } catch {
+    }
+  }
+  return released;
+}
+
+// src/run/leases.ts
+import { createServer } from "node:net";
+import { join as join14, resolve as resolve6 } from "node:path";
+function isPortFree(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return Promise.resolve(false);
+  return new Promise((done) => {
+    const server = createServer();
+    server.once("error", () => done(false));
+    server.listen({ port, host: "127.0.0.1", exclusive: true }, () => {
+      server.close(() => done(true));
+    });
+  });
+}
+function leaseDir(home, type) {
+  return join14(resolve6(home), "leases", assertValidName(type, "resource type"));
+}
+function checkedRange(type, ranges) {
+  const spec = Object.hasOwn(ranges, type) ? ranges[type] : void 0;
+  const r = typeof spec === "object" && spec !== null ? spec.range : void 0;
+  if (!Array.isArray(r) || r.length !== 2) throw new ArbabError("lease", `no range configured for resource ${type}`);
+  const [lo, hi] = r;
+  if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi) || lo < 0 || lo > hi) {
+    throw new ArbabError("lease", `resource ${type} has an invalid range ${JSON.stringify(r)}`);
+  }
+  if (type === "port" && (lo < 1 || hi > 65535)) {
+    throw new ArbabError("lease", `port range ${JSON.stringify(r)} is outside 1..65535`);
+  }
+  return [lo, hi];
+}
+async function acquireLeases(req) {
+  const plan = [];
+  for (const type of Object.keys(req.requests).sort()) {
+    assertValidName(type, "resource type");
+    const count = req.requests[type];
+    if (count === void 0 || !Number.isSafeInteger(count) || count < 0) {
+      throw new ArbabError("lease", `resource ${type} count must be a non-negative integer`);
+    }
+    if (count === 0) continue;
+    const [lo, hi] = checkedRange(type, req.ranges);
+    plan.push({ type, count, lo, hi });
+  }
+  const taken = [];
+  try {
+    for (const { type, count, lo, hi } of plan) {
+      const dir = leaseDir(req.home, type);
+      let got = 0;
+      for (let value = lo; value <= hi && got < count; value++) {
+        if (acquireFromPool(dir, [value], req.holder, req.alive) === null) continue;
+        if (type === "port") {
+          let isFree;
+          try {
+            isFree = await req.probePort(value);
+          } catch (err) {
+            releaseToPool(dir, value, req.holder);
+            throw err;
+          }
+          if (!isFree) {
+            releaseToPool(dir, value, req.holder);
+            continue;
+          }
+        }
+        const { pid, lane, project, createdAt } = req.holder;
+        taken.push({ type, value, lane, project, pid, createdAt });
+        got++;
+      }
+      if (got < count) throw new ArbabError("lease", `only ${got} of ${count} ${type} values free in ${lo}..${hi}`);
+    }
+  } catch (err) {
+    releaseLeases(req.home, taken, req.holder);
+    throw err instanceof ArbabError ? err : new ArbabError("lease", err.message, { cause: err });
+  }
+  return taken;
+}
+function releaseLeases(home, leases, holder2) {
+  for (const lease of leases) releaseToPool(leaseDir(home, lease.type), lease.value, holder2);
+}
+function leaseEnv(leases) {
+  const env2 = {};
+  const next = /* @__PURE__ */ new Map();
+  for (const lease of leases) {
+    const i = next.get(lease.type) ?? 0;
+    next.set(lease.type, i + 1);
+    env2[`ARBAB_${envSuffix(lease.type)}_${i}`] = String(lease.value);
+  }
+  return env2;
+}
+
+// src/run/spawn.ts
+import { spawn } from "node:child_process";
+import { closeSync as closeSync2, openSync as openSync2 } from "node:fs";
+function open(path, flags, opened) {
+  try {
+    const fd = openSync2(path, flags);
+    opened.push(fd);
+    return fd;
+  } catch (err) {
+    const code4 = err.code;
+    const why = code4 === "EEXIST" ? "already exists (attempt files are never overwritten)" : err.message;
+    throw new ArbabError("io", `cannot open ${path}: ${why}`, { cause: err });
+  }
+}
+function spawnWorker(input) {
+  const opened = [];
+  let child2;
+  try {
+    const stdin = open(input.promptFile, "r", opened);
+    const stdout = open(input.streamFile, "wx", opened);
+    const stderr = open(input.stderrFile, "wx", opened);
+    child2 = (input.spawnImpl ?? spawn)(input.binary, input.args, {
+      cwd: input.cwd,
+      env: input.env,
+      detached: true,
+      stdio: [stdin, stdout, stderr]
+    });
+  } finally {
+    for (const fd of opened) closeSync2(fd);
+  }
+  const exited = new Promise((done) => {
+    child2.once("error", () => {
+      if (child2.pid === void 0) done({ code: null, signal: null });
+    });
+    child2.once("exit", (code4, signal) => done({ code: code4, signal }));
+  });
+  if (child2.pid === void 0) throw new ArbabError("runtime", `cannot start ${input.binary}`);
+  return { pid: child2.pid, exited };
+}
+
+// src/run/tree.ts
+import { execFileSync } from "node:child_process";
+function parsePs(output4) {
+  const rows = [];
+  for (const line2 of output4.split("\n")) {
+    const parts = line2.trim().split(/\s+/);
+    if (parts.length !== 3 || !parts.every((p) => /^\d+$/.test(p))) continue;
+    const [pid, ppid, pgid] = parts.map(Number);
+    rows.push({ pid, ppid, pgid });
+  }
+  return rows;
+}
+var execText = (file, args) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+function readPs(exec = execText) {
+  return exec("ps", ["-A", "-o", "pid=,ppid=,pgid="]);
+}
+function descendantsOf(root, table3, known) {
+  const children = /* @__PURE__ */ new Map();
+  for (const row of table3) {
+    const list3 = children.get(row.ppid);
+    if (list3) list3.push(row.pid);
+    else children.set(row.ppid, [row.pid]);
+  }
+  const found = /* @__PURE__ */ new Set();
+  const queue = [root, ...known, ...table3.filter((r) => r.pgid === root).map((r) => r.pid)];
+  for (const pid of queue) {
+    if (pid !== root && pid > 1) found.add(pid);
+  }
+  while (queue.length > 0) {
+    const pid = queue.pop();
+    for (const child2 of children.get(pid) ?? []) {
+      if (child2 === root || child2 <= 1 || found.has(child2)) continue;
+      found.add(child2);
+      queue.push(child2);
+    }
+  }
+  return found;
+}
+function trackDescendants(root, table3, tracked, rootRunning) {
+  const present = new Set(table3.map((row) => row.pid));
+  const rows = rootRunning ? table3 : table3.filter((row) => row.ppid !== root);
+  return new Set([...descendantsOf(root, rows, tracked)].filter((pid) => present.has(pid)));
+}
+function signalTargets(root, table3, tracked, rootRunning) {
+  const present = new Set(table3.map((row) => row.pid));
+  const parents = new Set([...tracked].filter((pid) => present.has(pid)));
+  if (rootRunning) parents.add(root);
+  const out = /* @__PURE__ */ new Set();
+  for (const row of table3) {
+    if (row.pid === root || row.pid <= 1) continue;
+    if (row.pgid === root || parents.has(row.ppid)) out.add(row.pid);
+  }
+  return out;
+}
+async function reap(input) {
+  const signal = input.signal ?? sendSignal;
+  const alive = input.alive ?? isAlive;
+  const sleep2 = input.sleep ?? sleep;
+  const graceMs = input.graceMs ?? 1e4;
+  const self = input.selfPid ?? process.pid;
+  const safe = (pid) => Number.isInteger(pid) && pid > 1 && pid !== self;
+  const vouched = (pids) => {
+    if (input.verify === void 0) return pids;
+    const ok = input.verify(pids);
+    return ok === null ? [] : pids.filter((pid) => ok.has(pid));
+  };
+  const targets = [.../* @__PURE__ */ new Set([input.pgid, ...input.pids])].filter(safe);
+  const living = vouched(targets.filter((pid) => alive(pid)));
+  const group = safe(input.pgid) ? -input.pgid : null;
+  const send = (target, sig) => {
+    try {
+      return signal(target, sig);
+    } catch {
+      return false;
+    }
+  };
+  let sent = group !== null && send(group, "SIGTERM");
+  for (const pid of living) sent = send(pid, "SIGTERM") || sent;
+  if (!sent) return living;
+  await sleep2(graceMs);
+  if (group !== null) send(group, "SIGKILL");
+  for (const pid of vouched(living.filter((p) => alive(p)))) send(pid, "SIGKILL");
+  return living;
+}
+
+// src/run/watch.ts
+import { closeSync as closeSync3, openSync as openSync3, readSync, statSync as statSync3 } from "node:fs";
+function fileSize(path) {
+  try {
+    return statSync3(path).size;
+  } catch (err) {
+    if (err.code === "ENOENT") return 0;
+    throw new ArbabError("io", `cannot stat ${path}: ${err.message}`, { cause: err });
+  }
+}
+function fileRange(path, start, end) {
+  const buf = Buffer.alloc(Math.max(0, end - start));
+  if (buf.length === 0) return buf;
+  const fd = openSync3(path, "r");
+  try {
+    let done = 0;
+    while (done < buf.length) {
+      const n = readSync(fd, buf, done, buf.length - done, start + done);
+      if (n === 0) break;
+      done += n;
+    }
+    return buf.subarray(0, done);
+  } finally {
+    closeSync3(fd);
+  }
+}
+var NEWLINE = 10;
+function createWatcher(input) {
+  const hangAfterResultMs = input.hangAfterResultMs ?? 15 * 6e4;
+  const hangAfterErrorMs = input.hangAfterErrorMs ?? 2 * 6e4;
+  const readSize = input.readSize ?? fileSize;
+  const readRange = input.readRange ?? fileRange;
+  let offset = 0;
+  let carry = Buffer.alloc(0);
+  let lastGrowthMs = input.startedAtMs;
+  let resultSeen = false;
+  let lastResultIsError = false;
+  let rateLimitEvent = null;
+  const consume2 = (line2) => {
+    let event;
+    try {
+      event = JSON.parse(line2.toString("utf8"));
+    } catch {
+      return;
+    }
+    if (typeof event !== "object" || event === null || Array.isArray(event)) return;
+    const e = event;
+    if (e.type === "rate_limit_event") rateLimitEvent = e;
+    if (e.type !== "result") return;
+    resultSeen = true;
+    lastResultIsError = e.is_error === true;
+  };
+  const read2 = (now) => {
+    const size2 = readSize(input.streamPath);
+    if (size2 < offset) {
+      offset = 0;
+      carry = Buffer.alloc(0);
+    }
+    if (size2 <= offset) return;
+    const chunk = readRange(input.streamPath, offset, size2);
+    if (chunk.length === 0) return;
+    offset += chunk.length;
+    lastGrowthMs = now;
+    let data = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+    let nl = data.indexOf(NEWLINE);
+    while (nl !== -1) {
+      consume2(data.subarray(0, nl));
+      data = data.subarray(nl + 1);
+      nl = data.indexOf(NEWLINE);
+    }
+    carry = Buffer.from(data);
+  };
+  return {
+    tick() {
+      const now = input.clock.now();
+      rateLimitEvent = null;
+      read2(now);
+      const quiet = now - lastGrowthMs;
+      let kill = null;
+      if (now - input.startedAtMs > input.wallMs) kill = "wall";
+      else if (resultSeen && lastResultIsError && quiet > hangAfterErrorMs) kill = "hang-after-error";
+      else if (resultSeen && quiet > hangAfterResultMs) kill = "hang-after-result";
+      else if (quiet > input.idleMs) kill = "idle";
+      return { kill, rateLimitEvent };
+    },
+    state: () => ({ offset, lastGrowthMs, resultSeen, lastResultIsError })
+  };
+}
+
+// src/run/checkpoint.ts
+import { readdirSync as readdirSync6 } from "node:fs";
+import { join as join15 } from "node:path";
+function nestedUnder(worktree, rel, out) {
+  const abs = join15(worktree, rel);
+  if (holdsGit(abs)) {
+    out.push(rel);
+    return;
+  }
+  let entries3;
+  try {
+    entries3 = readdirSync6(abs, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries3) if (e.isDirectory()) nestedUnder(worktree, `${rel}/${e.name}`, out);
+}
+function untrackedRepositories(git, worktree) {
+  const others = git(["ls-files", "--others", "--exclude-standard", "--directory", "-z"]);
+  if (others.code !== 0) return others;
+  const out = [];
+  for (const entry of others.stdout.split("\0")) {
+    if (entry.endsWith("/")) nestedUnder(worktree, entry.replace(/\/+$/, ""), out);
+  }
+  return out;
+}
+function stagedGitlinks(raw) {
+  const fields = raw.split("\0");
+  const out = [];
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const [src, dst] = (fields[i] ?? "").replace(/^:/, "").split(" ");
+    const path = fields[i + 1] ?? "";
+    if ((src === "160000" || dst === "160000") && path !== "") out.push(path);
+  }
+  return out.sort();
+}
+var ARBAB_STATE = [".arbab", ".arbab-tmp"];
+function checkpoint(input) {
+  const lane = assertValidName(input.lane, "lane");
+  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
+    throw new ArbabError("usage", `attempt ${input.attempt} is not a positive integer`);
+  }
+  const verified = verifyWorktreeGit({ worktree: input.worktree, branch: input.branch, gitCommonDir: input.gitCommonDir });
+  if (verified.gitDir === null) return { sha: null, error: `checkpoint skipped: ${verified.error}` };
+  const gitDir = verified.gitDir;
+  const prefix = [...explicitGit(gitDir, input.worktree), ...untrustedTree()];
+  const git = (args) => input.git([...prefix, ...args], input.worktree);
+  let tracked;
+  try {
+    if (worktreeStatus(input.worktree, gitDir, input.git).length === 0) return { sha: null, error: null };
+    tracked = indexGitlinks(input.worktree, gitDir, input.git);
+  } catch (err) {
+    return { sha: null, error: err.message };
+  }
+  const failed = (step, r) => ({
+    sha: null,
+    error: `${step} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`
+  });
+  const untracked = untrackedRepositories(git, input.worktree);
+  if (!Array.isArray(untracked)) return failed("git ls-files --others", untracked);
+  const left = [.../* @__PURE__ */ new Set([...tracked.filter((p) => holdsGit(join15(input.worktree, p))), ...untracked])].sort();
+  const leftOut = left.length === 0 ? null : `nested repositories were not committed: ${left.join(", ")}; arbab never commits or inspects them`;
+  const state = ARBAB_STATE.filter((path) => git(["check-ignore", "-q", "--", path]).code !== 0);
+  const add = git([
+    "add",
+    "-A",
+    "--",
+    ".",
+    ...[.../* @__PURE__ */ new Set([...tracked, ...untracked])].map((p) => `:(exclude,literal)${p}`),
+    ...state.map((p) => `:(exclude,icase,literal)${p}`)
+  ]);
+  if (add.code !== 0) return failed("git add -A", add);
+  const cached = git(["diff", "--cached", "--raw", "-z", "--no-renames", "--ignore-submodules=none"]);
+  if (cached.code !== 0) return failed("git diff --cached", cached);
+  const staged = stagedGitlinks(cached.stdout);
+  if (staged.length > 0) {
+    return {
+      sha: null,
+      error: `nested repositories are staged in the index: ${staged.join(", ")}; arbab never commits or inspects them, so nothing was committed. Unstage them to let the checkpoint commit the rest`
+    };
+  }
+  if (cached.stdout === "") return { sha: null, error: leftOut };
+  const message5 = `arbab(${lane}): checkpoint attempt ${input.attempt} (${input.endState})
+
+Co-Authored-By: Claude <noreply@anthropic.com>`;
+  const commit = git(["commit", "--no-verify", "-m", message5]);
+  if (commit.code !== 0) return failed("git commit", commit);
+  const head = git(["rev-parse", "HEAD"]);
+  if (head.code !== 0) return failed("git rev-parse HEAD", head);
+  return { sha: head.stdout.trim(), error: leftOut };
+}
+
+// src/run/workertmp.ts
+import { closeSync as closeSync4, constants, lstatSync as lstatSync2, mkdirSync as mkdirSync4, openSync as openSync4, rmSync as rmSync6, unlinkSync } from "node:fs";
+import { join as join16 } from "node:path";
+var WORKER_TMP_DIR = ".arbab-tmp";
+function workerTmpPaths(worktree) {
+  const root = join16(worktree, WORKER_TMP_DIR);
+  return {
+    root,
+    xdgConfig: join16(root, "xdg-config"),
+    yarnCache: join16(root, "yarn-cache"),
+    npmrc: join16(root, "npmrc"),
+    inputs: join16(root, "inputs")
+  };
+}
+function lstatOrNull(path) {
+  try {
+    return lstatSync2(path);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw new ArbabError("io", `cannot read ${path}: ${err.message}`, { cause: err });
+  }
+}
+function removeEntry(path, stat) {
+  try {
+    if (stat.isDirectory()) rmSync6(path, { recursive: true, force: true });
+    else unlinkSync(path);
+  } catch (err) {
+    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
+  }
+}
+function realDir(worktree, rel) {
+  let at = worktree;
+  for (const part of rel.split(/[\\/]+/)) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") throw new ArbabError("usage", `${rel} leaves the worktree`);
+    at = join16(at, part);
+    const stat = lstatOrNull(at);
+    if (stat?.isDirectory() === true) continue;
+    if (stat !== null) removeEntry(at, stat);
+    try {
+      mkdirSync4(at);
+    } catch (err) {
+      throw new ArbabError("io", `cannot create ${at}: ${err.message}`, { cause: err });
+    }
+  }
+  return at;
+}
+function ensureWorkerTmp(worktree) {
+  const paths = workerTmpPaths(worktree);
+  for (const dir of ["xdg-config", "yarn-cache", "inputs"]) realDir(worktree, join16(WORKER_TMP_DIR, dir));
+  const stat = lstatOrNull(paths.npmrc);
+  if (stat?.isFile() === true) return paths;
+  if (stat !== null) removeEntry(paths.npmrc, stat);
+  let fd;
+  try {
+    fd = openSync4(paths.npmrc, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 384);
+  } catch (err) {
+    throw new ArbabError("io", `cannot create ${paths.npmrc}: ${err.message}`, { cause: err });
+  }
+  closeSync4(fd);
+  return paths;
+}
+
+// src/run/project-files.ts
+import { join as join17, relative as relative7, resolve as resolve7, sep as sep7 } from "node:path";
+var ARBAB_DIR = ".arbab";
+var ESLINT_MARKER = ".eslintrc.json";
+function arbabIgnoreEntries(projectRoot, config) {
+  const rel = (p) => `${relative7(resolve7(projectRoot), confine(projectRoot, p)).split(sep7).join("/")}/`;
+  const own2 = `${ARBAB_DIR}/`;
+  const outside = [rel(config.worktreeRoot), rel(config.runsRoot)].filter((r) => !r.startsWith(own2));
+  return [.../* @__PURE__ */ new Set([own2, `${WORKER_TMP_DIR}/`, ...outside])];
+}
+function ensureArbabMarkers(projectRoot) {
+  createExclusive(join17(projectRoot, ARBAB_DIR, ESLINT_MARKER), `${JSON.stringify({ root: true }, null, 2)}
+`);
+}
+
+// src/shepherd/trust.ts
+var SHA = /^[0-9a-f]{40,64}$/;
+var output = (r) => (r.stderr || r.stdout).trim();
+function confirmedHeads(projectRoot, config, git) {
+  const heads = /* @__PURE__ */ new Set();
+  const listed = git(["ls-files", "-z", "--", `:(icase)${INTEGRATIONS_DIR}`], projectRoot);
+  if (listed.code !== 0) return heads;
+  const depth = INTEGRATIONS_DIR.split("/").length;
+  const trackedNames = new Set(
+    listed.stdout.split("\0").filter((p) => p !== "").map((p) => (p.split("/")[depth] ?? "").toLowerCase())
+  );
+  for (const name2 of listIntegrations(projectRoot)) {
+    if (trackedNames.has(name2)) continue;
+    try {
+      const at = readIntegration(integrationPaths(projectRoot, config, name2))?.depsConfirmedAt ?? null;
+      if (at !== null) heads.add(at);
+    } catch {
+    }
+  }
+  return heads;
+}
+function assertRevision2(rev, what) {
+  if (rev === "" || rev.startsWith("-")) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+}
+function resolveCommit(projectRoot, rev, git) {
+  assertRevision2(rev, "revision");
+  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], projectRoot);
+  const sha = r.stdout.trim();
+  return r.code === 0 && SHA.test(sha) ? sha : null;
+}
+function isTrustedInstallPoint(sha, input) {
+  if (input.confirmed.has(sha)) return true;
+  assertRevision2(input.baseBranch, "baseBranch");
+  const r = input.git(["merge-base", "--is-ancestor", sha, input.baseBranch], input.projectRoot);
+  if (r.code === 0) return true;
+  if (r.code === 1) return false;
+  throw new ArbabError("git", `git merge-base --is-ancestor ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
+}
+function distance(ancestor, sha, input) {
+  const r = input.git(["rev-list", "--count", `${ancestor}..${sha}`], input.projectRoot);
+  const n = Number(r.stdout.trim());
+  if (r.code !== 0 || !Number.isInteger(n)) {
+    throw new ArbabError("git", `git rev-list --count ${ancestor}..${sha} failed (${r.code}): ${output(r)}`);
+  }
+  return n;
+}
+function installPlan(base, input) {
+  assertRevision2(base, "base");
+  assertRevision2(input.baseBranch, "baseBranch");
+  const sha = resolveCommit(input.projectRoot, base, input.git);
+  if (sha === null) return { start: base, merge: null };
+  if (isTrustedInstallPoint(sha, input)) return { start: sha, merge: null };
+  const candidates = [...input.confirmed].filter((c) => SHA.test(c) && input.git(["merge-base", "--is-ancestor", c, sha], input.projectRoot).code === 0).sort();
+  const r = input.git(["merge-base", sha, input.baseBranch], input.projectRoot);
+  const fork = r.stdout.trim();
+  if (r.code === 0 && SHA.test(fork)) {
+    candidates.push(fork);
+  } else if (r.code !== 1) {
+    throw new ArbabError("git", `git merge-base ${sha} ${input.baseBranch} failed (${r.code}): ${output(r)}`);
+  }
+  if (candidates.length === 0) {
+    throw new ArbabError(
+      "git",
+      `base ${base} shares no history with ${input.baseBranch}, so the lane has no trusted commit to install its dependencies on; base it on ${input.baseBranch} or on a commit that descends from it`
+    );
+  }
+  let start = candidates[0];
+  let least = distance(start, sha, input);
+  for (const c of candidates.slice(1)) {
+    const d = distance(c, sha, input);
+    if (d < least) [start, least] = [c, d];
+  }
+  return { start, merge: sha };
+}
+
+// src/integrate/integrate.ts
+function listIntegrations(projectRoot) {
+  try {
+    return readdirSync7(join18(resolve8(projectRoot), INTEGRATIONS_DIR), { withFileTypes: true }).filter((e) => e.isDirectory() && isValidName(e.name)).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+}
+function integrationPaths(projectRoot, config, name2) {
+  const valid = assertValidName(name2, "integration");
+  if (valid === "integrate" || valid.startsWith("integrate-")) {
+    throw new ArbabError("usage", `integration name ${valid} may not be integrate or start with integrate-`);
+  }
+  const root = resolve8(projectRoot);
+  const dir = join18(root, INTEGRATIONS_DIR, valid);
+  return {
+    name: valid,
+    projectRoot: root,
+    dir,
+    integration: join18(dir, "integration.json"),
+    verify: join18(dir, "verify.json"),
+    review: join18(dir, "review.json"),
+    readiness: join18(dir, "readiness.json"),
+    readinessMd: join18(dir, "readiness.md"),
+    landing: join18(dir, "landing.json"),
+    lanesDir: join18(dir, "lanes"),
+    worktree: join18(confine(root, config.worktreeRoot), `${INTEGRATION_WORKTREE_PREFIX}${valid}`),
+    branch: `integrate/${valid}`
+  };
+}
+var SHA2 = /^[0-9a-f]{40,64}$/;
+var output2 = (r) => (r.stderr || r.stdout).trim();
+function must2(git, args, cwd) {
+  const r = git(args, cwd);
+  if (r.code !== 0) throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${output2(r)}`);
+  return r.stdout;
+}
+function canonical3(path) {
+  try {
+    return realpathSync5(path);
+  } catch {
+    return resolve8(path);
+  }
+}
+function commitOf(git, rev, cwd) {
+  const r = git(["rev-parse", "--verify", "--quiet", `${rev}^{commit}`], cwd);
+  const sha = r.stdout.trim();
+  return r.code === 0 && SHA2.test(sha) ? sha : null;
+}
+function isAncestor(git, ancestor, of, cwd) {
+  const r = git(["merge-base", "--is-ancestor", ancestor, of], cwd);
+  if (r.code === 0) return true;
+  if (r.code === 1) return false;
+  throw new ArbabError("git", `git merge-base --is-ancestor ${ancestor} ${of} failed (${r.code}): ${output2(r)}`);
+}
+function worktreeBranches(projectRoot, git) {
+  const out = /* @__PURE__ */ new Map();
+  for (const block3 of must2(git, ["worktree", "list", "--porcelain"], projectRoot).split("\n\n")) {
+    const lines = block3.split("\n");
+    const path = lines.find((l) => l.startsWith("worktree "))?.slice("worktree ".length);
+    if (path === void 0) continue;
+    const ref2 = lines.find((l) => l.startsWith("branch "))?.slice("branch ".length) ?? null;
+    out.set(canonical3(path), ref2);
+  }
+  return out;
+}
+function gitCommonDir(projectRoot, git) {
+  const out = must2(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
+  if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
+  return canonical3(resolve8(projectRoot, out));
+}
+function refuseLaneWorktree(paths, git) {
+  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
+  const lanePrefix = "refs/heads/arbab/";
+  if (typeof ref2 !== "string" || !ref2.startsWith(lanePrefix)) return;
+  throw new ArbabError(
+    "usage",
+    `${paths.worktree} is the worktree of lane ${ref2.slice(lanePrefix.length)}, where a worker runs, so integration ${paths.name} cannot use it. Lane names starting with ${INTEGRATION_WORKTREE_PREFIX} are reserved: rename that lane and remove its worktree, or choose another integration name`
+  );
+}
+function ownedGitDir(paths, git) {
+  const refused = (why) => new ArbabError("git", `${paths.worktree} exists but is not a worktree of this repository on ${paths.branch}: ${why}`);
+  const ref2 = worktreeBranches(paths.projectRoot, git).get(canonical3(paths.worktree));
+  if (ref2 === void 0) throw refused("git does not list it as a worktree");
+  if (ref2 !== `refs/heads/${paths.branch}`) throw refused(`it is on ${ref2 ?? "a detached HEAD"}`);
+  const verified = verifyWorktreeGit({
+    worktree: paths.worktree,
+    branch: paths.branch,
+    gitCommonDir: gitCommonDir(paths.projectRoot, git)
+  });
+  if (verified.gitDir === null) throw refused(verified.error);
+  return verified.gitDir;
+}
+function refuseLanded(paths) {
+  if (!existsSync5(paths.landing)) return;
+  let landedAt;
+  try {
+    const landing = readJson(paths.landing);
+    landedAt = isRecord4(landing) ? landing["landedAt"] : void 0;
+  } catch {
+  }
+  const when = typeof landedAt === "string" && landedAt !== "" ? `at ${landedAt}` : `(${paths.landing} does not say when)`;
+  throw new ArbabError(
+    "usage",
+    `integration ${paths.name} landed ${when}; its records stay as that landing's measurement. Choose a new name for a new integration`
+  );
+}
+function supersedeRecord(paths) {
+  if (!existsSync5(paths.integration)) return;
+  let updatedAt;
+  try {
+    const old = readJson(paths.integration);
+    updatedAt = isRecord4(old) ? old["updatedAt"] : void 0;
+  } catch {
+  }
+  const stamp = typeof updatedAt === "string" && updatedAt !== "" ? updatedAt.slice(0, 64).replace(/[^A-Za-z0-9._-]/g, "-") : "unknown";
+  let target = join18(paths.dir, `integration.superseded-${stamp}.json`);
+  for (let n = 2; existsSync5(target); n++) target = join18(paths.dir, `integration.superseded-${stamp}-${n}.json`);
+  renameSync3(paths.integration, target);
+}
+function createIntegrationWorktree(input, paths) {
+  const { git, projectRoot } = input;
+  const base = input.config.baseBranch;
+  if (base === "" || base.startsWith("-")) {
+    throw new ArbabError("config", `baseBranch ${JSON.stringify(base)} is not a valid revision`);
+  }
+  const baseSha = commitOf(git, base, projectRoot);
+  if (baseSha === null) throw new ArbabError("git", `base ${base} does not name a commit`);
+  must2(git, ["worktree", "prune"], projectRoot);
+  ensureDir(dirname3(paths.worktree));
+  const existing = commitOf(git, `refs/heads/${paths.branch}`, projectRoot);
+  if (existing === null) {
+    must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, base], projectRoot);
+    supersedeRecord(paths);
+  } else {
+    if (!isAncestor(git, existing, baseSha, projectRoot)) {
+      throw new ArbabError(
+        "git",
+        `${paths.branch} exists without its worktree and holds commits that are not on ${base}; arbab prepares dependencies only on the trusted base. Restore the worktree at ${paths.worktree}, or delete the branch and integrate again`
+      );
+    }
+    must2(git, ["worktree", "add", paths.worktree, paths.branch], projectRoot);
+  }
+  let deps;
+  try {
+    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+  } catch (err) {
+    removeWorktree(git, paths);
+    throw err;
+  }
+  if (!deps.ok) {
+    removeWorktree(git, paths);
+    const tail = deps.output.trim().split("\n").slice(-5).join("\n");
+    throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
+  }
+}
+function refuseDirtyLanes(input, lanes) {
+  const { git, projectRoot } = input;
+  const root = confine(projectRoot, input.config.worktreeRoot);
+  let common = null;
+  for (const lane of lanes) {
+    const worktree = join18(root, lane);
+    if (!existsSync5(worktree)) continue;
+    common ??= gitCommonDir(projectRoot, git);
+    const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: common });
+    if (verified.gitDir === null) {
+      throw new ArbabError("git", `cannot check lane ${lane}'s worktree ${worktree} for uncommitted changes: ${verified.error}`);
+    }
+    const status = worktreeStatus(worktree, verified.gitDir, git).map((l) => l.slice(3));
+    if (status.length === 0) continue;
+    const shown = status.slice(0, 5).join(", ") + (status.length > 5 ? ` and ${status.length - 5} more` : "");
+    throw new ArbabError(
+      "usage",
+      `lane ${lane} has uncommitted changes in ${worktree} (${shown}): its checkpoint did not commit them, and integrating its branch would leave them behind. Commit or discard them, then integrate again`
+    );
+  }
+}
+function removeWorktree(git, paths) {
+  git(["worktree", "remove", "--force", paths.worktree], paths.projectRoot);
+}
+function oneEntryPerLane(entries3) {
+  const out = [];
+  for (const e of entries3) {
+    const i = out.findIndex((o) => o.lane === e.lane);
+    const prior = i < 0 ? void 0 : out[i];
+    if (prior === void 0) out.push({ ...e, manifests: [...e.manifests] });
+    else out[i] = { ...e, manifests: [.../* @__PURE__ */ new Set([...prior.manifests, ...e.manifests])].sort() };
+  }
+  return out;
+}
+function integrate(input) {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  const lanes = input.lanes.map((lane) => assertValidName(lane, "lane"));
+  const { git, config } = input;
+  refuseLanded(paths);
+  refuseLaneWorktree(paths, git);
+  refuseDirtyLanes(input, lanes);
+  if (!existsSync5(paths.worktree)) createIntegrationWorktree(input, paths);
+  const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
+  ensureIgnored(paths.projectRoot, arbabIgnoreEntries(paths.projectRoot, config), git);
+  ensureArbabMarkers(paths.projectRoot);
+  const wt = (args) => git([...prefix, ...args], paths.worktree);
+  const head = () => {
+    const sha = commitOf(wt, "HEAD", paths.worktree);
+    if (sha === null) throw new ArbabError("git", `cannot read HEAD of ${paths.worktree}`);
+    return sha;
+  };
+  const previous = readIntegration(paths);
+  let headSha = head();
+  const present = (sha) => SHA2.test(sha) && commitOf(wt, sha, paths.worktree) !== null;
+  let merged = oneEntryPerLane(
+    (previous?.merged ?? []).filter((m) => present(m.sha) && isAncestor(wt, m.sha, headSha, paths.worktree))
+  );
+  const keptBase = previous !== null && present(previous.baseSha) && isAncestor(wt, previous.baseSha, headSha, paths.worktree);
+  const base = keptBase ? previous.base : config.baseBranch;
+  if (base === "" || base.startsWith("-")) {
+    const from = keptBase ? `${paths.integration} records base` : "baseBranch";
+    throw new ArbabError(keptBase ? "io" : "config", `${from} ${JSON.stringify(base)} is not a valid revision`);
+  }
+  const mergeBase = () => must2(wt, ["merge-base", headSha, base], paths.worktree).trim();
+  let baseSha = mergeBase();
+  let confirmedAt = previous?.depsConfirmedAt ?? null;
+  const manifestsBetween = (from, to, what) => {
+    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", from, to, "--"]);
+    if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${what} (${diff.code}): ${output2(diff)}`);
+    return installRelevantPaths(wt, from, to, diff.stdout.split("\0").filter((p) => p !== ""));
+  };
+  const stillConfirmed = (at) => commitOf(wt, at, paths.worktree) !== null && isAncestor(wt, at, headSha, paths.worktree) && manifestsBetween(at, headSha, `${paths.branch} changed since ${at}`).length === 0;
+  const record2 = () => {
+    baseSha = mergeBase();
+    const manifests = manifestsBetween(baseSha, headSha, `${paths.branch} changed since ${baseSha}`);
+    if (confirmedAt !== null && !stillConfirmed(confirmedAt)) confirmedAt = null;
+    const depsConfirmedAt = confirmedAt;
+    const rec = {
+      name: paths.name,
+      branch: paths.branch,
+      worktree: paths.worktree,
+      base,
+      baseSha,
+      merged: [...merged],
+      manifests,
+      depsConfirmedAt,
+      depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null,
+      headSha,
+      updatedAt: isoAt(input.clock)
+    };
+    writeJsonAtomic(paths.integration, rec);
+    return rec;
+  };
+  record2();
+  const alreadyIn = [];
+  for (const lane of lanes) {
+    const branch = `arbab/${lane}`;
+    const sha = commitOf(wt, `refs/heads/${branch}`, paths.worktree);
+    if (sha === null) throw new ArbabError("git", `cannot integrate ${lane}: branch ${branch} does not exist`);
+    if (isAncestor(wt, sha, headSha, paths.worktree)) {
+      alreadyIn.push(lane);
+      if (merged.some((m) => m.lane === lane && m.sha === sha)) continue;
+      const fork = must2(wt, ["merge-base", baseSha, sha], paths.worktree).trim();
+      const manifests2 = manifestsBetween(fork, sha, `${lane} changed since ${baseSha}`);
+      merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests: manifests2 }]);
+      record2();
+      continue;
+    }
+    const r = wt(["merge", "--no-ff", "--no-edit", "--no-verify", "-m", `arbab: integrate ${lane} into ${paths.branch}`, sha]);
+    if (r.code !== 0) {
+      const unmerged = wt(["diff", "--name-only", "-z", "--diff-filter=U"]);
+      const conflicts = unmerged.code === 0 ? unmerged.stdout.split("\0").filter((p) => p !== "") : [];
+      wt(["merge", "--abort"]);
+      const kept = merged.length > 0 ? `; ${merged.map((m) => m.lane).join(", ")} stay merged` : "";
+      if (conflicts.length > 0) {
+        throw new ArbabError("git", `integrating ${lane} into ${paths.branch} conflicts in ${conflicts.join(", ")}; the merge was aborted${kept}`);
+      }
+      throw new ArbabError("git", `integrating ${lane} into ${paths.branch} failed (${r.code}): ${output2(r)}; the merge was aborted${kept}`);
+    }
+    const before = headSha;
+    headSha = head();
+    const manifests = manifestsBetween(before, headSha, `${lane} changed in ${paths.branch}`);
+    merged = oneEntryPerLane([...merged, { lane, branch, sha, manifests }]);
+    record2();
+  }
+  return { record: record2(), alreadyIn };
+}
+function assertRevision3(rev, what) {
+  if (rev === "" || rev.startsWith("-") || /\s/.test(rev)) throw new ArbabError("usage", `${what} ${JSON.stringify(rev)} is not a valid revision`);
+}
+function adoptIntegration(input) {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  const { git, projectRoot } = input;
+  const base = input.base ?? input.config.baseBranch;
+  assertRevision3(input.ref, "--adopt");
+  assertRevision3(base, input.base === void 0 ? "baseBranch" : "--base");
+  refuseLanded(paths);
+  refuseLaneWorktree(paths, git);
+  const existing = [
+    existsSync5(paths.integration) ? paths.integration : null,
+    commitOf(git, `refs/heads/${paths.branch}`, projectRoot) !== null ? `branch ${paths.branch}` : null,
+    existsSync5(paths.worktree) ? paths.worktree : null
+  ].filter((e) => e !== null);
+  if (existing.length > 0) {
+    throw new ArbabError("usage", `integration ${paths.name} already exists (${existing.join(", ")}); choose a new name to adopt ${input.ref}`);
+  }
+  const sha = commitOf(git, input.ref, projectRoot);
+  if (sha === null) throw new ArbabError("usage", `--adopt ${input.ref} does not name a commit`);
+  const baseSha = commitOf(git, base, projectRoot);
+  if (baseSha === null) throw new ArbabError("usage", `base ${base} does not name a commit`);
+  if (git(["show-ref", "--verify", "--quiet", `refs/heads/${base}`], projectRoot).code !== 0) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not a branch: land merges the integration into its base, so the base must be a branch`
+    );
+  }
+  const trusted = input.config.baseBranch;
+  assertRevision3(trusted, "baseBranch");
+  if (!isAncestor(git, baseSha, trusted, projectRoot)) {
+    throw new ArbabError(
+      "usage",
+      `${input.base === void 0 ? "baseBranch" : "--base"} ${base} is not contained in ${trusted}: arbab installs dependencies only on a commit of ${trusted}, and ${base} may hold worker code. Adopt against ${trusted}, or a branch it contains`
+    );
+  }
+  const fork = git(["merge-base", sha, baseSha], projectRoot);
+  if (fork.code !== 0 || !SHA2.test(fork.stdout.trim())) {
+    if (fork.code === 1) throw new ArbabError("usage", `${input.ref} shares no history with ${base}: there is nothing to land it into`);
+    throw new ArbabError("git", `git merge-base ${sha} ${baseSha} failed (${fork.code}): ${output2(fork)}`);
+  }
+  const start = fork.stdout.trim();
+  const trust = { projectRoot, baseBranch: trusted, confirmed: confirmedHeads(projectRoot, input.config, git), git };
+  if (!isTrustedInstallPoint(start, trust)) {
+    throw new ArbabError(
+      "usage",
+      `the fork point ${start} of ${input.ref} and ${base} is not a trusted install point (a commit of ${trusted} or an integration head a human confirmed), so arbab will not install dependencies there`
+    );
+  }
+  must2(git, ["worktree", "prune"], projectRoot);
+  ensureDir(dirname3(paths.worktree));
+  must2(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
+  try {
+    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+    if (!deps.ok) {
+      const tail = deps.output.trim().split("\n").slice(-5).join("\n");
+      throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
+    }
+    if (sha !== start) {
+      const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
+      must2(git, [...prefix, "merge", "--ff-only", "--no-verify", sha], paths.worktree);
+    }
+  } catch (err) {
+    removeWorktree(git, paths);
+    git([...untrustedTree(), "branch", "-D", paths.branch], projectRoot);
+    throw err;
+  }
+  return integrate({ ...input, config: { ...input.config, baseBranch: base }, lanes: [] });
+}
+function refreshIntegration(input) {
+  const paths = integrationPaths(input.projectRoot, input.config, input.name);
+  refuseLanded(paths);
+  if (readIntegration(paths) === null) {
+    throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
+  }
+  if (!existsSync5(paths.worktree)) {
+    throw new ArbabError("usage", `integration ${paths.name} has no worktree at ${paths.worktree}; restore it on ${paths.branch} to refresh`);
+  }
+  const tracked = worktreeStatus(paths.worktree, ownedGitDir(paths, input.git), input.git).filter((l) => !l.startsWith("?? ")).map((l) => l.slice(3));
+  if (tracked.length > 0) {
+    const shown = tracked.slice(0, 5).join(", ") + (tracked.length > 5 ? ` and ${tracked.length - 5} more` : "");
+    throw new ArbabError(
+      "usage",
+      `integration ${paths.name} has uncommitted changes in ${paths.worktree} (${shown}); commit or discard them, then refresh`
+    );
+  }
+  return integrate({ ...input, lanes: [] });
+}
+function isRecord4(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+var isStringArray = (v) => Array.isArray(v) && v.every((s) => typeof s === "string");
+function isMergedEntry(v) {
+  return isRecord4(v) && typeof v["lane"] === "string" && typeof v["branch"] === "string" && typeof v["sha"] === "string" && isStringArray(v["manifests"]);
+}
+function mergedManifests(merged) {
+  return [...new Set(merged.flatMap((m) => m.manifests))].sort();
+}
+var isOptional = (v, check2) => v === void 0 || check2(v);
+function readIntegration(paths) {
+  const raw = readJson(paths.integration);
+  if (raw === null) return null;
+  const ok = isRecord4(raw) && raw["name"] === paths.name && typeof raw["branch"] === "string" && typeof raw["worktree"] === "string" && typeof raw["base"] === "string" && typeof raw["baseSha"] === "string" && Array.isArray(raw["merged"]) && raw["merged"].every(isMergedEntry) && isOptional(raw["manifests"], isStringArray) && isOptional(raw["depsConfirmedAt"], (v) => v === null || typeof v === "string" && SHA2.test(v)) && typeof raw["depsConfirmed"] === "boolean" && typeof raw["headSha"] === "string" && typeof raw["updatedAt"] === "string";
+  if (!ok) throw new ArbabError("io", `${paths.integration} is not an integration record for ${paths.name}`);
+  const stored = raw;
+  const manifests = stored.manifests ?? mergedManifests(stored.merged);
+  const depsConfirmedAt = stored.depsConfirmedAt ?? null;
+  return { ...stored, manifests, depsConfirmedAt, depsConfirmed: manifests.length === 0 || depsConfirmedAt !== null };
+}
+function confirmCommand(name2, sha) {
+  return `arbab integrate ${name2} --deps-installed ${sha}`;
+}
+function confirmDeps(paths, sha, git, clock) {
+  refuseLanded(paths);
+  const previous = readIntegration(paths);
+  if (previous === null) throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate first`);
+  if (!SHA2.test(sha)) {
+    throw new ArbabError(
+      "usage",
+      `--deps-installed takes the full head sha arbab integrate printed, not ${JSON.stringify(sha)}; the recorded head is ${previous.headSha}: review its manifests, then run ${confirmCommand(paths.name, previous.headSha)}`
+    );
+  }
+  if (sha !== previous.headSha) {
+    throw new ArbabError(
+      "usage",
+      `integration ${paths.name} records head ${previous.headSha}, not ${sha}: it moved since you reviewed it. Review the manifests arbab integrate ${paths.name} lists for ${previous.headSha} (run it again with its lanes), then run ` + confirmCommand(paths.name, previous.headSha)
+    );
+  }
+  const headSha = commitOf(git, `refs/heads/${paths.branch}`, paths.projectRoot);
+  if (headSha === null) throw new ArbabError("git", `branch ${paths.branch} does not exist`);
+  if (headSha !== previous.headSha) {
+    throw new ArbabError(
+      "usage",
+      `${paths.branch} is at ${headSha}, not ${previous.headSha}, the head whose manifests arbab integrate listed; run arbab integrate ${paths.name} --refresh (or with its lanes) again, review the manifests it lists, then run the arbab integrate ${paths.name} --deps-installed <sha> it prints`
+    );
+  }
+  if (previous.manifests.length === 0) return previous;
+  const rec = { ...previous, depsConfirmedAt: headSha, depsConfirmed: true, updatedAt: isoAt(clock) };
+  writeJsonAtomic(paths.integration, rec);
+  return rec;
+}
+
+// src/summary/integrations.ts
+var SHORT_SHA = 7;
+var short = (sha) => sha.slice(0, SHORT_SHA);
+function integrationLine(projectRoot, config, name2) {
+  const paths = integrationPaths(projectRoot, config, name2);
+  const record2 = readIntegration(paths);
+  if (record2 === null) return null;
+  const head = record2.headSha;
+  const verify = readVerifyRecord(paths.verify, name2);
+  const review = readReviewRecord(paths.review, name2);
+  const readiness = readReadinessReport(paths.readiness, name2);
+  const readinessOnHead = readiness !== null && readiness.headSha === head ? readiness : null;
+  const verified = verify !== null && verify.headSha === head && verify.passed;
+  const reviewed = review !== null && (review.headSha === head || readinessOnHead?.reviewCarriedOverFrom === review.headSha);
+  const ready = readinessOnHead?.ready === true;
+  const landed = existsSync6(paths.landing);
+  const stage = landed ? "landed" : ready ? "ready" : reviewed ? "reviewed" : verified ? "verified" : "integrated";
+  const waitsFor = [];
+  if (!landed) {
+    if (!record2.depsConfirmed) waitsFor.push(`dependencies to confirm: ${confirmCommand(name2, head)}`);
+    if (verify === null) waitsFor.push("verify has not run");
+    else if (verify.headSha !== head) waitsFor.push(`verify is stale (ran on ${short(verify.headSha)})`);
+    else if (!verify.passed) waitsFor.push(`verify failed${verify.reason === void 0 ? "" : `: ${verify.reason}`}`);
+    if (review === null) waitsFor.push("review missing");
+    else if (!reviewed) waitsFor.push(`review is stale (ran on ${short(review.headSha)})`);
+    if (readinessOnHead === null) waitsFor.push(readiness === null ? "readiness has not run" : "readiness is stale");
+    else {
+      const open2 = readinessOnHead.skipped.filter((s) => !s.waived).map((s) => s.id);
+      if (open2.length > 0) waitsFor.push(`readiness skipped, not waived: ${open2.join(", ")}`);
+    }
+    if (ready) waitsFor.push("ready: ask the human to land");
+  }
+  return { name: name2, stage, head, waitsFor };
+}
+function integrationOverview(projectRoot, config) {
+  const integrations = [];
+  const errors = [];
+  for (const name2 of listIntegrations(projectRoot)) {
+    try {
+      const line2 = integrationLine(projectRoot, config, name2);
+      if (line2 !== null) integrations.push(line2);
+    } catch (err) {
+      errors.push(`integration ${name2}: ${err.message}`);
+    }
+  }
+  return { integrations, errors };
+}
+
+// src/summary/landings.ts
+import { readFileSync as readFileSync5 } from "node:fs";
+import { join as join19, resolve as resolve9 } from "node:path";
+function isObject3(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+function readLanding(projectRoot, name2) {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync5(join19(resolve9(projectRoot), INTEGRATIONS_DIR, name2, "landing.json"), "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject3(raw) || raw["name"] !== name2) return null;
+  const { into, landedAt, mergeSha, owner, squash, lanes } = raw;
+  if (typeof into !== "string" || into === "" || typeof mergeSha !== "string" || typeof landedAt !== "string") return null;
+  const ms = Date.parse(landedAt);
+  if (!Number.isFinite(ms)) return null;
+  const landing = {
+    name: name2,
+    into,
+    landedAt,
+    mergeSha,
+    squash: squash === true,
+    lanes: Array.isArray(lanes) ? lanes.length : 0
+  };
+  if (owner === null || typeof owner === "string") landing.owner = owner;
+  return { landing, ms };
+}
+var SESSION_CHARS = 8;
+function landingOwner(owner) {
+  if (owner === null) return "outside Claude Code";
+  return owner === void 0 ? "session unknown" : `session ${owner.slice(0, SESSION_CHARS)}`;
+}
+function landingText(landing) {
+  return `${landing.name} at ${landing.landedAt} (${landingOwner(landing.owner)})`;
+}
+function landingsSince(projectRoot, sinceMs) {
+  return listIntegrations(projectRoot).map((name2) => readLanding(projectRoot, name2)).filter((l) => l !== null && l.ms > sinceMs).sort((a, b) => a.ms - b.ms || (a.landing.name < b.landing.name ? -1 : a.landing.name > b.landing.name ? 1 : 0)).map((l) => l.landing);
+}
+
+// src/summary/format.ts
+var NONE = "-";
+var INDENT = "  ";
+function table(rows) {
+  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
+  return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd());
+}
+function formatCounts(counts) {
+  const parts = [];
+  const s = counts.byState;
+  for (const state of ["running", "held", "preparing", "waiting-reset", "queued"]) {
+    if (s[state] > 0) parts.push(`${s[state]} ${state}`);
+  }
+  const finished = Object.entries(counts.finished).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const total = finished.reduce((n, [, c]) => n + c, 0);
+  if (total > 0) parts.push(`${total} finished (${finished.map(([end, c]) => `${c} ${end}`).join(", ")})`);
+  if (s.orphaned > 0) parts.push(`${s.orphaned} orphaned`);
+  return parts.join(" \xB7 ");
+}
+function phaseText(p) {
+  return p.status === "failed" && p.endState !== null ? `failed (${p.endState})` : p.status;
+}
+var isoAt2 = (sec) => new Date(sec * 1e3).toISOString().replace(/\.000Z$/, "Z");
+function formatSummary(s, nowSec) {
+  const out = [];
+  const section2 = (title, lines) => {
+    if (out.length > 0) out.push("");
+    out.push(title, ...lines.map((l) => INDENT + l));
+  };
+  if (s.lanes.total > 0) {
+    const lines = [formatCounts(s.lanes.counts)];
+    if (s.lanes.active.length > 0) {
+      lines.push(
+        ...table([
+          ["LANE", "STATE", "ELAPSED", "ATTEMPT", "OWNER", "REASON"],
+          ...s.lanes.active.map((l) => [
+            l.lane,
+            l.state,
+            l.elapsedMs === null ? NONE : formatElapsed(l.elapsedMs),
+            String(l.attempt),
+            l.owner ?? NONE,
+            l.reason ?? NONE
+          ])
+        ])
+      );
+    }
+    section2(`Lanes (${s.lanes.total})`, lines);
+  }
+  if (s.plans.length > 0) {
+    const lines = [];
+    for (const plan of s.plans) {
+      lines.push(`${plan.plan}:`);
+      lines.push(...table(plan.phases.map((p) => [phaseText(p), p.phase])).map((l) => INDENT + l));
+    }
+    lines.push("run `arbab plan status <plan file>` for the phases not launched yet");
+    section2("Plans", lines);
+  }
+  if (s.integrations.length > 0) {
+    section2(
+      "Integrations",
+      table(
+        s.integrations.map((i) => [
+          i.name,
+          i.stage,
+          i.head.slice(0, SHORT_SHA),
+          i.waitsFor.length > 0 ? `waits for: ${i.waitsFor.join("; ")}` : NONE
+        ])
+      )
+    );
+  }
+  if (s.landedSince !== void 0 && s.since !== void 0) {
+    section2(
+      `Landed since ${s.since}`,
+      s.landedSince.length === 0 ? ["nothing landed"] : table(
+        s.landedSince.map((l) => [
+          l.name,
+          `into ${l.into}`,
+          l.landedAt,
+          landingOwner(l.owner),
+          `${l.lanes} ${l.lanes === 1 ? "lane" : "lanes"}${l.squash ? ", squashed" : ""}`
+        ])
+      )
+    );
+  }
+  if (s.attention.length > 0) {
+    const lines = [];
+    for (const a of s.attention) {
+      lines.push(`${a.lane}: ${a.state} (attempt ${a.attempt})${a.reason === null ? "" : `: ${a.reason}`}`);
+      lines.push(`${INDENT}${a.todo}`);
+    }
+    section2("Needs attention", lines);
+  }
+  const q = s.quota;
+  const machine = q.slots.machineMaxParallel === null ? "" : `, machine cap ${q.slots.machineMaxParallel}`;
+  section2("Quota and slots", [
+    `quota: ${formatQuota(q.snapshot, nowSec)}`,
+    q.hold.hold ? `hold: yes, ${q.hold.reason ?? "quota"}${q.hold.until === null ? "" : ` (until ${isoAt2(q.hold.until)})`}` : "hold: no",
+    `slots: ${q.slots.inUse.length} in use machine-wide of ${q.slots.cap} (maxParallel ${q.slots.projectMaxParallel}${machine})`
+  ]);
+  if (s.errors.length > 0) section2("Unreadable records", s.errors);
+  return out.join("\n");
+}
+
+// src/summary/lanes.ts
+import { existsSync as existsSync7 } from "node:fs";
+var OWNER_CHARS = 8;
+var emptyCounts = () => ({
+  byState: { running: 0, held: 0, preparing: 0, "waiting-reset": 0, queued: 0, orphaned: 0 },
+  finished: {}
+});
+function attemptSummary(runsRoot, lane, attempt) {
+  if (attempt < 1) return null;
+  const dir = runPaths(runsRoot, lane).attemptDir(attempt);
+  return existsSync7(dir) ? readAttempt(dir).summary : null;
+}
+function laneOverview(runsRoot, alive, nowMs) {
+  const out = { total: 0, counts: emptyCounts(), active: [], attention: [], errors: [] };
+  for (const lane of listLanes(runsRoot)) {
+    try {
+      const record2 = readState(runsRoot, lane);
+      if (record2 === null) continue;
+      const state = effectiveState(record2, alive);
+      const summary = attemptSummary(runsRoot, lane, record2.attempt);
+      const reason = record2.reason ?? null;
+      out.total++;
+      if (state === "finished") {
+        const end = record2.endState ?? summary?.state ?? null;
+        const key = end ?? "unknown";
+        out.counts.finished[key] = (out.counts.finished[key] ?? 0) + 1;
+        if (needsAttention(end)) {
+          const endState = end;
+          out.attention.push({ lane, state: endState, attempt: record2.attempt, reason, todo: adviceFor(endState) });
+        }
+        continue;
+      }
+      out.counts.byState[state]++;
+      const owner = readShepherdRecord(runsRoot, lane)?.owner ?? null;
+      out.active.push({
+        lane,
+        state,
+        attempt: record2.attempt,
+        elapsedMs: statusRow({ ...record2, state }, summary, nowMs).elapsedMs,
+        owner: owner === null ? null : owner.slice(0, OWNER_CHARS),
+        reason
+      });
+      if (state === "orphaned") {
+        out.attention.push({ lane, state: "orphaned", attempt: record2.attempt, reason, todo: adviceFor("orphaned") });
+      }
+    } catch (err) {
+      out.errors.push(`lane ${lane}: ${err.message}`);
+    }
+  }
+  return out;
+}
+
+// src/summary/plans.ts
+import { readdirSync as readdirSync8 } from "node:fs";
+import { join as join20 } from "node:path";
+var PLANS_DIR = join20(".arbab", "plans");
+function names(dir, keep) {
+  try {
+    return readdirSync8(dir, { withFileTypes: true }).filter(keep).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+}
+function phaseLine(runsRoot, phase, alive) {
+  const record2 = readState(runsRoot, phase);
+  if (record2 === null) return { phase, status: "launched", endState: null };
+  const state = effectiveState(record2, alive);
+  if (state === "orphaned") return { phase, status: "failed", endState: "orphaned" };
+  if (state !== "finished") return { phase, status: state, endState: null };
+  let end = record2.endState ?? null;
+  if (end === null && record2.attempt >= 1) end = readAttempt(runPaths(runsRoot, phase).attemptDir(record2.attempt)).summary?.state ?? null;
+  return { phase, status: end === "success" ? "done" : "failed", endState: end };
+}
+function planOverview(projectRoot, runsRoot, alive) {
+  const root = join20(projectRoot, PLANS_DIR);
+  const plans = [];
+  const errors = [];
+  for (const plan of names(root, (e) => e.isDirectory() && isValidName(e.name))) {
+    const phases = [];
+    for (const file of names(join20(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
+      const phase = file.slice(0, -".json".length);
+      if (!isValidName(phase)) continue;
+      try {
+        phases.push(phaseLine(runsRoot, phase, alive));
+      } catch (err) {
+        errors.push(`plan ${plan} phase ${phase}: ${err.message}`);
+      }
+    }
+    if (phases.length > 0) plans.push({ plan, phases });
+  }
+  return { plans, errors };
+}
+
+// src/summary/slots.ts
+import { readdirSync as readdirSync9, readFileSync as readFileSync6 } from "node:fs";
+import { join as join21 } from "node:path";
+var SLOT_FILE = /^(0|[1-9][0-9]*)\.json$/;
+function holder(path) {
+  let v;
+  try {
+    v = JSON.parse(readFileSync6(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v;
+  if (!Number.isSafeInteger(o.pid) || o.pid < 1 || typeof o.lane !== "string" || typeof o.project !== "string") return null;
+  return { pid: o.pid, lane: o.lane, project: o.project };
+}
+function slotsInUse(home, alive) {
+  let files;
+  try {
+    files = readdirSync9(join21(home, "slots"));
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const file of files) {
+    const match = SLOT_FILE.exec(file);
+    if (match === null) continue;
+    const h = holder(join21(home, "slots", file));
+    if (h !== null && alive(h.pid)) out.push({ slot: Number(match[1]), ...h });
+  }
+  return out.sort((a, b) => a.slot - b.slot);
+}
+function effectiveCap(projectMaxParallel, machine) {
+  return machine.maxParallel === null ? projectMaxParallel : Math.min(projectMaxParallel, machine.maxParallel);
+}
+function quotaOverview(input) {
+  const snapshot = readQuota(input.home);
+  return {
+    snapshot,
+    hold: holdDecision(snapshot, input.config.quota.holdAbove, input.nowSec),
+    slots: {
+      inUse: slotsInUse(input.home, input.alive),
+      cap: effectiveCap(input.config.maxParallel, input.machine),
+      projectMaxParallel: input.config.maxParallel,
+      machineMaxParallel: input.machine.maxParallel
+    }
+  };
+}
+
+// src/summary/project.ts
+function projectSummary(input) {
+  const { project, alive, nowMs, sinceMs } = input;
+  const lanes = laneOverview(project.runsRoot, alive, nowMs);
+  const plans = planOverview(project.root, project.runsRoot, alive);
+  const integrations = integrationOverview(project.root, project.config);
+  return {
+    root: project.root,
+    lanes: { total: lanes.total, counts: lanes.counts, active: lanes.active },
+    plans: plans.plans,
+    integrations: integrations.integrations,
+    attention: lanes.attention,
+    quota: quotaOverview({ home: input.home, config: project.config, machine: input.machine, alive, nowSec: Math.floor(nowMs / 1e3) }),
+    ...sinceMs !== void 0 && { since: new Date(sinceMs).toISOString(), landedSince: landingsSince(project.root, sinceMs) },
+    errors: [...lanes.errors, ...plans.errors, ...integrations.errors]
+  };
+}
+
+// src/summary/report.ts
+import { existsSync as existsSync8, statSync as statSync4 } from "node:fs";
+var FILES_SHOWN = 10;
+function size(path) {
+  try {
+    return statSync4(path).size;
+  } catch {
+    return null;
+  }
+}
+function laneFileRole(path) {
+  try {
+    const spec = readJson(path);
+    const role2 = typeof spec === "object" && spec !== null ? spec["role"] : void 0;
+    return ROLES.includes(role2) ? role2 : null;
+  } catch {
+    return null;
+  }
+}
+function readLaneReport(runsRoot, lane, n) {
+  const paths = runPaths(runsRoot, lane);
+  if (!existsSync8(paths.laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+  const attempts = listAttempts(runsRoot, lane);
+  const latest = attempts.at(-1);
+  if (latest === void 0) throw new ArbabError("usage", `lane ${lane} has no attempt yet`);
+  const attempt = n ?? latest;
+  if (!attempts.includes(attempt)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt} (attempts: ${attempts.join(", ")})`);
+  const dir = paths.attemptDir(attempt);
+  const files = attemptFiles(dir);
+  const record2 = readAttempt(dir);
+  let report = null;
+  let reportError = null;
+  try {
+    report = readJson(files.report);
+  } catch (err) {
+    reportError = err.message;
+  }
+  const summaryRole = record2.summary !== null && ROLES.includes(record2.summary.role) ? record2.summary.role : null;
+  return {
+    lane,
+    role: summaryRole ?? laneFileRole(paths.laneFile),
+    attempt,
+    latest,
+    record: record2,
+    report,
+    reportError,
+    stderr: { path: files.stderr, bytes: size(files.stderr) },
+    stream: { path: files.stream, bytes: size(files.stream) }
+  };
+}
+var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var str = (v) => typeof v === "string" ? v : null;
+var strings = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : null;
+var objects = (v) => Array.isArray(v) ? v.filter(isObject4) : null;
+var INDENT2 = "  ";
+var block = (text2, indent = INDENT2) => text2.split("\n").join(`
+${indent}`);
+function formatTokens2(t) {
+  return `${t.input} in \xB7 ${t.cacheCreation} cache write \xB7 ${t.cacheRead} cache read \xB7 ${t.output} out`;
+}
+function isTokens(v) {
+  return isObject4(v) && ["input", "cacheCreation", "cacheRead", "output"].every((k) => Number.isFinite(v[k]));
+}
+function costLine(s) {
+  if (typeof s.costUsd === "number") {
+    const delta = typeof s.costDeltaUsd === "number" && s.costDeltaUsd.toFixed(2) !== s.costUsd.toFixed(2) ? ` (\u0394$${s.costDeltaUsd.toFixed(2)})` : "";
+    return `cost:      $${s.costUsd.toFixed(2)}${delta}`;
+  }
+  return isTokens(s.tokens) ? `tokens:    ${formatTokens2(s.tokens)}` : "cost:      -";
+}
+function effortText(s) {
+  const measured = isObject4(s.measuredEffort) ? Object.entries(s.measuredEffort).filter(([, n]) => Number.isFinite(n)).map(([e, n]) => `${e} ${n}`) : [];
+  const requested = s.requestedEffort ?? "-";
+  return measured.length > 0 ? `${requested} (measured: ${measured.join(", ")})` : requested;
+}
+function formatHeader(r, live = null) {
+  const s = r.record.summary ?? live;
+  const lines = [
+    `lane:      ${r.lane}`,
+    `role:      ${r.role ?? "-"}`,
+    `attempt:   ${r.attempt}${r.attempt === r.latest ? "" : ` (latest ${r.latest})`}`
+  ];
+  if (s === null) {
+    lines.push("end state: - (no summary.json)");
+    return lines;
+  }
+  const wallMs = s.wallMs ?? r.record.exit?.wallMs ?? null;
+  lines.push(
+    `end state: ${s.state}${r.record.summary === null ? " (live, no summary.json yet)" : ""}`,
+    `wall:      ${typeof wallMs === "number" ? formatElapsed(wallMs) : "-"}`,
+    `turns:     ${s.turns}`,
+    costLine(s),
+    `effort:    ${effortText(s)}`
+  );
+  return lines;
+}
+function listSection(title, items) {
+  if (items === null) return [];
+  if (items.length === 0) return [`${title}: none`];
+  return [`${title}:`, ...items.map((i) => `${INDENT2}- ${block(i, INDENT2 + "  ")}`)];
+}
+function workerBody(rep) {
+  const lines = [];
+  const status = str(rep["status"]);
+  if (status !== null) lines.push(`status: ${status}`);
+  const summary = str(rep["summary"]);
+  if (summary !== null) lines.push(`summary: ${block(summary)}`);
+  const files = strings(rep["files_changed"]);
+  if (files !== null) {
+    const more = files.length > FILES_SHOWN ? `, \u2026 ${files.length - FILES_SHOWN} more` : "";
+    lines.push(`files changed (${files.length})${files.length > 0 ? `: ${files.slice(0, FILES_SHOWN).join(", ")}${more}` : ""}`);
+  }
+  const checks = objects(rep["checks"]);
+  if (checks !== null) {
+    if (checks.length === 0) lines.push("checks: none");
+    else {
+      lines.push("checks:");
+      for (const c of checks) {
+        const code4 = Number.isInteger(c["exit_code"]) ? String(c["exit_code"]) : "?";
+        const result = str(c["result"]);
+        lines.push(`${INDENT2}${str(c["command"]) ?? "?"} \u2192 ${code4}${result === null || result === "" ? "" : `  ${block(result, INDENT2 + "  ")}`}`);
+      }
+    }
+  }
+  lines.push(...listSection("decisions", strings(rep["decisions"])));
+  lines.push(...listSection("open questions", strings(rep["open_questions"])));
+  lines.push(...listSection("not verified", strings(rep["not_verified"])));
+  const notes = str(rep["notes_for_reviewer"]);
+  if (notes !== null) lines.push(`notes for reviewer: ${block(notes)}`);
+  return lines;
+}
+function reviewerBody(rep, findings) {
+  const lines = [];
+  const coverage = str(rep["coverage"]);
+  if (coverage !== null) lines.push(`coverage: ${block(coverage)}`);
+  const paths = strings(rep["paths_checked"]);
+  if (paths !== null) lines.push(`paths checked: ${paths.length}`);
+  lines.push(findings.length === 0 ? "findings: none" : `findings (${findings.length}):`);
+  findings.forEach((f, i) => {
+    const line2 = Number.isInteger(f["line"]) ? `:${f["line"]}` : "";
+    const id = str(f["id"]) ?? String(i + 1);
+    lines.push(`${INDENT2}${id}  ${str(f["severity"]) ?? "?"}  ${str(f["title"]) ?? "?"}  ${str(f["file"]) ?? "?"}${line2}`);
+  });
+  return lines;
+}
+function skepticBody(verdicts) {
+  const lines = [verdicts.length === 0 ? "verdicts: none" : `verdicts (${verdicts.length}):`];
+  for (const v of verdicts) {
+    const refuted = v["refuted"] === true ? "refuted" : v["refuted"] === false ? "stands" : "?";
+    const reasoning = str(v["reasoning"]);
+    lines.push(
+      `${INDENT2}${str(v["id"]) ?? "?"}  ${refuted}  ${str(v["corrected_severity"]) ?? "?"}${reasoning === null ? "" : `  ${block(reasoning, INDENT2 + "  ")}`}`
+    );
+  }
+  return lines;
+}
+function formatReportBody(report) {
+  if (!isObject4(report)) return ["report.json is not an object (see --json)"];
+  const findings = objects(report["findings"]);
+  if (findings !== null) return reviewerBody(report, findings);
+  const verdicts = objects(report["verdicts"]);
+  if (verdicts !== null) return skepticBody(verdicts);
+  const worker = workerBody(report);
+  if (worker.length > 0) return worker;
+  return [`report fields: ${Object.keys(report).join(", ") || "none"} (see --json)`];
+}
+var bytes = (n) => n === null ? "missing" : `${n} bytes`;
+function formatLaneReport(r, live = null) {
+  const lines = formatHeader(r, live);
+  lines.push("");
+  if (r.reportError !== null) {
+    lines.push(`report.json cannot be read: ${r.reportError}`);
+  } else if (r.report === null) {
+    lines.push(`no report.json; see ${r.stderr.path} (${bytes(r.stderr.bytes)}); stream.jsonl: ${bytes(r.stream.bytes)}`);
+  } else {
+    lines.push(...formatReportBody(r.report));
+  }
+  return lines.join("\n");
+}
+
+// src/hook/catchup.ts
+var SESSIONS_DIR = "sessions";
+var NAMED_LANDINGS = 5;
+var WATERMARK_MAX_AGE_MS = 30 * 864e5;
+var WATERMARK_FILE = /^[0-9a-f]{64}\.json$/;
+function watermarkPath(home, session) {
+  return join22(home, SESSIONS_DIR, `${createHash4("sha256").update(session).digest("hex")}.json`);
+}
+var REPORTED_KEPT = 100;
+var LANDING_SLACK_MS = 10 * 6e4;
+function landingKey(landing) {
+  return `${landing.name}@${landing.mergeSha}`;
+}
+function parseWatermark(raw) {
+  if (!isObject5(raw)) return null;
+  const seenAt = raw["seenAt"];
+  const ms = typeof seenAt === "string" ? Date.parse(seenAt) : NaN;
+  if (!Number.isFinite(ms)) return null;
+  const keys = raw["reported"];
+  const reported = Array.isArray(keys) ? keys.filter((k) => typeof k === "string").slice(-REPORTED_KEPT) : [];
+  return { seenMs: ms, reported };
+}
+function readWatermarks(path) {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync7(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject5(raw)) return null;
+  const projects = raw["projects"];
+  if (isObject5(projects)) {
+    const marks = /* @__PURE__ */ new Map();
+    for (const [root, value] of Object.entries(projects)) {
+      const mark = parseWatermark(value);
+      if (root !== "" && mark !== null) marks.set(root, mark);
+    }
+    const own2 = parseWatermark({ seenAt: raw["seenAt"] });
+    const latest = Math.max(...[...marks.values()].map((m) => m.seenMs));
+    const session2 = own2 ?? (marks.size > 0 ? { seenMs: latest, reported: [] } : null);
+    return { projects: marks, session: session2 };
+  }
+  const session = parseWatermark(raw);
+  return session === null ? null : { projects: /* @__PURE__ */ new Map(), session };
+}
+function watermarkOf(marks, root) {
+  const folded = foldPath(root);
+  for (const entry of marks) if (foldPath(entry[0]) === folded) return entry;
+  return null;
+}
+function writeWatermarks(path, nowMs, marks) {
+  const projects = {};
+  for (const [root, { seenMs, reported }] of marks) {
+    projects[root] = { seenAt: new Date(seenMs).toISOString(), reported: [...new Set(reported)].slice(-REPORTED_KEPT) };
+  }
+  writeJsonAtomic(path, { seenAt: new Date(nowMs).toISOString(), projects });
+}
+function isObject5(v) {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+var flat = (text2) => text2.replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
+function catchUpText(landings) {
+  const intos = [...new Set(landings.map((l) => l.into))];
+  const named2 = landings.slice(0, NAMED_LANDINGS).map((l) => l.project === void 0 ? landingText(l) : `${landingText(l)} in ${l.project}`);
+  const more = landings.length > NAMED_LANDINGS ? ` and ${landings.length - NAMED_LANDINGS} more` : "";
+  const into = intos.join(", ");
+  const here = landings.some((l) => l.project !== void 0) ? "" : " here";
+  const merge = intos.length === 1 ? into : `its base (${into})`;
+  return flat(
+    `arbab: while this session was away, other sessions landed into ${into}${here}: ${named2.join(", ")}${more}. Lanes keep their own base; an integration started before these must merge ${merge} in before it can land.`
+  );
+}
+function registeredAround(home, cwd, real2) {
+  const around = [];
+  const below = [];
+  for (const { root } of listProjects(home)) {
+    if (sameOrInside(root, cwd) || real2 !== null && sameOrInside(root, real2)) around.push(root);
+    else if (sameOrInside(cwd, root) || real2 !== null && sameOrInside(real2, root)) below.push(root);
+  }
+  return { around, below };
+}
+function projectName(root, cwd, real2) {
+  const from = [cwd, real2].find((dir) => dir !== null && sameOrInside(dir, root));
+  const rel = from === void 0 ? "" : relative8(foldPath(from), foldPath(root));
+  if (rel === "" || rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute7(rel)) return basename(root);
+  const parts = normalize(root).split(sep8).filter((part) => part !== "");
+  return parts.slice(-rel.split(sep8).length).join(sep8);
+}
+function sameRoot(a, b, realpath2) {
+  if (foldPath(a) === foldPath(b)) return true;
+  try {
+    return foldPath(realpath2(a)) === foldPath(realpath2(b));
+  } catch {
+    return false;
+  }
+}
+function catchUpDecision(input, event, opts) {
+  let parsed2;
+  try {
+    parsed2 = JSON.parse(input);
+  } catch {
+    return null;
+  }
+  if (!isObject5(parsed2)) return null;
+  const { session_id: session, cwd, hook_event_name: name2, source } = parsed2;
+  if (typeof session !== "string" || session === "" || typeof cwd !== "string" || cwd === "") return null;
+  if (name2 !== void 0 && name2 !== event) return null;
+  if (source !== void 0 && typeof source !== "string") return null;
+  const realpath2 = opts.realpath ?? ((path2) => realpathSync6.native(path2));
+  let real2 = null;
+  try {
+    real2 = realpath2(cwd);
+  } catch {
+  }
+  const { around, below } = registeredAround(opts.home, cwd, real2);
+  if (around.length === 0 && below.length === 0) return null;
+  const roots = [];
+  if (around.length > 0) {
+    const root = opts.findRoot(cwd);
+    if (root === null) return null;
+    const key = around.find((r) => sameRoot(r, root, realpath2));
+    if (key !== void 0) roots.push({ root, key });
+  }
+  for (const root of below) if (!roots.some((r) => sameRoot(r.root, root, realpath2))) roots.push({ root, key: root });
+  if (roots.length === 0) return null;
+  const path = watermarkPath(opts.home, session);
+  const marks = readWatermarks(path) ?? { projects: /* @__PURE__ */ new Map(), session: null };
+  const next = new Map(marks.projects);
+  const nowMs = opts.clock.now();
+  const landings = [];
+  for (const { root, key } of roots) {
+    const found = watermarkOf(marks.projects, key);
+    if (found !== null) next.delete(found[0]);
+    const mark = found?.[1] ?? marks.session;
+    if (mark === null) {
+      next.set(key, { seenMs: nowMs, reported: landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey) });
+      continue;
+    }
+    const reported = new Set(mark.reported);
+    const news = landingsSince(root, mark.seenMs - LANDING_SLACK_MS).filter(
+      (l) => l.owner !== session && !reported.has(landingKey(l))
+    );
+    next.set(key, { seenMs: nowMs, reported: [...mark.reported, ...news.map(landingKey)] });
+    const project = roots.length > 1 ? projectName(root, cwd, real2) : void 0;
+    landings.push(...news.map((l) => project === void 0 ? l : { ...l, project }));
+  }
+  writeWatermarks(path, nowMs, next);
+  if (landings.length === 0) return null;
+  landings.sort((a, b) => (Date.parse(a.landedAt) || 0) - (Date.parse(b.landedAt) || 0));
+  return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(landings) } });
+}
+function removeStaleWatermarks(home, nowMs, maxAgeMs = WATERMARK_MAX_AGE_MS) {
+  const dir = join22(home, SESSIONS_DIR);
+  let files;
+  try {
+    files = readdirSync10(dir);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const file of files) {
+    if (!WATERMARK_FILE.test(file)) continue;
+    const path = join22(dir, file);
+    try {
+      if (!(nowMs - statSync5(path).mtimeMs > maxAgeMs)) continue;
+      rmSync7(path, { force: true });
+      removed++;
+    } catch {
+    }
+  }
+  return removed;
+}
+
+// src/commands/generated.ts
+import { existsSync as existsSync9 } from "node:fs";
+import { join as join23 } from "node:path";
+var GENERATED = "generated.json";
+var BY = "integration:";
+var SHA3 = /^[0-9a-f]{40,64}$/;
+var ownerTag = (owner) => `${BY}${owner.integration}`;
+var markerPath = (runsRoot, lane) => join23(runsRoot, assertValidName(lane, "lane"), GENERATED);
+function markGenerated(runsRoot, lane, owner, now) {
+  const marker = { by: ownerTag(owner), createdAt: now, baseSha: owner.head };
+  writeJsonAtomic(markerPath(runsRoot, lane), marker);
+}
+function readGenerated(runsRoot, lane) {
+  const path = markerPath(runsRoot, lane);
+  if (!existsSync9(path)) return null;
+  let raw;
+  try {
+    raw = readJson(path);
+  } catch {
+    raw = null;
+  }
+  const fields = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
+  return {
+    by: typeof fields["by"] === "string" ? fields["by"] : null,
+    baseSha: typeof fields["baseSha"] === "string" && SHA3.test(fields["baseSha"]) ? fields["baseSha"] : null
+  };
+}
+function lanesGeneratedBy(runsRoot, integration) {
+  const tag = ownerTag({ integration });
+  return listLanes(runsRoot).filter((lane) => readGenerated(runsRoot, lane)?.by === tag);
+}
+function generatingIntegration(by) {
+  if (by?.startsWith(BY) !== true) return null;
+  const name2 = by.slice(BY.length);
+  return isValidName(name2) ? name2 : null;
+}
+function assertNotGenerated(runsRoot, lane) {
+  const marker = readGenerated(runsRoot, lane);
+  if (marker === null) return;
+  const owner = generatingIntegration(marker.by);
+  throw new ArbabError(
+    "usage",
+    `lane ${lane} was generated by ${owner === null ? "an integration" : `integration ${owner}`}, which owns the name; only its arbab verify or arbab review runs it. Give your lane another name`
+  );
+}
+
+// src/commands/integration.ts
+import { createHash as createHash5 } from "node:crypto";
+import { existsSync as existsSync18 } from "node:fs";
+import { join as join39 } from "node:path";
+
 // src/commands/launch.ts
-import { rmSync as rmSync5, statSync as statSync4 } from "node:fs";
-import { join as join22 } from "node:path";
+import { rmSync as rmSync8, statSync as statSync6 } from "node:fs";
+import { join as join29 } from "node:path";
 
 // src/commands/lint.ts
-import { realpathSync as realpathSync9 } from "node:fs";
-import { join as join21, resolve as resolve12 } from "node:path";
+import { realpathSync as realpathSync10 } from "node:fs";
+import { join as join28, resolve as resolve13 } from "node:path";
 
 // src/brief/markdown.ts
 var OPEN = /^ {0,3}(`{3,}|~{3,})(.*)$/;
@@ -3564,8 +4935,8 @@ function lintBrief(markdown, source, profile) {
 }
 
 // src/config/load.ts
-import { existsSync as existsSync6, lstatSync as lstatSync3, realpathSync as realpathSync6 } from "node:fs";
-import { dirname as dirname4, isAbsolute as isAbsolute6, join as join17, relative as relative7, sep as sep7 } from "node:path";
+import { existsSync as existsSync10, lstatSync as lstatSync3, realpathSync as realpathSync7 } from "node:fs";
+import { dirname as dirname4, isAbsolute as isAbsolute8, join as join24, relative as relative9, sep as sep9 } from "node:path";
 
 // src/util/env-policy.ts
 var FORBIDDEN_PREFIX = /^(CLAUDE|VSCODE|CURSOR|TERM_PROGRAM)/;
@@ -3638,7 +5009,7 @@ function loadConfig(projectRoot) {
   let raw = null;
   let label = CONFIG_FILE;
   for (const rel of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
-    raw = readJsonFile(join17(projectRoot, rel));
+    raw = readJsonFile(join24(projectRoot, rel));
     label = rel;
     if (raw !== null) break;
   }
@@ -3709,7 +5080,7 @@ function readableEnvFiles(v) {
   const seen = /* @__PURE__ */ new Set();
   return stringArray(v, "fence.readableEnvFiles").map((p, i) => {
     const field = `fence.readableEnvFiles[${i}]`;
-    if (isAbsolute6(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (isAbsolute8(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
     if (/[\0\n\r]/.test(p)) fail(field, "must not contain NUL or a newline");
     const segments = p.split(/[\\/]/);
     if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
@@ -3741,9 +5112,9 @@ function arbabRoot(projectRoot, v, field) {
   const records = confined(projectRoot, INTEGRATIONS_DIR, field);
   checkArbabRoot(path, root, records, field);
   const real2 = realExisting(path);
-  const realRoot = realpathSync6.native(projectRoot);
-  const rel = real2 === null ? ".." : relative7(realRoot, real2);
-  if (rel === ".." || rel.startsWith(`..${sep7}`) || isAbsolute6(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  const realRoot = realpathSync7.native(projectRoot);
+  const rel = real2 === null ? ".." : relative9(realRoot, real2);
+  if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute8(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   if (real2 !== null) checkArbabRoot(real2, realRoot, realExisting(records), field);
   return s;
 }
@@ -3763,8 +5134,8 @@ function realExisting(path) {
     }
     if (present) {
       try {
-        const tail = relative7(p, path);
-        return tail === "" ? realpathSync6.native(p) : join17(realpathSync6.native(p), tail);
+        const tail = relative9(p, path);
+        return tail === "" ? realpathSync7.native(p) : join24(realpathSync7.native(p), tail);
       } catch {
         return null;
       }
@@ -3871,9 +5242,9 @@ function roles(v) {
 }
 
 // src/config/machine.ts
-import { join as join18 } from "node:path";
+import { join as join25 } from "node:path";
 function loadMachineConfig(home) {
-  const raw = readJsonFile(join18(home, MACHINE_CONFIG_FILE));
+  const raw = readJsonFile(join25(home, MACHINE_CONFIG_FILE));
   const config = { maxParallel: null };
   if (raw === null) return config;
   const obj = record(raw, MACHINE_CONFIG_FILE);
@@ -4020,12 +5391,12 @@ function dedupe(items) {
 }
 
 // src/profile/compile.ts
-import { isAbsolute as isAbsolute7, relative as relative8, resolve as resolve9 } from "node:path";
+import { isAbsolute as isAbsolute9, relative as relative10, resolve as resolve10 } from "node:path";
 var FILE_TOOLS2 = /* @__PURE__ */ new Set(["Read", "Glob", "Grep", "Edit", "Write"]);
 var WRITE_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "Write"]);
 var WRITERS = ["implementer", "verifier", "probe"];
 function compileProfile(input) {
-  if (!isAbsolute7(input.worktree)) {
+  if (!isAbsolute9(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
   const gitDir = input.gitCommonDir === void 0 ? void 0 : absoluteDir("gitCommonDir", input.gitCommonDir);
@@ -4079,19 +5450,19 @@ function compileProfile(input) {
   return { tools: input.tools, settings };
 }
 function absoluteDir(field, dir) {
-  if (!isAbsolute7(dir)) {
+  if (!isAbsolute9(dir)) {
     throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
-  const normal = resolve9(dir);
+  const normal = resolve10(dir);
   if (normal === "/") throw new ArbabError("usage", `${field} must not be the filesystem root`);
   return normal;
 }
 function envAllowReads(worktree, paths) {
   return dedupe(paths.map((path) => {
-    if (!isAbsolute7(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
-    const normal = resolve9(path);
-    const rel = relative8(resolve9(worktree), normal);
-    if (rel === "" || rel.startsWith("..") || isAbsolute7(rel)) {
+    if (!isAbsolute9(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    const normal = resolve10(path);
+    const rel = relative10(resolve10(worktree), normal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute9(rel)) {
       throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
     }
     return normal;
@@ -4115,12 +5486,12 @@ function roleAllow(role2) {
 }
 
 // src/profile/envfiles.ts
-import { readdirSync as readdirSync7, realpathSync as realpathSync7 } from "node:fs";
-import { basename, dirname as dirname5, join as join19, posix as posix2, relative as relative9, sep as sep8 } from "node:path";
+import { readdirSync as readdirSync11, realpathSync as realpathSync8 } from "node:fs";
+import { basename as basename2, dirname as dirname5, join as join26, posix as posix2, relative as relative11, sep as sep10 } from "node:path";
 function envFileAllowReads(input) {
   let real2;
   try {
-    real2 = realpathSync7(input.worktree);
+    real2 = realpathSync8(input.worktree);
   } catch {
     return [];
   }
@@ -4134,7 +5505,7 @@ function envFileAllowReads(input) {
     } catch {
       continue;
     }
-    const rel = relative9(input.worktree, path).split(sep8).join("/");
+    const rel = relative11(input.worktree, path).split(sep10).join("/");
     if (rel === "") continue;
     if (isRegularFile(input.worktree, real2, path)) candidates.set(rel, path);
   }
@@ -4154,8 +5525,8 @@ function trackedOf(git, worktree, gitDir, rels) {
 function isRegularFile(worktree, realWorktree, path) {
   const dir = dirname5(path);
   try {
-    if (realpathSync7(dir) !== join19(realWorktree, relative9(worktree, dir))) return false;
-    const entry = readdirSync7(dir, { withFileTypes: true }).find((e) => e.name === basename(path));
+    if (realpathSync8(dir) !== join26(realWorktree, relative11(worktree, dir))) return false;
+    const entry = readdirSync11(dir, { withFileTypes: true }).find((e) => e.name === basename2(path));
     return entry !== void 0 && entry.isFile();
   } catch {
     return false;
@@ -4219,7 +5590,7 @@ function buildClaudeArgs(input) {
 }
 
 // src/profile/env.ts
-import { isAbsolute as isAbsolute8 } from "node:path";
+import { isAbsolute as isAbsolute10 } from "node:path";
 var HOST_KEYS = ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"];
 var SYSTEM_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 var ENV_NAME2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -4228,7 +5599,7 @@ function workerEnv(host, opts) {
   for (const name2 of Object.keys(opts.extra)) assertWorkerEnvName(name2, isReservedEnv);
   const dirs = opts.pnpmDir === void 0 ? [opts.nodeDir] : [opts.nodeDir, opts.pnpmDir];
   for (const dir of dirs) {
-    if (!isAbsolute8(dir) || dir.includes(":")) {
+    if (!isAbsolute10(dir) || dir.includes(":")) {
       throw new ArbabError("config", `PATH entry ${JSON.stringify(dir)} must be an absolute path without ":"`);
     }
   }
@@ -4258,7 +5629,7 @@ function assertWorkerEnvName(name2, refused) {
 }
 
 // src/profile/lint.ts
-import { resolve as resolve10 } from "node:path";
+import { resolve as resolve11 } from "node:path";
 var BASH_RULE = /^Bash\((.*)\)$/s;
 var PARAM_RULE = /^\s*([A-Za-z_]+)\s*:/;
 var PATH_RULE = /^(?:Read|Edit)\((.*)\)$/s;
@@ -4318,7 +5689,7 @@ function lintProfile(profile, input) {
         "no shared git directory is known, so sandboxed commands can write its refs and objects",
         "sandbox.filesystem.denyWrite"
       );
-    } else if (!(sandbox.filesystem?.denyWrite ?? []).map((p) => resolve10(p)).includes(resolve10(gitDir))) {
+    } else if (!(sandbox.filesystem?.denyWrite ?? []).map((p) => resolve11(p)).includes(resolve11(gitDir))) {
       warn("shared-git-writable", `${gitDir} is not in the sandbox's denyWrite`, "sandbox.filesystem.denyWrite");
     }
   }
@@ -4344,11 +5715,11 @@ function wildcardPrefix(content) {
 }
 
 // src/commands/project.ts
-import { existsSync as existsSync7, readFileSync as readFileSync5, realpathSync as realpathSync8 } from "node:fs";
-import { dirname as dirname6, join as join20, resolve as resolve11, sep as sep9 } from "node:path";
+import { existsSync as existsSync11, readFileSync as readFileSync8, realpathSync as realpathSync9 } from "node:fs";
+import { dirname as dirname6, join as join27, resolve as resolve12, sep as sep11 } from "node:path";
 import { parseArgs } from "node:util";
 function hasWorktreesPair(path) {
-  const parts = path.split(sep9).map(foldPath);
+  const parts = path.split(sep11).map(foldPath);
   return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
 }
 function configuredWorktreeRoots(dir, io) {
@@ -4361,7 +5732,7 @@ function configuredWorktreeRoots(dir, io) {
   for (const file of [CONFIG_FILE, LOCAL_CONFIG_FILE]) {
     let parsed2;
     try {
-      parsed2 = JSON.parse(io.readFile(join20(dir, file)));
+      parsed2 = JSON.parse(io.readFile(join27(dir, file)));
     } catch {
       continue;
     }
@@ -4374,7 +5745,7 @@ function configuredWorktreeRoots(dir, io) {
     } catch {
       continue;
     }
-    if (full === resolve11(dir)) continue;
+    if (full === resolve12(dir)) continue;
     roots.push(full);
     let real2;
     try {
@@ -4394,10 +5765,10 @@ function underConfiguredRoot(path, io) {
 }
 function inLaneWorktree(path, io = {}) {
   const full = {
-    realpath: io.realpath ?? ((p) => realpathSync8.native(p)),
-    readFile: io.readFile ?? ((p) => readFileSync5(p, "utf8"))
+    realpath: io.realpath ?? ((p) => realpathSync9.native(p)),
+    readFile: io.readFile ?? ((p) => readFileSync8(p, "utf8"))
   };
-  const lexical = resolve11(path);
+  const lexical = resolve12(path);
   let canonical4;
   try {
     canonical4 = full.realpath(lexical);
@@ -4413,9 +5784,9 @@ function notALaneWorktree(root) {
   return root;
 }
 function findProjectRoot(cwd, git) {
-  let dir = resolve11(cwd);
+  let dir = resolve12(cwd);
   for (; ; ) {
-    if (existsSync7(join20(dir, CONFIG_FILE))) return notALaneWorktree(dir);
+    if (existsSync11(join27(dir, CONFIG_FILE))) return notALaneWorktree(dir);
     const parent = dirname6(dir);
     if (parent === dir) break;
     dir = parent;
@@ -4454,9 +5825,9 @@ function resolveGitCommonDir(git, root) {
   const r = git(["rev-parse", "--git-common-dir"], root);
   const out = r.stdout.trim();
   if (r.code !== 0 || out === "") return void 0;
-  const path = resolve12(root, out);
+  const path = resolve13(root, out);
   try {
-    return realpathSync9(path);
+    return realpathSync10(path);
   } catch {
     return path;
   }
@@ -4475,7 +5846,7 @@ function profileInputFor(project, lane, gitCommonDir2) {
     laneAllow: lane.allow ?? [],
     credentialPaths: project.config.credentialPaths,
     env: { ...project.config.env, ...leaseEnv(leases) },
-    worktree: join21(project.worktreeRoot, lane.worktree ?? lane.name),
+    worktree: join28(project.worktreeRoot, lane.worktree ?? lane.name),
     ...gitCommonDir2 !== void 0 && { gitCommonDir: gitCommonDir2 }
   };
 }
@@ -4538,14 +5909,14 @@ async function runLint(argv2, ctx) {
 // src/commands/launch.ts
 var LAUNCH_LOCK_MS = 1e4;
 var LAUNCH_POLL_MS = 50;
-var launchLockPath = (project, lane) => join22(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
+var launchLockPath = (project, lane) => join29(runPaths(project.runsRoot, lane).laneDir, "launch.lock");
 function takeLaunchLock(ctx, project, lane, pid) {
   const path = launchLockPath(project, lane);
   const holder2 = { pid, lane, project: project.root, createdAt: isoAt(ctx.clock) };
   const data = JSON.stringify(holder2);
   const unparsedIsStale = () => {
     try {
-      return ctx.clock.now() - statSync4(path).mtimeMs > LAUNCH_LOCK_MS;
+      return ctx.clock.now() - statSync6(path).mtimeMs > LAUNCH_LOCK_MS;
     } catch {
       return false;
     }
@@ -4555,7 +5926,7 @@ function takeLaunchLock(ctx, project, lane, pid) {
   }
   return () => {
     try {
-      if (readText(path) === data) rmSync5(path, { force: true });
+      if (readText(path) === data) rmSync8(path, { force: true });
     } catch {
     }
   };
@@ -4643,29 +6014,29 @@ async function runLaunch(argv2, ctx) {
 }
 
 // src/commands/preflight.ts
-import { existsSync as existsSync13 } from "node:fs";
-import { join as join31, relative as relative10 } from "node:path";
+import { existsSync as existsSync17 } from "node:fs";
+import { join as join38, relative as relative12 } from "node:path";
 
 // src/commands/doctor.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
-import { rmSync as rmSync6 } from "node:fs";
-import { join as join30 } from "node:path";
+import { rmSync as rmSync9 } from "node:fs";
+import { join as join37 } from "node:path";
 
 // src/binary/node.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { existsSync as existsSync8, realpathSync as realpathSync10 } from "node:fs";
+import { existsSync as existsSync12, realpathSync as realpathSync11 } from "node:fs";
 function runVersion(path, args) {
   return execFileSync2(path, args, { encoding: "utf8", timeout: 3e4, stdio: ["ignore", "pipe", "pipe"] });
 }
 function pathExists(p) {
-  return existsSync8(p);
+  return existsSync12(p);
 }
 function realpath(p) {
-  return realpathSync10(p);
+  return realpathSync11(p);
 }
 
 // src/binary/resolve.ts
-import { isAbsolute as isAbsolute9, join as join23 } from "node:path";
+import { isAbsolute as isAbsolute11, join as join30 } from "node:path";
 function parseVersion(text2) {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(text2);
   if (m === null) return null;
@@ -4687,8 +6058,8 @@ function compareVersions(a, b) {
 function findOnPath(cmd, pathEnv, exists) {
   if (cmd === "" || cmd.includes("/")) return null;
   for (const dir of pathEnv.split(":")) {
-    if (dir === "" || !isAbsolute9(dir)) continue;
-    const candidate = join23(dir, cmd);
+    if (dir === "" || !isAbsolute11(dir)) continue;
+    const candidate = join30(dir, cmd);
     if (exists(candidate)) return candidate;
   }
   return null;
@@ -4776,27 +6147,27 @@ function checkEnvTemplates(git, root, readableEnvFiles2) {
 }
 
 // src/doctor/gates.ts
-import { basename as basename2, join as join25 } from "node:path";
+import { basename as basename3, join as join32 } from "node:path";
 
 // src/doctor/read.ts
-import { readdirSync as readdirSync8, readFileSync as readFileSync6 } from "node:fs";
-import { join as join24 } from "node:path";
+import { readdirSync as readdirSync12, readFileSync as readFileSync9 } from "node:fs";
+import { join as join31 } from "node:path";
 function readOptional(path) {
   try {
-    return readFileSync6(path, "utf8");
+    return readFileSync9(path, "utf8");
   } catch {
     return null;
   }
 }
 function listNames(dir) {
   try {
-    return readdirSync8(dir).sort();
+    return readdirSync12(dir).sort();
   } catch {
     return [];
   }
 }
 function readPackageJson(root) {
-  const text2 = readOptional(join24(root, "package.json"));
+  const text2 = readOptional(join31(root, "package.json"));
   if (text2 === null) return null;
   try {
     const value = JSON.parse(text2);
@@ -4824,7 +6195,7 @@ function isCheckScript(name2) {
   return CHECK_NAMES.has(name2) || CHECK_PREFIXES.some((p) => name2.startsWith(p));
 }
 function scriptOf(argv2) {
-  const pm = basename2(argv2[0] ?? "");
+  const pm = basename3(argv2[0] ?? "");
   let name2;
   if (pm === "pnpm" || pm === "yarn") name2 = argv2[1] === "run" ? argv2[2] : argv2[1];
   else if (pm === "npm") name2 = argv2[1] === "run" || argv2[1] === "run-script" ? argv2[2] : argv2[1] === "test" ? "test" : void 0;
@@ -4837,7 +6208,7 @@ function scriptCalls(command) {
     while (words.length > 0 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) words.shift();
     const name2 = scriptOf(words);
     if (name2 !== null) out.push(name2);
-    if (RUNNERS.has(basename2(words[0] ?? ""))) out.push(...words.slice(1).filter((w) => SCRIPT_NAME.test(w)));
+    if (RUNNERS.has(basename3(words[0] ?? ""))) out.push(...words.slice(1).filter((w) => SCRIPT_NAME.test(w)));
   }
   return out;
 }
@@ -4897,10 +6268,10 @@ function checkGates(root, gates) {
   const out = [
     missing.length === 0 ? { status: "ok", check: "gates", detail: `gates run ${checks.join(", ")}` } : { status: "warn", check: "gates", detail: `no gate runs these package.json scripts: ${missing.join(", ")}` }
   ];
-  const workflows = join25(root, ".github", "workflows");
+  const workflows = join32(root, ".github", "workflows");
   const inCi = /* @__PURE__ */ new Set();
   for (const file of listNames(workflows).filter((n) => /\.ya?ml$/.test(n))) {
-    for (const line2 of workflowRunLines(readOptional(join25(workflows, file)) ?? "")) {
+    for (const line2 of workflowRunLines(readOptional(join32(workflows, file)) ?? "")) {
       for (const call of scriptCalls(line2)) for (const name2 of matching(call, missing)) inCi.add(name2);
     }
   }
@@ -4909,11 +6280,11 @@ function checkGates(root, gates) {
 }
 
 // src/doctor/hook.ts
-import { basename as basename3, dirname as dirname7, join as join26 } from "node:path";
+import { basename as basename4, dirname as dirname7, join as join33 } from "node:path";
 var HOOK_MISSING = "runner calls will wait for approval: the plugin hook is missing (update the plugin)";
 function hookFile(scriptPath2) {
   const dist = dirname7(scriptPath2);
-  return basename3(dist) === "dist" ? join26(dirname7(dist), "hooks", "hooks.json") : null;
+  return basename4(dist) === "dist" ? join33(dirname7(dist), "hooks", "hooks.json") : null;
 }
 function checkHook(scriptPath2) {
   const file = hookFile(scriptPath2);
@@ -4922,14 +6293,14 @@ function checkHook(scriptPath2) {
 }
 
 // src/doctor/machine.ts
-import { existsSync as existsSync9, readdirSync as readdirSync9 } from "node:fs";
-import { join as join27 } from "node:path";
+import { existsSync as existsSync13, readdirSync as readdirSync13 } from "node:fs";
+import { join as join34 } from "node:path";
 var MAX_WORKTREE_DIRS = 30;
 var MAX_EMPTY_LOCK_DIRS = 100;
 var message = (err) => err instanceof Error ? err.message : String(err);
 function entries2(dir) {
   try {
-    return readdirSync9(dir, { withFileTypes: true });
+    return readdirSync13(dir, { withFileTypes: true });
   } catch {
     return [];
   }
@@ -4938,11 +6309,11 @@ function countDirs(dir) {
   return entries2(dir).filter((e) => e.isDirectory()).length;
 }
 function countEmptyDirs(dir) {
-  return entries2(dir).filter((e) => e.isDirectory() && entries2(join27(dir, e.name)).length === 0).length;
+  return entries2(dir).filter((e) => e.isDirectory() && entries2(join34(dir, e.name)).length === 0).length;
 }
 function checkDisk(worktreeDir, worktreeLabel, home) {
   const worktrees = countDirs(worktreeDir);
-  const locks = countEmptyDirs(join27(home, "locks"));
+  const locks = countEmptyDirs(join34(home, "locks"));
   const out = [];
   if (worktrees > MAX_WORKTREE_DIRS) {
     out.push({
@@ -4975,7 +6346,7 @@ function checkMachineCap(home, root, maxParallel) {
   } catch {
   }
   for (const p of projects) {
-    if (caps.has(p.root) || !existsSync9(p.root)) continue;
+    if (caps.has(p.root) || !existsSync13(p.root)) continue;
     try {
       caps.set(p.root, loadConfig(p.root).maxParallel);
     } catch {
@@ -4991,8 +6362,8 @@ function checkMachineCap(home, root, maxParallel) {
 }
 
 // src/doctor/project.ts
-import { existsSync as existsSync10 } from "node:fs";
-import { join as join28 } from "node:path";
+import { existsSync as existsSync14 } from "node:fs";
+import { join as join35 } from "node:path";
 function checkIgnored(git, root, config) {
   const entries3 = arbabIgnoreEntries(root, config).filter((e) => e !== `${WORKER_TMP_DIR}/`);
   const notIgnored = entries3.filter((e) => git(["check-ignore", "-q", "--", `${e}x`], root).code !== 0);
@@ -5005,34 +6376,34 @@ function checkIgnored(git, root, config) {
   };
 }
 function checkConfigFiles(root) {
-  if (!existsSync10(join28(root, CONFIG_FILE)) || !existsSync10(join28(root, LOCAL_CONFIG_FILE))) return null;
+  if (!existsSync14(join35(root, CONFIG_FILE)) || !existsSync14(join35(root, LOCAL_CONFIG_FILE))) return null;
   return { status: "warn", check: "configs", detail: `both ${CONFIG_FILE} and ${LOCAL_CONFIG_FILE} exist: ${CONFIG_FILE} wins` };
 }
 
 // src/doctor/scanners.ts
-import { existsSync as existsSync11 } from "node:fs";
-import { join as join29 } from "node:path";
+import { existsSync as existsSync15 } from "node:fs";
+import { join as join36 } from "node:path";
 var FLAT_CONFIG = /^eslint\.config\.(js|mjs|cjs|ts|mts|cts)$/;
 var TEST_CONFIG = /^(vitest|vite|jest)\.config\.(js|mjs|cjs|ts|mts|cts|json)$/;
 var ESLINT_FLAT_UNGUARDED = "eslint in this checkout also lints .arbab/worktrees: add '.arbab/**' to its ignores";
 function checkEslint(root) {
   const names2 = listNames(root);
-  const flat2 = names2.filter((n) => FLAT_CONFIG.test(n));
+  const flat3 = names2.filter((n) => FLAT_CONFIG.test(n));
   const legacy = names2.filter((n) => n.startsWith(".eslintrc"));
   if (readPackageJson(root)?.["eslintConfig"] !== void 0) legacy.push("package.json eslintConfig");
-  if (flat2.length === 0 && legacy.length === 0) return [];
+  if (flat3.length === 0 && legacy.length === 0) return [];
   const out = [];
-  const unguarded = flat2.filter((n) => !(readOptional(join29(root, n)) ?? "").includes(ARBAB_DIR));
+  const unguarded = flat3.filter((n) => !(readOptional(join36(root, n)) ?? "").includes(ARBAB_DIR));
   if (unguarded.length > 0) out.push({ status: "warn", check: "eslint", detail: `${ESLINT_FLAT_UNGUARDED} (${unguarded.join(", ")})` });
   const marker = `${ARBAB_DIR}/${ESLINT_MARKER}`;
-  if (legacy.length > 0 && !existsSync11(join29(root, marker))) {
+  if (legacy.length > 0 && !existsSync15(join36(root, marker))) {
     out.push({
       status: "warn",
       check: "eslint",
       detail: `${marker} is missing, so ESLint in a worktree also loads ${legacy.join(", ")} of this checkout (the shepherd writes the marker on the next launch)`
     });
   }
-  if (out.length === 0) out.push({ status: "ok", check: "eslint", detail: `${[...flat2, ...legacy].join(", ")} stop at ${ARBAB_DIR}/` });
+  if (out.length === 0) out.push({ status: "ok", check: "eslint", detail: `${[...flat3, ...legacy].join(", ")} stop at ${ARBAB_DIR}/` });
   return out;
 }
 function confinesTests(text2) {
@@ -5042,7 +6413,7 @@ function checkTestConfigs(root) {
   const configs = [];
   const open2 = [];
   for (const name2 of listNames(root).filter((n) => TEST_CONFIG.test(n))) {
-    const text2 = readOptional(join29(root, name2)) ?? "";
+    const text2 = readOptional(join36(root, name2)) ?? "";
     if (name2.startsWith("vite.") && !/\btest\s*:/.test(text2)) continue;
     configs.push(name2);
     if (!confinesTests(text2)) open2.push(name2);
@@ -5098,11 +6469,11 @@ function checkSandbox(platform, deps) {
   return { status: "fail", check: "sandbox", detail: `Claude Code has no sandbox on ${platform}` };
 }
 function checkHome(home) {
-  const probe = join30(home, `.doctor-${randomBytes3(6).toString("hex")}`);
+  const probe = join37(home, `.doctor-${randomBytes3(6).toString("hex")}`);
   try {
     ensureDir(home);
     createExclusive(probe, "");
-    rmSync6(probe, { force: true });
+    rmSync9(probe, { force: true });
     return { status: "ok", check: "home", detail: `${home} is writable` };
   } catch (err) {
     return { status: "fail", check: "home", detail: `${home} is not writable: ${message2(err)}` };
@@ -5172,10 +6543,10 @@ async function runDoctor(argv2, ctx) {
 }
 
 // src/commands/wait.ts
-import { existsSync as existsSync12 } from "node:fs";
+import { existsSync as existsSync16 } from "node:fs";
 var WAIT_TIMEOUT_EXIT = 3;
 var POLL_MS = 2e3;
-var NONE = "\u2014";
+var NONE2 = "\u2014";
 function describeFinished(runsRoot, item) {
   const s = item.summary;
   const report = item.attempt === null ? null : attemptFiles(runPaths(runsRoot, item.lane).attemptDir(item.attempt)).report;
@@ -5191,14 +6562,14 @@ function describeFinished(runsRoot, item) {
     toolCalls: s?.toolCallTotal ?? 0,
     failed: s?.failedTotal ?? 0,
     costDeltaUsd: s?.costDeltaUsd ?? null,
-    report: report !== null && existsSync12(report) ? report : null
+    report: report !== null && existsSync16(report) ? report : null
   };
 }
 function formatFinished(line2) {
   const parts = [line2.attempt === null ? line2.lane : `${line2.lane}#${line2.attempt}`, line2.endState];
   if (line2.attempt !== null) {
-    const wall = line2.wallMs === null ? NONE : formatElapsed(line2.wallMs);
-    const cost = line2.costDeltaUsd === null ? NONE : `$${line2.costDeltaUsd.toFixed(2)}`;
+    const wall = line2.wallMs === null ? NONE2 : formatElapsed(line2.wallMs);
+    const cost = line2.costDeltaUsd === null ? NONE2 : `$${line2.costDeltaUsd.toFixed(2)}`;
     parts.push(wall, `turns=${line2.turns}`, `calls=${line2.toolCalls}`, `failed=${line2.failed}`, `cost=${cost}`);
   }
   if (line2.report !== null) parts.push(`report=${line2.report}`);
@@ -5350,7 +6721,7 @@ var MAX_PREFLIGHT_NAME = (() => {
   return n;
 })();
 var PREFLIGHT_DIR = ".arbab/preflight";
-var preflightDir = (project, lane) => join31(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
+var preflightDir = (project, lane) => join38(project.root, PREFLIGHT_DIR, assertValidName(lane, "lane"));
 function writeProbeLanes(project, lane) {
   if (lane.name.length > MAX_PREFLIGHT_NAME) {
     throw new ArbabError(
@@ -5359,9 +6730,9 @@ function writeProbeLanes(project, lane) {
     );
   }
   const dir = preflightDir(project, lane.name);
-  const rel = (path) => relative10(project.root, path);
+  const rel = (path) => relative12(project.root, path);
   const owner = lane.worktree ?? lane.name;
-  const worktree = lane.worktree !== void 0 || existsSync13(join31(project.worktreeRoot, owner)) ? owner : void 0;
+  const worktree = lane.worktree !== void 0 || existsSync17(join38(project.worktreeRoot, owner)) ? owner : void 0;
   const shared = {
     role: lane.role,
     ...lane.fence !== void 0 && { fence: lane.fence },
@@ -5378,9 +6749,9 @@ function writeProbeLanes(project, lane) {
   };
   const write = (suffix, brief, schema, fields) => {
     const name2 = assertValidName(`${lane.name}-${suffix}`, "probe lane");
-    const briefFile = join31(dir, `${name2}.md`);
-    const schemaFile = join31(dir, `${name2}.schema.json`);
-    const laneFile = join31(dir, `${name2}.json`);
+    const briefFile = join38(dir, `${name2}.md`);
+    const schemaFile = join38(dir, `${name2}.schema.json`);
+    const laneFile = join38(dir, `${name2}.json`);
     writeTextAtomic(briefFile, brief);
     writeJsonAtomic(schemaFile, schema);
     writeJsonAtomic(laneFile, { name: name2, ...shared, brief: rel(briefFile), schema: rel(schemaFile), ...fields });
@@ -5408,9 +6779,9 @@ function writeProbeLanes(project, lane) {
 }
 var gitMessage = (r) => (r.stderr || r.stdout).trim();
 function removeProbeWorktree(git, project, probe, gitCommonDir2) {
-  const path = join31(project.worktreeRoot, assertValidName(probe, "probe lane"));
+  const path = join38(project.worktreeRoot, assertValidName(probe, "probe lane"));
   const branch = `arbab/${probe}`;
-  if (existsSync13(path)) {
+  if (existsSync17(path)) {
     if (gitCommonDir2 === void 0) return `kept ${path}: the repository's git directory is unknown`;
     const verified = verifyWorktreeGit({ worktree: path, branch, gitCommonDir: gitCommonDir2 });
     if (verified.gitDir === null) return `kept ${path}: ${verified.error}`;
@@ -5686,7 +7057,7 @@ function writeGeneratedLane(project, paths, lane) {
     if (lane.spec.schema === void 0) throw new ArbabError("usage", `lane ${name2} has a schema but no schema path`);
     writeJsonAtomic(confine(project.root, lane.spec.schema), lane.schema);
   }
-  const file = join32(paths.lanesDir, `${name2}.json`);
+  const file = join39(paths.lanesDir, `${name2}.json`);
   writeJsonAtomic(file, lane.spec);
   return file;
 }
@@ -5739,11 +7110,11 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
   assertInactive(ctx, project, name2);
   assertNoLiveWorker(ctx, project, name2);
   assertNotBorrowed(ctx, project, name2);
-  const runDir = join32(project.runsRoot, name2);
-  const path = join32(project.worktreeRoot, name2);
+  const runDir = join39(project.runsRoot, name2);
+  const path = join39(project.worktreeRoot, name2);
   const branch = `arbab/${name2}`;
   const head = branchHead(ctx.git, project.root, branch);
-  if (!existsSync14(runDir) && !existsSync14(path) && head === null) return;
+  if (!existsSync18(runDir) && !existsSync18(path) && head === null) return;
   const marker = readGenerated(project.runsRoot, name2);
   if (marker === null || marker.by !== ownerTag(owner)) {
     throw new ArbabError(
@@ -5757,7 +7128,7 @@ function resetGeneratedWorktree(ctx, project, lane, owner) {
       throw new ArbabError("git", `${branch} has commits that are not on ${owner.branch}, so nothing was removed`);
     }
   }
-  if (existsSync14(path)) mustGit(ctx, [...untrustedTree(), "worktree", "remove", "--force", path], project.root);
+  if (existsSync18(path)) mustGit(ctx, [...untrustedTree(), "worktree", "remove", "--force", path], project.root);
   mustGit(ctx, ["worktree", "prune"], project.root);
   if (head !== null) mustGit(ctx, [...untrustedTree(), "branch", "-D", branch], project.root);
 }
@@ -5789,7 +7160,7 @@ function collectRun(runsRoot, run) {
   if (own2 !== null) ackRun(runsRoot, run.lane, { shepherdPid: own2.shepherdPid, since: own2.since }, outcome2.attempts.at(-1) ?? null);
   return outcome2;
 }
-var runRecordPath = (lanesDir, lane) => join32(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
+var runRecordPath = (lanesDir, lane) => join39(lanesDir, `${assertValidName(lane, "lane")}.run.json`);
 function readGeneratedRun(lanesDir, lane) {
   let raw;
   try {
@@ -5809,7 +7180,7 @@ function settleGeneratedRuns(lanesDir, lanes) {
   }
 }
 function laneFingerprint(lane) {
-  return createHash4("sha256").update(JSON.stringify([lane.spec, lane.brief, lane.schema ?? null])).digest("hex");
+  return createHash5("sha256").update(JSON.stringify([lane.spec, lane.brief, lane.schema ?? null])).digest("hex");
 }
 var hasReport = (o) => o.report !== null;
 function reusableRun(ctx, project, lanesDir, lane, owner, fingerprint, usable = hasReport) {
@@ -5882,13 +7253,13 @@ function releaseStalePoolFiles(home, alive, nowMs) {
   for (const path of listPoolEntries(home)) {
     let old;
     try {
-      old = nowMs - statSync5(path).mtimeMs > UNPARSED_GRACE_MS;
+      old = nowMs - statSync7(path).mtimeMs > UNPARSED_GRACE_MS;
     } catch {
       continue;
     }
     if (path.endsWith(".stale")) {
       if (old) {
-        rmSync7(path, { force: true });
+        rmSync10(path, { force: true });
         released.push(path);
       }
       continue;
@@ -5901,10 +7272,10 @@ function releaseStalePoolFiles(home, alive, nowMs) {
   return released;
 }
 function removeEmptyLockDirs(home) {
-  const root = join33(home, "locks");
+  const root = join40(home, "locks");
   let entries3;
   try {
-    entries3 = readdirSync10(root, { withFileTypes: true });
+    entries3 = readdirSync14(root, { withFileTypes: true });
   } catch {
     return 0;
   }
@@ -5912,7 +7283,7 @@ function removeEmptyLockDirs(home) {
   for (const entry of entries3) {
     if (!entry.isDirectory()) continue;
     try {
-      rmdirSync2(join33(root, entry.name));
+      rmdirSync2(join40(root, entry.name));
       removed++;
     } catch {
     }
@@ -6032,7 +7403,7 @@ function judge(git, root, target, hasWorktree, hasBranch, rules, common) {
   return { keep: `branch ${target.branch} is not merged into ${rules.base}` };
 }
 function removeWorktreeAndBranch(git, root, target, rules, out, blocker, common) {
-  const hasWorktree = existsSync15(target.path);
+  const hasWorktree = existsSync19(target.path);
   if (!hasWorktree && !target.deleteBranch) return;
   const hasBranch = branchHead(git, root, target.branch) !== null;
   if (!hasWorktree && !hasBranch) return;
@@ -6100,7 +7471,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
     }
     try {
       const target = {
-        path: join33(project.worktreeRoot, lane),
+        path: join40(project.worktreeRoot, lane),
         branch: `arbab/${lane}`,
         deleteBranch: readGenerated(project.runsRoot, lane) !== null
       };
@@ -6108,7 +7479,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
       if (owner !== lane) {
         const where = typeof owner === "string" && isValidName(owner) ? `lane ${owner}'s worktree` : `worktree ${JSON.stringify(owner)}`;
         const reason = `lane ${lane} works in ${where}`;
-        if (existsSync15(target.path)) out.worktreesKept.push({ path: target.path, reason });
+        if (existsSync19(target.path)) out.worktreesKept.push({ path: target.path, reason });
         else if (target.deleteBranch && branchHead(ctx.git, project.root, target.branch) !== null) out.branchesKept.push({ branch: target.branch, reason });
         continue;
       }
@@ -6117,7 +7488,7 @@ function removeLaneWorktrees(ctx, project, lanes, base, out, opts = {}) {
         if (state === void 0) {
           const error = unreadable.get(lane);
           if (error !== void 0) return error;
-          return existsSync15(runPaths(project.runsRoot, lane).laneDir) ? "no run state" : null;
+          return existsSync19(runPaths(project.runsRoot, lane).laneDir) ? "no run state" : null;
         }
         if (isActive(state)) return `lane ${lane} is ${state}`;
         if (state === "orphaned") return "orphaned: run arbab cleanup first";
@@ -6144,7 +7515,7 @@ function removeLandedIntegrations(ctx, project, out, opts = {}) {
   for (const name2 of listIntegrations(project.root)) {
     try {
       const paths = integrationPaths(project.root, project.config, name2);
-      if (!existsSync15(paths.landing)) continue;
+      if (!existsSync19(paths.landing)) continue;
       const record2 = readIntegration(paths);
       if (record2 === null) {
         out.warnings.push(`integration ${name2} landed but has no integration.json`);
@@ -6197,6 +7568,7 @@ function formatCleanup(report) {
     ...report.reaped.map((r) => `reaped ${r.lane} pgid ${r.pgid}`),
     ...report.released.map((path) => `released ${path}`),
     ...report.lockDirsRemoved > 0 ? [`removed ${report.lockDirsRemoved} empty lock ${report.lockDirsRemoved === 1 ? "directory" : "directories"}`] : [],
+    ...report.sessionWatermarksRemoved > 0 ? [`removed ${report.sessionWatermarksRemoved} session ${report.sessionWatermarksRemoved === 1 ? "watermark" : "watermarks"} unused for 30 days`] : [],
     ...formatWorktreeCleanup(report, report.worktreeRemovals)
   ];
   return lines.length === 0 ? "nothing to clean" : lines.join("\n");
@@ -6220,10 +7592,19 @@ async function runCleanup(argv2, ctx) {
   const project = openProject(ctx);
   const session = sessionOf(ctx.hostEnv);
   const include = values.mine === true && session !== null ? (lane) => ownedBy(readShepherdRecord(project.runsRoot, lane), session, { ownerless: false }) : void 0;
-  const report = { orphaned: [], reaped: [], released: [], ...emptyWorktreeCleanup(), worktreeRemovals: [], lockDirsRemoved: 0 };
+  const report = {
+    orphaned: [],
+    reaped: [],
+    released: [],
+    ...emptyWorktreeCleanup(),
+    worktreeRemovals: [],
+    lockDirsRemoved: 0,
+    sessionWatermarksRemoved: 0
+  };
   await reapOrphans(ctx, project, report, include);
   report.released = releaseStalePoolFiles(ctx.home, ctx.alive, ctx.clock.now());
   report.lockDirsRemoved = removeEmptyLockDirs(ctx.home);
+  report.sessionWatermarksRemoved = removeStaleWatermarks(ctx.home, ctx.clock.now());
   if (values.worktrees === true) removeMergedWorktrees(ctx, project, report, { olderThanMs: ageMs, include });
   if (values.json === true) printJson(ctx, report);
   else ctx.stdout(formatCleanup(report) + "\n");
@@ -6231,10 +7612,10 @@ async function runCleanup(argv2, ctx) {
 }
 
 // src/commands/hook.ts
-import { realpathSync as realpathSync11 } from "node:fs";
+import { realpathSync as realpathSync12 } from "node:fs";
 
 // src/hook/approve.ts
-import { isAbsolute as isAbsolute10, resolve as resolve13, sep as sep10 } from "node:path";
+import { isAbsolute as isAbsolute12, resolve as resolve14, sep as sep12 } from "node:path";
 
 // src/hook/command.ts
 var UNQUOTED = /^[A-Za-z0-9_@%+=:,./~-]+$/;
@@ -6275,8 +7656,7 @@ function tokenize(command) {
 }
 function shellWord(s) {
   if (UNQUOTED.test(s)) return s;
-  if (!s.includes("'")) return `'${s}'`;
-  return `"${s.replace(/[$`\\!"]/g, "\\$&")}"`;
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 // src/hook/approve.ts
@@ -6297,26 +7677,26 @@ function sameFile(a, b, realpath2) {
   return ra !== null && ra === real(b, realpath2);
 }
 function under(base, path) {
-  const b = resolve13(base);
-  return path === b || path.startsWith(b.endsWith(sep10) ? b : b + sep10);
+  const b = resolve14(base);
+  return path === b || path.startsWith(b.endsWith(sep12) ? b : b + sep12);
 }
 function knownProject(dir, opts) {
-  if (!isAbsolute10(dir)) return false;
+  if (!isAbsolute12(dir)) return false;
   const path = real(dir, opts.realpath);
   if (path === null || inLaneWorktree(dir, { realpath: opts.realpath })) return false;
   for (const temp of opts.tempDirs) {
-    if (!isAbsolute10(temp)) continue;
+    if (!isAbsolute12(temp)) continue;
     const realTemp = real(temp, opts.realpath);
     if (under(temp, path) || realTemp !== null && under(realTemp, path)) return false;
   }
-  return opts.projectRoots().some((root) => isAbsolute10(root) && (root === path || real(root, opts.realpath) === path));
+  return opts.projectRoots().some((root) => isAbsolute12(root) && (root === path || real(root, opts.realpath) === path));
 }
 function isRunnerCall(command, opts) {
   const words = tokenize(command);
   if (words === null || words.length < 3) return false;
   const [node, runner] = words;
   if (node?.value !== "node" || runner === void 0) return false;
-  if (!isAbsolute10(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
+  if (!isAbsolute12(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
   let at = 2;
   if (words[at]?.value === "-C") at += 2;
   const name2 = words[at]?.value;
@@ -6324,7 +7704,7 @@ function isRunnerCall(command, opts) {
   const dir = at === 4 ? words[3]?.value : void 0;
   return dir === void 0 || knownProject(dir, opts);
 }
-function isObject2(v) {
+function isObject6(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 var STRING_FIELDS = ["session_id", "transcript_path", "cwd", "permission_mode", "tool_use_id"];
@@ -6335,28 +7715,31 @@ function approves(input, opts) {
   } catch {
     return false;
   }
-  if (!isObject2(parsed2)) return false;
+  if (!isObject6(parsed2)) return false;
   for (const field of STRING_FIELDS) {
     if (parsed2[field] !== void 0 && typeof parsed2[field] !== "string") return false;
   }
   if (parsed2.hook_event_name !== void 0 && parsed2.hook_event_name !== "PreToolUse") return false;
-  if (parsed2.tool_name !== "Bash" || !isObject2(parsed2.tool_input)) return false;
+  if (parsed2.tool_name !== "Bash" || !isObject6(parsed2.tool_input)) return false;
   const command = parsed2.tool_input.command;
   return typeof command === "string" && isRunnerCall(command, opts);
 }
 
 // src/hook/stop.ts
 var NAMED_LANES = 5;
-function isObject3(v) {
+function isObject7(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 function runnerWord(path) {
   return /[$`\\!"]/.test(path) ? shellWord(path) : `"${path}"`;
 }
+function projectWord(path) {
+  return path.includes("'") && !/[$`\\!"]/.test(path) ? `"${path}"` : shellWord(path);
+}
 function waitCommand(scriptPath2, lanes, cwd) {
   const projects = new Set(lanes.map((l) => l.project));
   const [project] = projects;
-  const dir = projects.size === 1 && project !== void 0 && project !== cwd ? ` -C ${shellWord(project)}` : "";
+  const dir = projects.size === 1 && project !== void 0 && project !== cwd ? ` -C ${projectWord(project)}` : "";
   return `node ${runnerWord(scriptPath2)}${dir} wait --any`;
 }
 function blockReason(lanes, scriptPath2, cwd) {
@@ -6372,7 +7755,7 @@ function stopDecision(input, opts) {
   } catch {
     return null;
   }
-  if (!isObject3(parsed2)) return null;
+  if (!isObject7(parsed2)) return null;
   const { session_id: session, stop_hook_active: active, cwd } = parsed2;
   if (typeof session !== "string" || session === "") return null;
   if (active !== void 0 && typeof active !== "boolean") return null;
@@ -6386,7 +7769,8 @@ function stopDecision(input, opts) {
 }
 
 // src/commands/hook.ts
-var HOOK_EVENTS = ["pre-tool-use", "stop"];
+var HOOK_EVENTS = ["pre-tool-use", "stop", "user-prompt-submit", "session-start"];
+var isHookEvent = (value) => HOOK_EVENTS.includes(value);
 async function answer(event, ctx, tempDirs) {
   const input = await ctx.readStdin();
   if (event === "pre-tool-use") {
@@ -6396,17 +7780,25 @@ async function answer(event, ctx, tempDirs) {
       // COMMANDS is read here, not at load: index.ts imports this module.
       commands: Object.keys(COMMANDS),
       // The native one returns the spelling on disk, so a case-insensitive file system's other spellings compare equal.
-      realpath: (path) => realpathSync11.native(path),
+      realpath: (path) => realpathSync12.native(path),
       projectRoots: () => listProjects(ctx.home).map((entry) => entry.root),
       tempDirs: tmp === void 0 || tmp === "" ? tempDirs : [...tempDirs, tmp]
     });
     return ok ? APPROVAL : null;
   }
+  if (event === "user-prompt-submit" || event === "session-start") {
+    return catchUpDecision(input, event === "session-start" ? "SessionStart" : "UserPromptSubmit", {
+      home: ctx.home,
+      clock: ctx.clock,
+      // A worker's worktree is no project of the human's; findProjectRoot would refuse it after a git call.
+      findRoot: (cwd) => inLaneWorktree(cwd) ? null : findProjectRoot(cwd, ctx.git)
+    });
+  }
   return stopDecision(input, { home: ctx.home, alive: ctx.alive, scriptPath: ctx.scriptPath, cwd: ctx.cwd });
 }
 async function runHook(argv2, ctx, tempDirs = TEMP_DIRS) {
   const [event, ...rest] = argv2;
-  if (event !== "pre-tool-use" && event !== "stop") {
+  if (!isHookEvent(event)) {
     throw new ArbabError("usage", `hook takes one of ${HOOK_EVENTS.join(", ")}, got ${JSON.stringify(event ?? "")}`);
   }
   if (rest.length > 0) throw new ArbabError("usage", `hook ${event} takes no arguments`);
@@ -6421,8 +7813,8 @@ async function runHook(argv2, ctx, tempDirs = TEMP_DIRS) {
 }
 
 // src/commands/host-check.ts
-import { existsSync as existsSync16 } from "node:fs";
-import { join as join34 } from "node:path";
+import { existsSync as existsSync20 } from "node:fs";
+import { join as join41 } from "node:path";
 
 // src/verify/index.ts
 var VERIFY_TIMEOUT_MS = 9e5;
@@ -6489,7 +7881,7 @@ function gateResults(events, gates, smoke) {
   const results = /* @__PURE__ */ new Map();
   for (const event of Array.isArray(events) ? events : []) {
     for (const block3 of contentBlocks(event)) {
-      if (block3.type === "tool_use" && block3.name === "Bash" && isRecord4(block3.input)) {
+      if (block3.type === "tool_use" && block3.name === "Bash" && isRecord3(block3.input)) {
         const id = stringOrNull(block3.id);
         const command = stringOrNull(block3.input.command)?.trim() ?? null;
         if (id !== null && command !== null && !firstCall.has(command)) firstCall.set(command, id);
@@ -6519,17 +7911,17 @@ function verifyRecord(input) {
 }
 
 // src/commands/host-check.ts
-var isObject4 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-var isGateResult = (v) => isObject4(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && Array.isArray(v["argv"]) && v["argv"].every((a) => typeof a === "string") && typeof v["command"] === "string" && (v["exitCode"] === null || Number.isInteger(v["exitCode"]));
+var isObject8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isGateResult2 = (v) => isObject8(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && Array.isArray(v["argv"]) && v["argv"].every((a) => typeof a === "string") && typeof v["command"] === "string" && (v["exitCode"] === null || Number.isInteger(v["exitCode"]));
 function readHostCheckRecord(path, name2) {
   const raw = readJson(path);
   if (raw === null) return null;
-  const ok = isObject4(raw) && raw["name"] === name2 && typeof raw["headSha"] === "string" && Array.isArray(raw["results"]) && raw["results"].every(isGateResult) && typeof raw["passed"] === "boolean" && raw["interactive"] === true && typeof raw["finishedAt"] === "string";
+  const ok = isObject8(raw) && raw["name"] === name2 && typeof raw["headSha"] === "string" && Array.isArray(raw["results"]) && raw["results"].every(isGateResult2) && typeof raw["passed"] === "boolean" && raw["interactive"] === true && typeof raw["finishedAt"] === "string";
   if (!ok) throw new ArbabError("io", `${path} is not a host check record for ${name2}`);
   return raw;
 }
 function assertWorktreeAt(ctx, worktree, head) {
-  if (!existsSync16(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
+  if (!existsSync20(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
   const at = ctx.git([...untrustedTree(), "rev-parse", "HEAD"], worktree);
   if (at.code !== 0 || at.stdout.trim() !== head) {
     throw new ArbabError("usage", `${worktree} is at ${at.code === 0 ? at.stdout.trim() : "no commit"}, not at the integration head ${head}`);
@@ -6576,7 +7968,7 @@ ${r.output.endsWith("\n") ? r.output : `${r.output}
     interactive: true,
     finishedAt: isoAt(ctx.clock)
   };
-  writeJsonAtomic(join34(integration.paths.dir, HOST_CHECKS_FILE), record2);
+  writeJsonAtomic(join41(integration.paths.dir, HOST_CHECKS_FILE), record2);
   return record2.passed ? 0 : 1;
 }
 
@@ -6932,11 +8324,11 @@ function coordination(plan, siblings) {
 }
 
 // src/plan/load.ts
-import { isAbsolute as isAbsolute11, resolve as resolve14 } from "node:path";
+import { isAbsolute as isAbsolute13, resolve as resolve15 } from "node:path";
 var PLAN_KEYS = ["name", "base", "defaults", "phases"];
 var PHASE_KEYS = ["name", "brief", "scope", "dependsOn", ...PHASE_LANE_KEYS];
 function loadPlan(projectRoot, planPath, credentialPaths = []) {
-  const file = resolve14(projectRoot, planPath);
+  const file = resolve15(projectRoot, planPath);
   const raw = readJsonFile(file);
   if (raw === null) throw new ArbabError("usage", `plan file ${planPath} does not exist`);
   const obj = record(raw, planPath);
@@ -6971,7 +8363,7 @@ function scope(v, field) {
   if (!Array.isArray(v) || v.length === 0) fail(field, "must be a non-empty array of globs");
   return v.map((item, i) => {
     const glob = nonEmptyString(item, `${field}[${i}]`);
-    if (isAbsolute11(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
+    if (isAbsolute13(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
     if (glob.split(/[\\/]/).includes("..")) fail(`${field}[${i}]`, `${glob} must not contain ".."`);
     return glob;
   });
@@ -7204,1107 +8596,25 @@ async function runIntegrate(argv2, ctx) {
 }
 
 // src/commands/land.ts
-import { existsSync as existsSync17, readFileSync as readFileSync7, realpathSync as realpathSync12 } from "node:fs";
-import { dirname as dirname8, resolve as resolve15 } from "node:path";
+import { existsSync as existsSync22, readFileSync as readFileSync10, realpathSync as realpathSync13 } from "node:fs";
+import { dirname as dirname8, resolve as resolve16 } from "node:path";
 
-// src/review/findings.ts
-var SEVERITIES = ["HIGH", "MEDIUM", "LOW"];
-function text(v) {
-  return typeof v === "string" && v.trim() !== "" ? v : null;
+// src/readiness/moved.ts
+import { existsSync as existsSync21 } from "node:fs";
+var SHA6 = /^[0-9a-f]{40,64}$/;
+function baseMergeInstruction(base, name2, worktree) {
+  return `Merge ${base} into integrate/${name2} with hooks off: git -C ${shellWord(worktree)} ${untrustedTree().join(" ")} merge --no-verify --no-edit ${shellWord(base)}; then arbab integrate ${name2} --refresh to record the new head, and verify, review and readiness for ${name2} again`;
+}
+function baseMoved(git, projectRoot, base, head, own2) {
+  if (base === "" || base.startsWith("-") || !SHA6.test(head)) return null;
+  if (existsSync21(own2.landing)) return null;
+  if (git(["merge-base", "--is-ancestor", base, head], projectRoot).code !== 1) return null;
+  const listed = git(["rev-list", `${head}..${base}`, "--"], projectRoot);
+  if (listed.code !== 0) return { base, landings: [], commits: null };
+  const commits = new Set(listed.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== ""));
+  const landings = landingsSince(projectRoot, -Infinity).filter((l) => l.into === base && l.name !== own2.name && commits.has(l.mergeSha));
+  return { base, landings, commits: commits.size };
 }
-function severity(v) {
-  return SEVERITIES.includes(v) ? v : null;
-}
-function parseFinding(lens, raw) {
-  if (!isRecord4(raw)) return null;
-  const title = text(raw.title);
-  const sev = severity(raw.severity);
-  const file = text(raw.file);
-  const failureScenario = text(raw.failure_scenario);
-  const evidence = text(raw.evidence);
-  if (title === null || sev === null || file === null || failureScenario === null || evidence === null) return null;
-  const finding = { lens, title, severity: sev, file, failureScenario, evidence, verdict: "unverified" };
-  if (Number.isInteger(raw.line) && raw.line >= 1) finding.line = raw.line;
-  if (text(raw.suggested_fix) !== null) finding.suggestedFix = raw.suggested_fix;
-  return finding;
-}
-function collectFindings(reports) {
-  const out = [];
-  const counts = /* @__PURE__ */ new Map();
-  for (const { lens, report } of reports) {
-    if (!isRecord4(report) || !Array.isArray(report.findings)) continue;
-    for (const raw of report.findings) {
-      const finding = parseFinding(lens, raw);
-      if (finding === null) continue;
-      const n = (counts.get(lens) ?? 0) + 1;
-      counts.set(lens, n);
-      out.push({ id: `${lens}-${n}`, ...finding });
-    }
-  }
-  return out;
-}
-function reviewerCoverage(report) {
-  if (!isRecord4(report)) return { coverage: null, pathsChecked: 0 };
-  const paths = Array.isArray(report.paths_checked) ? report.paths_checked.filter((p) => text(p) !== null) : [];
-  return { coverage: text(report.coverage), pathsChecked: new Set(paths).size };
-}
-function parseVerdicts(raw) {
-  const list3 = Array.isArray(raw) ? raw : isRecord4(raw) && Array.isArray(raw.verdicts) ? raw.verdicts : [];
-  const out = /* @__PURE__ */ new Map();
-  for (const v of list3) {
-    if (!isRecord4(v) || typeof v.id !== "string" || typeof v.refuted !== "boolean" || typeof v.reasoning !== "string") {
-      continue;
-    }
-    const sev = v.corrected_severity === "NONE" ? "NONE" : severity(v.corrected_severity);
-    if (sev === null) continue;
-    if (!out.has(v.id)) out.set(v.id, { refuted: v.refuted, severity: sev, reasoning: v.reasoning });
-  }
-  return out;
-}
-function applyVerdicts(findings, verdicts) {
-  const byId = parseVerdicts(verdicts);
-  return findings.map((f) => {
-    const v = byId.get(f.id);
-    if (v === void 0 || f.severity === "LOW") return { ...f };
-    if (v.refuted || v.severity === "NONE") return { ...f, verdict: "refuted", verdictReason: v.reasoning };
-    return { ...f, severity: v.severity, verdict: "confirmed", verdictReason: v.reasoning };
-  });
-}
-function reviewRecord(input) {
-  return {
-    name: input.name,
-    headSha: input.headSha,
-    lenses: input.lenses.map((l) => ({ ...l })),
-    skeptics: input.skeptics.map((s) => ({ ...s })),
-    findings: input.findings.map((f) => ({ ...f })),
-    finishedAt: new Date(input.now).toISOString(),
-    ...input.since !== void 0 && { since: input.since }
-  };
-}
-
-// src/review/history.ts
-import { readdirSync as readdirSync11 } from "node:fs";
-import { join as join35 } from "node:path";
-var ROUND_FILE = /^([1-9][0-9]{0,8})\.json$/;
-function reviewRoundPath(integrationDir, round) {
-  if (!Number.isInteger(round) || round < 1) throw new ArbabError("usage", `review round ${round} is not a positive integer`);
-  return join35(integrationDir, REVIEW_HISTORY_DIR, `${round}.json`);
-}
-function reviewRounds(integrationDir) {
-  let names2;
-  try {
-    names2 = readdirSync11(join35(integrationDir, REVIEW_HISTORY_DIR));
-  } catch (err) {
-    if (err.code === "ENOENT") return [];
-    throw new ArbabError("io", `cannot list ${join35(integrationDir, REVIEW_HISTORY_DIR)}: ${err.message}`, { cause: err });
-  }
-  return names2.flatMap((n) => {
-    const round = ROUND_FILE.exec(n)?.[1];
-    return round === void 0 ? [] : [Number(round)];
-  }).sort((a, b) => a - b);
-}
-function writeReviewRound(integrationDir, record2) {
-  for (let round = (reviewRounds(integrationDir).at(-1) ?? 0) + 1; ; round++) {
-    const numbered = { ...record2, round };
-    if (createExclusive(reviewRoundPath(integrationDir, round), JSON.stringify(numbered, null, 2) + "\n")) return numbered;
-  }
-}
-function keepOtherLenses(previous, current, ran) {
-  if (previous === null || previous.headSha !== current.headSha) return current;
-  const rerun = new Set(ran);
-  const fresh2 = new Map(current.lenses.map((l) => [l.lens, l]));
-  const lenses2 = [];
-  for (const entry of previous.lenses) {
-    if (!rerun.has(entry.lens)) lenses2.push({ ...entry });
-    else {
-      const now = fresh2.get(entry.lens);
-      if (now !== void 0 && !lenses2.includes(now)) lenses2.push(now);
-    }
-  }
-  for (const entry of current.lenses) if (!lenses2.includes(entry)) lenses2.push(entry);
-  const order = new Map(lenses2.map((l, i) => [l.lens, i]));
-  const byLens = (items) => items.map((item, i) => ({ item, i })).sort((a, b) => (order.get(a.item.lens) ?? order.size) - (order.get(b.item.lens) ?? order.size) || a.i - b.i).map((x) => x.item);
-  const kept = (items) => items.filter((x) => !rerun.has(x.lens)).map((x) => ({ ...x }));
-  return {
-    ...current,
-    lenses: lenses2,
-    skeptics: byLens([...kept(previous.skeptics), ...current.skeptics]),
-    findings: byLens([...kept(previous.findings), ...current.findings])
-  };
-}
-
-// src/review/lanes.ts
-import { isAbsolute as isAbsolute12, relative as relative11, sep as sep11 } from "node:path";
-var MAX_LANE_NAME = 48;
-var MAX_FINDINGS = 10;
-var REF = /^[A-Za-z0-9._/@^~{}-]+$/;
-function reviewLaneFiles(paths, lane) {
-  const name2 = assertValidName(lane, "lane name");
-  const rel = relative11(paths.projectRoot, paths.lanesDir);
-  if (rel === "" || rel === ".." || rel.startsWith(`..${sep11}`) || isAbsolute12(rel)) {
-    throw new ArbabError("usage", `the lanes directory ${paths.lanesDir} is not inside the project ${paths.projectRoot}`);
-  }
-  const dir = rel.split(sep11).join("/");
-  return { brief: `${dir}/${name2}.md`, schema: `${dir}/${name2}.schema.json` };
-}
-function startFields(start) {
-  const base = checkRef(start.base, "base");
-  if (start.mergeBranches === void 0) return { base };
-  return { base, mergeBranches: start.mergeBranches.map((ref2) => checkRef(ref2, "merge branch")) };
-}
-function laneName(name2, kind, lens) {
-  assertValidName(name2, "integration name");
-  assertValidName(lens, "lens");
-  const lane = `${name2}-${kind}-${lens}`;
-  if (lane.length > MAX_LANE_NAME) {
-    throw new ArbabError(
-      "usage",
-      `lane name ${lane} has ${lane.length} characters (at most ${MAX_LANE_NAME}): shorten the integration name or the lens`
-    );
-  }
-  return assertValidName(lane, "lane name");
-}
-function assertReviewLaneNames(name2, lenses2) {
-  for (const lens of lenses2) for (const kind of ["review", "skeptic"]) laneName(name2, kind, lens);
-}
-function checkRef(ref2, what) {
-  if (ref2.startsWith("-") || ref2.includes("..") || !REF.test(ref2)) {
-    throw new ArbabError("usage", `${what} ${JSON.stringify(ref2)} is not a plain git ref`);
-  }
-  return ref2;
-}
-function quote(text2) {
-  return text2.trim().split(/\r?\n/).map((line2) => line2 === "" ? ">" : `> ${line2}`).join("\n");
-}
-function reviewLane(input) {
-  const name2 = input.paths.name;
-  const lane = laneName(name2, "review", input.lens);
-  const base = checkRef(input.diffBase, "diff base");
-  if (input.text.trim() === "") throw new ArbabError("usage", `lens ${input.lens} has no text`);
-  const start = startFields(input);
-  const range2 = `${base}..HEAD`;
-  const since = input.since === true ? `
-
-The branch's earlier commits were reviewed in an earlier round: this round covers only what changed since
-\`${base}\`.` : "";
-  const brief = `# Review ${name2}: ${input.lens}
-
-## Task
-
-Review the change on this branch through the **${input.lens}** lens. Run \`git diff ${range2}\` to see the change, and
-\`git diff --stat ${range2}\` for the files it touches.${since}
-
-The ${input.lens} lens looks for:
-
-${quote(input.text)}
-
-Depth floor:
-
-- Read in full every file the diff changes, not only the hunks.
-- Where a finding depends on code the changed files call, read that code too; do not assume what it does.
-
-Findings:
-
-- Every finding names a file, a line, a concrete failure scenario (the inputs or events, and what goes wrong) and
-  evidence (the code that does it, quoted or cited by line).
-- At most ${MAX_FINDINGS} findings, strongest first. Severity: HIGH loses or corrupts work, escapes the fence or
-  leaks secrets; MEDIUM is wrong behaviour on a reachable path; LOW is a real but minor defect.
-- No style remarks. Report no finding rather than a speculative one.
-
-## Scope
-
-Read-only. Do not edit, create or delete files, and do not commit.
-
-## Acceptance
-
-- \`paths_checked\` lists every file you read in full.
-- \`coverage\` says what you verified and how, and what you did not check.
-- Each finding has a file, a line, a failure scenario and evidence.
-`;
-  const spec = {
-    name: lane,
-    role: "reviewer",
-    brief: reviewLaneFiles(input.paths, lane).brief,
-    ...start
-  };
-  return { spec, brief };
-}
-var SEVERITY_VERDICTS = ["HIGH", "MEDIUM", "LOW", "NONE"];
-var SKEPTIC_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    verdicts: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          id: { type: "string" },
-          refuted: { type: "boolean" },
-          corrected_severity: { type: "string", enum: SEVERITY_VERDICTS },
-          reasoning: { type: "string" }
-        },
-        required: ["id", "refuted", "corrected_severity", "reasoning"]
-      }
-    }
-  },
-  required: ["verdicts"]
-};
-function skepticFindings(lens, findings) {
-  return findings.filter((f) => f.lens === lens && (f.severity === "HIGH" || f.severity === "MEDIUM"));
-}
-function skepticLane(input) {
-  const name2 = input.paths.name;
-  const lane = laneName(name2, "skeptic", input.lens);
-  const findings = skepticFindings(input.lens, input.findings);
-  if (findings.length === 0) {
-    throw new ArbabError("usage", `lens ${input.lens} has no MEDIUM or HIGH findings: no skeptic lane is needed`);
-  }
-  const base = input.diffBase === void 0 ? null : checkRef(input.diffBase, "diff base");
-  const start = startFields(input);
-  const listed = findings.map((f) => ({
-    id: f.id,
-    severity: f.severity,
-    title: f.title,
-    file: f.file,
-    ...f.line === void 0 ? {} : { line: f.line },
-    failure_scenario: f.failureScenario,
-    evidence: f.evidence
-  }));
-  const provenance = base === null ? "use the file's history (`git log` and `git blame`) to tell" : `run \`git diff ${base}..HEAD\` and the file's history to tell`;
-  const brief = `# Skeptic ${name2}: ${input.lens}
-
-## Task
-
-A reviewer reported the findings below about the change on this branch, through the **${input.lens}** lens. Try to
-refute each one. Check every finding from three angles:
-
-- Trace: does the code do what the finding says? Read the cited file and line and follow the calls.
-- Reachability: can it happen with real inputs, callers and configuration, not only in theory?
-- Provenance: was it introduced by this change or was it there before? To check, ${provenance}. A pre-existing defect
-  is still real: do not refute it for that, but say "pre-existing" in the reasoning.
-
-Give one verdict per finding id: \`refuted\` true when the finding is wrong or cannot happen, and the severity it
-really has (\`NONE\` when it is not a defect). If still uncertain after checking the code, refute it.
-
-The findings:
-
-\`\`\`json
-${JSON.stringify(listed, null, 2)}
-\`\`\`
-
-## Scope
-
-Read-only. Do not edit, create or delete files, and do not commit.
-
-## Acceptance
-
-- \`verdicts\` has exactly one entry for each finding id listed in the Task.
-- Each \`reasoning\` names the code it checked (file and line) for the trace, reachability and provenance angles.
-`;
-  const files = reviewLaneFiles(input.paths, lane);
-  const spec = {
-    name: lane,
-    role: "reviewer",
-    brief: files.brief,
-    ...start,
-    schema: files.schema
-  };
-  return { spec, brief, schema: SKEPTIC_SCHEMA };
-}
-
-// src/review/lenses.ts
-var BUILTIN_LENSES = Object.freeze({
-  correctness: "Wrong behaviour on reachable paths, lost or duplicated work, wrong end states, time and unit errors, resource leaks.",
-  security: "Fence escapes, code from workers running on the host, path traversal and symlinks, argument injection, secrets on disk or in logs, signals to the wrong processes, races.",
-  contracts: "Files and fields modules disagree on, behaviour against DESIGN.md, duplicated logic, untested exports, bundle-only breakage."
-});
-function lensNames(configLenses) {
-  const names2 = Object.keys(BUILTIN_LENSES);
-  for (const name2 of Object.keys(configLenses)) if (!names2.includes(name2)) names2.push(name2);
-  return names2;
-}
-function lensText(lens, configLenses) {
-  if (Object.hasOwn(configLenses, lens)) return configLenses[lens] ?? null;
-  return Object.hasOwn(BUILTIN_LENSES, lens) ? BUILTIN_LENSES[lens] ?? null : null;
-}
-var MAX_LENS_FILE_TEXT = 8e3;
-function parseLensFileOption(option) {
-  const at = option.indexOf("=");
-  if (at <= 0 || at === option.length - 1) {
-    throw new ArbabError("usage", `--lens-file ${JSON.stringify(option)} must be <name>=<file>`);
-  }
-  return { name: assertValidName(option.slice(0, at), "lens"), file: option.slice(at + 1) };
-}
-function lensFileText(name2, text2) {
-  const trimmed = text2.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_LENS_FILE_TEXT) {
-    throw new ArbabError("usage", `the file of lens ${name2} has ${trimmed.length} characters; a lens text has 1 to ${MAX_LENS_FILE_TEXT}`);
-  }
-  return trimmed;
-}
-
-// src/commands/records.ts
-var isObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-var isString = (v) => typeof v === "string";
-var isStringOrNull = (v) => v === null || typeof v === "string";
-var isNumberOrNull = (v) => v === null || Number.isFinite(v);
-var listOf = (v, item) => Array.isArray(v) && v.every(item);
-function read(path, name2, what, valid) {
-  const raw = readJson(path);
-  if (raw === null) return null;
-  if (!isObject5(raw) || raw["name"] !== name2 || !valid(raw)) {
-    throw new ArbabError("io", `${path} is not a ${what} for ${name2}`);
-  }
-  return raw;
-}
-var isGateResult2 = (v) => isObject5(v) && (v["kind"] === "gate" || v["kind"] === "smoke") && listOf(v["argv"], isString) && isString(v["command"]) && isNumberOrNull(v["exitCode"]);
-function readVerifyRecord(path, name2) {
-  return read(
-    path,
-    name2,
-    "verify record",
-    (v) => isString(v["lane"]) && isNumberOrNull(v["attempt"]) && isString(v["headSha"]) && listOf(v["results"], isGateResult2) && typeof v["passed"] === "boolean" && (v["reason"] === void 0 || isString(v["reason"])) && isString(v["finishedAt"])
-  );
-}
-var SEVERITIES2 = ["HIGH", "MEDIUM", "LOW"];
-var VERDICTS = ["confirmed", "refuted", "unverified"];
-var isFinding = (v) => isObject5(v) && isString(v["id"]) && isString(v["lens"]) && isString(v["title"]) && SEVERITIES2.includes(v["severity"]) && isString(v["file"]) && (v["line"] === void 0 || Number.isInteger(v["line"])) && isString(v["failureScenario"]) && isString(v["evidence"]) && VERDICTS.includes(v["verdict"]);
-var isLensEntry = (v) => isObject5(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]) && isStringOrNull(v["coverage"]) && Number.isInteger(v["pathsChecked"]);
-var isSkepticEntry = (v) => isObject5(v) && isString(v["lens"]) && isString(v["lane"]) && isStringOrNull(v["endState"]);
-function readReviewRecord(path, name2) {
-  return read(
-    path,
-    name2,
-    "review record",
-    (v) => isString(v["headSha"]) && listOf(v["lenses"], isLensEntry) && listOf(v["skeptics"], isSkepticEntry) && listOf(v["findings"], isFinding) && isString(v["finishedAt"]) && (v["round"] === void 0 || Number.isInteger(v["round"]) && v["round"] >= 1) && (v["since"] === void 0 || isStringOrNull(v["since"]))
-  );
-}
-var isItem = (v) => isObject5(v) && isString(v["id"]) && isString(v["text"]);
-function readReadinessReport(path, name2) {
-  return read(
-    path,
-    name2,
-    "readiness report",
-    (v) => TIERS.includes(v["tier"]) && isString(v["headSha"]) && listOf(v["verified"], isItem) && listOf(v["skipped"], (s) => isItem(s) && typeof s["waived"] === "boolean") && listOf(v["risks"], isItem) && typeof v["ready"] === "boolean" && isString(v["createdAt"])
-  );
-}
-
-// src/commands/land.ts
-var refuse = (message5) => new ArbabError("usage", `not landed: ${message5}`);
-function gitOut(git, args, cwd) {
-  const r = git(args, cwd);
-  if (r.code !== 0) throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  return r.stdout;
-}
-function firstRemote(git, root) {
-  const r = git(["remote"], root);
-  if (r.code !== 0) return null;
-  return r.stdout.split("\n").map((l) => l.trim()).find((l) => l !== "") ?? null;
-}
-function porcelainEntries(out) {
-  const tokens = out.split("\0");
-  const entries3 = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const entry = tokens[i] ?? "";
-    if (entry.length < 4) continue;
-    entries3.push(entry);
-    if (/[RC]/.test(entry.slice(0, 2))) i++;
-  }
-  return entries3;
-}
-function changedPaths(git, root, revs) {
-  return gitOut(git, ["-c", "diff.relative=false", "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root).split("\0").filter((p) => p !== "");
-}
-function sessionsAffected(ctx, root, changed) {
-  const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
-  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed, changedBase });
-}
-var firstFive = (items, sep14) => items.slice(0, 5).join(sep14) + (items.length > 5 ? `${sep14}and ${items.length - 5} more` : "");
-function assertCleanBase(git, root, base, head) {
-  const r = git(["symbolic-ref", "--quiet", "--short", "HEAD"], root);
-  const branch = r.code === 0 ? r.stdout.trim() : null;
-  if (branch !== base) throw refuse(`the main checkout ${root} is on ${branch ?? "a detached HEAD"}, not ${base}`);
-  const status = porcelainEntries(gitOut(git, ["status", "--porcelain", "-z", "--untracked-files=normal"], root));
-  const tracked = status.filter((e) => !e.startsWith("?? "));
-  if (tracked.length > 0) throw refuse(`the main checkout ${root} has uncommitted changes (${firstFive(tracked, "; ")})`);
-  const untracked = status.map((e) => e.slice(3));
-  if (untracked.length === 0) return [];
-  const written = changedPaths(git, root, ["HEAD", head]);
-  const collides = (u) => written.some((p) => u.endsWith("/") ? p.startsWith(u) : p === u || p.startsWith(`${u}/`));
-  const blocking = untracked.filter(collides);
-  if (blocking.length > 0) {
-    throw refuse(`the main checkout ${root} has untracked files where the merge writes (${firstFive(blocking, "; ")}); move them away and land again`);
-  }
-  return untracked;
-}
-function readMessage(root, file, credential) {
-  let path;
-  try {
-    path = confine(root, file);
-  } catch {
-    throw refuse(`the --message file ${file} is outside the project ${resolve15(root)}`);
-  }
-  const hit = credential(path, root);
-  if (hit !== null) throw refuse(`the --message file ${path} ${credentialReason(hit)}`);
-  let text2;
-  try {
-    const real2 = realpathSync12(path);
-    const realRoot = realpathSync12(root);
-    try {
-      confine(realRoot, real2);
-    } catch {
-      throw refuse(`the --message file ${path} resolves outside the project`);
-    }
-    const realHit = credential(real2, realRoot);
-    if (realHit !== null) throw refuse(`the --message file ${path} resolves to ${real2}, which ${credentialReason(realHit)}`);
-    text2 = readFileSync7(real2, "utf8");
-  } catch (err) {
-    if (err instanceof ArbabError) throw err;
-    throw refuse(`cannot read the --message file ${path}: ${err.message}`);
-  }
-  if (text2.trim() === "") throw refuse(`the --message file ${path} is empty`);
-  return text2;
-}
-function assertBaseInHead(git, root, base, head, name2, worktree) {
-  const r = git(["merge-base", "--is-ancestor", "HEAD", head], root);
-  if (r.code === 0) return;
-  if (r.code !== 1) throw new ArbabError("git", `git merge-base --is-ancestor HEAD ${head} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
-  throw refuse(
-    `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree nobody verified. Merge ${base} into integrate/${name2} with hooks off: git -C ${worktree} ${untrustedTree().join(" ")} merge --no-verify --no-edit ${base}; then arbab integrate ${name2} --refresh to record the new head, and verify, review and readiness for ${name2} again`
-  );
-}
-var notBefore = (later, earlier) => Date.parse(later) >= Date.parse(earlier);
-function assertReadinessCurrent(readiness, verify, review, name2) {
-  for (const [what, record2, at, heads] of [
-    ["verify", verify, verify?.finishedAt, [readiness.headSha]],
-    ["review", review, review?.finishedAt, [readiness.headSha, readiness.reviewCarriedOverFrom]]
-  ]) {
-    if (record2 === null || at === void 0 || !heads.includes(record2.headSha)) continue;
-    if (!notBefore(readiness.createdAt, at)) {
-      throw refuse(`the readiness report (${readiness.createdAt}) is older than ${what}.json (${at}); run arbab readiness ${name2} again`);
-    }
-  }
-}
-function assertTier(readiness, required, name2) {
-  if (TIERS.indexOf(readiness.tier) < TIERS.indexOf(required)) {
-    throw refuse(`readiness was checked at tier ${readiness.tier}, below the landing tier ${required}; run arbab readiness ${name2} --tier ${required}`);
-  }
-}
-async function runLand(argv2, ctx) {
-  const { values, positionals } = parse("land", {
-    args: argv2,
-    options: { "keep-worktrees": { type: "boolean" }, squash: { type: "boolean" }, message: { type: "string" }, json: { type: "boolean" } },
-    allowPositionals: true
-  });
-  const name2 = assertValidName(onePositional("land", positionals, "name"), "integration");
-  const project = openProject(ctx);
-  const credential = credentialMatcher(project.config.credentialPaths, homeSpellings(dirname8(ctx.home)));
-  const message5 = values.message === void 0 ? `Land ${name2}` : readMessage(project.root, values.message, credential);
-  const squash = values.squash ?? project.config.landing.squash;
-  const { paths, record: record2 } = openIntegration(project, name2);
-  const base = record2.base;
-  const head = record2.headSha;
-  const readiness = readReadinessReport(paths.readiness, name2);
-  if (readiness === null) throw refuse(`no readiness report; run arbab readiness ${name2}`);
-  if (readiness.headSha !== head) throw refuse(`the readiness report is for ${readiness.headSha}, the integration head is ${head}; run arbab readiness ${name2} again`);
-  if (!readiness.ready) {
-    const open2 = readiness.skipped.filter((s) => !s.waived).map((s) => s.id);
-    throw refuse(`readiness is not ready${open2.length > 0 ? ` (unwaived: ${open2.join(", ")})` : ""}`);
-  }
-  assertTier(readiness, project.config.landing.tier, name2);
-  const verify = readVerifyRecord(paths.verify, name2);
-  if (verify === null || verify.headSha !== head || !verify.passed) throw refuse(`verify has not passed on ${head}; run arbab verify ${name2}`);
-  assertReadinessCurrent(readiness, verify, readReviewRecord(paths.review, name2), name2);
-  const leftAlone = assertCleanBase(ctx.git, project.root, base, head);
-  if (ctx.git(["merge-base", "--is-ancestor", head, "HEAD"], project.root).code === 0) throw refuse(`${head} is already in ${base}`);
-  if (existsSync17(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
-  const branchAt = branchHead(ctx.git, project.root, paths.branch);
-  if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
-  assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
-  let sessions;
-  let sessionsUnknown;
-  try {
-    sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
-  } catch (err) {
-    sessionsUnknown = err.message;
-  }
-  if (squash) squashLand(ctx, project.root, head, message5, `squashing ${paths.branch} into ${base}`);
-  else {
-    const merge = ctx.git([...untrustedTree(), "merge", "--no-ff", "--no-edit", "-m", message5, head], project.root);
-    if (merge.code !== 0) {
-      ctx.git([...untrustedTree(), "merge", "--abort"], project.root);
-      throw new ArbabError("git", `merging ${paths.branch} into ${base} failed (${merge.code}): ${(merge.stderr || merge.stdout).trim()}; the merge was aborted`);
-    }
-  }
-  for (const activity of sessions ?? []) ctx.stderr(`warning: ${sessionText(activity, "land")}
-`);
-  if (sessionsUnknown !== void 0) ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${sessionsUnknown}
-`);
-  const mergeSha = gitOut(ctx.git, ["rev-parse", "HEAD"], project.root).trim();
-  const landing = {
-    name: name2,
-    into: base,
-    integrationHead: head,
-    mergeSha,
-    landedAt: isoAt(ctx.clock),
-    pushed: false,
-    squash,
-    lanes: record2.merged.map((m) => ({ lane: m.lane, sha: m.sha }))
-  };
-  writeJsonAtomic(paths.landing, landing);
-  const cleanup = values["keep-worktrees"] === true ? null : cleanUpLanded(ctx, project, { paths, record: record2 }, landing);
-  const remote = firstRemote(ctx.git, project.root);
-  if (values.json === true) {
-    printJson(ctx, {
-      landing,
-      remote,
-      push: remote === null ? null : ["git", "push", remote, base],
-      cleanup,
-      leftAlone,
-      ...sessions !== void 0 && { otherSessions: sessions }
-    });
-  } else {
-    ctx.stdout(`landed ${name2}: ${head} into ${base} as ${mergeSha}
-`);
-    ctx.stdout(`Not pushed. To publish: git push ${remote ?? "<remote>"} ${base}${remote === null ? " (no remote configured)" : ""}
-`);
-    if (leftAlone.length > 0) ctx.stdout(`left alone: ${firstFive(leftAlone, ", ")}
-`);
-    for (const line2 of cleanup === null ? [] : formatWorktreeCleanup(cleanup)) ctx.stdout(line2 + "\n");
-  }
-  return 0;
-}
-function squashLand(ctx, root, head, message5, what) {
-  const fail2 = (r) => {
-    ctx.git([...untrustedTree(), "reset", "--merge"], root);
-    return new ArbabError("git", `${what} failed (${r.code}): ${(r.stderr || r.stdout).trim()}; the squash was reset`);
-  };
-  const staged = ctx.git([...untrustedTree(), "merge", "--squash", head], root);
-  if (staged.code !== 0) throw fail2(staged);
-  const commit = ctx.git([...untrustedTree(), "commit", "--no-verify", "--allow-empty", "-m", message5], root);
-  if (commit.code !== 0) throw fail2(commit);
-}
-function cleanUpLanded(ctx, project, integration, landing) {
-  const { paths, record: record2 } = integration;
-  const out = emptyWorktreeCleanup();
-  try {
-    const generated = lanesGeneratedBy(project.runsRoot, paths.name);
-    const lanes = [...record2.merged.map((m) => m.lane), ...generated];
-    const landed = landing?.squash === true ? landing.integrationHead : record2.base;
-    removeLaneWorktrees(ctx, project, lanes, landed, out);
-    removeIntegrationWorktree(ctx, project, paths, landed, out);
-    if (landing?.squash === true) deleteSquashedBranches(ctx, project.root, [...generated.map((g) => `arbab/${g}`), paths.branch], landing.integrationHead, out);
-  } catch (err) {
-    out.warnings.push(err.message);
-  }
-  return out;
-}
-function deleteSquashedBranches(ctx, root, branches, landedHead, out) {
-  const listed = ctx.git(["worktree", "list", "--porcelain"], root);
-  if (listed.code !== 0) return;
-  const checkedOut = new Set(listed.stdout.split("\n").filter((l) => l.startsWith("branch ")).map((l) => l.slice("branch ".length)));
-  for (const kept of [...out.branchesKept]) {
-    if (!branches.includes(kept.branch) || !kept.reason.startsWith("git branch -d failed")) continue;
-    const ref2 = `refs/heads/${kept.branch}`;
-    const sha = branchHead(ctx.git, root, kept.branch);
-    if (sha === null || checkedOut.has(ref2)) continue;
-    if (ctx.git(["merge-base", "--is-ancestor", sha, landedHead], root).code !== 0) continue;
-    if (ctx.git([...untrustedTree(), "update-ref", "-d", ref2, sha], root).code !== 0) continue;
-    out.branchesKept.splice(out.branchesKept.indexOf(kept), 1);
-    out.branchesDeleted.push(kept.branch);
-  }
-}
-
-// src/commands/plan.ts
-import { join as join36 } from "node:path";
-var phaseNames = (plan) => [...new Set(plan.phases.map((p) => p.name))];
-var plansDir = (project, plan) => join36(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
-function checkPlanFile(ctx, project, planPath) {
-  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
-  const issues = checkPlan(plan);
-  let waves = null;
-  try {
-    waves = planWaves(plan);
-  } catch (err) {
-    if (!(err instanceof ArbabError)) throw err;
-  }
-  const phases = [];
-  if (waves !== null) {
-    const gitCommonDir2 = resolveGitCommonDir(ctx.git, project.root);
-    for (const phase of phaseNames(plan)) {
-      const lane = compilePhase(plan, phase);
-      phases.push({ phase, lane, issues: lintLaneSpec(project, lane, gitCommonDir2).issues });
-    }
-  }
-  return { plan, issues, phases, waves };
-}
-var planHasErrors = (check2) => hasErrors(check2.issues) || check2.phases.some((p) => hasErrors(p.issues));
-function planSummary(check2) {
-  return issueSummary(`plan ${check2.plan.name}`, [...check2.issues, ...check2.phases.flatMap((p) => p.issues)]);
-}
-function latestExit(runsRoot, lane) {
-  let value;
-  try {
-    const n = listAttempts(runsRoot, lane).at(-1);
-    if (n === void 0) return null;
-    value = readJson(attemptFiles(runPaths(runsRoot, lane).attemptDir(n)).exit);
-  } catch {
-    return null;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const { checkpoint: checkpoint2, checkpointError } = value;
-  const field = (v) => v === null || typeof v === "string";
-  if (!field(checkpoint2) || !field(checkpointError)) return null;
-  return { checkpoint: checkpoint2, checkpointError };
-}
-function phaseStates(project, plan, alive) {
-  const states = {};
-  for (const phase of phaseNames(plan)) {
-    const record2 = readState(project.runsRoot, phase);
-    states[phase] = record2 === null ? void 0 : { state: effectiveState(record2, alive), endState: record2.endState ?? null, exit: latestExit(project.runsRoot, phase) };
-  }
-  return states;
-}
-async function planNext(ctx, project, planPath, opts = {}) {
-  const check2 = checkPlanFile(ctx, project, planPath);
-  const plan = check2.plan;
-  if (planHasErrors(check2)) {
-    for (const issue of check2.issues) ctx.stderr(formatIssue(issue) + "\n");
-    for (const p of check2.phases) for (const issue of p.issues) ctx.stderr(`${p.phase}: ${formatIssue(issue)}
-`);
-    throw new ArbabError("lint", `${planSummary(check2)}; nothing launched`);
-  }
-  const states = phaseStates(project, plan, ctx.alive);
-  if (opts.retry !== void 0) {
-    const refusal = retryRefusal(plan, states, opts.retry);
-    if (refusal !== null) throw new ArbabError("usage", `cannot retry: ${refusal}; nothing launched`);
-  }
-  const out = { plan: plan.name, launched: [], blocked: [], failed: [], errors: [], warnings: [], code: 0 };
-  let prepared = false;
-  const launch = async (phase, onlyNew) => {
-    if (!prepared) {
-      ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
-      ensureArbabMarkers(project.root);
-      prepared = true;
-    }
-    const lane = check2.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
-    const laneFile = join36(plansDir(project, plan.name), `${phase}.json`);
-    try {
-      writeJsonAtomic(laneFile, lane);
-      const launched = await launchLane(ctx, project, laneFile, { onlyNew });
-      out.launched.push({ phase, laneFile, runDir: launched.runDir, shepherdPid: launched.shepherdPid });
-      for (const issue of launched.warnings) out.warnings.push({ phase, issue });
-      return true;
-    } catch (err) {
-      out.errors.push({ phase, message: err instanceof Error ? err.message : String(err) });
-      out.code = Math.max(out.code, exitCodeFor(err));
-      return false;
-    }
-  };
-  if (opts.retry !== void 0 && await launch(opts.retry, false)) states[opts.retry] = { state: "queued", endState: null, exit: null };
-  const next = nextPhases(plan, states);
-  out.blocked = next.blocked;
-  out.failed = next.failed;
-  for (const phase of next.launch) await launch(phase, true);
-  return out;
-}
-function table(rows) {
-  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
-  return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd()).join("\n");
-}
-function formatPlanStatus(rows) {
-  return table([
-    ["PHASE", "WAVE", "STATE", "END", "DEPENDS ON"],
-    ...rows.map((r) => [r.phase, String(r.wave), r.state ?? "-", r.endState ?? "-", r.dependsOn.length > 0 ? r.dependsOn.join(", ") : "-"])
-  ]);
-}
-async function runCheck(argv2, ctx) {
-  const { values, positionals } = parse("plan check", { args: argv2, options: { json: { type: "boolean" } }, allowPositionals: true });
-  const planPath = onePositional("plan check", positionals, "plan.json");
-  const check2 = checkPlanFile(ctx, openProject(ctx), planPath);
-  const ok = !planHasErrors(check2);
-  if (values.json === true) {
-    printJson(ctx, {
-      plan: check2.plan.name,
-      ok,
-      issues: check2.issues,
-      phases: check2.phases.map((p) => ({ phase: p.phase, issues: p.issues })),
-      waves: check2.waves
-    });
-  } else {
-    for (const issue of check2.issues) ctx.stdout(formatIssue(issue) + "\n");
-    for (const p of check2.phases) {
-      for (const issue of p.issues) ctx.stdout(`  ${formatIssue(issue)}
-`);
-      ctx.stdout(issueSummary(p.phase, p.issues) + "\n");
-    }
-    if (check2.waves === null) ctx.stdout("phases not linted: the dependency graph does not resolve\n");
-    else check2.waves.forEach((wave, i) => ctx.stdout(`wave ${i}: ${wave.join(", ")}
-`));
-    ctx.stdout(planSummary(check2) + "\n");
-  }
-  return ok ? 0 : 1;
-}
-async function runNext(argv2, ctx) {
-  const { values, positionals } = parse("plan next", {
-    args: argv2,
-    options: { json: { type: "boolean" }, retry: { type: "string" } },
-    allowPositionals: true
-  });
-  const planPath = onePositional("plan next", positionals, "plan.json");
-  const next = await planNext(ctx, openProject(ctx), planPath, values.retry === void 0 ? {} : { retry: values.retry });
-  if (values.json === true) {
-    printJson(ctx, {
-      plan: next.plan,
-      launched: next.launched,
-      blocked: next.blocked,
-      failed: next.failed,
-      errors: next.errors,
-      warnings: next.warnings.map((w) => ({ phase: w.phase, ...w.issue }))
-    });
-    return next.code;
-  }
-  for (const w of next.warnings) ctx.stderr(`${w.phase}: ${formatIssue(w.issue)}
-`);
-  for (const l of next.launched) ctx.stdout(`launched ${l.phase}  run ${l.runDir}  shepherd ${l.shepherdPid}
-`);
-  if (next.launched.length === 0) ctx.stdout("nothing launched\n");
-  for (const b of next.blocked) ctx.stdout(`blocked ${b.phase}  waiting for ${b.waitingFor.join(", ")}
-`);
-  for (const f of next.failed) {
-    const reason = f.reason === null ? "" : `; ${f.reason}`;
-    ctx.stdout(`failed-upstream ${f.phase}  ${f.dependency} ended ${f.endState ?? "without an end state"}${reason}
-`);
-  }
-  for (const e of next.errors) ctx.stderr(`error ${e.phase}  ${e.message}
-`);
-  return next.code;
-}
-async function runPlanStatus(argv2, ctx) {
-  const { values, positionals } = parse("plan status", { args: argv2, options: { json: { type: "boolean" } }, allowPositionals: true });
-  const planPath = onePositional("plan status", positionals, "plan.json");
-  const project = openProject(ctx);
-  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
-  const rows = planStatus(plan, phaseStates(project, plan, ctx.alive));
-  if (values.json === true) printJson(ctx, { plan: plan.name, phases: rows });
-  else ctx.stdout(formatPlanStatus(rows) + "\n");
-  return 0;
-}
-var SUBCOMMANDS = {
-  check: runCheck,
-  next: runNext,
-  status: runPlanStatus
-};
-async function runPlan(argv2, ctx) {
-  const [sub, ...rest] = argv2;
-  const command = sub !== void 0 && Object.hasOwn(SUBCOMMANDS, sub) ? SUBCOMMANDS[sub] : void 0;
-  if (command === void 0) throw new ArbabError("usage", "usage: arbab plan check|next|status <plan.json> [--json] (next also takes --retry <phase>)");
-  return command(rest, ctx);
-}
-
-// src/quota/quota.ts
-import { existsSync as existsSync18, rmSync as rmSync8 } from "node:fs";
-import { join as join37 } from "node:path";
-var quotaPath = (home) => join37(home, "quota.json");
-var resetFile = (home) => join37(home, "quota-reset.json");
-function isWindow(value) {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value;
-  return Number.isFinite(v["utilization"]) && Number.isFinite(v["resetsAt"]);
-}
-function isSnapshot(value) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const v = value;
-  const nullableString = (x) => x === null || typeof x === "string";
-  return typeof v["observedAt"] === "string" && !Number.isNaN(Date.parse(v["observedAt"])) && nullableString(v["status"]) && nullableString(v["type"]) && (v["fiveHour"] === null || isWindow(v["fiveHour"])) && (v["sevenDay"] === null || isWindow(v["sevenDay"]));
-}
-function readQuota(home) {
-  let value;
-  try {
-    value = readJson(quotaPath(home));
-  } catch (err) {
-    if (err instanceof ArbabError) return null;
-    throw err;
-  }
-  return isSnapshot(value) ? value : null;
-}
-function updateQuota(home, snapshot) {
-  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
-  const stored = readQuota(home);
-  if (stored && Date.parse(snapshot.observedAt) <= Date.parse(stored.observedAt)) return false;
-  writeJsonAtomic(quotaPath(home), snapshot);
-  return true;
-}
-function resetQuota(home, clock) {
-  const path = quotaPath(home);
-  const existed = existsSync18(path);
-  try {
-    rmSync8(path, { force: true });
-  } catch (err) {
-    throw new ArbabError("io", `cannot remove ${path}: ${err.message}`, { cause: err });
-  }
-  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
-  return existed;
-}
-function replaceQuota(home, snapshot, clock) {
-  if (!isSnapshot(snapshot)) throw new ArbabError("usage", "invalid rate-limit snapshot");
-  writeJsonAtomic(quotaPath(home), snapshot);
-  writeJsonAtomic(resetFile(home), { resetAt: isoAt(clock) });
-}
-function lastQuotaReset(home) {
-  let value;
-  try {
-    value = readJson(resetFile(home));
-  } catch (err) {
-    if (err instanceof ArbabError) return null;
-    throw err;
-  }
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
-  const resetAt = value["resetAt"];
-  if (typeof resetAt !== "string") return null;
-  const ms = Date.parse(resetAt);
-  return Number.isNaN(ms) ? null : ms;
-}
-var pct = (utilization) => `${Math.round(utilization * 100)}%`;
-var WINDOWS = [
-  { key: "fiveHour", name: "five-hour", label: "5h" },
-  { key: "sevenDay", name: "seven-day", label: "7d" }
-];
-function rejectedWindow(type) {
-  if (type?.startsWith("five_hour")) return "fiveHour";
-  if (type?.startsWith("seven_day")) return "sevenDay";
-  return null;
-}
-function holdDecision(snapshot, holdAbove, nowSec) {
-  if (!snapshot) return { hold: false, reason: null, until: null };
-  const reasons = [];
-  let until = null;
-  const named2 = snapshot.status === "rejected" ? rejectedWindow(snapshot.type) : null;
-  for (const { key, name: name2 } of WINDOWS) {
-    const window = snapshot[key];
-    if (!window || window.resetsAt <= nowSec) continue;
-    let reason = null;
-    if (snapshot.status === "rejected" && (named2 === null || named2 === key)) {
-      reason = `rate limit rejected (${name2} window at ${pct(window.utilization)})`;
-    } else if (window.utilization >= holdAbove[key]) {
-      reason = `${name2} window at ${pct(window.utilization)} (hold above ${pct(holdAbove[key])})`;
-    }
-    if (reason) {
-      reasons.push(reason);
-      until = Math.max(until ?? 0, window.resetsAt);
-    }
-  }
-  return reasons.length > 0 ? { hold: true, reason: reasons.join("; "), until } : { hold: false, reason: null, until: null };
-}
-function resumeAt(resetsAt, jitterSec) {
-  if (!Number.isFinite(jitterSec) || jitterSec < 0 || jitterSec > 60) {
-    throw new ArbabError("usage", `jitter ${jitterSec} must be between 0 and 60 seconds`);
-  }
-  return resetsAt + 60 + jitterSec;
-}
-var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-function formatReset(resetsAt, nowSec) {
-  const at = new Date(resetsAt * 1e3);
-  const now = new Date(nowSec * 1e3);
-  const two = (n) => String(n).padStart(2, "0");
-  const time = `${two(at.getUTCHours())}:${two(at.getUTCMinutes())}Z`;
-  const sameDay = at.getUTCFullYear() === now.getUTCFullYear() && at.getUTCMonth() === now.getUTCMonth() && at.getUTCDate() === now.getUTCDate();
-  return sameDay ? time : `${MONTHS[at.getUTCMonth()]} ${at.getUTCDate()} ${time}`;
-}
-function formatQuota(snapshot, nowSec) {
-  if (!snapshot) return "quota unknown";
-  const parts = [];
-  for (const { key, label } of WINDOWS) {
-    const window = snapshot[key];
-    if (!window) continue;
-    parts.push(
-      window.resetsAt > nowSec ? `${label} ${pct(window.utilization)} (resets ${formatReset(window.resetsAt, nowSec)})` : `${label} \u2014 (reset ${formatReset(window.resetsAt, nowSec)})`
-    );
-  }
-  if (parts.length === 0) return "quota unknown";
-  if (snapshot.status === "rejected") parts.push("rejected");
-  return parts.join(" \xB7 ");
-}
-
-// src/quota/refresh.ts
-import { mkdtempSync, rmSync as rmSync9 } from "node:fs";
-import { join as join38 } from "node:path";
-var REFRESH_PROMPT = "Reply with the single word: ok";
-var REFRESH_TIMEOUT_MS = 6e4;
-var STDERR_TAIL_LINES = 5;
-var STDERR_KEEP_CHARS = 16384;
-var TAIL_LINE_CHARS = 500;
-function refreshArgs() {
-  return [
-    "-p",
-    "--output-format",
-    "stream-json",
-    "--verbose",
-    "--model",
-    "haiku",
-    "--max-turns",
-    "1",
-    "--tools",
-    "",
-    // The same empty source list as a worker's: no user, project or local settings.
-    "--setting-sources",
-    "",
-    "--strict-mcp-config"
-  ];
-}
-function makeRefreshSpawn(spawnImpl, graceMs = 2e3) {
-  return (binary, args, opts) => new Promise((resolve19) => {
-    const out = [];
-    let err = "";
-    let timedOut = false;
-    let exit = null;
-    const timers = [];
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      for (const t of timers) clearTimeout(t);
-      resolve19({ code: exit?.code ?? null, signal: exit?.signal ?? null, timedOut, stdout: Buffer.concat(out).toString("utf8"), stderr: err });
-    };
-    let child2;
-    try {
-      child2 = spawnImpl(binary, args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"] });
-    } catch (e) {
-      err = `cannot start ${binary}: ${e.message}`;
-      finish();
-      return;
-    }
-    const kill = (sig) => {
-      try {
-        child2.kill(sig);
-      } catch {
-      }
-    };
-    child2.stdout?.on("data", (chunk) => out.push(chunk));
-    child2.stderr?.on("data", (chunk) => {
-      err = (err + chunk.toString("utf8")).slice(-STDERR_KEEP_CHARS);
-    });
-    child2.once("error", (e) => {
-      err += `${err === "" || err.endsWith("\n") ? "" : "\n"}${e.message}
-`;
-      if (child2.pid === void 0) finish();
-    });
-    child2.once("exit", (code4, signal) => {
-      exit = { code: code4, signal };
-      if (!timedOut) for (const t of timers.splice(0)) clearTimeout(t);
-      timers.push(setTimeout(finish, graceMs));
-    });
-    child2.once("close", finish);
-    timers.push(
-      setTimeout(() => {
-        timedOut = true;
-        kill("SIGTERM");
-        timers.push(
-          setTimeout(() => {
-            kill("SIGKILL");
-            timers.push(setTimeout(finish, graceMs));
-          }, graceMs)
-        );
-      }, opts.timeoutMs)
-    );
-    child2.stdin?.on("error", () => void 0);
-    child2.stdin?.end(opts.input);
-  });
-}
-function stderrTail(stderr) {
-  return stderr.split("\n").map((line2) => line2.trimEnd()).filter((line2) => line2.trim() !== "").slice(-STDERR_TAIL_LINES).map((line2) => line2.length > TAIL_LINE_CHARS ? `${line2.slice(0, TAIL_LINE_CHARS)}\u2026` : line2);
-}
-async function refreshQuota(input) {
-  const timeoutMs = input.timeoutMs ?? REFRESH_TIMEOUT_MS;
-  const tmpRoot = join38(input.home, "tmp");
-  let cwd;
-  try {
-    ensureDir(tmpRoot);
-    cwd = mkdtempSync(join38(tmpRoot, "quota-refresh-"));
-  } catch (err) {
-    throw new ArbabError("io", `cannot create a working directory under ${tmpRoot}: ${err.message}`, { cause: err });
-  }
-  let run;
-  try {
-    run = await input.spawn(input.binary, refreshArgs(), { cwd, env: input.env, input: REFRESH_PROMPT, timeoutMs });
-  } finally {
-    rmSync9(cwd, { recursive: true, force: true });
-  }
-  const fail2 = (what) => {
-    const tail = stderrTail(run.stderr);
-    const lines = tail.length === 0 ? ["  (stderr empty)"] : tail.map((line2) => `  ${line2}`);
-    return new ArbabError("runtime", [`refresh failed: ${what}; ${quotaPath(input.home)} is unchanged`, "stderr:", ...lines].join("\n"));
-  };
-  if (run.timedOut) throw fail2(`claude did not finish within ${Math.round(timeoutMs / 1e3)} s`);
-  if (run.code !== 0) throw fail2(`claude exited with ${run.code === null ? `signal ${run.signal ?? "unknown"}` : `code ${run.code}`}`);
-  const parsed2 = parseStream(run.stdout);
-  const snapshot = digestStream(parsed2.events, isoAt(input.clock), parsed2.unparsedLines).rateLimit;
-  if (snapshot === null) throw fail2("claude's stream had no rate_limit_event");
-  replaceQuota(input.home, snapshot, input.clock);
-  return snapshot;
-}
-
-// src/commands/quota.ts
-function formatHold(hold) {
-  if (!hold.hold) return "hold: no";
-  const until = hold.until === null ? "" : ` (until ${new Date(hold.until * 1e3).toISOString()})`;
-  return `hold: yes \u2014 ${hold.reason ?? "unknown"}${until}`;
-}
-async function refresh(ctx, config, spawn4) {
-  const deps = ctx.shepherdDeps();
-  const binary = resolveBinary({
-    pinned: null,
-    explicitPath: deps.explicitClaude,
-    pathEnv: deps.pathEnv,
-    minVersion: config.minClaudeVersion,
-    run: deps.run,
-    exists: deps.exists,
-    realpath: deps.realpath
-  });
-  const env2 = workerEnv(deps.hostEnv, {
-    passEnv: [],
-    extra: {},
-    nodeDir: deps.nodeDir,
-    ...deps.pnpmDir === void 0 ? {} : { pnpmDir: deps.pnpmDir }
-  });
-  return refreshQuota({ home: ctx.home, binary: binary.path, env: env2, clock: ctx.clock, spawn: spawn4 ?? makeRefreshSpawn(deps.spawnImpl) });
-}
-async function runQuota(argv2, ctx, spawn4) {
-  const { values } = parse("quota", {
-    args: argv2,
-    options: { reset: { type: "boolean" }, refresh: { type: "boolean" }, json: { type: "boolean" } },
-    allowPositionals: false
-  });
-  if (values.reset === true && values.refresh === true) {
-    throw new ArbabError("usage", "quota takes --reset or --refresh, not both: --refresh already replaces the snapshot");
-  }
-  if (values.reset === true) {
-    const path = quotaPath(ctx.home);
-    const removed = resetQuota(ctx.home, ctx.clock);
-    if (values.json === true) printJson(ctx, { reset: true, removed, path });
-    else ctx.stdout(removed ? `quota: snapshot ${path} removed; the next worker's rate-limit events write a fresh one
-` : `quota: no snapshot at ${path}
-`);
-    return 0;
-  }
-  const root = findProjectRoot(ctx.cwd, ctx.git);
-  const config = root === null ? defaultConfig() : loadConfig(root);
-  const snapshot = values.refresh === true ? await refresh(ctx, config, spawn4) : readQuota(ctx.home);
-  const nowSec = Math.floor(ctx.clock.now() / 1e3);
-  const hold = holdDecision(snapshot, config.quota.holdAbove, nowSec);
-  if (values.json === true) {
-    printJson(ctx, { snapshot, hold });
-  } else {
-    ctx.stdout(`quota: ${formatQuota(snapshot, nowSec)}
-${formatHold(hold)}
-`);
-  }
-  return 0;
-}
-
-// src/commands/readiness.ts
-import { join as join39 } from "node:path";
 
 // src/readiness/notes.ts
 var FENCE_KINDS = [
@@ -8321,11 +8631,11 @@ function fenceKind(text2) {
 function noteKey(text2) {
   return text2.trim().toLowerCase().replace(/\d+/g, "N").replace(/\s+/g, " ");
 }
-function flat(text2) {
+function flat2(text2) {
   return text2.trim().replace(/\s+/g, " ");
 }
 function example(note) {
-  const text2 = flat(note.text);
+  const text2 = flat2(note.text);
   return `${note.lane}: ${text2.length > EXAMPLE_CHARS ? `${text2.slice(0, EXAMPLE_CHARS - 1)}\u2026` : text2}`;
 }
 function groupLaneNotes(entries3) {
@@ -8369,7 +8679,7 @@ function groupLaneNotes(entries3) {
     }
     if (emitted.has(`notes:${key}`)) continue;
     emitted.add(`notes:${key}`);
-    out.push({ id: `notes:${note.id}`, text: `${lanes} lanes: ${flat(note.text)}` });
+    out.push({ id: `notes:${note.id}`, text: `${lanes} lanes: ${flat2(note.text)}` });
   }
   return out;
 }
@@ -8383,13 +8693,13 @@ function uniqueTexts(items) {
 }
 
 // src/readiness/carry.ts
-var SHA6 = /^[0-9a-f]{40,64}$/;
+var SHA7 = /^[0-9a-f]{40,64}$/;
 function line(git, args, cwd) {
   const r = git([...untrustedTree(), ...args], cwd);
   return r.code === 0 ? r.stdout.trim() : null;
 }
 function reviewCarriesOver(git, cwd, reviewed, head, baseBranch) {
-  if (!SHA6.test(reviewed) || !SHA6.test(head) || reviewed === head || baseBranch.startsWith("-")) return false;
+  if (!SHA7.test(reviewed) || !SHA7.test(head) || reviewed === head || baseBranch.startsWith("-")) return false;
   const parents = line(git, ["rev-list", "--parents", "-n", "1", head], cwd)?.split(/\s+/);
   if (parents === void 0 || parents.length !== 3 || parents[0] !== head) return false;
   const [, first, second] = parents;
@@ -8397,10 +8707,17 @@ function reviewCarriesOver(git, cwd, reviewed, head, baseBranch) {
   if (git(["merge-base", "--is-ancestor", second, baseBranch], cwd).code !== 0) return false;
   const merged = line(git, ["merge-tree", "--write-tree", first, second], cwd)?.split("\n")[0]?.trim();
   const tree = line(git, ["rev-parse", "--verify", "--quiet", `${head}^{tree}`], cwd);
-  return merged !== void 0 && tree !== null && SHA6.test(tree) && merged === tree;
+  return merged !== void 0 && tree !== null && SHA7.test(tree) && merged === tree;
 }
 
 // src/readiness/index.ts
+function baseMovedRisk(name2, worktree, moved) {
+  const what = moved.landings.length > 0 ? `${moved.landings.map(landingText).join(", ")} landed` : moved.commits === null ? "it has new commits" : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
+  return {
+    id: "base-moved",
+    text: `${moved.base} moved since this integration started: ${what}, so land would refuse. ${baseMergeInstruction(moved.base, name2, worktree)}.`
+  };
+}
 function exitText(code4) {
   return code4 === null ? "missing (counts as a failure)" : `exit ${code4}`;
 }
@@ -8633,6 +8950,7 @@ function computeReadiness(input) {
   if (input.sessionsUnknown !== void 0) {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }
+  if (input.baseMoved !== void 0 && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.worktree, input.baseMoved));
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,
@@ -8659,12 +8977,12 @@ function inline(text2) {
   return text2.replace(/\s*[\r\n]+\s*/g, " ");
 }
 function code2(text2) {
-  const flat2 = inline(text2);
+  const flat3 = inline(text2);
   let longest = 0;
-  for (const run of flat2.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
+  for (const run of flat3.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
   const fence2 = "`".repeat(longest + 1);
-  const pad = flat2.startsWith("`") || flat2.endsWith("`") ? " " : "";
-  return `${fence2}${pad}${flat2}${pad}${fence2}`;
+  const pad = flat3.startsWith("`") || flat3.endsWith("`") ? " " : "";
+  return `${fence2}${pad}${flat3}${pad}${fence2}`;
 }
 function cell(text2) {
   return text2.replace(/\|/g, "\\|");
@@ -8698,7 +9016,480 @@ function renderReadiness(report) {
   return lines.join("\n");
 }
 
+// src/commands/land.ts
+var refuse = (message5) => new ArbabError("usage", `not landed: ${message5}`);
+function gitOut(git, args, cwd) {
+  const r = git(args, cwd);
+  if (r.code !== 0) throw new ArbabError("git", `git ${args.join(" ")} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
+  return r.stdout;
+}
+function firstRemote(git, root) {
+  const r = git(["remote"], root);
+  if (r.code !== 0) return null;
+  return r.stdout.split("\n").map((l) => l.trim()).find((l) => l !== "") ?? null;
+}
+function porcelainEntries(out) {
+  const tokens = out.split("\0");
+  const entries3 = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const entry = tokens[i] ?? "";
+    if (entry.length < 4) continue;
+    entries3.push(entry);
+    if (/[RC]/.test(entry.slice(0, 2))) i++;
+  }
+  return entries3;
+}
+function changedPaths(git, root, revs) {
+  return gitOut(git, ["-c", "diff.relative=false", "diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", ...revs, "--"], root).split("\0").filter((p) => p !== "");
+}
+function sessionsAffected(ctx, root, changed) {
+  const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
+  return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed, changedBase });
+}
+var firstFive = (items, sep15) => items.slice(0, 5).join(sep15) + (items.length > 5 ? `${sep15}and ${items.length - 5} more` : "");
+function assertCleanBase(git, root, base, head) {
+  const r = git(["symbolic-ref", "--quiet", "--short", "HEAD"], root);
+  const branch = r.code === 0 ? r.stdout.trim() : null;
+  if (branch !== base) throw refuse(`the main checkout ${root} is on ${branch ?? "a detached HEAD"}, not ${base}`);
+  const status = porcelainEntries(gitOut(git, ["status", "--porcelain", "-z", "--untracked-files=normal"], root));
+  const tracked = status.filter((e) => !e.startsWith("?? "));
+  if (tracked.length > 0) throw refuse(`the main checkout ${root} has uncommitted changes (${firstFive(tracked, "; ")})`);
+  const untracked = status.map((e) => e.slice(3));
+  if (untracked.length === 0) return [];
+  const written = changedPaths(git, root, ["HEAD", head]);
+  const collides = (u) => written.some((p) => u.endsWith("/") ? p.startsWith(u) : p === u || p.startsWith(`${u}/`));
+  const blocking = untracked.filter(collides);
+  if (blocking.length > 0) {
+    throw refuse(`the main checkout ${root} has untracked files where the merge writes (${firstFive(blocking, "; ")}); move them away and land again`);
+  }
+  return untracked;
+}
+function readMessage(root, file, credential) {
+  let path;
+  try {
+    path = confine(root, file);
+  } catch {
+    throw refuse(`the --message file ${file} is outside the project ${resolve16(root)}`);
+  }
+  const hit = credential(path, root);
+  if (hit !== null) throw refuse(`the --message file ${path} ${credentialReason(hit)}`);
+  let text2;
+  try {
+    const real2 = realpathSync13(path);
+    const realRoot = realpathSync13(root);
+    try {
+      confine(realRoot, real2);
+    } catch {
+      throw refuse(`the --message file ${path} resolves outside the project`);
+    }
+    const realHit = credential(real2, realRoot);
+    if (realHit !== null) throw refuse(`the --message file ${path} resolves to ${real2}, which ${credentialReason(realHit)}`);
+    text2 = readFileSync10(real2, "utf8");
+  } catch (err) {
+    if (err instanceof ArbabError) throw err;
+    throw refuse(`cannot read the --message file ${path}: ${err.message}`);
+  }
+  if (text2.trim() === "") throw refuse(`the --message file ${path} is empty`);
+  return text2;
+}
+function assertBaseInHead(git, root, base, head, name2, worktree) {
+  const r = git(["merge-base", "--is-ancestor", "HEAD", head], root);
+  if (r.code === 0) return;
+  if (r.code !== 1) throw new ArbabError("git", `git merge-base --is-ancestor HEAD ${head} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
+  throw refuse(
+    `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree nobody verified. ${baseMergeInstruction(base, name2, worktree)}`
+  );
+}
+var notBefore = (later, earlier) => Date.parse(later) >= Date.parse(earlier);
+function assertReadinessCurrent(readiness, verify, review, name2) {
+  for (const [what, record2, at, heads] of [
+    ["verify", verify, verify?.finishedAt, [readiness.headSha]],
+    ["review", review, review?.finishedAt, [readiness.headSha, readiness.reviewCarriedOverFrom]]
+  ]) {
+    if (record2 === null || at === void 0 || !heads.includes(record2.headSha)) continue;
+    if (!notBefore(readiness.createdAt, at)) {
+      throw refuse(`the readiness report (${readiness.createdAt}) is older than ${what}.json (${at}); run arbab readiness ${name2} again`);
+    }
+  }
+}
+function assertTier(readiness, required, name2) {
+  if (TIERS.indexOf(readiness.tier) < TIERS.indexOf(required)) {
+    throw refuse(`readiness was checked at tier ${readiness.tier}, below the landing tier ${required}; run arbab readiness ${name2} --tier ${required}`);
+  }
+}
+async function runLand(argv2, ctx) {
+  const { values, positionals } = parse("land", {
+    args: argv2,
+    options: { "keep-worktrees": { type: "boolean" }, squash: { type: "boolean" }, message: { type: "string" }, json: { type: "boolean" } },
+    allowPositionals: true
+  });
+  const name2 = assertValidName(onePositional("land", positionals, "name"), "integration");
+  const project = openProject(ctx);
+  const credential = credentialMatcher(project.config.credentialPaths, homeSpellings(dirname8(ctx.home)));
+  const message5 = values.message === void 0 ? `Land ${name2}` : readMessage(project.root, values.message, credential);
+  const squash = values.squash ?? project.config.landing.squash;
+  const { paths, record: record2 } = openIntegration(project, name2);
+  const base = record2.base;
+  const head = record2.headSha;
+  const readiness = readReadinessReport(paths.readiness, name2);
+  if (readiness === null) throw refuse(`no readiness report; run arbab readiness ${name2}`);
+  if (readiness.headSha !== head) throw refuse(`the readiness report is for ${readiness.headSha}, the integration head is ${head}; run arbab readiness ${name2} again`);
+  if (!readiness.ready) {
+    const open2 = readiness.skipped.filter((s) => !s.waived).map((s) => s.id);
+    throw refuse(`readiness is not ready${open2.length > 0 ? ` (unwaived: ${open2.join(", ")})` : ""}`);
+  }
+  assertTier(readiness, project.config.landing.tier, name2);
+  const verify = readVerifyRecord(paths.verify, name2);
+  if (verify === null || verify.headSha !== head || !verify.passed) throw refuse(`verify has not passed on ${head}; run arbab verify ${name2}`);
+  assertReadinessCurrent(readiness, verify, readReviewRecord(paths.review, name2), name2);
+  const leftAlone = assertCleanBase(ctx.git, project.root, base, head);
+  if (ctx.git(["merge-base", "--is-ancestor", head, "HEAD"], project.root).code === 0) throw refuse(`${head} is already in ${base}`);
+  if (existsSync22(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
+  const branchAt = branchHead(ctx.git, project.root, paths.branch);
+  if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
+  assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
+  let sessions;
+  let sessionsUnknown;
+  try {
+    sessions = sessionsAffected(ctx, project.root, changedPaths(ctx.git, project.root, ["HEAD", head]));
+  } catch (err) {
+    sessionsUnknown = err.message;
+  }
+  if (squash) squashLand(ctx, project.root, head, message5, `squashing ${paths.branch} into ${base}`);
+  else {
+    const merge = ctx.git([...untrustedTree(), "merge", "--no-ff", "--no-edit", "-m", message5, head], project.root);
+    if (merge.code !== 0) {
+      ctx.git([...untrustedTree(), "merge", "--abort"], project.root);
+      throw new ArbabError("git", `merging ${paths.branch} into ${base} failed (${merge.code}): ${(merge.stderr || merge.stdout).trim()}; the merge was aborted`);
+    }
+  }
+  for (const activity of sessions ?? []) ctx.stderr(`warning: ${sessionText(activity, "land")}
+`);
+  if (sessionsUnknown !== void 0) ctx.stderr(`warning: cannot tell which other sessions this landing affects: ${sessionsUnknown}
+`);
+  const mergeSha = gitOut(ctx.git, ["rev-parse", "HEAD"], project.root).trim();
+  const landing = {
+    name: name2,
+    into: base,
+    integrationHead: head,
+    mergeSha,
+    landedAt: isoAt(ctx.clock),
+    owner: sessionOf(ctx.hostEnv),
+    pushed: false,
+    squash,
+    lanes: record2.merged.map((m) => ({ lane: m.lane, sha: m.sha }))
+  };
+  writeJsonAtomic(paths.landing, landing);
+  const cleanup = values["keep-worktrees"] === true ? null : cleanUpLanded(ctx, project, { paths, record: record2 }, landing);
+  const remote = firstRemote(ctx.git, project.root);
+  if (values.json === true) {
+    printJson(ctx, {
+      landing,
+      remote,
+      push: remote === null ? null : ["git", "push", remote, base],
+      cleanup,
+      leftAlone,
+      ...sessions !== void 0 && { otherSessions: sessions }
+    });
+  } else {
+    ctx.stdout(`landed ${name2}: ${head} into ${base} as ${mergeSha}
+`);
+    ctx.stdout(`Not pushed. To publish: git push ${remote ?? "<remote>"} ${base}${remote === null ? " (no remote configured)" : ""}
+`);
+    if (leftAlone.length > 0) ctx.stdout(`left alone: ${firstFive(leftAlone, ", ")}
+`);
+    for (const line2 of cleanup === null ? [] : formatWorktreeCleanup(cleanup)) ctx.stdout(line2 + "\n");
+  }
+  return 0;
+}
+function squashLand(ctx, root, head, message5, what) {
+  const fail2 = (r) => {
+    ctx.git([...untrustedTree(), "reset", "--merge"], root);
+    return new ArbabError("git", `${what} failed (${r.code}): ${(r.stderr || r.stdout).trim()}; the squash was reset`);
+  };
+  const staged = ctx.git([...untrustedTree(), "merge", "--squash", head], root);
+  if (staged.code !== 0) throw fail2(staged);
+  const commit = ctx.git([...untrustedTree(), "commit", "--no-verify", "--allow-empty", "-m", message5], root);
+  if (commit.code !== 0) throw fail2(commit);
+}
+function cleanUpLanded(ctx, project, integration, landing) {
+  const { paths, record: record2 } = integration;
+  const out = emptyWorktreeCleanup();
+  try {
+    const generated = lanesGeneratedBy(project.runsRoot, paths.name);
+    const lanes = [...record2.merged.map((m) => m.lane), ...generated];
+    const landed = landing?.squash === true ? landing.integrationHead : record2.base;
+    removeLaneWorktrees(ctx, project, lanes, landed, out);
+    removeIntegrationWorktree(ctx, project, paths, landed, out);
+    if (landing?.squash === true) deleteSquashedBranches(ctx, project.root, [...generated.map((g) => `arbab/${g}`), paths.branch], landing.integrationHead, out);
+  } catch (err) {
+    out.warnings.push(err.message);
+  }
+  return out;
+}
+function deleteSquashedBranches(ctx, root, branches, landedHead, out) {
+  const listed = ctx.git(["worktree", "list", "--porcelain"], root);
+  if (listed.code !== 0) return;
+  const checkedOut = new Set(listed.stdout.split("\n").filter((l) => l.startsWith("branch ")).map((l) => l.slice("branch ".length)));
+  for (const kept of [...out.branchesKept]) {
+    if (!branches.includes(kept.branch) || !kept.reason.startsWith("git branch -d failed")) continue;
+    const ref2 = `refs/heads/${kept.branch}`;
+    const sha = branchHead(ctx.git, root, kept.branch);
+    if (sha === null || checkedOut.has(ref2)) continue;
+    if (ctx.git(["merge-base", "--is-ancestor", sha, landedHead], root).code !== 0) continue;
+    if (ctx.git([...untrustedTree(), "update-ref", "-d", ref2, sha], root).code !== 0) continue;
+    out.branchesKept.splice(out.branchesKept.indexOf(kept), 1);
+    out.branchesDeleted.push(kept.branch);
+  }
+}
+
+// src/commands/plan.ts
+import { join as join42 } from "node:path";
+var phaseNames = (plan) => [...new Set(plan.phases.map((p) => p.name))];
+var plansDir = (project, plan) => join42(project.root, ".arbab", "plans", assertValidName(plan, "plan"));
+function checkPlanFile(ctx, project, planPath) {
+  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
+  const issues = checkPlan(plan);
+  let waves = null;
+  try {
+    waves = planWaves(plan);
+  } catch (err) {
+    if (!(err instanceof ArbabError)) throw err;
+  }
+  const phases = [];
+  if (waves !== null) {
+    const gitCommonDir2 = resolveGitCommonDir(ctx.git, project.root);
+    for (const phase of phaseNames(plan)) {
+      const lane = compilePhase(plan, phase);
+      phases.push({ phase, lane, issues: lintLaneSpec(project, lane, gitCommonDir2).issues });
+    }
+  }
+  return { plan, issues, phases, waves };
+}
+var planHasErrors = (check2) => hasErrors(check2.issues) || check2.phases.some((p) => hasErrors(p.issues));
+function planSummary(check2) {
+  return issueSummary(`plan ${check2.plan.name}`, [...check2.issues, ...check2.phases.flatMap((p) => p.issues)]);
+}
+function latestExit(runsRoot, lane) {
+  let value;
+  try {
+    const n = listAttempts(runsRoot, lane).at(-1);
+    if (n === void 0) return null;
+    value = readJson(attemptFiles(runPaths(runsRoot, lane).attemptDir(n)).exit);
+  } catch {
+    return null;
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const { checkpoint: checkpoint2, checkpointError } = value;
+  const field = (v) => v === null || typeof v === "string";
+  if (!field(checkpoint2) || !field(checkpointError)) return null;
+  return { checkpoint: checkpoint2, checkpointError };
+}
+function phaseStates(project, plan, alive) {
+  const states = {};
+  for (const phase of phaseNames(plan)) {
+    const record2 = readState(project.runsRoot, phase);
+    states[phase] = record2 === null ? void 0 : { state: effectiveState(record2, alive), endState: record2.endState ?? null, exit: latestExit(project.runsRoot, phase) };
+  }
+  return states;
+}
+async function planNext(ctx, project, planPath, opts = {}) {
+  const check2 = checkPlanFile(ctx, project, planPath);
+  const plan = check2.plan;
+  if (planHasErrors(check2)) {
+    for (const issue of check2.issues) ctx.stderr(formatIssue(issue) + "\n");
+    for (const p of check2.phases) for (const issue of p.issues) ctx.stderr(`${p.phase}: ${formatIssue(issue)}
+`);
+    throw new ArbabError("lint", `${planSummary(check2)}; nothing launched`);
+  }
+  const states = phaseStates(project, plan, ctx.alive);
+  if (opts.retry !== void 0) {
+    const refusal = retryRefusal(plan, states, opts.retry);
+    if (refusal !== null) throw new ArbabError("usage", `cannot retry: ${refusal}; nothing launched`);
+  }
+  const out = { plan: plan.name, launched: [], blocked: [], failed: [], errors: [], warnings: [], code: 0 };
+  let prepared = false;
+  const launch = async (phase, onlyNew) => {
+    if (!prepared) {
+      ensureIgnored(project.root, arbabIgnoreEntries(project.root, project.config), ctx.git);
+      ensureArbabMarkers(project.root);
+      prepared = true;
+    }
+    const lane = check2.phases.find((p) => p.phase === phase)?.lane ?? compilePhase(plan, phase);
+    const laneFile = join42(plansDir(project, plan.name), `${phase}.json`);
+    try {
+      writeJsonAtomic(laneFile, lane);
+      const launched = await launchLane(ctx, project, laneFile, { onlyNew });
+      out.launched.push({ phase, laneFile, runDir: launched.runDir, shepherdPid: launched.shepherdPid });
+      for (const issue of launched.warnings) out.warnings.push({ phase, issue });
+      return true;
+    } catch (err) {
+      out.errors.push({ phase, message: err instanceof Error ? err.message : String(err) });
+      out.code = Math.max(out.code, exitCodeFor(err));
+      return false;
+    }
+  };
+  if (opts.retry !== void 0 && await launch(opts.retry, false)) states[opts.retry] = { state: "queued", endState: null, exit: null };
+  const next = nextPhases(plan, states);
+  out.blocked = next.blocked;
+  out.failed = next.failed;
+  for (const phase of next.launch) await launch(phase, true);
+  return out;
+}
+function table2(rows) {
+  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
+  return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd()).join("\n");
+}
+function formatPlanStatus(rows) {
+  return table2([
+    ["PHASE", "WAVE", "STATE", "END", "DEPENDS ON"],
+    ...rows.map((r) => [r.phase, String(r.wave), r.state ?? "-", r.endState ?? "-", r.dependsOn.length > 0 ? r.dependsOn.join(", ") : "-"])
+  ]);
+}
+async function runCheck(argv2, ctx) {
+  const { values, positionals } = parse("plan check", { args: argv2, options: { json: { type: "boolean" } }, allowPositionals: true });
+  const planPath = onePositional("plan check", positionals, "plan.json");
+  const check2 = checkPlanFile(ctx, openProject(ctx), planPath);
+  const ok = !planHasErrors(check2);
+  if (values.json === true) {
+    printJson(ctx, {
+      plan: check2.plan.name,
+      ok,
+      issues: check2.issues,
+      phases: check2.phases.map((p) => ({ phase: p.phase, issues: p.issues })),
+      waves: check2.waves
+    });
+  } else {
+    for (const issue of check2.issues) ctx.stdout(formatIssue(issue) + "\n");
+    for (const p of check2.phases) {
+      for (const issue of p.issues) ctx.stdout(`  ${formatIssue(issue)}
+`);
+      ctx.stdout(issueSummary(p.phase, p.issues) + "\n");
+    }
+    if (check2.waves === null) ctx.stdout("phases not linted: the dependency graph does not resolve\n");
+    else check2.waves.forEach((wave, i) => ctx.stdout(`wave ${i}: ${wave.join(", ")}
+`));
+    ctx.stdout(planSummary(check2) + "\n");
+  }
+  return ok ? 0 : 1;
+}
+async function runNext(argv2, ctx) {
+  const { values, positionals } = parse("plan next", {
+    args: argv2,
+    options: { json: { type: "boolean" }, retry: { type: "string" } },
+    allowPositionals: true
+  });
+  const planPath = onePositional("plan next", positionals, "plan.json");
+  const next = await planNext(ctx, openProject(ctx), planPath, values.retry === void 0 ? {} : { retry: values.retry });
+  if (values.json === true) {
+    printJson(ctx, {
+      plan: next.plan,
+      launched: next.launched,
+      blocked: next.blocked,
+      failed: next.failed,
+      errors: next.errors,
+      warnings: next.warnings.map((w) => ({ phase: w.phase, ...w.issue }))
+    });
+    return next.code;
+  }
+  for (const w of next.warnings) ctx.stderr(`${w.phase}: ${formatIssue(w.issue)}
+`);
+  for (const l of next.launched) ctx.stdout(`launched ${l.phase}  run ${l.runDir}  shepherd ${l.shepherdPid}
+`);
+  if (next.launched.length === 0) ctx.stdout("nothing launched\n");
+  for (const b of next.blocked) ctx.stdout(`blocked ${b.phase}  waiting for ${b.waitingFor.join(", ")}
+`);
+  for (const f of next.failed) {
+    const reason = f.reason === null ? "" : `; ${f.reason}`;
+    ctx.stdout(`failed-upstream ${f.phase}  ${f.dependency} ended ${f.endState ?? "without an end state"}${reason}
+`);
+  }
+  for (const e of next.errors) ctx.stderr(`error ${e.phase}  ${e.message}
+`);
+  return next.code;
+}
+async function runPlanStatus(argv2, ctx) {
+  const { values, positionals } = parse("plan status", { args: argv2, options: { json: { type: "boolean" } }, allowPositionals: true });
+  const planPath = onePositional("plan status", positionals, "plan.json");
+  const project = openProject(ctx);
+  const plan = loadPlan(project.root, planPath, project.config.credentialPaths);
+  const rows = planStatus(plan, phaseStates(project, plan, ctx.alive));
+  if (values.json === true) printJson(ctx, { plan: plan.name, phases: rows });
+  else ctx.stdout(formatPlanStatus(rows) + "\n");
+  return 0;
+}
+var SUBCOMMANDS = {
+  check: runCheck,
+  next: runNext,
+  status: runPlanStatus
+};
+async function runPlan(argv2, ctx) {
+  const [sub, ...rest] = argv2;
+  const command = sub !== void 0 && Object.hasOwn(SUBCOMMANDS, sub) ? SUBCOMMANDS[sub] : void 0;
+  if (command === void 0) throw new ArbabError("usage", "usage: arbab plan check|next|status <plan.json> [--json] (next also takes --retry <phase>)");
+  return command(rest, ctx);
+}
+
+// src/commands/quota.ts
+function formatHold(hold) {
+  if (!hold.hold) return "hold: no";
+  const until = hold.until === null ? "" : ` (until ${new Date(hold.until * 1e3).toISOString()})`;
+  return `hold: yes \u2014 ${hold.reason ?? "unknown"}${until}`;
+}
+async function refresh(ctx, config, spawn4) {
+  const deps = ctx.shepherdDeps();
+  const binary = resolveBinary({
+    pinned: null,
+    explicitPath: deps.explicitClaude,
+    pathEnv: deps.pathEnv,
+    minVersion: config.minClaudeVersion,
+    run: deps.run,
+    exists: deps.exists,
+    realpath: deps.realpath
+  });
+  const env2 = workerEnv(deps.hostEnv, {
+    passEnv: [],
+    extra: {},
+    nodeDir: deps.nodeDir,
+    ...deps.pnpmDir === void 0 ? {} : { pnpmDir: deps.pnpmDir }
+  });
+  return refreshQuota({ home: ctx.home, binary: binary.path, env: env2, clock: ctx.clock, spawn: spawn4 ?? makeRefreshSpawn(deps.spawnImpl) });
+}
+async function runQuota(argv2, ctx, spawn4) {
+  const { values } = parse("quota", {
+    args: argv2,
+    options: { reset: { type: "boolean" }, refresh: { type: "boolean" }, json: { type: "boolean" } },
+    allowPositionals: false
+  });
+  if (values.reset === true && values.refresh === true) {
+    throw new ArbabError("usage", "quota takes --reset or --refresh, not both: --refresh already replaces the snapshot");
+  }
+  if (values.reset === true) {
+    const path = quotaPath(ctx.home);
+    const removed = resetQuota(ctx.home, ctx.clock);
+    if (values.json === true) printJson(ctx, { reset: true, removed, path });
+    else ctx.stdout(removed ? `quota: snapshot ${path} removed; the next worker's rate-limit events write a fresh one
+` : `quota: no snapshot at ${path}
+`);
+    return 0;
+  }
+  const root = findProjectRoot(ctx.cwd, ctx.git);
+  const config = root === null ? defaultConfig() : loadConfig(root);
+  const snapshot = values.refresh === true ? await refresh(ctx, config, spawn4) : readQuota(ctx.home);
+  const nowSec = Math.floor(ctx.clock.now() / 1e3);
+  const hold = holdDecision(snapshot, config.quota.holdAbove, nowSec);
+  if (values.json === true) {
+    printJson(ctx, { snapshot, hold });
+  } else {
+    ctx.stdout(`quota: ${formatQuota(snapshot, nowSec)}
+${formatHold(hold)}
+`);
+  }
+  return 0;
+}
+
 // src/commands/readiness.ts
+import { join as join43 } from "node:path";
 function parseTier(text2, fallback) {
   if (text2 === void 0) return fallback;
   if (!TIERS.includes(text2)) throw new ArbabError("usage", `--tier ${JSON.stringify(text2)} must be one of ${TIERS.join(", ")}`);
@@ -8774,6 +9565,7 @@ async function runReadiness(argv2, ctx) {
     name: name2,
     tier: tier2,
     integration: record2,
+    worktree: paths.worktree,
     verify: readVerifyRecord(paths.verify, name2),
     review,
     laneReports: laneReports(project.runsRoot, [...new Set(record2.merged.map((m) => m.lane))]),
@@ -8783,10 +9575,11 @@ async function runReadiness(argv2, ctx) {
     now: isoAt(ctx.clock),
     reviewCarryOver: carried && review !== null ? { from: review.headSha, base } : null,
     hostGates: project.config.hostGates,
-    hostChecks: readHostCheckRecord(join39(paths.dir, HOST_CHECKS_FILE), name2),
+    hostChecks: readHostCheckRecord(join43(paths.dir, HOST_CHECKS_FILE), name2),
     reviewRounds: reviewRounds2(paths.dir, name2),
     ...otherSessions2 !== void 0 && { otherSessions: otherSessions2 },
-    ...sessionsUnknown !== void 0 && { sessionsUnknown }
+    ...sessionsUnknown !== void 0 && { sessionsUnknown },
+    baseMoved: baseMoved(ctx.git, project.root, base, record2.headSha, { name: name2, landing: paths.landing })
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);
@@ -8796,516 +9589,8 @@ async function runReadiness(argv2, ctx) {
   return report.ready ? 0 : 1;
 }
 
-// src/summary/advice.ts
-var ATTENTION_END_STATES = /* @__PURE__ */ new Set([
-  "failed",
-  "invalid-report",
-  "no-result",
-  "budget",
-  "max-turns",
-  "unsupported-cli"
-]);
-function needsAttention(endState) {
-  if (endState === null) return false;
-  return ATTENTION_END_STATES.has(endState) || endState.startsWith("killed:");
-}
-var ADVICE = {
-  "killed:wall": "ran past wallMin: read the last events; split the task or name the timeout, then relaunch or resume",
-  "killed:idle": "no stream growth for idleMin (often a foreground server or watcher): fix the brief, then resume or relaunch",
-  "killed:hang-after-result": "the work ended but the process hung: read report.json as for success; check the reaped pids in exit.json",
-  "killed:hang-after-error": "treat as the error it followed: read stderr.log and the last result",
-  "killed:stopped": "stopped by arbab stop: resume or relaunch when you have the correction",
-  "no-result": "crashed before a result: read stderr.log and exit.json, then decide as for failed",
-  "unsupported-cli": "the claude binary is too old for the model: run arbab doctor, upgrade or pin it, then relaunch",
-  budget: "spent budgetUsd: check the report and checkpoint, split or decide more, then resume or relaunch",
-  "max-turns": "hit the turn cap: check the report and checkpoint, split or decide more, then resume or relaunch",
-  "invalid-report": "the report is not usable: check the diff and reportErrors in summary.json; resume asking only for the report",
-  failed: "read the report, stderr.log and the last events; then arbab resume <lane> --prompt <file>, arbab resume <lane> --digest, or relaunch with a corrected brief",
-  orphaned: "the shepherd died before finishing: arbab cleanup, then decide as for failed"
-};
-function adviceFor(state) {
-  return Object.hasOwn(ADVICE, state) ? ADVICE[state] : "see references/end-states.md";
-}
-
-// src/summary/integrations.ts
-import { existsSync as existsSync19 } from "node:fs";
-var SHORT_SHA = 7;
-var short = (sha) => sha.slice(0, SHORT_SHA);
-function integrationLine(projectRoot, config, name2) {
-  const paths = integrationPaths(projectRoot, config, name2);
-  const record2 = readIntegration(paths);
-  if (record2 === null) return null;
-  const head = record2.headSha;
-  const verify = readVerifyRecord(paths.verify, name2);
-  const review = readReviewRecord(paths.review, name2);
-  const readiness = readReadinessReport(paths.readiness, name2);
-  const readinessOnHead = readiness !== null && readiness.headSha === head ? readiness : null;
-  const verified = verify !== null && verify.headSha === head && verify.passed;
-  const reviewed = review !== null && (review.headSha === head || readinessOnHead?.reviewCarriedOverFrom === review.headSha);
-  const ready = readinessOnHead?.ready === true;
-  const landed = existsSync19(paths.landing);
-  const stage = landed ? "landed" : ready ? "ready" : reviewed ? "reviewed" : verified ? "verified" : "integrated";
-  const waitsFor = [];
-  if (!landed) {
-    if (!record2.depsConfirmed) waitsFor.push(`dependencies to confirm: ${confirmCommand(name2, head)}`);
-    if (verify === null) waitsFor.push("verify has not run");
-    else if (verify.headSha !== head) waitsFor.push(`verify is stale (ran on ${short(verify.headSha)})`);
-    else if (!verify.passed) waitsFor.push(`verify failed${verify.reason === void 0 ? "" : `: ${verify.reason}`}`);
-    if (review === null) waitsFor.push("review missing");
-    else if (!reviewed) waitsFor.push(`review is stale (ran on ${short(review.headSha)})`);
-    if (readinessOnHead === null) waitsFor.push(readiness === null ? "readiness has not run" : "readiness is stale");
-    else {
-      const open2 = readinessOnHead.skipped.filter((s) => !s.waived).map((s) => s.id);
-      if (open2.length > 0) waitsFor.push(`readiness skipped, not waived: ${open2.join(", ")}`);
-    }
-    if (ready) waitsFor.push("ready: ask the human to land");
-  }
-  return { name: name2, stage, head, waitsFor };
-}
-function integrationOverview(projectRoot, config) {
-  const integrations = [];
-  const errors = [];
-  for (const name2 of listIntegrations(projectRoot)) {
-    try {
-      const line2 = integrationLine(projectRoot, config, name2);
-      if (line2 !== null) integrations.push(line2);
-    } catch (err) {
-      errors.push(`integration ${name2}: ${err.message}`);
-    }
-  }
-  return { integrations, errors };
-}
-
-// src/summary/format.ts
-var NONE2 = "-";
-var INDENT = "  ";
-function table2(rows) {
-  const widths = rows[0]?.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length))) ?? [];
-  return rows.map((r) => r.map((cell2, i) => i === r.length - 1 ? cell2 : cell2.padEnd(widths[i] ?? 0)).join("  ").trimEnd());
-}
-function formatCounts(counts) {
-  const parts = [];
-  const s = counts.byState;
-  for (const state of ["running", "held", "preparing", "waiting-reset", "queued"]) {
-    if (s[state] > 0) parts.push(`${s[state]} ${state}`);
-  }
-  const finished = Object.entries(counts.finished).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
-  const total = finished.reduce((n, [, c]) => n + c, 0);
-  if (total > 0) parts.push(`${total} finished (${finished.map(([end, c]) => `${c} ${end}`).join(", ")})`);
-  if (s.orphaned > 0) parts.push(`${s.orphaned} orphaned`);
-  return parts.join(" \xB7 ");
-}
-function phaseText(p) {
-  return p.status === "failed" && p.endState !== null ? `failed (${p.endState})` : p.status;
-}
-var isoAt2 = (sec) => new Date(sec * 1e3).toISOString().replace(/\.000Z$/, "Z");
-function formatSummary(s, nowSec) {
-  const out = [];
-  const section2 = (title, lines) => {
-    if (out.length > 0) out.push("");
-    out.push(title, ...lines.map((l) => INDENT + l));
-  };
-  if (s.lanes.total > 0) {
-    const lines = [formatCounts(s.lanes.counts)];
-    if (s.lanes.active.length > 0) {
-      lines.push(
-        ...table2([
-          ["LANE", "STATE", "ELAPSED", "ATTEMPT", "OWNER", "REASON"],
-          ...s.lanes.active.map((l) => [
-            l.lane,
-            l.state,
-            l.elapsedMs === null ? NONE2 : formatElapsed(l.elapsedMs),
-            String(l.attempt),
-            l.owner ?? NONE2,
-            l.reason ?? NONE2
-          ])
-        ])
-      );
-    }
-    section2(`Lanes (${s.lanes.total})`, lines);
-  }
-  if (s.plans.length > 0) {
-    const lines = [];
-    for (const plan of s.plans) {
-      lines.push(`${plan.plan}:`);
-      lines.push(...table2(plan.phases.map((p) => [phaseText(p), p.phase])).map((l) => INDENT + l));
-    }
-    lines.push("run `arbab plan status <plan file>` for the phases not launched yet");
-    section2("Plans", lines);
-  }
-  if (s.integrations.length > 0) {
-    section2(
-      "Integrations",
-      table2(
-        s.integrations.map((i) => [
-          i.name,
-          i.stage,
-          i.head.slice(0, SHORT_SHA),
-          i.waitsFor.length > 0 ? `waits for: ${i.waitsFor.join("; ")}` : NONE2
-        ])
-      )
-    );
-  }
-  if (s.attention.length > 0) {
-    const lines = [];
-    for (const a of s.attention) {
-      lines.push(`${a.lane}: ${a.state} (attempt ${a.attempt})${a.reason === null ? "" : `: ${a.reason}`}`);
-      lines.push(`${INDENT}${a.todo}`);
-    }
-    section2("Needs attention", lines);
-  }
-  const q = s.quota;
-  const machine = q.slots.machineMaxParallel === null ? "" : `, machine cap ${q.slots.machineMaxParallel}`;
-  section2("Quota and slots", [
-    `quota: ${formatQuota(q.snapshot, nowSec)}`,
-    q.hold.hold ? `hold: yes, ${q.hold.reason ?? "quota"}${q.hold.until === null ? "" : ` (until ${isoAt2(q.hold.until)})`}` : "hold: no",
-    `slots: ${q.slots.inUse.length} in use machine-wide of ${q.slots.cap} (maxParallel ${q.slots.projectMaxParallel}${machine})`
-  ]);
-  if (s.errors.length > 0) section2("Unreadable records", s.errors);
-  return out.join("\n");
-}
-
-// src/summary/lanes.ts
-import { existsSync as existsSync20 } from "node:fs";
-var OWNER_CHARS = 8;
-var emptyCounts = () => ({
-  byState: { running: 0, held: 0, preparing: 0, "waiting-reset": 0, queued: 0, orphaned: 0 },
-  finished: {}
-});
-function attemptSummary(runsRoot, lane, attempt) {
-  if (attempt < 1) return null;
-  const dir = runPaths(runsRoot, lane).attemptDir(attempt);
-  return existsSync20(dir) ? readAttempt(dir).summary : null;
-}
-function laneOverview(runsRoot, alive, nowMs) {
-  const out = { total: 0, counts: emptyCounts(), active: [], attention: [], errors: [] };
-  for (const lane of listLanes(runsRoot)) {
-    try {
-      const record2 = readState(runsRoot, lane);
-      if (record2 === null) continue;
-      const state = effectiveState(record2, alive);
-      const summary = attemptSummary(runsRoot, lane, record2.attempt);
-      const reason = record2.reason ?? null;
-      out.total++;
-      if (state === "finished") {
-        const end = record2.endState ?? summary?.state ?? null;
-        const key = end ?? "unknown";
-        out.counts.finished[key] = (out.counts.finished[key] ?? 0) + 1;
-        if (needsAttention(end)) {
-          const endState = end;
-          out.attention.push({ lane, state: endState, attempt: record2.attempt, reason, todo: adviceFor(endState) });
-        }
-        continue;
-      }
-      out.counts.byState[state]++;
-      const owner = readShepherdRecord(runsRoot, lane)?.owner ?? null;
-      out.active.push({
-        lane,
-        state,
-        attempt: record2.attempt,
-        elapsedMs: statusRow({ ...record2, state }, summary, nowMs).elapsedMs,
-        owner: owner === null ? null : owner.slice(0, OWNER_CHARS),
-        reason
-      });
-      if (state === "orphaned") {
-        out.attention.push({ lane, state: "orphaned", attempt: record2.attempt, reason, todo: adviceFor("orphaned") });
-      }
-    } catch (err) {
-      out.errors.push(`lane ${lane}: ${err.message}`);
-    }
-  }
-  return out;
-}
-
-// src/summary/plans.ts
-import { readdirSync as readdirSync12 } from "node:fs";
-import { join as join40 } from "node:path";
-var PLANS_DIR = join40(".arbab", "plans");
-function names(dir, keep) {
-  try {
-    return readdirSync12(dir, { withFileTypes: true }).filter(keep).map((e) => e.name).sort();
-  } catch {
-    return [];
-  }
-}
-function phaseLine(runsRoot, phase, alive) {
-  const record2 = readState(runsRoot, phase);
-  if (record2 === null) return { phase, status: "launched", endState: null };
-  const state = effectiveState(record2, alive);
-  if (state === "orphaned") return { phase, status: "failed", endState: "orphaned" };
-  if (state !== "finished") return { phase, status: state, endState: null };
-  let end = record2.endState ?? null;
-  if (end === null && record2.attempt >= 1) end = readAttempt(runPaths(runsRoot, phase).attemptDir(record2.attempt)).summary?.state ?? null;
-  return { phase, status: end === "success" ? "done" : "failed", endState: end };
-}
-function planOverview(projectRoot, runsRoot, alive) {
-  const root = join40(projectRoot, PLANS_DIR);
-  const plans = [];
-  const errors = [];
-  for (const plan of names(root, (e) => e.isDirectory() && isValidName(e.name))) {
-    const phases = [];
-    for (const file of names(join40(root, plan), (e) => e.isFile() && e.name.endsWith(".json"))) {
-      const phase = file.slice(0, -".json".length);
-      if (!isValidName(phase)) continue;
-      try {
-        phases.push(phaseLine(runsRoot, phase, alive));
-      } catch (err) {
-        errors.push(`plan ${plan} phase ${phase}: ${err.message}`);
-      }
-    }
-    if (phases.length > 0) plans.push({ plan, phases });
-  }
-  return { plans, errors };
-}
-
-// src/summary/slots.ts
-import { readdirSync as readdirSync13, readFileSync as readFileSync8 } from "node:fs";
-import { join as join41 } from "node:path";
-var SLOT_FILE = /^(0|[1-9][0-9]*)\.json$/;
-function holder(path) {
-  let v;
-  try {
-    v = JSON.parse(readFileSync8(path, "utf8"));
-  } catch {
-    return null;
-  }
-  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
-  const o = v;
-  if (!Number.isSafeInteger(o.pid) || o.pid < 1 || typeof o.lane !== "string" || typeof o.project !== "string") return null;
-  return { pid: o.pid, lane: o.lane, project: o.project };
-}
-function slotsInUse(home, alive) {
-  let files;
-  try {
-    files = readdirSync13(join41(home, "slots"));
-  } catch {
-    return [];
-  }
-  const out = [];
-  for (const file of files) {
-    const match = SLOT_FILE.exec(file);
-    if (match === null) continue;
-    const h = holder(join41(home, "slots", file));
-    if (h !== null && alive(h.pid)) out.push({ slot: Number(match[1]), ...h });
-  }
-  return out.sort((a, b) => a.slot - b.slot);
-}
-function effectiveCap(projectMaxParallel, machine) {
-  return machine.maxParallel === null ? projectMaxParallel : Math.min(projectMaxParallel, machine.maxParallel);
-}
-function quotaOverview(input) {
-  const snapshot = readQuota(input.home);
-  return {
-    snapshot,
-    hold: holdDecision(snapshot, input.config.quota.holdAbove, input.nowSec),
-    slots: {
-      inUse: slotsInUse(input.home, input.alive),
-      cap: effectiveCap(input.config.maxParallel, input.machine),
-      projectMaxParallel: input.config.maxParallel,
-      machineMaxParallel: input.machine.maxParallel
-    }
-  };
-}
-
-// src/summary/project.ts
-function projectSummary(input) {
-  const { project, alive, nowMs } = input;
-  const lanes = laneOverview(project.runsRoot, alive, nowMs);
-  const plans = planOverview(project.root, project.runsRoot, alive);
-  const integrations = integrationOverview(project.root, project.config);
-  return {
-    root: project.root,
-    lanes: { total: lanes.total, counts: lanes.counts, active: lanes.active },
-    plans: plans.plans,
-    integrations: integrations.integrations,
-    attention: lanes.attention,
-    quota: quotaOverview({ home: input.home, config: project.config, machine: input.machine, alive, nowSec: Math.floor(nowMs / 1e3) }),
-    errors: [...lanes.errors, ...plans.errors, ...integrations.errors]
-  };
-}
-
-// src/summary/report.ts
-import { existsSync as existsSync21, statSync as statSync6 } from "node:fs";
-var FILES_SHOWN = 10;
-function size(path) {
-  try {
-    return statSync6(path).size;
-  } catch {
-    return null;
-  }
-}
-function laneFileRole(path) {
-  try {
-    const spec = readJson(path);
-    const role2 = typeof spec === "object" && spec !== null ? spec["role"] : void 0;
-    return ROLES.includes(role2) ? role2 : null;
-  } catch {
-    return null;
-  }
-}
-function readLaneReport(runsRoot, lane, n) {
-  const paths = runPaths(runsRoot, lane);
-  if (!existsSync21(paths.laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
-  const attempts = listAttempts(runsRoot, lane);
-  const latest = attempts.at(-1);
-  if (latest === void 0) throw new ArbabError("usage", `lane ${lane} has no attempt yet`);
-  const attempt = n ?? latest;
-  if (!attempts.includes(attempt)) throw new ArbabError("usage", `lane ${lane} has no attempt ${attempt} (attempts: ${attempts.join(", ")})`);
-  const dir = paths.attemptDir(attempt);
-  const files = attemptFiles(dir);
-  const record2 = readAttempt(dir);
-  let report = null;
-  let reportError = null;
-  try {
-    report = readJson(files.report);
-  } catch (err) {
-    reportError = err.message;
-  }
-  const summaryRole = record2.summary !== null && ROLES.includes(record2.summary.role) ? record2.summary.role : null;
-  return {
-    lane,
-    role: summaryRole ?? laneFileRole(paths.laneFile),
-    attempt,
-    latest,
-    record: record2,
-    report,
-    reportError,
-    stderr: { path: files.stderr, bytes: size(files.stderr) },
-    stream: { path: files.stream, bytes: size(files.stream) }
-  };
-}
-var isObject6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-var str = (v) => typeof v === "string" ? v : null;
-var strings = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : null;
-var objects = (v) => Array.isArray(v) ? v.filter(isObject6) : null;
-var INDENT2 = "  ";
-var block = (text2, indent = INDENT2) => text2.split("\n").join(`
-${indent}`);
-function formatTokens2(t) {
-  return `${t.input} in \xB7 ${t.cacheCreation} cache write \xB7 ${t.cacheRead} cache read \xB7 ${t.output} out`;
-}
-function isTokens(v) {
-  return isObject6(v) && ["input", "cacheCreation", "cacheRead", "output"].every((k) => Number.isFinite(v[k]));
-}
-function costLine(s) {
-  if (typeof s.costUsd === "number") {
-    const delta = typeof s.costDeltaUsd === "number" && s.costDeltaUsd.toFixed(2) !== s.costUsd.toFixed(2) ? ` (\u0394$${s.costDeltaUsd.toFixed(2)})` : "";
-    return `cost:      $${s.costUsd.toFixed(2)}${delta}`;
-  }
-  return isTokens(s.tokens) ? `tokens:    ${formatTokens2(s.tokens)}` : "cost:      -";
-}
-function effortText(s) {
-  const measured = isObject6(s.measuredEffort) ? Object.entries(s.measuredEffort).filter(([, n]) => Number.isFinite(n)).map(([e, n]) => `${e} ${n}`) : [];
-  const requested = s.requestedEffort ?? "-";
-  return measured.length > 0 ? `${requested} (measured: ${measured.join(", ")})` : requested;
-}
-function formatHeader(r, live = null) {
-  const s = r.record.summary ?? live;
-  const lines = [
-    `lane:      ${r.lane}`,
-    `role:      ${r.role ?? "-"}`,
-    `attempt:   ${r.attempt}${r.attempt === r.latest ? "" : ` (latest ${r.latest})`}`
-  ];
-  if (s === null) {
-    lines.push("end state: - (no summary.json)");
-    return lines;
-  }
-  const wallMs = s.wallMs ?? r.record.exit?.wallMs ?? null;
-  lines.push(
-    `end state: ${s.state}${r.record.summary === null ? " (live, no summary.json yet)" : ""}`,
-    `wall:      ${typeof wallMs === "number" ? formatElapsed(wallMs) : "-"}`,
-    `turns:     ${s.turns}`,
-    costLine(s),
-    `effort:    ${effortText(s)}`
-  );
-  return lines;
-}
-function listSection(title, items) {
-  if (items === null) return [];
-  if (items.length === 0) return [`${title}: none`];
-  return [`${title}:`, ...items.map((i) => `${INDENT2}- ${block(i, INDENT2 + "  ")}`)];
-}
-function workerBody(rep) {
-  const lines = [];
-  const status = str(rep["status"]);
-  if (status !== null) lines.push(`status: ${status}`);
-  const summary = str(rep["summary"]);
-  if (summary !== null) lines.push(`summary: ${block(summary)}`);
-  const files = strings(rep["files_changed"]);
-  if (files !== null) {
-    const more = files.length > FILES_SHOWN ? `, \u2026 ${files.length - FILES_SHOWN} more` : "";
-    lines.push(`files changed (${files.length})${files.length > 0 ? `: ${files.slice(0, FILES_SHOWN).join(", ")}${more}` : ""}`);
-  }
-  const checks = objects(rep["checks"]);
-  if (checks !== null) {
-    if (checks.length === 0) lines.push("checks: none");
-    else {
-      lines.push("checks:");
-      for (const c of checks) {
-        const code4 = Number.isInteger(c["exit_code"]) ? String(c["exit_code"]) : "?";
-        const result = str(c["result"]);
-        lines.push(`${INDENT2}${str(c["command"]) ?? "?"} \u2192 ${code4}${result === null || result === "" ? "" : `  ${block(result, INDENT2 + "  ")}`}`);
-      }
-    }
-  }
-  lines.push(...listSection("decisions", strings(rep["decisions"])));
-  lines.push(...listSection("open questions", strings(rep["open_questions"])));
-  lines.push(...listSection("not verified", strings(rep["not_verified"])));
-  const notes = str(rep["notes_for_reviewer"]);
-  if (notes !== null) lines.push(`notes for reviewer: ${block(notes)}`);
-  return lines;
-}
-function reviewerBody(rep, findings) {
-  const lines = [];
-  const coverage = str(rep["coverage"]);
-  if (coverage !== null) lines.push(`coverage: ${block(coverage)}`);
-  const paths = strings(rep["paths_checked"]);
-  if (paths !== null) lines.push(`paths checked: ${paths.length}`);
-  lines.push(findings.length === 0 ? "findings: none" : `findings (${findings.length}):`);
-  findings.forEach((f, i) => {
-    const line2 = Number.isInteger(f["line"]) ? `:${f["line"]}` : "";
-    const id = str(f["id"]) ?? String(i + 1);
-    lines.push(`${INDENT2}${id}  ${str(f["severity"]) ?? "?"}  ${str(f["title"]) ?? "?"}  ${str(f["file"]) ?? "?"}${line2}`);
-  });
-  return lines;
-}
-function skepticBody(verdicts) {
-  const lines = [verdicts.length === 0 ? "verdicts: none" : `verdicts (${verdicts.length}):`];
-  for (const v of verdicts) {
-    const refuted = v["refuted"] === true ? "refuted" : v["refuted"] === false ? "stands" : "?";
-    const reasoning = str(v["reasoning"]);
-    lines.push(
-      `${INDENT2}${str(v["id"]) ?? "?"}  ${refuted}  ${str(v["corrected_severity"]) ?? "?"}${reasoning === null ? "" : `  ${block(reasoning, INDENT2 + "  ")}`}`
-    );
-  }
-  return lines;
-}
-function formatReportBody(report) {
-  if (!isObject6(report)) return ["report.json is not an object (see --json)"];
-  const findings = objects(report["findings"]);
-  if (findings !== null) return reviewerBody(report, findings);
-  const verdicts = objects(report["verdicts"]);
-  if (verdicts !== null) return skepticBody(verdicts);
-  const worker = workerBody(report);
-  if (worker.length > 0) return worker;
-  return [`report fields: ${Object.keys(report).join(", ") || "none"} (see --json)`];
-}
-var bytes = (n) => n === null ? "missing" : `${n} bytes`;
-function formatLaneReport(r, live = null) {
-  const lines = formatHeader(r, live);
-  lines.push("");
-  if (r.reportError !== null) {
-    lines.push(`report.json cannot be read: ${r.reportError}`);
-  } else if (r.report === null) {
-    lines.push(`no report.json; see ${r.stderr.path} (${bytes(r.stderr.bytes)}); stream.jsonl: ${bytes(r.stream.bytes)}`);
-  } else {
-    lines.push(...formatReportBody(r.report));
-  }
-  return lines.join("\n");
-}
-
 // src/commands/status.ts
-import { existsSync as existsSync22 } from "node:fs";
+import { existsSync as existsSync23 } from "node:fs";
 function laneRole(runsRoot, lane) {
   const spec = readJson(runPaths(runsRoot, lane).laneFile);
   const role2 = typeof spec === "object" && spec !== null ? spec.role : void 0;
@@ -9343,7 +9628,7 @@ function laneStatus(project, lane, alive, nowMs) {
   let summary = null;
   if (record2.attempt >= 1) {
     const dir = runPaths(project.runsRoot, lane).attemptDir(record2.attempt);
-    if (existsSync22(dir)) {
+    if (existsSync23(dir)) {
       const attempt = readAttempt(dir);
       summary = attempt.summary;
       if (summary === null && effective.state === "running" && attempt.started !== null) {
@@ -9364,7 +9649,7 @@ async function runStatus(argv2, ctx) {
   const named2 = positionals.length > 0;
   for (const lane of positionals) {
     assertValidName(lane, "lane");
-    if (!existsSync22(runPaths(project.runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+    if (!existsSync23(runPaths(project.runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   }
   const nowMs = ctx.clock.now();
   const rows = [];
@@ -9426,21 +9711,21 @@ async function runReport(argv2, ctx) {
 }
 
 // src/commands/resume.ts
-import { existsSync as existsSync24, realpathSync as realpathSync16 } from "node:fs";
-import { join as join46 } from "node:path";
+import { existsSync as existsSync25, realpathSync as realpathSync17 } from "node:fs";
+import { join as join48 } from "node:path";
 
 // src/shepherd/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { homedir } from "node:os";
-import { dirname as dirname11, join as join45 } from "node:path";
+import { dirname as dirname11, join as join47 } from "node:path";
 
 // src/shepherd/lifecycle.ts
-import { existsSync as existsSync23, mkdirSync as mkdirSync6, realpathSync as realpathSync15 } from "node:fs";
-import { dirname as dirname10, join as join44, resolve as resolve17 } from "node:path";
+import { existsSync as existsSync24, mkdirSync as mkdirSync6, realpathSync as realpathSync16 } from "node:fs";
+import { dirname as dirname10, join as join46, resolve as resolve18 } from "node:path";
 
 // src/shepherd/attempt.ts
 import { randomUUID } from "node:crypto";
-import { join as join42 } from "node:path";
+import { join as join44 } from "node:path";
 
 // src/report/schemas.ts
 var str2 = { type: "string" };
@@ -9552,7 +9837,7 @@ function check(schema, value, path, errors) {
   if (schema.enum !== void 0 && !schema.enum.some((option) => option === value)) {
     errors.push({ path, message: `must be one of ${schema.enum.map((o) => JSON.stringify(o)).join(", ")}` });
   }
-  if (isObject7(value)) checkObject(schema, value, path, errors);
+  if (isObject9(value)) checkObject(schema, value, path, errors);
   if (Array.isArray(value)) checkArray(schema, value, path, errors);
 }
 function checkObject(schema, value, path, errors) {
@@ -9580,7 +9865,7 @@ function checkArray(schema, value, path, errors) {
 function hasType(type, value) {
   switch (type) {
     case "object":
-      return isObject7(value);
+      return isObject9(value);
     case "array":
       return Array.isArray(value);
     case "string":
@@ -9595,7 +9880,7 @@ function hasType(type, value) {
       return value === null;
   }
 }
-function isObject7(value) {
+function isObject9(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function describe(value) {
@@ -9609,8 +9894,8 @@ function child(path, key) {
 }
 
 // src/shepherd/prompt.ts
-import { realpathSync as realpathSync13 } from "node:fs";
-import { isAbsolute as isAbsolute13, relative as relative12 } from "node:path";
+import { realpathSync as realpathSync14 } from "node:fs";
+import { isAbsolute as isAbsolute14, relative as relative13 } from "node:path";
 
 // src/digest/index.ts
 var REPORT_TOOL2 = "StructuredOutput";
@@ -9643,14 +9928,14 @@ function json(value, indent) {
 }
 function resultText(content) {
   if (typeof content === "string") return content;
-  return arrayOrEmpty(content).map((item) => isRecord4(item) && typeof item.text === "string" ? item.text : "").filter((t) => t !== "").join("\n");
+  return arrayOrEmpty(content).map((item) => isRecord3(item) && typeof item.text === "string" ? item.text : "").filter((t) => t !== "").join("\n");
 }
 function blocks(event) {
-  return isRecord4(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord4) : [];
+  return isRecord3(event.message) ? arrayOrEmpty(event.message.content).filter(isRecord3) : [];
 }
 function headingName(name2) {
-  const flat2 = name2.replace(/\s+/g, " ").trim();
-  return flat2 === "" ? "?" : cut(flat2, 100);
+  const flat3 = name2.replace(/\s+/g, " ").trim();
+  return flat3 === "" ? "?" : cut(flat3, 100);
 }
 function renderDigest(events, opts = {}) {
   const maxChars = limit(opts.maxChars, DEFAULTS.maxChars);
@@ -9662,7 +9947,7 @@ function renderDigest(events, opts = {}) {
   const reportCalls = /* @__PURE__ */ new Set();
   let lastResult = null;
   for (const e of Array.isArray(events) ? events : []) {
-    if (!isRecord4(e)) continue;
+    if (!isRecord3(e)) continue;
     if (e.type === "assistant") {
       for (const block3 of blocks(e)) {
         if (block3.type === "text" && typeof block3.text === "string") {
@@ -9750,17 +10035,17 @@ function readRequired2(path, what) {
 function resumePrompt(laneDir, mode) {
   if (mode.promptFile === void 0) return mode.prompt ?? CONTINUATION_PROMPT;
   const file = mode.promptFile;
-  if (!isAbsolute13(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
+  if (!isAbsolute14(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
   let real2;
   let base;
   try {
-    real2 = realpathSync13(file);
-    base = realpathSync13(laneDir);
+    real2 = realpathSync14(file);
+    base = realpathSync14(laneDir);
   } catch (err) {
     throw new ArbabError("io", `cannot resolve prompt file ${file}: ${err.message}`, { cause: err });
   }
-  const rel = relative12(base, real2);
-  if (rel === "" || rel.startsWith("..") || isAbsolute13(rel)) {
+  const rel = relative13(base, real2);
+  if (rel === "" || rel.startsWith("..") || isAbsolute14(rel)) {
     throw new ArbabError("usage", `prompt file ${file} is not inside the lane's run dir ${laneDir}`);
   }
   const text2 = readRequired2(real2, "prompt file");
@@ -9880,7 +10165,7 @@ function readRegistration(path) {
   return { kind: str3(v["kind"]), entrypoint: str3(v["entrypoint"]), name: str3(v["name"]) };
 }
 function worktreeUsedFile(runsRoot, owner) {
-  return join42(runPaths(runsRoot, owner).laneDir, "worktree-used");
+  return join44(runPaths(runsRoot, owner).laneDir, "worktree-used");
 }
 function writeOnce(path, text2) {
   if (!createExclusive(path, text2)) throw new ArbabError("io", `${path} already exists (attempt files are never overwritten)`);
@@ -10068,7 +10353,7 @@ async function runAttempt(ctx, request) {
   });
   try {
     writeOnce(files.started, json2(started));
-    const registrationFile = join42(deps.claudeHome, "sessions", `${pid}.json`);
+    const registrationFile = join44(deps.claudeHome, "sessions", `${pid}.json`);
     const ended = worker.exited.then(() => true);
     const nextTick = () => ctx.stop.aborted ? deps.sleep(deps.tickMs) : ctx.pause(deps.tickMs);
     while (!await Promise.race([ended, nextTick().then(() => false)])) {
@@ -10145,7 +10430,7 @@ async function runAttempt(ctx, request) {
     }
   }
   let effort2 = null;
-  const transcript = findTranscript(join42(deps.claudeHome, "projects"), digest.sessionId ?? sessionId2);
+  const transcript = findTranscript(join44(deps.claudeHome, "projects"), digest.sessionId ?? sessionId2);
   const transcriptText = transcript === null ? null : readOptional2(transcript);
   if (transcriptText !== null) {
     try {
@@ -10155,7 +10440,7 @@ async function runAttempt(ctx, request) {
     }
   }
   if (registration === null) {
-    registration = readRegistration(join42(deps.claudeHome, "sessions", `${pid}.json`));
+    registration = readRegistration(join44(deps.claudeHome, "sessions", `${pid}.json`));
     if (registration !== null) writeOnce(files.registration, json2(registration));
   }
   const summary = buildAttemptSummary({
@@ -10181,31 +10466,31 @@ async function runAttempt(ctx, request) {
 }
 
 // src/shepherd/inputs.ts
-import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync14, readFileSync as readFileSync9, realpathSync as realpathSync14, rmSync as rmSync10, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename as basename4, dirname as dirname9, isAbsolute as isAbsolute14, join as join43, relative as relative13, resolve as resolve16, sep as sep12 } from "node:path";
+import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync15, readFileSync as readFileSync11, realpathSync as realpathSync15, rmSync as rmSync11, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { basename as basename5, dirname as dirname9, isAbsolute as isAbsolute15, join as join45, relative as relative14, resolve as resolve17, sep as sep13 } from "node:path";
 var MAX_INPUTS_BYTES = 50 * 1024 * 1024;
 var LIBRARY = "~/Library/**";
 function realOr(path) {
   try {
-    return realpathSync14.native(path);
+    return realpathSync15.native(path);
   } catch {
     return path;
   }
 }
 function inputRoots(roots, path, real2) {
-  const rel = relative13(roots.real, real2);
-  const exactlyInside = rel === "" || rel !== ".." && !rel.startsWith(`..${sep12}`) && !isAbsolute14(rel);
+  const rel = relative14(roots.real, real2);
+  const exactlyInside = rel === "" || rel !== ".." && !rel.startsWith(`..${sep13}`) && !isAbsolute15(rel);
   return {
     pathRoot: [.../* @__PURE__ */ new Set([roots.lexical, roots.real])].find((r) => sameOrInside(r, path)),
     realRoot: exactlyInside ? roots.real : void 0
   };
 }
 function copyInputs(input) {
-  const home = resolve16(input.userHome);
+  const home = resolve17(input.userHome);
   const homes = homeSpellings(home);
-  const worktree = realOr(resolve16(input.worktree));
+  const worktree = realOr(resolve17(input.worktree));
   const credential = credentialMatcher([LIBRARY, ...input.credentialPaths], homes);
-  const projectRoot = resolve16(input.projectRoot);
+  const projectRoot = resolve17(input.projectRoot);
   const roots = { lexical: projectRoot, real: realOr(projectRoot) };
   const names2 = /* @__PURE__ */ new Map();
   const planned = [];
@@ -10215,10 +10500,10 @@ function copyInputs(input) {
       throw new ArbabError("usage", `input ${raw} ${why}`);
     };
     let path;
-    if (raw === "~" || raw.startsWith("~/")) path = join43(home, raw.slice(2));
+    if (raw === "~" || raw.startsWith("~/")) path = join45(home, raw.slice(2));
     else if (raw.startsWith("~")) path = refuse2("names another user's home; write the full path");
-    else path = resolve16(projectRoot, raw);
-    const name2 = basename4(path);
+    else path = resolve17(projectRoot, raw);
+    const name2 = basename5(path);
     if (name2 === "") refuse2("has no name to copy it under");
     const clash = names2.get(name2);
     if (clash !== void 0) refuse2(`has the same name (${name2}) as input ${clash}`);
@@ -10250,13 +10535,13 @@ function copyInputs(input) {
     } else {
       entries3.push({ rel: "", dir: true });
       const walk = (rel) => {
-        for (const child2 of readdirSync14(join43(real2, rel)).sort()) {
-          const childRel = join43(rel, child2);
-          const full = join43(real2, childRel);
+        for (const child2 of readdirSync15(join45(real2, rel)).sort()) {
+          const childRel = join45(rel, child2);
+          const full = join45(real2, childRel);
           const s = lstatSync4(full);
           if (s.isSymbolicLink()) continue;
           if (!s.isDirectory() && !s.isFile()) continue;
-          const hit = credential(full, realRoot) ?? credential(join43(path, childRel), pathRoot);
+          const hit = credential(full, realRoot) ?? credential(join45(path, childRel), pathRoot);
           if (hit !== null) {
             if (hit.kind === "dir") refuse2(`holds ${hit.label}, where credentials live`);
             if (hit.kind === "file") refuse2(`holds ${hit.label}, a credential file`);
@@ -10287,15 +10572,15 @@ function copyInputs(input) {
     const refuse2 = (why) => {
       throw new ArbabError("usage", `input ${p.raw} ${why}`);
     };
-    const target = join43(dest, p.name);
+    const target = join45(dest, p.name);
     try {
       for (const e of p.entries) {
-        const to = join43(target, e.rel);
+        const to = join45(target, e.rel);
         if (e.dir) {
           mkdirSync5(to);
           continue;
         }
-        const from = join43(p.source, e.rel);
+        const from = join45(p.source, e.rel);
         if (realOr(dirname9(from)) !== dirname9(from)) refuse2(`changed while it was copied (${e.rel || p.name} moved)`);
         let fd;
         try {
@@ -10311,7 +10596,7 @@ function copyInputs(input) {
           if (copied > MAX_INPUTS_BYTES) refuse2("grew over the inputs' limit while it was copied");
           const out = openSync5(to, constants2.O_WRONLY | constants2.O_CREAT | constants2.O_EXCL | constants2.O_NOFOLLOW, s.mode & 511);
           try {
-            writeFileSync3(out, readFileSync9(fd));
+            writeFileSync3(out, readFileSync11(fd));
           } finally {
             closeSync5(out);
           }
@@ -10327,8 +10612,8 @@ function copyInputs(input) {
   return planned.map((p) => p.name);
 }
 function clearInputs(worktree) {
-  const rel = join43(WORKER_TMP_DIR, "inputs");
-  const dest = join43(realDir(worktree, WORKER_TMP_DIR), "inputs");
+  const rel = join45(WORKER_TMP_DIR, "inputs");
+  const dest = join45(realDir(worktree, WORKER_TMP_DIR), "inputs");
   let stat = null;
   try {
     stat = lstatSync4(dest);
@@ -10336,7 +10621,7 @@ function clearInputs(worktree) {
     if (err.code !== "ENOENT") throw new ArbabError("io", `cannot read ${dest}: ${err.message}`, { cause: err });
   }
   try {
-    if (stat?.isDirectory() === true) rmSync10(dest, { recursive: true, force: true });
+    if (stat?.isDirectory() === true) rmSync11(dest, { recursive: true, force: true });
     else if (stat !== null) unlinkSync2(dest);
   } catch (err) {
     throw new ArbabError("io", `cannot remove ${dest}: ${err.message}`, { cause: err });
@@ -10434,7 +10719,7 @@ function releaseAll(home, held, holder2) {
 }
 async function runShepherd(projectRoot, laneName2, mode, deps, stop) {
   assertValidName(laneName2, "lane");
-  const root = resolve17(projectRoot);
+  const root = resolve18(projectRoot);
   const config = loadConfig(root);
   const runsRoot = confine(root, config.runsRoot);
   const paths = runPaths(runsRoot, laneName2);
@@ -10593,7 +10878,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
   ensureArbabMarkers(root);
   const owner = lane.worktree ?? lane.name;
-  if (owner !== lane.name && !existsSync23(join44(confine(root, config.worktreeRoot), owner))) {
+  if (owner !== lane.name && !existsSync24(join46(confine(root, config.worktreeRoot), owner))) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist`);
   }
   const base = lane.base ?? config.baseBranch;
@@ -10611,7 +10896,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   };
   const worktreeRoot = confine(root, config.worktreeRoot);
   mkdirSync6(worktreeRoot, { recursive: true });
-  const worktree = join44(realpathSync15(worktreeRoot), owner);
+  const worktree = join46(realpathSync16(worktreeRoot), owner);
   held.leases = await acquireLeases({
     home: deps.home,
     requests: lane.resources ?? {},
@@ -10636,10 +10921,10 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   while (!acquireWriterLock(deps.home, key, holder2, deps.alive)) await wait("waiting for the writer lock");
   held.lockKey = key;
   let wt = createWorktree(worktreeInput);
-  if (realpathSync15(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
+  if (realpathSync16(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
   let merged = [];
   const runsRoot = confine(root, config.runsRoot);
-  const pristine = wt.created || !existsSync23(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
+  const pristine = wt.created || !existsSync24(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
   if (pristine && owner !== lane.name) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, where no attempt has run yet; launch ${owner} first`);
   }
@@ -10653,7 +10938,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
     });
     discardWorktree({ projectRoot: root, root: config.worktreeRoot, lane: owner, sources, gitCommonDir: wt.gitCommonDir, git: deps.git });
     wt = createWorktree(worktreeInput);
-    if (realpathSync15(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} moved while it was built again`);
+    if (realpathSync16(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} moved while it was built again`);
   }
   if (pristine) {
     const { merge } = planned();
@@ -10688,8 +10973,8 @@ function defaultDeps() {
   const pnpm = findOnPath("pnpm", pathEnv, pathExists);
   const explicit = process.env["ARBAB_CLAUDE"];
   return {
-    home: join45(home, ".arbab"),
-    claudeHome: join45(home, ".claude"),
+    home: join47(home, ".arbab"),
+    claudeHome: join47(home, ".claude"),
     clock: systemClock,
     sleep,
     random: Math.random,
@@ -10721,12 +11006,12 @@ var MAX_PROMPT_BYTES = 64 * 1024;
 function readPrompt(project, file) {
   let path;
   try {
-    path = realpathSync16(confine(project.root, file));
+    path = realpathSync17(confine(project.root, file));
   } catch (err) {
     if (err instanceof ArbabError) throw err;
     throw new ArbabError("usage", `cannot read prompt ${file}: ${err.message}`, { cause: err });
   }
-  confine(realpathSync16(project.root), path);
+  confine(realpathSync17(project.root), path);
   const text2 = readText(path);
   if (text2 === null) throw new ArbabError("usage", `cannot read prompt ${file}: no such file`);
   if (text2.trim() === "") throw new ArbabError("usage", `prompt ${file} is empty`);
@@ -10738,7 +11023,7 @@ function readPrompt(project, file) {
 function writeResumePrompt(project, lane, text2) {
   const laneDir = runPaths(project.runsRoot, lane).laneDir;
   for (let n = (listAttempts(project.runsRoot, lane).at(-1) ?? 0) + 1; ; n++) {
-    const path = join46(laneDir, `resume-prompt-${n}.md`);
+    const path = join48(laneDir, `resume-prompt-${n}.md`);
     if (createExclusive(path, text2)) return path;
   }
 }
@@ -10786,7 +11071,7 @@ async function runResume(argv2, ctx) {
   }
   const project = openProject(ctx);
   const paths = runPaths(project.runsRoot, lane);
-  if (!existsSync24(paths.laneFile)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+  if (!existsSync25(paths.laneFile)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   if (values.digest === true) {
     const seeded = await resumeWithDigest(ctx, project, lane);
     if (values.json === true) {
@@ -10820,10 +11105,10 @@ async function runResume(argv2, ctx) {
 }
 
 // src/commands/review.ts
-import { realpathSync as realpathSync17 } from "node:fs";
+import { realpathSync as realpathSync18 } from "node:fs";
 import { dirname as dirname12 } from "node:path";
 var DEFAULT_TIMEOUT_MIN2 = 120;
-var SHA7 = /^[0-9a-f]{40,64}$/;
+var SHA8 = /^[0-9a-f]{40,64}$/;
 function reviewLenses(option, configLenses) {
   const known = lensNames(configLenses);
   if (option === void 0) return known;
@@ -10847,8 +11132,8 @@ function lensFilePath(root, name2, file, credential) {
   let real2;
   let realRoot;
   try {
-    real2 = realpathSync17(path);
-    realRoot = realpathSync17(root);
+    real2 = realpathSync18(path);
+    realRoot = realpathSync18(root);
   } catch (err) {
     if (err.code === "ENOENT") throw new ArbabError("usage", `the file of lens ${name2}, ${file}, does not exist`);
     throw new ArbabError("usage", `cannot read the file of lens ${name2}, ${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -10883,7 +11168,7 @@ function sinceCommit(git, root, since, head) {
   if (since === "" || since.startsWith("-")) throw new ArbabError("usage", `--since ${JSON.stringify(since)} is not a commit`);
   const r = git(["rev-parse", "--verify", "--quiet", `${since}^{commit}`], root);
   const sha = r.stdout.trim();
-  if (r.code !== 0 || !SHA7.test(sha)) throw new ArbabError("usage", `--since ${since} does not name a commit`);
+  if (r.code !== 0 || !SHA8.test(sha)) throw new ArbabError("usage", `--since ${since} does not name a commit`);
   if (sha === head) throw new ArbabError("usage", `--since ${since} is the integration head itself: nothing changed since`);
   const ancestor = git(["merge-base", "--is-ancestor", sha, head], root);
   if (ancestor.code === 1) throw new ArbabError("usage", `--since ${since} (${sha}) is not an ancestor of the integration head ${head}`);
@@ -11000,7 +11285,7 @@ async function runReview(argv2, ctx) {
 }
 
 // src/commands/shepherd.ts
-import { isAbsolute as isAbsolute15 } from "node:path";
+import { isAbsolute as isAbsolute16 } from "node:path";
 function parseMode(text2) {
   let value;
   try {
@@ -11019,7 +11304,7 @@ function parseMode(text2) {
   if (kind === "resume") {
     if (prompt !== void 0 && promptFile !== void 0) throw new ArbabError("usage", "shepherd mode takes prompt or promptFile, not both");
     if (promptFile !== void 0) {
-      if (typeof promptFile === "string" && isAbsolute15(promptFile)) return { kind, promptFile };
+      if (typeof promptFile === "string" && isAbsolute16(promptFile)) return { kind, promptFile };
       throw new ArbabError("usage", "shepherd mode promptFile must be an absolute path");
     }
     if (prompt === void 0) return { kind };
@@ -11033,7 +11318,7 @@ async function runShepherdProcess(argv2, ctx) {
   if (root === void 0 || lane === void 0 || modeText === void 0 || rest.length > 0) {
     throw new ArbabError("usage", "usage: arbab __shepherd <root> <lane> <mode-json>");
   }
-  if (!isAbsolute15(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
+  if (!isAbsolute16(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
   assertValidName(lane, "lane");
   const mode = parseMode(modeText);
   const controller = new AbortController();
@@ -11083,7 +11368,7 @@ async function runStop(argv2, ctx) {
 }
 
 // src/commands/summary.ts
-import { existsSync as existsSync25 } from "node:fs";
+import { existsSync as existsSync26 } from "node:fs";
 function machineConfig(ctx, errors) {
   try {
     return loadMachineConfig(ctx.home);
@@ -11093,9 +11378,45 @@ function machineConfig(ctx, errors) {
     return { maxParallel: null };
   }
 }
-function summarize(ctx, project, machine, machineErrors, nowMs) {
-  const summary = projectSummary({ project, home: ctx.home, machine, alive: ctx.alive, nowMs });
+function summarize(ctx, project, machine, machineErrors, nowMs, sinceMs) {
+  const summary = projectSummary({ project, home: ctx.home, machine, alive: ctx.alive, nowMs, ...sinceMs !== void 0 && { sinceMs } });
   return { ...summary, errors: [...machineErrors, ...summary.errors] };
+}
+var DAY_MS2 = 864e5;
+var UNIT_MS = { m: 6e4, h: 36e5, d: DAY_MS2 };
+var SINCE_MAX_DAYS = 3650;
+var ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+var ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:(Z)|([+-])(\d{2}):(\d{2}))$/;
+function utcMs(year, month, day, hour = 0, minute = 0, second = 0, ms = 0) {
+  if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) return NaN;
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, ms));
+  date.setUTCFullYear(year);
+  return date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.getTime() : NaN;
+}
+function isoSince(text2) {
+  const date = ISO_DATE.exec(text2);
+  if (date !== null) return utcMs(Number(date[1]), Number(date[2]), Number(date[3]));
+  const time = ISO_DATE_TIME.exec(text2);
+  if (time === null) return NaN;
+  const [, y, mo, d, h, mi, s, frac, zulu, sign, oh, om] = time;
+  const ms = utcMs(Number(y), Number(mo), Number(d), Number(h), Number(mi), Number(s ?? 0), Number((frac ?? "0").padEnd(3, "0").slice(0, 3)));
+  if (zulu !== void 0) return ms;
+  if (Number(oh) > 23 || Number(om) > 59) return NaN;
+  return ms - (sign === "-" ? -1 : 1) * (Number(oh) * 60 + Number(om)) * 6e4;
+}
+function parseSince(text2, nowMs) {
+  const relative16 = /^(\d{1,9})([mhd])$/.exec(text2);
+  let ms;
+  if (relative16 === null) ms = isoSince(text2);
+  else {
+    const back = Number(relative16[1]) * (UNIT_MS[relative16[2] ?? ""] ?? NaN);
+    ms = back <= SINCE_MAX_DAYS * DAY_MS2 ? nowMs - back : NaN;
+  }
+  if (Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime())) return ms;
+  throw new ArbabError(
+    "usage",
+    `--since takes <n>m, <n>h or <n>d back from now (at most ${SINCE_MAX_DAYS} days), a date (2026-10-09, midnight UTC) or an ISO time with Z or an offset (2026-10-09T12:00:00Z), not ${JSON.stringify(text2)} (see arbab summary --help)`
+  );
 }
 function openRoot(root) {
   const config = loadConfig(root);
@@ -11104,22 +11425,23 @@ function openRoot(root) {
 async function runSummary(argv2, ctx) {
   const { values } = parse("summary", {
     args: argv2,
-    options: { all: { type: "boolean" }, json: { type: "boolean" } },
+    options: { all: { type: "boolean" }, since: { type: "string" }, json: { type: "boolean" } },
     allowPositionals: false
   });
   const nowMs = ctx.clock.now();
+  const sinceMs = values.since === void 0 ? void 0 : parseSince(values.since, nowMs);
   const nowSec = Math.floor(nowMs / 1e3);
   const machineErrors = [];
   const machine = machineConfig(ctx, machineErrors);
   if (values.all !== true) {
-    const summary = summarize(ctx, openProject(ctx), machine, machineErrors, nowMs);
+    const summary = summarize(ctx, openProject(ctx), machine, machineErrors, nowMs, sinceMs);
     if (values.json === true) printJson(ctx, summary);
     else ctx.stdout(formatSummary(summary, nowSec) + "\n");
     return 0;
   }
   const summaries = [];
   for (const entry of listProjects(ctx.home)) {
-    if (!existsSync25(entry.root)) continue;
+    if (!existsSync26(entry.root)) continue;
     let project;
     try {
       project = openRoot(entry.root);
@@ -11129,7 +11451,7 @@ async function runSummary(argv2, ctx) {
 `);
       continue;
     }
-    summaries.push(summarize(ctx, project, machine, machineErrors, nowMs));
+    summaries.push(summarize(ctx, project, machine, machineErrors, nowMs, sinceMs));
   }
   if (values.json === true) printJson(ctx, summaries);
   else if (summaries.length === 0) ctx.stdout("no projects recorded on this machine\n");
@@ -11140,7 +11462,7 @@ ${formatSummary(s, nowSec)}`).join("\n\n") + "\n");
 
 // src/commands/ui.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { basename as basename6 } from "node:path";
+import { basename as basename7 } from "node:path";
 
 // src/ui/client/app/bundle.ts
 var UI_SCRIPT = '"use strict";(()=>{var ca=Object.defineProperty;var ua=(e,t,n)=>t in e?ca(e,t,{enumerable:!0,configurable:!0,writable:!0,value:n}):e[t]=n;var xt=(e,t,n)=>ua(e,typeof t!="symbol"?t+"":t,n);var st={page:"/",script:"/app.js",style:"/app.css",events:"/events",snapshot:"/snapshot.json",icon:"/icon.svg"},So="token",vo={snapshot:"snapshot",problem:"problem"};var L={spawn:{x:-16,y:248},exit:{x:-16,y:258},camp:{x:22,y:204},arbab:{x:116,y:262},audience:{x:144,y:260},rations:{x:86,y:262},treasury:{x:62,y:264},well:{x:444,y:206},horizon:{x:496,y:196},sledge:{x:402,y:208}},Je={columns:5,rows:2,step:12,rowStep:16},q={centerX:268,baseY:208,maxWidth:228,maxHeight:104},me={w:12,h:18},Eo={w:16,h:26};function da(e){let t=4;for(;t*(t+1)/2<e;)t+=1;return t}function Mo(e){let t=da(Math.max(0,Math.floor(e))),{centerX:n,baseY:o,maxWidth:r,maxHeight:s}=q,i=Math.min(32,Math.floor(r/t));i-=i%2;let a=Math.min(i/2,Math.floor(s/t));i=Math.min(i,2*a);let l=[];for(let u=0;u<t;u+=1){let d=t-u,f=n-d*i/2,m=o-(u+1)*a;for(let y=0;y<d;y+=1)l.push({x:f+y*i,y:m,w:i,h:a,course:u})}return{base:t,blockW:i,blockH:a,slots:l,apex:{x:n,y:o-t*a}}}function Er(e){let t=Je.columns*Je.rows,n=(Math.floor(e)%t+t)%t,o=Math.floor(n/Je.columns),r=n%Je.columns;return{x:L.camp.x+r*Je.step+o*Je.step/2,y:L.camp.y+o*Je.rowStep}}var Co=[152,108,64];function Cr(e,t){let n=Co[Math.min(Co.length-1,Math.max(0,Math.floor(e)))]??Co[0],o=Math.min(22,Math.max(8,Math.round(8+.6*t)));return{x:n,y:128,height:o}}function An(e){return{x:e.x+e.w/2,y:e.y+e.h}}var fa=600*1e3,Po=q.baseY,Ze=Po+2,Mr=28,pa=18,Ln=16,Nn=.8,Ao=3,Ar=.15,ma=1.2,Lr=.4,ha=6,ga=.2,ba=2,ya=.6,xa=1,wa=300,Nr=300,ka=60,Sa=48,va=4,Ea=3,Ca=2,Ma=20,Aa=100,La=12,Na=6,Ta=5,Ra=18e3,Pa=1.5,Oa=2,Ba=3,Fa=6,Ia=4,Tr=.25,Da=.5,Ua=new Set(["walk","slump","carry-scroll","carry-stone","carry-ration"]);function Tn(e){switch(e.kind){case"verify":return"surveyor";case"review":return"scribe";case"skeptic":return"skeptic";case"preflight":return"waterboy"}switch(e.role){case"implementer":return"laborer";case"verifier":return"mason";case"reviewer":return"scribe";case"probe":return"waterboy";case"researcher":return"scout";default:return"waterboy"}}function To(e){return e.kind==="lane"&&(e.role==="implementer"||e.role==="verifier"&&e.worktreeOf===null)}function qe(e){if(e===null)return-1/0;let t=Date.parse(e);return Number.isFinite(t)?t:-1/0}function Ro(e,t){let n=null,o=-1/0;for(let r of e){let s=t(r);(n===null||s>=o)&&(n=r,o=s)}return n}function Pr(e){let t=qe(e.now),n=e.integrations.map((d,f)=>({integration:d,index:f,at:qe(d.landedAt)})).filter(d=>d.integration.landedAt!==null).sort((d,f)=>d.at===f.at?f.index-d.index:f.at>d.at?1:-1).map(d=>d.integration),o=new Set(n.filter(d=>Number.isFinite(t)&&t-qe(d.landedAt)<fa)),r=n.find(d=>o.has(d))??null,s=new Map(e.integrations.map(d=>[d.name,d])),i=e.lanes.filter(d=>{if(!To(d))return!1;if(d.integration===null)return!0;let f=s.get(d.integration);return f===void 0?!1:f.landedAt===null||o.has(f)}),a=r;if(a===null){let d=new Set(i.map(m=>m.name)),f=e.integrations.filter(m=>m.landedAt===null&&m.lanes.some(y=>d.has(y)));a=Ro(f,m=>qe(m.updatedAt))}let l=i.length===0&&r===null?n[0]??null:null,u=n.filter(d=>!o.has(d)&&d!==l).slice(0,3);return{lanes:i,capstone:a,capstoneLanded:r!==null,monument:l,far:u}}function Or(e){let t=Pr(e);if(t.capstone!==null)return t.capstone;if(t.monument!==null)return t.monument;let n=e.integrations.filter(o=>o.landedAt===null);return n.length>0?Ro(n,o=>qe(o.updatedAt)):Ro(e.integrations,o=>qe(o.landedAt))}function Oo(e){let t=Number.isFinite(e)?Math.max(0,e):0;return Math.min(.95,1-Math.exp(-t/40))}function $a(e){let t=e.costDeltaUsd??e.costUsd??0,n=Number.isFinite(t)?t:0;return n<1?1:n<5?2:3}function _a(e){return e.reportStatus==="partial"?1:e.reportStatus==="blocked"?0:e.endState==="success"?$a(e):0}function Br(e){switch(e.state){case"running":return"building";case"waiting-reset":return"stalled";case"orphaned":return"orphaned";case"finished":return e.reportStatus==="partial"||e.reportStatus==="blocked"?"stalled":e.endState==="success"?"set":"fallen";default:return"planned"}}function Fr(e){return Br(e)==="set"}function Ga(e){return typeof e.costUsd=="number"&&Number.isFinite(e.costUsd)?Math.max(0,e.costUsd):0}function Ha(e){return e<.5?2*e*e:1-(-2*e+2)**2/2}function Ae(e,t,n={}){return{kind:"go",to:e,pose:t,...n}}function Ee(e,t,n={}){return{kind:"hold",pose:e,time:t,...n}}function it(e,t){e.pose!==t&&(e.pose=t,e.poseTime=0)}function Lo(e){let t=q.maxWidth/2;return e.y<Po&&e.x>=q.centerX-t&&e.x<=q.centerX+t}function Wa(e,t){return e.x===t.x&&e.y===t.y}function Rr(e,t,n,o){return{id:e,lane:t,cast:n,x:o.x,y:o.y,facing:1,pose:"idle",poseTime:0,stroke:0,ration:0,icon:null,bubble:null,alpha:1,ghost:!1,highlight:!1}}function No(e){return{lane:null,x:e.x,y:e.y,w:e.w,h:e.h,look:"empty",fill:0,flash:0,highlight:!1}}function Bo(e){let t=e.reducedMotion,n=e.random,o=Rr("arbab",null,"arbab",L.arbab),r=Mo(0),s={sky:{phase:"day",sun:.5},pyramid:{base:r.base,blockW:r.blockW,blockH:r.blockH,blocks:r.slots.map(No),rubble:0,apex:{...r.apex},capstone:{state:"none",integration:null,...L.sledge,flag:"none",ready:!1,glow:0},monument:null},far:[],actors:[o],particles:[],coins:0,events:[],reducedMotion:t,time:0,shake:0},i=new Map,a=new Map,l=new Map,u=[],d=null,f=new Map,m=new Map,y=!1,E=0,g=null,w=0,x=0,k=null,S=!1,C=()=>Math.floor(n()*2147483647),O=(c,p)=>{s.events.push({kind:c,lane:p})},I=()=>({x:q.centerX,y:Ze}),P=()=>r.base*r.blockW/2,G=(c,p)=>{let b=q.centerX-P();return Math.round(b+(c+(p-c)*n())*2*P())};function Y(c){if(c.builder){let p=f.get(c.lane.name);return p?An(p):I()}switch(c.actor.cast){case"mason":{let p=c.lane.worktreeOf===null?void 0:f.get(c.lane.worktreeOf);if(!p)return I();let b=An(p);return{x:b.x+Ta,y:b.y}}case"surveyor":return{x:L.sledge.x-14,y:Ze};default:return null}}function Oe(){let c=r.slots.filter(b=>b.course<2),p=c[Math.min(c.length-1,Math.floor(n()*c.length))];return p?An(p):I()}function Be(c){switch(c.actor.cast){case"scribe":case"skeptic":return Oe();case"waterboy":return{...L.well};default:return{x:G(.5,1),y:Ze}}}let ve=c=>c.x<0||c.x>480;function Fe(c,p){if(p!=="work")return p;let b=Y(c)??I();return c.spot=b,b}function fe(c,p,b){let h=b==="slump"?pa:Mr,v=b==="carry-stone"?"climb-stone":"climb",M=[],B=Lo(c),_=Lo(p);return B&&_&&c.x===p.x?[{kind:"move",x:p.x,y:p.y,pose:p.y<c.y?v:"climb",speed:Ln}]:(B&&M.push({kind:"move",x:c.x,y:Ze,pose:"climb",speed:Ln}),_?(M.push({kind:"move",x:p.x,y:Ze,pose:b,speed:h}),M.push({kind:"move",x:p.x,y:p.y,pose:v,speed:Ln})):M.push({kind:"move",x:p.x,y:p.y,pose:b,speed:h}),M)}function Ie(c){if(c.seat!==null)return c.seat;let p=new Set;for(let h of i.values())h.seat!==null&&p.add(h.seat);let b=0;for(;p.has(b);)b+=1;return c.seat=b,b}function De(c){let p=u.indexOf(c);p>=0&&u.splice(p,1),d?.crew===c&&(d=null,o.bubble=null,c.actor.bubble=null)}function le(c){De(c),c.seat=null,i.get(c.lane.name)===c&&i.delete(c.lane.name),S=!0}function ne(c,p,b,h,v,M){if(t)return;let B={kind:c,x:p,y:b,vx:h,vy:v,life:M};s.particles.push(B),s.particles.length>Nr&&s.particles.splice(0,s.particles.length-Nr)}function nt(c){if(c.paid=!0,O("pay",c.lane.name),t)return;let p=3+Math.floor(n()*3);for(let b=0;b<p;b+=1){let h=L.treasury.x+(n()-.5)*6;ne("coin",h,L.treasury.y-8,(n()-.5)*24,-40-n()*15,.6)}}let pe=c=>{s.pyramid.rubble=Math.min(ka,s.pyramid.rubble+c)};function Ue(c){De(c);let p=c.lane,b=c.actor;switch(p.state!=="queued"&&p.state!=="held"&&(c.seat=null),c.queue=[],c.loop=!1,c.spot=null,c.begun=!1,c.elapsed=0,c.chatIn=null,c.chatLeft=0,c.descending=!1,b.alpha=1,b.stroke=0,b.bubble=null,p.state){case"queued":case"held":{let h=p.state==="held"?{icon:p.hold==="slot"?"dots":"hourglass"}:{};c.queue.push(Ae(Er(Ie(c)),"walk"),Ee("sit",1/0,h));break}case"preparing":case"running":c.briefed||c.queue.push({kind:"talk",event:"brief"}),Y(c)!==null?c.queue.push(Ae("work",c.builder?"carry-stone":"walk"),Ee("work",1/0,{faceCenter:!0})):c.loop=!0;break;case"waiting-reset":{let h=Y(c)!==null?"work":c.briefed&&!ve(b)?{x:b.x,y:b.y}:Be(c);c.queue.push(Ae(h,"walk"),Ee("sleep",1/0,{icon:"zzz",faceCenter:!0}));break}case"finished":{let h=_a(p);c.queue.push({kind:"talk",event:"report"},Ae({...L.rations},"walk"),Ee("idle",ya),Ae({...L.exit},h>0?"carry-ration":"slump",{ration:h}),{kind:"exit"});break}case"orphaned":ve(b)&&c.queue.push(Ae(Y(c)!==null?"work":Be(c),"walk")),c.queue.push(Ee("idle",1/0,{ghost:!0,icon:"question"}));break;default:c.queue.push(Ee("idle",1/0))}Ye(c,0)}function ht(c){switch(c.actor.cast){case"scribe":case"skeptic":return[Ae(Oe(),"walk"),Ee("work",3+3*n(),{faceCenter:!0})];case"waterboy":return[Ae({...L.well},"walk"),Ee("idle",1),Ae({x:G(0,1),y:Ze},"walk"),Ee("idle",1)];case"scout":{let p=6+4*n();return[Ae({...L.horizon},"walk"),Ee("idle",p,{alpha:0}),Ae({x:G(.5,1),y:Ze},"walk",{alpha:1}),Ee("idle",2)]}default:return[Ee("idle",1/0)]}}function $e(c){c.queue.shift(),c.begun=!1,c.elapsed=0}function Gt(c,p){let b=c.actor;if(b.bubble=null,b.stroke=0,c.chatLeft=0,p.kind==="go"){let h=Fe(c,p.to);return p.alpha!==void 0&&(b.alpha=p.alpha),p.ration!==void 0&&(b.ration=p.ration),p.ration!==void 0&&p.ration>0&&!c.paid&&nt(c),c.queue.splice(0,1,...fe(b,h,p.pose)),!0}return b.icon=p.kind==="hold"?p.icon??null:null,b.ghost=p.kind==="hold"&&p.ghost===!0,p.kind==="hold"&&(it(b,p.pose),p.alpha!==void 0&&(b.alpha=p.alpha),p.faceCenter&&(b.facing=b.x<=q.centerX?1:-1)),!1}function Ht(c,p,b,h,v){let M=p.x-c.x,B=p.y-c.y,_=Math.hypot(M,B);return _===0?v:(M!==0&&(c.facing=M>0?1:-1),it(c,b),t||h*v>=_?(c.x=p.x,c.y=p.y,t?v:Math.max(0,v-_/h)):(c.x+=M/_*h*v,c.y+=B/_*h*v,-1))}function Ye(c,p){let b=c.actor,h=p;for(let v=0;v<64;v+=1){if(i.get(c.lane.name)!==c)return;if(c.queue.length===0){if(!c.loop){it(b,"idle");return}c.queue=ht(c),c.begun=!1}let M=c.queue[0];if(M===void 0)return;if(!c.begun&&(c.begun=!0,c.elapsed=0,Gt(c,M))){c.begun=!1;continue}switch(M.kind){case"go":continue;case"move":if(h=Ht(b,M,M.pose,M.speed,h),h<0)return;$e(c);continue;case"hold":{let B=Math.min(h,M.time-c.elapsed);if(c.elapsed+=B,h-=B,M.pose==="work"&&xo(c,B),c.elapsed<M.time)return;$e(c);continue}case"talk":if(h=yo(c,M.event,h),h<0)return;$e(c);continue;case"exit":le(c);return}}}function yo(c,p,b){let h=c.actor,v=b;if(u.includes(c)||u.push(c),d?.crew!==c){let yt=u.indexOf(c);if(yt>Na)return h.pose!=="sit"&&it(h,"idle"),-1;if(Lo(h)&&(c.descending=!0),c.descending){if(v=Ht(h,{x:h.x,y:Ze},"climb",Ln,v),v<0)return-1;c.descending=!1}let Mn={x:L.audience.x+La*yt,y:L.audience.y};if(v=Ht(h,Mn,"walk",Mr,v),v<0)return-1;if(h.facing=-1,yt!==0||d!==null)return it(h,"idle"),-1;d={crew:c,t:0,turn:-1}}let M=d;M.t+=v;let B=Math.min(Ao-1,Math.floor(M.t/Nn));for(;M.turn<B;){M.turn+=1;let yt=M.turn===1,Mn={seed:C(),open:0};h.bubble=yt?Mn:null,o.bubble=yt?null:Mn}let _=M.turn===1?h:o;if(_.bubble&&(_.bubble.open=t?1:Math.min(1,(M.t-M.turn*Nn)/Ar)),it(h,M.turn===1?"talk":"idle"),h.facing=-1,M.t<Ao*Nn)return-1;let Qe=M.t-Ao*Nn;d=null,o.bubble=null,h.bubble=null;let vr=u.indexOf(c);return vr>=0&&u.splice(vr,1),p==="brief"&&(c.briefed=!0),O(p,c.lane.name),Qe}function xo(c,p){let b=c.actor,h=p;for(;h>0&&c.pending>0;){let v=b.stroke,M=(1-v)*Lr;h>=M?(b.stroke=1,h-=M):(b.stroke=v+h/Lr,h=0),v<.5&&b.stroke>=.5&&xn(c),b.stroke>=1&&(b.stroke=0,c.pending-=1)}b.cast==="skeptic"&&wn(c,p)}function xn(c){if(!c.builder)return;let p=c.lane.name,b=a.get(p);if(!b||!f.has(p))return;let h=l.get(p)??0,v=t?h:b.fill+Math.max(.02,(h-b.fill)/Math.max(1,c.pending));if(b.fill=Math.max(b.fill,Math.min(h,v)),b.flash=1,!t){let M=3+Math.floor(n()*3);for(let B=0;B<M;B+=1){let _=b.x+n()*b.w,Qe=b.y+n()*b.h;ne("dust",_,Qe,(n()-.5)*16,-(10+20*n()),.5)}}O("stone",p)}function wn(c,p){let b=c.actor;if(c.chatLeft>0){c.chatLeft-=p,b.bubble&&(b.bubble.open=t?1:Math.min(1,b.bubble.open+p/Ar)),c.chatLeft<=0&&(b.bubble=null,c.chatIn=4+4*n());return}c.chatIn===null&&(c.chatIn=4+4*n()),c.chatIn-=p,c.chatIn<=0&&(b.bubble={seed:C(),open:t?1:0},c.chatLeft=ma)}function Ve(c){let p=Math.round(c.fill*8);if(t)pe(p);else{for(let b=0;b<p;b+=1){let h=c.x+n()*c.w,v=c.y+n()*c.h;ne("stone",h,v,(n()*2-1)*40,0,5)}s.shake=Math.max(s.shake,Oa)}c.fill=0,O("fall",c.lane)}function Wt(c,p,b){let h=c.name,v=Br(c),M=Oo(c.toolCalls);l.set(h,M);let B=f.get(h),_=a.get(h),Qe=_===void 0;if(_===void 0&&(_={lane:h,x:0,y:0,w:0,h:0,look:v,fill:0,flash:0,highlight:!1},a.set(h,_)),B&&Object.assign(_,{x:B.x,y:B.y,w:B.w,h:B.h}),Qe||p===void 0){_.look=v,_.flash=0,v==="set"?_.fill=1:v==="planned"||v==="fallen"||!b&&v==="building"?_.fill=0:_.fill=M,b&&v==="fallen"&&pe(va);return}p.state==="finished"&&c.state!=="finished"&&(_.fill=0,_.flash=0),v!==_.look&&B&&(v==="set"?(_.fill=1,_.flash=1,O("set",h)):v==="fallen"&&Ve(_)),_.look=v,t&&v==="building"&&(_.fill=Math.max(_.fill,M))}function Yt(c){let p={actor:Rr(c.name,c.name,Tn(c),L.spawn),lane:c,builder:To(c),queue:[],begun:!1,elapsed:0,loop:!1,briefed:!1,pending:0,spot:null,seat:null,fading:!1,descending:!1,chatIn:null,chatLeft:0,dust:0,paid:!1};return i.set(c.name,p),S=!0,p}function gt(c){let p=c.actor;for(let b=0;b<64;b+=1){if(c.queue.length===0){if(!c.loop)break;c.queue=ht(c),c.begun=!1}let h=c.queue[0];if(h===void 0)break;if(h.kind==="go"){let v=Fe(c,h.to);h.alpha!==void 0&&(p.alpha=h.alpha),p.x=v.x,p.y=v.y,$e(c)}else if(h.kind==="move")p.x=h.x,p.y=h.y,$e(c);else break}Ye(c,0)}function kn(c,p,b){let h=c.name,v=i.get(h);if(v?.fading&&(le(v),v=void 0),To(c)?Wt(c,p,b):(a.delete(h),l.delete(h)),b){if(c.state==="finished")return;let M=Yt(c);M.briefed=c.state!=="queued"&&c.state!=="held",Ue(M),gt(M);return}if(v===void 0){if(c.state==="finished")return;v=Yt(c),Ue(v)}else v.lane=c,(p===void 0||p.state!==c.state||c.state==="held"&&p.hold!==c.hold)&&(p?.state==="finished"&&(v.briefed=!1,v.actor.ration=0),c.state!=="running"&&(v.pending=0),Ue(v));if(c.state==="running"){let M=p!==void 0&&p.attempt===c.attempt?p.toolCalls:0,B=c.toolCalls-M;B>0&&(v.pending=Math.min(ha,v.pending+B))}}function Sn(c){let p=i.get(c);p&&!p.fading&&(De(p),p.seat=null,p.fading=!0,p.queue=[],p.loop=!1,p.pending=0,p.spot=null,p.actor.stroke=0,p.actor.bubble=null),a.delete(c),l.delete(c)}function ot(c){let p=s.pyramid.capstone;p.integration=c.name,p.flag=c.verify==="passed"?"passed":c.verify==="failed"?"failed":"none",p.ready=c.ready===!0}function vn(){Object.assign(s.pyramid.capstone,{state:"hoisting",...L.sledge,glow:0}),E=0,bt()}function wo(c,p){let b=s.pyramid.capstone,h=c.capstone,v=b.state==="hoisting"||w>0;if(c.capstoneLanded&&h!==null&&v&&b.integration!==h.name){g=h;return}if(g=null,w=0,c.monument!==null){ot(c.monument),Object.assign(b,{state:"set",...s.pyramid.apex,ready:!0,glow:0});return}if(h===null){Object.assign(b,{state:"none",integration:null,...L.sledge,flag:"none",ready:!1,glow:0});return}let M=b.integration===h.name;if(ot(h),!c.capstoneLanded){Object.assign(b,{state:"waiting",...L.sledge,glow:0});return}if(!(M&&b.state==="hoisting")){if(M&&b.state==="set"){Object.assign(b,s.pyramid.apex);return}if(p){Object.assign(b,{state:"set",...s.pyramid.apex,glow:0});return}vn(),t&&rt()}}function rt(){let c=s.pyramid.capstone,p=s.pyramid.apex;Object.assign(c,{state:"set",...p,glow:1}),bt(),t||(s.shake=Math.max(s.shake,Ba));for(let b=0;b<Ma&&!t;b+=1){let h=p.x+(n()-.5)*8,v=p.y-n()*6;ne("sparkle",h,v,(n()-.5)*12,-n()*10,.8)}O("capstone",c.integration),x=Ca}function ko(c){let p=qe(c.now)/1e3,b=c.quota,h=B=>B!==null&&Number.isFinite(p)&&B.resetsAt>p?B:null,v=h(b.fiveHour),M=h(b.sevenDay);s.sky.phase=b.status==="rejected"&&(v!==null||M!==null)?"night":b.hold.hold?"dusk":"day",s.sky.sun=v!==null?Math.min(1,Math.max(0,1-(v.resetsAt-p)/Ra)):.5}function Xe(c,p){let b=c.lanes.reduce((v,M)=>v+Ga(M),0),h=Math.min(Sa,Math.round(6*Math.sqrt(b)));if(!p&&h>s.coins&&!t){let v=1+Math.floor(n()*3);for(let M=0;M<v;M+=1){let B=L.treasury.x+(n()-.5)*6;ne("coin",B,L.treasury.y-8,(n()-.5)*20,-40,.6)}}s.coins=h}function qt(c){let p=s.pyramid;p.base=r.base,p.blockW=r.blockW,p.blockH=r.blockH,p.apex={...r.apex};let b=c.monument;if(p.monument=b===null?null:b.name,b!==null){p.blocks=r.slots.map((h,v)=>({...No(h),lane:b.lanes[v]??null,look:"set",fill:1}));return}p.blocks=r.slots.map((h,v)=>{let M=c.lanes[v],B=M===void 0?void 0:a.get(M.name);return B===void 0?No(h):(Object.assign(B,{x:h.x,y:h.y,w:h.w,h:h.h}),B)}),p.capstone.state==="set"&&Object.assign(p.capstone,p.apex)}function bt(){let c=s.pyramid.capstone.state==="set";for(let p of s.pyramid.blocks)p.lane===null&&(p.look=c?"set":"empty",p.fill=c?1:0)}function En(c){for(let p of[...i.values()]){if(p.fading||u.includes(p))continue;let b=Y(p);(p.spot!==null&&b!==null&&!Wa(p.spot,b)||c&&p.loop&&(p.lane.state==="running"||p.lane.state==="preparing"))&&Ue(p)}}function Kt(){if(S){S=!1,s.actors.length=0,s.actors.push(o);for(let c of i.values())s.actors.push(c.actor);R()}}function R(){for(let c of s.actors)c.highlight=k!==null&&c.lane===k;for(let c of s.pyramid.blocks)c.highlight=k!==null&&c.lane===k}function D(){o.x=L.arbab.x,o.y=L.arbab.y,o.facing=1,it(o,x>0?"cheer":d!==null&&d.turn>=0&&d.turn!==1?"talk":"idle")}function $(c){let p=!y;y=!0;let b=Pr(c);ko(c);let h=r;r=Mo(b.monument===null?b.lanes.length:b.monument.lanes.length);let v=h.base!==r.base||h.blockW!==r.blockW||h.blockH!==r.blockH;f=new Map,b.lanes.forEach((B,_)=>{let Qe=r.slots[_];Qe&&f.set(B.name,Qe)}),s.pyramid.apex={...r.apex};let M=new Set(c.lanes.map(B=>B.name));for(let B of m.keys())M.has(B)||Sn(B);for(let B of c.lanes)kn(B,m.get(B.name),p);qt(b),En(v),wo(b,p),bt(),s.far=b.far.map((B,_)=>({integration:B.name,...Cr(_,B.lanes.length)})),Xe(c,p),m=new Map(c.lanes.map(B=>[B.name,B])),S=!0,Kt(),D()}function Q(c){let p=Math.min(Aa,Number.isFinite(c)?Math.max(0,c):0)/1e3;if(p<=0)return;s.time+=p,o.poseTime+=p,s.shake=Math.max(0,s.shake-Fa*p);let b=s.pyramid.capstone;b.glow=Math.max(0,b.glow-p/Ia);for(let h of a.values())h.flash=Math.max(0,h.flash-ba*p);for(let h of[...i.values()]){if(h.actor.poseTime+=p,h.fading){h.actor.alpha=Math.max(0,h.actor.alpha-p/xa),h.actor.alpha<=0&&le(h);continue}let{x:v,y:M}=h.actor;Ye(h,p),se(h,p,h.actor.x!==v||h.actor.y!==M)}for(let[h,v]of a){if(v.look!=="building")continue;let M=l.get(h)??0;t?v.fill=Math.max(v.fill,M):(i.get(h)?.pending??0)===0&&v.fill<M&&(v.fill=Math.min(M,v.fill+ga*p))}if(b.state==="hoisting"){E=Math.min(1,E+p/Ea);let h=Ha(E),v=s.pyramid.apex;b.x=L.sledge.x+(v.x-L.sledge.x)*h,b.y=L.sledge.y+(v.y-L.sledge.y)*h,E>=1&&(rt(),g!==null&&(w=Pa))}else w>0&&(w=Math.max(0,w-p),w===0&&g!==null&&(ot(g),g=null,vn()));ye(p),x=Math.max(0,x-p),D(),Kt()}function se(c,p,b){let h=c.actor;if(!(t||!b||!Ua.has(h.pose)))for(c.dust+=p;c.dust>=Tr;)c.dust-=Tr,ne("dust",h.x,h.y,-4+8*n(),-6+4*n(),Da)}function ye(c){let p=0;for(let b of s.particles){if(b.x+=b.vx*c,b.y+=b.vy*c,(b.kind==="stone"||b.kind==="coin")&&(b.vy+=wa*c),b.life-=c,b.kind==="stone"&&b.y>=Po){pe(1);continue}b.life<=0||(s.particles[p]=b,p+=1)}s.particles.length=p}function _e(c,p){let b=s.actors.map((h,v)=>({a:h,i:v})).filter(({a:h})=>h.lane!==null&&h.cast!=="arbab"&&h.alpha>=.1).sort((h,v)=>v.a.y===h.a.y?v.i-h.i:v.a.y-h.a.y);for(let{a:h}of b)if(c>=h.x-me.w/2&&c<=h.x+me.w/2&&p>=h.y-me.h&&p<=h.y)return h.lane;for(let h of s.pyramid.blocks)if(h.lane!==null&&c>=h.x&&c<h.x+h.w&&p>=h.y&&p<h.y+h.h)return h.lane;return null}function Cn(c){k=c,R()}return{world:s,apply:$,step:Q,pick:_e,highlight:Cn}}var Ya=new Set(["queued","held","preparing","running","waiting-reset"]),Ir=e=>Ya.has(e);function wt(e){let t=Math.floor(e/1e3),n=Math.floor(t/3600),o=Math.floor(t%3600/60),r=t%60,s=i=>String(i).padStart(2,"0");return n>0?`${n}h${s(o)}m`:o>0?`${o}m${s(r)}s`:`${r}s`}function Dr(e,t,n){let o=[];for(let[r,s]of[["5h",e],["7d",t]])s&&s.resetsAt>n&&o.push(`${r} ${Math.round(s.utilization*100)}%`);return o.length>0?o.join(" \\xB7 "):"\\u2014"}var zt="\\u2014";function qa(e,t,n){let o=Number.isFinite(n)&&n>0?n:1,r=Math.min(e/480,t/270);return!Number.isFinite(r)||r<=0?0:Math.floor(r*o+1e-9)/o}function $r(e,t,n){let o=qa(e,t,n);return o>=1?{fluid:!1,scale:o,width:480*o,height:270*o}:Number.isFinite(e)&&e>=480?{fluid:!1,scale:1,width:480,height:270}:{fluid:!0}}var Ka=40;function _r(e,t,n,o){let r=e-t-n-o-Ka;return Number.isFinite(r)?Math.max(0,r):0}function Gr(e){return/^#?(?:.*&)?token=([0-9a-fA-F]{8,128})(?:&.*)?$/.exec(e)?.[1]??null}function Rn(e){return typeof e=="object"&&e!==null&&!Array.isArray(e)}function Hr(e){let t;try{t=JSON.parse(e)}catch{return{ok:!1,message:"The server sent a snapshot that is not JSON."}}return Rn(t)?t.protocol!==1?{ok:!1,message:`This page speaks protocol ${1} and the server speaks ${String(t.protocol)}: reload the page.`}:!Array.isArray(t.lanes)||!Array.isArray(t.integrations)||!Rn(t.quota)?{ok:!1,message:"The server sent a snapshot without lanes, integrations or quota."}:t.lanes.every(n=>Rn(n)&&typeof n.name=="string"&&typeof n.state=="string")?{ok:!0,snapshot:t}:{ok:!1,message:"The server sent a lane without a name or state."}:{ok:!1,message:"The server sent a snapshot that is not an object."}}function Wr(e){try{let t=JSON.parse(e);if(Rn(t)&&typeof t.message=="string"&&t.message!=="")return t.message}catch{}return"The server reported a problem."}function Fo(e){let t={running:0,preparing:0,waiting:0,asleep:0,orphaned:0,succeeded:0,failed:0};for(let n of e)switch(n.state){case"running":t.running++;break;case"preparing":t.preparing++;break;case"queued":case"held":t.waiting++;break;case"waiting-reset":t.asleep++;break;case"orphaned":t.orphaned++;break;case"finished":n.endState==="success"?t.succeeded++:t.failed++;break}return t}function za(e){let t=[];for(let[o,r]of[["running",e.running],["preparing",e.preparing],["waiting",e.waiting],["asleep",e.asleep],["orphaned",e.orphaned]])r>0&&t.push(`${r} ${o}`);let n=[];return e.succeeded>0&&n.push(`\\u2713 ${e.succeeded}`),e.failed>0&&n.push(`\\u2717 ${e.failed}`),n.length>0&&t.push(n.join(" ")),t.length>0?t.join(" \\xB7 "):"no lanes"}function Ke(e){return e===null||!Number.isFinite(e)?zt:`$${e.toFixed(2)}`}function Io(e){return e.reduce((t,n)=>t+(typeof n.costUsd=="number"&&Number.isFinite(n.costUsd)?n.costUsd:0),0)}function Yr(e){let t=Date.parse(e.now),n=Number.isNaN(t)?0:t/1e3,o=e.hiddenLanes>0?` \\xB7 ${e.hiddenLanes} older ${e.hiddenLanes===1?"lane":"lanes"} not shown`:"";return{project:e.project,version:`v${e.version}`,counts:za(Fo(e.lanes)),cost:Ke(Io(e.lanes)),quota:Dr(e.quota.fiveHour,e.quota.sevenDay,n),held:e.quota.hold.hold===!0,footer:`Read-only \\xB7 arbab ${e.version}${o}`}}function ja(e){return e.state==="finished"&&e.endState?`finished (${e.endState})`:e.state==="held"&&e.hold?`held (${e.hold})`:e.state}function kt(e,t){if(e.elapsedMs!==null)return e.elapsedMs;if(!Ir(e.state))return null;let n=Date.parse(e.since);return Number.isNaN(n)?null:Math.max(0,t-n)}function qr(e,t,n){let o=kt(e,t+n),r=[e.name,`${e.role} \\xB7 ${e.kind}`,ja(e),`attempt ${e.attempt}`,`elapsed ${o===null?zt:wt(o)}`,`tool calls ${e.toolCalls}`,`last tool ${e.lastTool??zt}`,`cost ${Ke(e.costUsd)}`,`${e.model??zt} \\xB7 ${e.effort??zt}`];return e.hold&&r.push(`held for ${e.hold==="quota"?"the quota":"a free slot"}`),e.reason&&r.push(e.reason),r}var jt={running:0,preparing:1,"waiting-reset":2,held:3,queued:4,orphaned:5,finished:6},Va=new Set(["preparing","running"]),Xa=new Set(["preparing","running","waiting-reset"]);function Do(e,t){return Va.has(e.state)&&!(t!==void 0&&Xa.has(t.state))}function Kr(e,t){if(!e)return[];let n=[],o=new Map(e.lanes.map(s=>[s.name,s]));for(let s of t.lanes){let i=o.get(s.name);Do(s,i)&&n.push(`${s.name} started`),s.state==="finished"&&i&&i.state!=="finished"&&n.push(`${s.name} finished: ${s.endState??"unknown"}`)}let r=new Set(e.integrations.filter(s=>s.landedAt!==null).map(s=>s.name));for(let s of t.integrations)s.landedAt!==null&&!r.has(s.name)&&e.integrations.some(i=>i.name===s.name)&&n.push(`${s.name} landed`);return n}var Qa=60;function St(e){let t=Math.max(0,Math.floor(e/1e3));if(t<60)return"just now";let n=Math.floor(t/60);if(n<60)return`${n}m ago`;let o=Math.floor(n/60);return o<48?`${o}h ago`:`${Math.floor(o/24)}d ago`}function Vt(e,t){if(e===null)return t;let n=Date.parse(e);return Number.isFinite(n)?n:t}function zr(e){return Vt(e.now,0)}function jr(e,t){let n=Vt(e.since,t),o=e.attempt>1?` (attempt ${e.attempt})`:"";return{id:`started:${e.name}:${e.attempt}:${n}`,at:n,kind:"started",text:`${e.name} started${o}`}}function Vr(e,t){let n=Vt(e.since,t),o=e.endState??"unknown",r=e.costUsd===null?"":` \\xB7 ${Ke(e.costUsd)}`;return{id:`finished:${e.name}:${e.attempt}:${n}`,at:n,kind:e.endState==="success"?"finished":"failed",text:`${e.name} finished: ${o}${r}`}}function Xr(e,t){let n=Vt(e.since,t);if(e.state==="held"){let r=e.hold==="slot"?"a free slot":"the quota";return{id:`held:${e.name}:${n}`,at:n,kind:e.hold==="slot"?"waiting":"held",text:`${e.name} held for ${r}`}}let o=e.state==="waiting-reset"?"asleep until the quota resets":"queued";return{id:`waiting:${e.name}:${e.state}:${n}`,at:n,kind:"waiting",text:`${e.name} ${o}`}}function Qr(e,t){return{id:`landed:${e.name}`,at:Vt(e.landedAt,t),kind:"landed",text:`${e.name} landed`}}function Ja(e,t){let n=e.verify==="passed";return{id:`verify:${e.name}:${e.headSha}:${e.verify}`,at:t,kind:n?"verify-passed":"verify-failed",text:`${e.name} verify ${n?"passed":"failed"}`}}function Uo(e,t,n=Qa){let o=new Set,r=[];for(let s of[...t,...e])o.has(s.id)||(o.add(s.id),r.push(s));return r.sort((s,i)=>i.at-s.at).slice(0,n)}function Jr(e){let t=zr(e),n=[];for(let o of e.lanes)o.state==="finished"?n.push(Vr(o,t)):o.state==="running"||o.state==="preparing"?n.push(jr(o,t)):(o.state==="queued"||o.state==="held"||o.state==="waiting-reset")&&n.push(Xr(o,t));for(let o of e.integrations)o.landedAt!==null&&n.push(Qr(o,t));return Uo([],n)}function Zr(e,t){let n=zr(t),o=[],r=new Map(e.lanes.map(i=>[i.name,i]));for(let i of t.lanes){let a=r.get(i.name);Do(i,a)&&o.push(jr(i,n)),i.state==="finished"&&a&&a.state!=="finished"&&o.push(Vr(i,n)),i.state==="held"&&i.hold==="quota"&&!(a&&a.state==="held"&&a.hold==="quota")&&o.push(Xr(i,n))}let s=new Map(e.integrations.map(i=>[i.name,i]));for(let i of t.integrations){let a=s.get(i.name);i.landedAt!==null&&(!a||a.landedAt===null)&&o.push(Qr(i,n)),i.verify!==null&&(!a||a.verify!==i.verify||a.headSha!==i.headSha)&&o.push(Ja(i,n))}return o}function es(e){switch(e){case"started":return"\\u2192";case"finished":case"verify-passed":return"\\u2713";case"failed":case"verify-failed":return"\\u2717";case"landed":return"\\u25C6";default:return"\\u23F3"}}var Za={none:"",waiting:"capstone waiting",hoisting:"capstone rising",set:"capstone set"};function $o(e){let t=e.pyramid,n=t.blocks.filter(r=>r.lane!==null),o=n.filter(r=>r.look==="set").length;return`${t.monument??""}|${o}/${n.length}|${t.capstone.state}|${t.capstone.integration??""}|${t.capstone.flag}`}function ts(e,t,n){let o=n.pyramid;if(o.monument!==null){let a=e.integrations.find(f=>f.name===o.monument),l=a?.landedAt?Date.parse(a.landedAt):Number.NaN,u=Number.isFinite(l)?` \\xB7 landed ${St(t-l)}`:"",d=a?a.lanes.length:o.blocks.filter(f=>f.lane!==null).length;return`monument \\xB7 ${o.monument} \\xB7 ${d} ${d===1?"block":"blocks"}${u}`.toUpperCase()}let r=o.blocks.filter(a=>a.lane!==null),s=o.capstone;if(r.length===0&&s.state==="none")return"THE SITE IS QUIET";let i=[];return s.state!=="none"&&s.integration!==null&&i.push(s.integration),i.push(`${r.filter(a=>a.look==="set").length}/${r.length} blocks set`),s.state!=="none"&&(i.push(Za[s.state]),i.push(`verify ${s.flag==="passed"?"\\u2713":s.flag==="failed"?"\\u2717":"\\xB7"}`)),i.join(" \\xB7 ").toUpperCase()}function T(e,t,n="",o=null){let r=e.createElement(t);return n!==""&&(r.className=n),o!==null&&(r.textContent=o),r}function Xt(e){return e&&typeof e.getContext=="function"?e:null}function ns(e){return Number.isFinite(e)?Math.max(1,Math.round(e)):1}function at(e,t,n,o,r="px"){let s=Xt(e.createElement("canvas"));return s?(s.className=r,s.setAttribute("aria-hidden","true"),Qt(s,t,n,o),s):null}function Qt(e,t,n,o){e.width=t*o,e.height=n*o,e.style.width=`${t}px`,e.style.height=`${n}px`}function _o(e,t){let n=[],o=new Map;for(let s of t){let i=e[s]??0,a=0,l=n.length;for(;a<l;){let u=a+l>>1;(e[n[u]??0]??0)<i?a=u+1:l=u}a>0&&o.set(s,n[a-1]??-1),n[a]=s}let r=[];for(let s=n[n.length-1];s!==void 0&&s>=0;s=o.get(s))r.push(s);return r}function el(e,t,n=null){let o=new Map(e.map((f,m)=>[f,m])),r=t.map(f=>o.get(f)??-1),s=t.map((f,m)=>m).filter(f=>(r[f]??-1)>=0),i=n===null?-1:t.indexOf(n),a=r[i]??-1,l;if(i<0||a<0)l=_o(r,s);else{let f=s.filter(y=>y<i&&(r[y]??0)<a),m=s.filter(y=>y>i&&(r[y]??0)>a);l=[..._o(r,f),i,..._o(r,m)]}let u=new Set(l),d=[];for(let f=t.length-1;f>=0;f--)u.has(f)||d.push({key:t[f]??"",before:t[f+1]??null});return d}function vt(e,t,n,o,r=null){let s=new Set(n),i=t.filter(a=>s.has(a)?!0:(o(a)?.remove(),!1));for(let{key:a,before:l}of el(i,n,r)){let u=o(a);u&&e.insertBefore(u,l===null?null:o(l)??null)}return[...n]}var Wo="#E8E6D8",Zt="#C9C6B4";var On=["#E9C886","#DDB66E","#C89A56","#B5843F"],ge={light:"#F1E2BC",face:"#DCC796",mortar:"#B9A06C",edge:"#8F7A50"},Bn="#8C7A5B",rs="#CDB27E",Ct={gap:"#6E5A3C",crack:"#4A3B26"},Mt={light:"#A7A39A",dark:"#85827A"},U={gleam:"#FFF6C9",light:"#FFD54A",mid:"#E0A800",shadow:"#A87400"},Et={base:"#B9784E",shadow:"#925A38"},Go={white:"#F4F0E2",shadow:"#D6CFBC"},xe="#3A2716",et={laborer:"#C9A46B",mason:"#3C6FB0",scribe:"#6E4C9E",skeptic:"#B23A3A",surveyor:"#3F8F5A",waterboy:"#E2B23A",scout:"#2F6B4F"},Fn="#2A4FA0",K=["#8B5A2B","#6B4220"],Ho={leaf:"#3E7D3A",leafDark:"#2D5E2B",trunk:"#7A5230"},Ge={cloth:"#E7D6B0",shade:"#C2A97A",stripe:"#B23A3A"},tl="#4F8FBF",nl="#C98A3E",os="#8E5B3E",At={fill:"#FFFDF5",glyph:"#5A4630"},Yo={green:"#3FAF5A",red:"#D04040"},In={face:"#F2C14E",shadow:"#C9962C"},qo="#FFFFFF",Lt={day:["#2E6CAF","#3D82C2","#5299CF","#6CAED9","#8DC2E0","#B1D3DF","#D3DDCB","#ECE1BA"],dusk:["#2A2350","#45306A","#6C3B70","#984870","#C25A66","#E0755A","#F1954E","#F6B860"],night:["#060A1C","#0A1027","#0F1733","#151E3E","#1B2648","#222E52","#2A375C","#334166"]},Dn={core:"#FFA640",rim:"#FFCB6B",halo:"#FFB85C"},Un={core:"#FFF7DC",rim:"#FFFCEF",halo:"#FFF3C4"},ss={day:["#FFFDF6","#F1ECDF","#CBD3DD"],dusk:["#FFD39A","#E8968A","#9C5A7C"],night:["#5A6688","#46507A","#343D63"]},J={bright:"#F5F3E8",mid:"#C9CCE0",dim:"#7E86AA"},is={day:"#4A3A3C",dusk:"#3A2236"},as=[{light:"#DCD3C6",face:"#C9BFB6",shade:"#B0A7A9"},{light:"#E5CBA2",face:"#D2B58C",shade:"#B39575"}],ls={light:"#E2BE7C",face:"#D4AA68",shade:"#BF9456"},be={light:"#7E9A4A",face:"#5F7D3A",shade:"#465F2E"},ie={sky:"#9CC9DD",light:"#6FA8CC",face:"#4F8FBF",deep:"#3D78A8",bank:"#A88654"},cs={day:"#E6F4FA",dusk:"#FFE0A8",night:"#A9B6D8"},en={light:"#9CAA52",face:"#6E8A3C",shade:"#4E6A2E",tip:"#C8B068"},V={light:"#EADCB8",face:"#D6C499",shade:"#B5A27C",dark:"#9A8868"},lt=["#CFAA6A","#D8B36F","#DFBC77","#E6C582","#E9C886","#E3BF7A"],tn={light:"#F1D9A2",face:"#ECD195",track:"#D9B878"},ze={light:"#CDB693",face:"#A8906C",shade:"#7E6A4E"},nn={light:"#A3A057",face:"#7C7E43",shade:"#5A5E34"},He={light:"#D9AE73",face:"#BE8E55",shade:"#97693C",dark:"#6E4A2A"},ct={white:"#FFF6D0",yellow:"#FFD24A",orange:"#F68B2C",red:"#D1452A",ember:"#8E2E1E"},Ko="#CFC8C0",zo={light:"#A8A094",shade:"#756E64"},ut={light:"#E0A859",face:"#B37A3A",shade:"#7E5226"},ce={cream:"#F2E4C2",creamShade:"#D7C29A",red:"#B8433A",redShade:"#8E2F2B"},$n={light:"#FBF7EC",shade:"#DCD4C2"},he={light:"#F3E6C2",face:"#E0CD9F",shade:"#C2AA78",edge:"#9C8558"},_n="#3E2A1C",us="#0A0E22",Gn="#FFB45A",ds={day:"#4A321E",dusk:"#2E1830",night:"#05071A"},dt={fill:"#2B1D14",rim:U.mid,text:U.gleam},jo={o:xe,k:Et.base,K:Et.shadow,"*":Et.base,"&":Et.shadow,t:Et.base,T:Et.shadow,w:Go.white,W:Go.shadow,h:et.laborer,H:Jt(et.laborer,.72),s:Go.shadow,n:K[0],N:K[1],l:ge.light,L:ge.face,m:ge.mortar,e:ge.edge,G:U.gleam,y:U.light,Y:U.mid,z:U.shadow,B:Fn,b:nl,j:os,J:Jt(os,.75),a:tl,v:Ho.leaf,V:Ho.leafDark,r:Ho.trunk,c:Ge.cloth,C:Ge.shade,q:Ge.stripe,U:On[3],f:At.fill},ol=Ct.crack;function fs(e){switch(e){case"arbab":return{};case"scribe":case"skeptic":return{h:ol,H:xe,s:et[e]};case"scout":{let t=et.scout;return{h:t,H:Jt(t,.72),t,T:Jt(t,.72)}}default:return{h:et[e],H:Jt(et[e],.72)}}}function Pn(e){if(!/^#[0-9a-fA-F]{6}$/.test(e))throw new Error(`not a #rrggbb color: ${e}`);let t=Number.parseInt(e.slice(1),16);return[t>>16&255,t>>8&255,t&255]}function Vo(e,t,n){let o=r=>Math.max(0,Math.min(255,Math.round(r))).toString(16).padStart(2,"0");return`#${o(e)}${o(t)}${o(n)}`.toUpperCase()}function Jt(e,t){let[n,o,r]=Pn(e);return Vo(n*t,o*t,r*t)}function W(e,t,n){let[o,r,s]=Pn(e),[i,a,l]=Pn(t);return Vo(o+(i-o)*n,r+(a-r)*n,s+(l-s)*n)}function ps(e){let[t,n,o]=Pn(e),r=.3*t+.59*n+.11*o;return Vo(r,r,r)}function Nt(e){return W(e,ps(e),.65)}function ms(e){return W(ps(e),Wo,.55)}var A={bg:"#120d0a","bg-2":"#1b140f",panel:"#241a12","panel-2":"#2e2116","panel-hi":"#3a2a1b","frame-dark":"#0b0705",frame:"#6b4a26","frame-hi":"#a87a3f","frame-lo":"#3a2716",text:"#f4ead2",muted:"#b89f74",faint:"#7d6a4d",gold:"#ffd54a","gold-2":"#e0a800",sand:"#e9c886",sky:"#5ba8d9","st-running":"#5ba8d9","st-preparing":"#8cc6e3","st-waiting":"#e0a800","st-asleep":"#8e7cc3","st-success":"#3faf5a","st-failed":"#d04040","st-orphaned":"#85827a","badge-failed":"#b23a3a"},Xo=Object.fromEntries(Object.entries(et).map(([e,t])=>[e,t.toLowerCase()])),Tt=A.bg;function Hn(e){return e==="failed"?{ground:A["badge-failed"],ink:A.text}:{ground:rl(e),ink:Tt}}function on(e){switch(e.state){case"running":return{tone:"running",label:"RUNNING"};case"preparing":return{tone:"preparing",label:"PREPARING"};case"queued":return{tone:"waiting",label:"QUEUED"};case"held":return{tone:"waiting",label:"HELD"};case"waiting-reset":return{tone:"asleep",label:"ASLEEP"};case"orphaned":return{tone:"orphaned",label:"ORPHANED"};case"finished":return e.endState==="success"?{tone:"success",label:"\\u2713 DONE"}:{tone:"failed",label:"\\u2717 FAILED"};default:return{tone:"orphaned",label:String(e.state).toUpperCase()}}}function rl(e){return A[`st-${e}`]}var hs={Y:A.gold,y:A["gold-2"],W:"#fff6c9",L:"#f1e2bc",l:"#dcc796",S:"#b5843f",s:"#8f6a33",i:"#c9c3b0",I:"#85827a",w:"#8b5a2b",g:A.sand,m:A.muted,b:A["st-running"],p:A["st-asleep"],e:A["st-success"],r:A["st-failed"],a:A["st-waiting"]},Qo=sl();function sl(){let e=[];for(let t=0;t<16;t++){let n=Math.floor(t/2),o="";for(let r=0;r<16;r++)r<7-n||r>8+n?o+=".":t===0&&r===7?o+="W":t<4?o+=r<=7?"Y":"y":t%2===1?o+=r<=7?"l":"s":o+=r<=7?"L":"S";e.push(o)}return e}var il={logo:Qo,hammer:["iiiiiii.","IiiiiiI.","...w....","...w....","...w....","...w....","...w....","...w...."],hourglass:["yyyyyyy",".mgggm.","..mgm..","...m...","..mgm..",".mgggm.","yyyyyyy"],zzz:["...pppp",".....p.","....p..","...pppp","ppp....",".p.....","ppp...."],check:[".......","......e",".....ee","e...ee.","ee.ee..",".eee...","..e...."],coin:["..YYY..",".YyyyY.","YyYYYyY","YyYyyyY","YyYYYyY",".YyyyY.","..YYY.."],cross:[".......","r.....r","rr...rr",".rr.rr.","..rrr..",".rr.rr.","rr...rr"],arrow:[".......","...b...","....b..","bbbbbb.","....b..","...b...","......."],diamond:[".......","...Y...","..YYy..",".YYyyy.","..Yyy..","...y...","......."],wait:["aaaaaaa",".aggga.","..aga..","...a...","..a.a..",".aggga.","aaaaaaa"]};function Jo(e,t,n,o,r){t.forEach((s,i)=>{let a=0;for(;a<s.length;){let l=hs[s[a]??"."];if(l===void 0){a++;continue}let u=a+1;for(;u<s.length&&hs[s[u]??"."]===l;)u++;e.fillStyle=l,e.fillRect(n+a*r,o+i*r,(u-a)*r,r),a=u}})}function al(e){return{w:Math.max(0,...e.map(t=>t.length)),h:e.length}}function Wn(e,t,n,o,r){let s=il[t],{w:i,h:a}=al(s),l=r??i*n,u=r??a*n,d=at(e,l,u,o,`px icon icon-${t}`);if(!d)return null;let f=d.getContext("2d");if(f){let m=n*o;Jo(f,s,Math.floor((l-i*n)/2)*o,Math.floor((u-a*n)/2)*o,m)}return d}var ll={" ":["...","...","...","...","...","...","..."],A:[".###.","#...#","#...#","#####","#...#","#...#","#...#"],B:["####.","#...#","#...#","####.","#...#","#...#","####."],C:[".###.","#...#","#....","#....","#....","#...#",".###."],D:["####.","#...#","#...#","#...#","#...#","#...#","####."],E:["#####","#....","#....","####.","#....","#....","#####"],F:["#####","#....","#....","####.","#....","#....","#...."],G:[".###.","#...#","#....","#.###","#...#","#...#",".###."],H:["#...#","#...#","#...#","#####","#...#","#...#","#...#"],I:["###",".#.",".#.",".#.",".#.",".#.","###"],J:["..###","....#","....#","....#","....#","#...#",".###."],K:["#...#","#..#.","#.#..","##...","#.#..","#..#.","#...#"],L:["#....","#....","#....","#....","#....","#....","#####"],M:["#...#","##.##","#.#.#","#.#.#","#...#","#...#","#...#"],N:["#...#","#...#","##..#","#.#.#","#..##","#...#","#...#"],O:[".###.","#...#","#...#","#...#","#...#","#...#",".###."],P:["####.","#...#","#...#","####.","#....","#....","#...."],Q:[".###.","#...#","#...#","#...#","#.#.#","#..#.",".##.#"],R:["####.","#...#","#...#","####.","#.#..","#..#.","#...#"],S:[".###.","#...#","#....",".###.","....#","#...#",".###."],T:["#####","..#..","..#..","..#..","..#..","..#..","..#.."],U:["#...#","#...#","#...#","#...#","#...#","#...#",".###."],V:["#...#","#...#","#...#","#...#","#...#",".#.#.","..#.."],W:["#...#","#...#","#...#","#.#.#","#.#.#","#.#.#",".#.#."],X:["#...#","#...#",".#.#.","..#..",".#.#.","#...#","#...#"],Y:["#...#","#...#",".#.#.","..#..","..#..","..#..","..#.."],Z:["#####","....#","...#.","..#..",".#...","#....","#####"],a:[".....",".....",".###.","....#",".####","#...#",".####"],b:["#....","#....","####.","#...#","#...#","#...#","####."],c:[".....",".....",".###.","#....","#....","#...#",".###."],d:["....#","....#",".####","#...#","#...#","#...#",".####"],e:[".....",".....",".###.","#...#","#####","#....",".###."],f:["..##",".#..","####",".#..",".#..",".#..",".#.."],g:[".....",".....",".####","#...#","#...#","#...#",".####","....#",".###."],h:["#....","#....","####.","#...#","#...#","#...#","#...#"],i:["#",".","#","#","#","#","#"],j:["..#","...","..#","..#","..#","..#","..#","..#","##."],k:["#...","#...","#..#","#.#.","##..","#.#.","#..#"],l:["#","#","#","#","#","#","#"],m:[".....",".....","##.#.","#.#.#","#.#.#","#.#.#","#...#"],n:[".....",".....","####.","#...#","#...#","#...#","#...#"],o:[".....",".....",".###.","#...#","#...#","#...#",".###."],p:[".....",".....","####.","#...#","#...#","#...#","####.","#....","#...."],q:[".....",".....",".####","#...#","#...#","#...#",".####","....#","....#"],r:["....","....","#.##","##..","#...","#...","#..."],s:[".....",".....",".####","#....",".###.","....#","####."],t:[".#..",".#..","####",".#..",".#..",".#..","..##"],u:[".....",".....","#...#","#...#","#...#","#...#",".####"],v:[".....",".....","#...#","#...#","#...#",".#.#.","..#.."],w:[".....",".....","#...#","#...#","#.#.#","#.#.#",".#.#."],x:[".....",".....","#...#",".#.#.","..#..",".#.#.","#...#"],y:[".....",".....","#...#","#...#","#...#","#...#",".####","....#",".###."],z:[".....",".....","#####","...#.","..#..",".#...","#####"],0:[".###.","#...#","#..##","#.#.#","##..#","#...#",".###."],1:["..#..",".##..","..#..","..#..","..#..","..#..",".###."],2:[".###.","#...#","....#","...#.","..#..",".#...","#####"],3:[".###.","#...#","....#","..##.","....#","#...#",".###."],4:["...#.","..##.",".#.#.","#..#.","#####","...#.","...#."],5:["#####","#....","####.","....#","....#","#...#",".###."],6:["..##.",".#...","#....","####.","#...#","#...#",".###."],7:["#####","....#","...#.","..#..",".#...",".#...",".#..."],8:[".###.","#...#","#...#",".###.","#...#","#...#",".###."],9:[".###.","#...#","#...#",".####","....#","...#.",".##.."],"!":["#","#","#","#","#",".","#"],\'"\':["#.#","#.#","...","...","...","...","..."],"#":[".#.#.",".#.#.","#####",".#.#.","#####",".#.#.",".#.#."],$:["..#..",".####","#.#..",".###.","..#.#","####.","..#.."],"%":["##...","##..#","...#.","..#..",".#...","#..##","...##"],"&":[".##..","#..#.","#..#.",".##..","#.#.#","#..#.",".##.#"],"\'":["#","#",".",".",".",".","."],"(":["..#",".#.","#..","#..","#..",".#.","..#"],")":["#..",".#.","..#","..#","..#",".#.","#.."],"*":[".....","..#..","#.#.#",".###.","#.#.#","..#..","....."],"+":[".....","..#..","..#..","#####","..#..","..#..","....."],",":["..","..","..","..","..","..",".#","#.",".."],"-":["...","...","...","###","...","...","..."],".":[".",".",".",".",".",".","#"],"/":["....#","....#","...#.","..#..",".#...","#....","#...."],":":[".",".","#",".",".",".","#"],";":["..","..",".#","..","..","..",".#","#.",".."],"<":["...#","..#.",".#..","#...",".#..","..#.","...#"],"=":[".....",".....","#####",".....","#####",".....","....."],">":["#...",".#..","..#.","...#","..#.",".#..","#..."],"?":[".###.","#...#","....#","...#.","..#..",".....","..#.."],"@":[".###.","#...#","#.###","#.#.#","#.###","#....",".####"],"[":["###","#..","#..","#..","#..","#..","###"],"\\\\":["#....","#....",".#...","..#..","...#.","....#","....#"],"]":["###","..#","..#","..#","..#","..#","###"],"^":["..#..",".#.#.","#...#",".....",".....",".....","....."],_:[".....",".....",".....",".....",".....",".....",".....",".....","#####"],"`":["#.",".#","..","..","..","..",".."],"{":["..##",".#..",".#..","#...",".#..",".#..","..##"],"|":["#","#","#","#","#","#","#"],"}":["##..","..#.","..#.","...#","..#.","..#.","##.."],"~":[".....",".....",".#...","#.#.#","...#.",".....","....."],"\\u2713":[".....","....#","...##","#.##.","###..",".#...","....."],"\\u2717":[".....","#...#","##.##",".###.","##.##","#...#","....."],"\\xB7":[".",".",".","#",".",".","."],"\\u2022":["....","....",".##.","####","####",".##.","...."],"\\u2192":[".....","..#..","...#.","#####","...#.","..#..","....."],"\\u2190":[".....","..#..",".#...","#####",".#...","..#..","....."],"\\u2191":["..#..",".###.","#.#.#","..#..","..#..","..#..","..#.."],"\\u2193":["..#..","..#..","..#..","..#..","#.#.#",".###.","..#.."],"\\u2026":[".....",".....",".....",".....",".....",".....","#.#.#"],"\\u2014":[".....",".....",".....","#####",".....",".....","....."],"\\u2013":["....","....","....","####","....","....","...."],"\\xD7":["...","...","#.#",".#.","#.#","...","..."],"\\xB0":[".#.","#.#",".#.","...","...","...","..."]},cl=["#####","#...#","#...#","#...#","#...#","#...#","#####"];function gs(e,t){if(t.length!==7&&t.length!==9)throw new Error(`glyph ${JSON.stringify(e)} has ${t.length} rows`);let n=t[0]?.length??0,o=[];return t.forEach((r,s)=>{if(r.length!==n||!/^[#.]*$/.test(r))throw new Error(`glyph ${JSON.stringify(e)} row ${s} is malformed`);for(let i=0;i<n;i++){if(r[i]!=="#")continue;let a=i+1;for(;r[a]==="#";)a++;o.push({x:i,y:s,w:a-i}),i=a}}),{w:n,runs:o}}var ul=new Map(Object.entries(ll).map(([e,t])=>[e,gs(e,t)])),dl=gs("missing",cl);function bs(e){return ul.get(e)??dl}function je(e){let t=0,n=0;for(let o of e)t+=bs(o).w,n++;return n===0?0:t+(n-1)*1}function Yn(e,t,n,o,r,s=1){if(!Number.isFinite(s)||s<=0)return 0;e.fillStyle=r;let i=0,a=!0;for(let l of t){a||(i+=1),a=!1;let u=bs(l);for(let d of u.runs)e.fillRect(n+(i+d.x)*s,o+d.y*s,d.w*s,s);i+=u.w}return i*s}var pl=1;function ml(e,t,n){let o=je(e)*t,r=11*t;return{width:o*n,height:r*n,cssWidth:o,cssHeight:r}}function z(e,t,n=""){let o=T(e,"span",t.className?`pxt ${t.className}`:"pxt"),r=at(e,0,0,t.dpr),s=T(e,"span","visually-hidden");r&&o.appendChild(r),o.appendChild(s);let i=null,a=t.color,l=t.scale,u={el:o,canvas:r,set(d,f=a,m=l){if(d===i&&f===a&&m===l)return;if(i=d,a=f,l=m,s.textContent=d,!r){s.className="";return}let y=ml(d,l,t.dpr);Qt(r,y.cssWidth,y.cssHeight,t.dpr);let E=r.getContext("2d");if(!E)return;E.clearRect(0,0,y.width,y.height);let g=l*t.dpr;Yn(E,d,0,pl*g,a,g)},text:()=>i??""};return u.set(n),u}var hl={started:A["st-running"],finished:A["st-success"],"verify-passed":A["st-success"],failed:A["st-failed"],"verify-failed":A["st-failed"],landed:A.gold,held:A["st-waiting"],waiting:A["st-waiting"]},gl={"\\u25C6":"diamond","\\u23F3":"wait"};function ys(e,t,n){let o=z(e,{scale:2,color:A.gold,dpr:n},"CHRONICLE");t.title.replaceChildren(o.el);let r=new Map,s=[],i=!1,a=u=>{let d=T(e,"li",i?`chronicle-line kind-${u.kind} enter`:`chronicle-line kind-${u.kind}`),f=es(u.kind),m=gl[f],y=m?Wn(e,m,1,n,9):z(e,{scale:1,color:hl[u.kind],dpr:n,className:"glyph"},f).el;y&&d.appendChild(y),m&&d.appendChild(T(e,"span","visually-hidden",u.kind==="landed"?"landed:":"waiting:")),d.appendChild(T(e,"span","text",u.text));let E=T(e,"time","ago");return E.setAttribute("datetime",new Date(u.at).toISOString()),d.appendChild(E),{li:d,time:E,at:u.at}},l={update(u,d){for(let y of u)!r.has(y.id)&&Number.isFinite(y.at)&&r.set(y.id,a(y));let f=u.filter(y=>r.has(y.id)).map(y=>y.id);s=vt(t.list,s,f,y=>r.get(y)?.li);let m=new Set(f);for(let y of[...r.keys()])m.has(y)||r.delete(y);t.empty.hidden=f.length>0,i=!0,l.refresh(d)},refresh(u){for(let d of r.values())d.time.textContent=St(u-d.at)}};return l}function ue(e,t){let n=e.length,o=Math.max(0,...e.map(i=>i.length)),r=[],s=n;for(let i=0;i<n;i++){let a=e[i]??"",l=0;for(;l<a.length;){let u=a[l]??".";if(u==="."){l++;continue}let d=t[u];if(d===void 0)throw new Error(`sprite character ${JSON.stringify(u)} has no color`);let f=l+1;for(;f<a.length&&t[a[f]??"."]===d;)f++;r.push({x:l,y:i,w:f-l,color:d}),s=Math.min(s,i),l=f}}return{w:o,h:n,top:s===n?0:s,runs:r,mirrored:r.map(i=>({...i,x:o-i.x-i.w}))}}function tt(e,t,n){let o=Array.from({length:t},()=>Array.from({length:e},()=>"."));for(let{grid:r,dx:s=0,dy:i=0}of n)r.forEach((a,l)=>{for(let u=0;u<a.length;u++){let d=a[u]??".";if(d==="."||d==="+")continue;let f=u+s,m=l+i,y=o[m];if(y===void 0||f<0||f>=e)throw new Error(`sprite pixel (${f}, ${m}) is outside ${e}\\xD7${t}`);y[f]=d}});return o.map(r=>r.join(""))}function xs(e,t){for(let n=0;n<e.length;n++){let o=(e[n]??"").indexOf(t);if(o>=0)return{x:o,y:n}}return null}function er(e,t,n){let o=xs(e,n),r=xs(t,"+");if(!o||!r)throw new Error(`no ${n} or + to hold an item by`);return{grid:t,dx:o.x-r.x,dy:o.y-r.y}}function we(e,t,n="*"){let o=[{grid:e}];return t&&o.push(er(e,t,n)),tt(e[0]?.length??0,e.length,o)}var Le=["....ooooo...","...ohhhhho..","..ohhhhhhho.","..oHhhhkkko.","..oHhhkkoko.","..oHhhkkkkko","..oHhokkKko.","..oHo.okko.."],ws=cn(Le,[[6,9,"o"]]),Zo=["............","....ooooo...","...ohhhhho..","..ohhhhhhho.","..oHhhhhkko.","..oHhhkkkko.","..oHhhkoKko.","..oHhokkkko."],rn=["....ooooo...","...ohhhhho..","..ohhhhhkko.","..oHhhkkoko.","..oHhhkkkkko","..oHhokkkko.","..oHhoKkko..","..oHo.oko..."];function cn(e,t){let n=[...e];for(let[o,r,s]of t){let i=n[o]??"";n[o]=i.slice(0,r)+s+i.slice(r+1)}return n}var oe={idle:["..otttttto..",".oTtttttTko.",".okTttttTko.",".okossssoko.",".o&o....o*o."],swingA:["..otttttto..",".oTtttttTko.","o&oTttttTko.","oo.ossssok*o","...........o"],swingB:["..otttttto..",".oTtttttTko.","okoTttttTo..","o&ossssso*o.",".o.....oo.o."],hold:["..otttttto..",".oTtttttTo..",".okTttttko*o",".okosssso.o.",".o&o........"],shoulder:["..o&ttttto..",".okTttttTko.",".oTTttttTko.","..ossssoko..","........o*o."],write:["..otttttto..",".oTtttttTo..",".ok&ttttt*o.",".okosssso.o.",".oo........."]},Rt={front:["..........o.",".........o*o",".........oko",".........oko","..ottttttoko",".oTtttttTko.",".okTttttto..",".okosssso...",".o&o........"],both:[".o........o.","o&o......o*o","oko......oko","oko......oko","okottttttoko",".okTttttTko.","..oTttttto..","..ossssso...","............"],half:["............","............","o&o......o*o","oko......oko","okottttttoko",".okTttttTko.","..oTttttto..","..ossssso...","............"],climbA:[".........o*o",".........oko",".........oko","........oko.","..ottttttko.",".o&tttttTo..",".okTttttto..","..ossssso...","............"],climbB:["............","............","..........o.",".........o*o","..ottttttoko",".o&tttttTko.",".okTttttto..","..ossssso...","............"]},vs=["...owwwWo...","..owwwwWWo..","..oowwwWoo.."],X={stand:["...oko.oko..","...oko.oko..","..ooo..oooo."],strideA:["..oKo..oko..",".oKo....oko.",".ooo....oooo"],pass:["....oKko....","....oKko....","....oooooo.."],strideB:["..oko..oKo..",".oko....oKo.",".ooo....oooo"],climbA:["..oko.oKo...","..oko..oo...","..ooo......."],climbB:["...oKo.oko..","....oo.oko..",".......ooo.."]},bl=[".owwwwwWkkko",".oooooooooo."],yl=["................","................","..........ooooo.",".oooooooooHhhhho","oKkkwwwWttoHkoko","okkkwwWWtttHkkko",".oooooooooooooo."],Ne={hammerDown:[".+.",".N.","nnn","NNN"],hammerUp:["nnn","NNN",".N.",".+."],plumb:["+","o","o","Y","z"],papyrus:["lL","+L","lL","LL"],penUp:["..o",".o.","+.."],penDown:["o+"],scroll:["mlllm","mLL+m"],loaf:[".oo.","obbo","ob+o",".oo."],basket:["..+.","obbo","onNo","oNno",".oo."],jug:[".+.","ojo","ojJo",".oo."]},ks=["oooooo","olllLo","olLLLo","oLLLeo","oooooo"],xl=[".oo.","ojjo","oJJo"];function jn(e,t,n){let o=[];for(let r=0;r<e;r++){let s=n?Math.floor(r/2)%2===0?"n":"y":r===0?"N":"n";o.push(r===t?`+${s}`:`.${s}`)}return o}function wl(e){switch(e){case"laborer":case"mason":return"hammer";case"scribe":case"skeptic":return"pen";case"surveyor":return"rod";default:return null}}function kl(e){switch(e){case"laborer":return Ne.hammerDown;case"mason":return Ne.plumb;case"scribe":case"skeptic":return Ne.papyrus;case"surveyor":return jn(15,10,!0);case"scout":return jn(16,11,!1);default:return null}}function ae(e,t,n,o=0,r=!1){let s={grid:t,dy:(r?4:8)+o},i={grid:e,dy:o};return tt(me.w,me.h,[{grid:n,dy:15},{grid:vs,dy:12+o},...r?[i,s]:[s,i]])}var sn=[X.strideA,X.pass,X.strideB,X.pass],an=[0,1,0,1],Sl=[oe.swingA,oe.idle,oe.swingB,oe.idle];function ln(e){return[0,1,2,3].map(e)}function vl(e){let t=kl(e),n=wl(e),o=[we(ae(Le,oe.idle,X.stand),t),we(ae(Le,oe.idle,X.stand,1),t)],r=ln(k=>we(ae(Le,Sl[k]??oe.idle,sn[k]??X.pass,an[k]),t)),s=(k,S,C)=>tt(me.w,me.h,[{grid:S,dy:15},{grid:vs,dy:12},{grid:k,dy:4},{grid:rn},...C?[{grid:ks,dx:0,dy:6}]:[]]),i=k=>[s(Rt.climbA,X.climbA,k),s(Rt.climbB,X.climbB,k)],a=[tt(me.w,me.h,[{grid:bl,dy:16},{grid:oe.idle,dy:12},{grid:Le,dy:4}])],l;if(n==="hammer")l=[we(ae(Le,oe.hold,X.stand,1),Ne.hammerDown),we(ae(rn,Rt.front,X.stand,0,!0),Ne.hammerUp)];else if(n==="pen"){let k=S=>cn(S,[[10,5,"l"],[10,6,"l"],[10,7,"L"],[11,5,"l"],[11,6,"L"],[11,7,"L"]]);l=[we(k(ae(Zo,oe.write,X.stand)),Ne.penDown),we(k(ae(Zo,oe.write,X.stand)),Ne.penUp)]}else n==="rod"?l=[we(ae(Le,oe.hold,X.stand),jn(10,3,!0)),we(ae(rn,oe.hold,X.stand),jn(14,9,!0))]:l=o;let d=[e==="skeptic"?we(ae(ws,Rt.front,X.stand,0,!0),["o","+"]):we(ae(ws,oe.hold,X.stand),null),we(ae(Le,oe.idle,X.stand),e==="skeptic"?null:t)],f=ln(k=>we(ae(Le,oe.hold,sn[k]??X.pass,an[k]),Ne.scroll)),m=ln(k=>tt(me.w,me.h,[{grid:ae(Le,oe.shoulder,sn[k]??X.pass,an[k])},{grid:ks,dx:0,dy:4+(an[k]??0)}])),y=k=>ln(S=>{let C=ae(Le,oe.hold,sn[S]??X.pass,an[S]),O=[{grid:C},er(C,k===3?Ne.basket:Ne.loaf,"*")];return k>1&&O.push(er(C,Ne.jug,"&")),tt(me.w,me.h,O)}),E=ln(k=>ae(Zo,oe.idle,sn[k]??X.pass,k%2)),g=[ae(rn,Rt.both,X.stand,0,!0),ae(rn,Rt.half,X.stand,1,!0)],w={idle:o,walk:r,climb:i(!1),"climb-stone":i(!0),sit:a,work:l,sleep:[[...yl]],talk:d,"carry-scroll":f,"carry-stone":m,"carry-ration":y(1),"carry-ration-2":y(2),"carry-ration-3":y(3),slump:E,cheer:g};if(e!=="waterboy")return w;let x={};for(let[k,S]of Object.entries(w))x[k]=S.map(C=>k==="sleep"?C:Cl(k==="sit"?C:El(C)));return x}function El(e){let t=".".repeat(e[0]?.length??0);return[t,t,...e.filter((n,o)=>o!==10&&o!==13)]}function Cl(e){let t=e.findIndex(r=>r.includes("h")),n=e[t]??"",o=Math.floor((n.indexOf("h")+n.lastIndexOf("h"))/2);return tt(e[0]?.length??0,e.length,[{grid:e},{grid:xl,dx:o-1,dy:t-3}])}var zn=[".....oooooo.....","....oyBYyBYo....","...oyBYyBYyyo...","...oBYyBYyyyyo..","..oyBYyBokkkkko.","..oBYyBYokkokko.","..oyBYyBokkkkkko","..oBYyBYokkKkko.","..oyBYyBookkkoo.","..oBYyBo.oYYo..."],Ss=[".....oooooo.....","....oyBYyBYo....","...oyBYyBYyyo...","...oBYyBYyykko..","..oyBYyBokkokko.","..oBYyBYokkkkkko","..oyBYyBokkkkko.","..oBYyBYoKkkkoo.","..oyBYyBookko...","..oBYyBo.oYYo..."],Ml=cn(zn,[[7,12,"o"]]),tr=["..oyBYoGyyyyyo..",".oGyyyGyyyGyyYo.",".oYzYYzYYzYYzYo.",".okowwwwwwwWokko",".okowwwwwwwWokko",".o&owwwwwwwWo*o.","..oowwwwwwWWoo..","...owyyyyyyYo...","...owwwwwwWWo...","...owwwwwwWWo...","...owwwwwwWWo...","..owwwwwwwWWWo..","..owwwwwwwWWWo..","..owwwwwwwWWWo..","..oooooooooooo..","...okko..okko..."],qn=cn(tr,[[3,1,"."],[3,2,"o"],[3,3,"w"],[4,1,"."],[4,2,"o"],[4,3,"w"],[5,1,"."],[5,2,"o"],[5,3,"w"]]);function Kn(e){let t=Array.from({length:13},()=>"...");t[e-1]=".o.",t[e]="o&o";for(let n=e+1;n<12;n++)t[n]="oko";return t[12]=".oo",t}var Al=[".y.","yGz",".z.",...Array.from({length:22},()=>".n.")];function Pt(e,t,n){let o=[{grid:Al,dx:13},{grid:t,dy:10},{grid:e}];return n&&o.push({grid:n}),tt(Eo.w,Eo.h,o)}function Ll(){let e=cn(tr,[[1,2,"y"],[1,6,"y"],[1,10,"y"],[1,4,"G"],[1,8,"G"]]);return{idle:[Pt(zn,tr,null),Pt(zn,e,null)],talk:[Pt(Ml,qn,Kn(6)),Pt(zn,qn,Kn(7))],cheer:[Pt(Ss,qn,Kn(1)),Pt(Ss,qn,Kn(4))]}}var Ce={tent:["............oo............","...........occo...........","..........occcCo..........",".........occccCCo.........","........occccqCCCo........",".......occccqqCCCCo.......","......occccqqoqCCCCo......",".....occccqqooqqCCCCo.....","....occccqqoooqqqCCCCo....","...occcccccoooooCCCCCCo...","..occcccccooooooCCCCCCCo..",".occccccccooooooCCCCCCCCo.","occccccccoooooooCCCCCCCCCo","oooooooooooooooooooooooooo"],palm:[".......vvv.........","....vvvvvvVv..vvv..","..vvvVVvvvvVvvvvvv.",".vvV...vVvvvvVV..vv","vvV...vvVrVvvv...Vv","vV...vV.JrJ.vVv...V","V...vV..rNJ..vV....","....V...rN....V....","........rN.........","........rN.........",".........rN........",".........rN........",".........rN........",".........rN........",".........rrN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rN.......","..........rrN......","..........rrN......","..........rrN......",".........rrN.......",".........rrN.......",".........rrN.......",".........rrN.......",".........rrNN......","........UUUUUU....."],table:["........oo..............",".......ojjo.............","..oo..ojjjJo..ooo.......",".obbo.ojjJJo.obbbo.ommo.","obbbbo.oJJo.obbbbbmlqlm.","ooooooooooooooooooomLLLm","onnnnnnnnnnnnnnnnnnnnnNo","oNNNNNNNNNNNNNNNNNNNNNNo",".oNo................oNo.",".oNo................oNo.",".ooo................ooo."],chest:["..oooooooooo..",".onnnnnnnnnNo.","onnnnnnnnnnNNo","oyyyyyyyyyyYYo","onnnnnoyonnNNo","oNNNNNoYoNNNNo","onnnnnnonnnNNo","onnnnnnnnnnNNo","oyyyyyyyyyyYYo","oooooooooooooo"],well:["..oooooooooooooooo..","..onnnnnnnnnnnnnNo..","..ooooooooooooooo...","..oNo....o....oNo...","..oNo....o....oNo...","..oNo...ooo...oNo...","..oNo..onnNo..oNo...","..oNo..oNNNo..oNo...","..oNo...ooo...oNo...","..oNo.........oNo...",".ooooooooooooooooo..","olllLlllLlllLlllLeo.","oLLmLLLmLLLmLLLmLeo.","oaaaaaaaaaaaaaaaaeo.","ollLlllLlllLlllLLeo.","oLmLLLmLLLmLLLmLLeo.","oLLLmLLLmLLLmLLLeeo.",".oooooooooooooooooo."],sledge:["oooooooooooooooooooooo..","onnnnnnnnnnnnnnnnnnnNo..","oNNNNNNNNNNNNNNNNNNNNo.o",".oNo....oNo.....oNo..onN","ooooooooooooooooooooooNo","oNNNNNNNNNNNNNNNNNNNNNo."],capstone:["....yY....","...yyYz...","...yyYz...","..yyyYzz..","..yyyYzz..",".yyyyYzzz.","yyyyyYzzzz"],capstoneGleam:["....GY....","...GyYz...","...yGYz...","..GyyYzz..","..yGyYzz..",".GyyGYzzz.","yyyyyYzzzz"],glint:[".G.","GGG",".G."],rubble:[["llLo","LLeo","oooo"],[".llo","lLLe","oooo"],["lLo","eeo"]]},Vn={hourglass:["ooooo","oGyGo",".oyo.","..o..",".oGo.","oyyyo","ooooo"],dots:["ooo.ooo.ooo","ofo.ofo.ofo","ooo.ooo.ooo"],zzz:[".....oooooo",".....offffo",".....ooofoo",".....oofooo","ooooooffffo","offfooooooo","oofoo......","offfo......","ooooo......"],question:[".ooo.","offfo","oo.fo","..ofo","..oo.","..of.","..oo."]},Es=["ooooooo","oyyyyYo",".oyyYo.","..oYo..","...o..."],Xn=[["...","###","#.#",".#."],["##.",".##",".#.","#.#"],[".#.","##.",".#.",".#."],["...","#.#",".#.","..."],[".#.","#.#","###",".#."],["###","#.#","###","..."],["#..","#..","##.","#.#"],["###","#..","##.","..."],["##.","..#",".#.","#.."],["...",".#.","###","..."],["...","###","#.#","###"],["...","#.#","###","..."],["###",".#.",".#.","###"],["#.#","###","#.#","###"],["###","#.#","#.#","#.#"],["#.#",".#.","#.#","..."]];function Nl(e,t){let n=new Map;for(let[o,r]of Object.entries(e))n.set(o,r.map(s=>ue(s,t)));return n}function Tl(e,t){let n={...jo,...fs(e)};if(t)for(let o of Object.keys(n))n[o]=ms(n[o]??"#000000");return n}function Qn(){let e=new Map,t=(n,o)=>{let r=`${n}:${o?"ghost":"solid"}`,s=e.get(r);return s||(s=Nl(n==="arbab"?Ll():vl(n),Tl(n,o)),e.set(r,s)),s};return{frames(n,o,r,s){let i=t(n,s),a=o==="carry-ration"&&r>=2?`carry-ration-${Math.min(3,r)}`:o;return i.get(a)??i.get("idle")??[]}}}function Ot(e){return ue(e,jo)}var ft={w:36,h:54,scale:3},un={w:48,h:78,scale:3},Rl=6,Ts=(e,t)=>e.name<t.name?-1:e.name>t.name?1:0;function Pl(e){return e.filter(t=>t.state!=="finished").sort((t,n)=>(jt[t.state]??9)-(jt[n.state]??9)||Ts(t,n))}function Cs(e){let t=Date.parse(e);return Number.isFinite(t)?t:-1/0}function Ol(e,t=Rl){return e.filter(n=>n.state==="finished").sort((n,o)=>Cs(o.since)-Cs(n.since)||Ts(n,o)).slice(0,t)}function Ms(e){switch(e.state){case"running":return{pose:"work",ghost:!1};case"held":case"queued":return{pose:"sit",ghost:!1};case"waiting-reset":return{pose:"sleep",ghost:!1};case"orphaned":return{pose:"idle",ghost:!0};default:return{pose:"idle",ghost:!1}}}function Bl(e){return Fr(e)?1:Oo(e.toolCalls)}function Rs(e){let{scrollHeight:t=0,clientHeight:n=0,scrollTop:o=0}=e;return[t,n,o].every(Number.isFinite)&&t-n-o>1}function Fl(e){return`CREW \\xB7 ${e.filter(n=>n.state==="running"||n.state==="preparing").length} AT WORK`}function Ps(e,t,n,o,r,s){let i=e.getContext("2d");if(!i)return 0;i.clearRect(0,0,n*s,o*s);let a=Math.max(1,Math.min(r,Math.floor(n/Math.max(1,t.w)),Math.floor(o/Math.max(1,t.h))));return Os(i,t,Math.floor((n-t.w*a)/2),o-t.h*a,a,s),a}function Os(e,t,n,o,r,s){let i=r*s;for(let a of t.runs)e.fillStyle=a.color,e.fillRect((n+a.x*r)*s,(o+a.y*r)*s,a.w*i,i)}var nr=Ot(Vn.zzz);function Il(e,t,n,o){let r=Ps(e,t,ft.w,ft.h,ft.scale,o),s=e.getContext("2d");if(n==="sleep"&&s){let i=t.h-t.top;Os(s,nr,ft.w-nr.w*2-2,ft.h-i*r-nr.h*2-4,2,o)}return r}function As(e,t,n){let o=T(e,"span","tile");o.setAttribute("aria-hidden","true");let r=at(e,ft.w,ft.h,n,"px avatar");r&&o.appendChild(r);let s="";return{el:o,set(i,a,l){let u=`${i}:${a}:${l}`;if(u===s)return;s=u,o.className=`tile cast-${i}${l?" ghost":""}`;let d=t.frames(i,a,0,l)[0];r&&d&&Il(r,d,a,n)}}}function Dl(e,t,n){let o=T(e,"span","tile tile-arbab");o.setAttribute("aria-hidden","true");let r=at(e,un.w,un.h,n,"px avatar"),s=t.frames("arbab","idle",0,!1)[0];return r&&(o.appendChild(r),s&&Ps(r,s,un.w,un.h,un.scale,n)),o}function Ls(e){let t=Tn(e);return t==="arbab"?"laborer":t}function Ns(e,t){let{tone:n,label:o}=on(t);e.el.className=`pxt badge tone-${n}`,e.set(o,Hn(n).ink)}function or(e,t){let n=kt(e,t);return n===null?"\\u2014":wt(n)}function Bs(e,t,n,o,r){let s=z(e,{scale:2,color:A.gold,dpr:o},"CREW");t.title.replaceChildren(s.el);let i=z(e,{scale:1,color:A.muted,dpr:o},"RECENTLY FINISHED");t.recentTitle.replaceChildren(i.el);let a=T(e,"p","empty-lead","The site is quiet."),l=T(e,"p","empty-hint");l.appendChild(T(e,"span","","No lane is at work. Launch one with ")),l.appendChild(T(e,"code","","arbab launch")),l.appendChild(T(e,"span","",", or ")),l.appendChild(T(e,"code","","arbab plan next")),l.appendChild(T(e,"span","",": workers walk in from the village."));let u=T(e,"div","empty-words");u.appendChild(a),u.appendChild(l),t.empty.replaceChildren(Dl(e,n,o),u);let d=new Map,f=[],m=null,y=null,E="",g=(S,C)=>{let O=T(e,"li","crew-item"),I=T(e,"button","card frame-btn");I.setAttribute("type","button"),I.setAttribute("aria-pressed","false");let P=As(e,n,o),G=T(e,"span","card-body"),Y=T(e,"span","card-head"),Oe=T(e,"span","name"),Be=z(e,{scale:1,color:Tt,dpr:o,className:"badge"});Y.appendChild(Oe),Y.appendChild(Be.el);let ve=T(e,"span","meta"),Fe=T(e,"span","progress"),fe=T(e,"span","bar"),Ie=T(e,"span","bar-fill");fe.appendChild(Ie);let De=T(e,"span","calls");Fe.appendChild(fe),Fe.appendChild(De);let le=T(e,"span","card-foot"),ne=T(e,"span","stats"),nt=T(e,"span","elapsed");le.appendChild(ne),le.appendChild(nt);for(let pe of[Y,ve,Fe,le])G.appendChild(pe);return I.appendChild(P.el),I.appendChild(G),O.appendChild(I),I.addEventListener("focus",()=>{y=S,r.enter(S)}),I.addEventListener("mouseenter",()=>r.enter(S)),I.addEventListener("blur",()=>{y===S&&(y=null),r.leave(S)}),I.addEventListener("mouseleave",()=>r.leave(S)),I.addEventListener("click",()=>r.toggle(S)),{li:O,button:I,avatar:P,name:Oe,meta:ve,badge:Be,elapsed:nt,fill:Ie,calls:De,stats:ne,lane:C}},w=(S,C,O)=>{S.lane=C;let{pose:I,ghost:P}=Ms(C);S.avatar.set(Ls(C),I,P),S.name.textContent=C.name,S.meta.textContent=`${C.role} \\xB7 ${C.kind}`,Ns(S.badge,C),S.elapsed.textContent=or(C,O),S.fill.style.width=`${Math.round(Bl(C)*100)}%`,S.calls.textContent=`${C.toolCalls} ${C.toolCalls===1?"call":"calls"}`,S.stats.textContent=`${C.lastTool??"\\u2014"} \\xB7 ${Ke(C.costUsd)}`},x=(S,C)=>{let O=Ol(S.lanes),I=JSON.stringify(O.map(P=>[P.name,P.endState,P.costUsd,P.elapsedMs,P.since]));t.recentGroup.hidden=O.length===0,I!==E&&(E=I,t.recent.replaceChildren(...O.map(P=>{let G=T(e,"li","recent-item"),Y=As(e,n,o),{pose:Oe,ghost:Be}=Ms(P);Y.set(Ls(P),Oe,Be);let ve=z(e,{scale:1,color:Tt,dpr:o});return Ns(ve,P),G.appendChild(Y.el),G.appendChild(T(e,"span","name",P.name)),G.appendChild(ve.el),G.appendChild(T(e,"span","num",Ke(P.costUsd))),G.appendChild(T(e,"span","num",or(P,C))),G})))},k={update(S,C){s.set(Fl(S.lanes));let O=Pl(S.lanes);for(let G of O){let Y=d.get(G.name);Y||(Y=g(G.name,G),d.set(G.name,Y)),w(Y,G,C)}let I=O.map(G=>G.name);f=vt(t.list,f,I,G=>d.get(G)?.li,y);let P=new Set(I);for(let G of[...d.keys()])P.has(G)||d.delete(G);y!==null&&!P.has(y)&&(y=null),t.empty.hidden=O.length>0,x(S,C),m!==null&&!P.has(m)&&(m=null),k.setPinned(m)},tick(S){for(let C of d.values())C.elapsed.textContent=or(C.lane,S)},setPinned(S){m=S;for(let[C,O]of d)O.button.setAttribute("aria-pressed",String(C===S))},order:()=>f,button:S=>d.get(S)?.button};return k}var rr=96,Fs=4,Ul=.7;function $l(e,t){return e>=t?"hold":e>=Ul?"warn":"ok"}var _l={ok:A.sand,warn:A["gold-2"],hold:A["st-failed"]};function Gl(e){let t=Math.max(0,Math.floor(e)),n=i=>String(i).padStart(2,"0"),o=Math.floor(t/86400),r=Math.floor(t%86400/3600),s=Math.floor(t%3600/60);return o>0?`${o}d ${n(r)}h`:r>0?`${r}h ${n(s)}m`:s>0?`${s}m`:"<1m"}function sr(e,t,n,o){let r=Math.max(0,Math.min(rr-1,Math.round(n*rr))),s=`hold at ${Math.round(n*100)}%`;if(!t||!Number.isFinite(t.utilization)||t.resetsAt<=o)return{percent:"\\u2014",fill:0,tick:r,level:"ok",title:`${e} window: no current reading \\xB7 ${s}`};let i=Math.max(0,Math.min(1,t.utilization)),a=rr/Fs,l=Math.min(a,Math.ceil(i*a))*Fs,u=`${Math.round(t.utilization*100)}%`;return{percent:u,fill:l,tick:r,level:$l(t.utilization,n),title:`${e} window ${u} \\xB7 resets in ${Gl(t.resetsAt-o)} \\xB7 ${s}`}}function ir(e,t,n,o){let r=z(e,{scale:1,color:A.muted,dpr:o,className:"gauge-label"},n.toUpperCase()),s=T(e,"span","gauge-bar"),i=T(e,"span","gauge-fill"),a=T(e,"span","gauge-tick");s.appendChild(i),s.appendChild(a);let l=z(e,{scale:1,color:A.sand,dpr:o,className:"gauge-pct"});return t.replaceChildren(r.el,s,l.el),{update(u){t.setAttribute("title",u.title),t.setAttribute("data-level",u.level),i.style.width=`${u.fill}px`,a.style.left=`${u.tick}px`,l.set(u.percent,u.percent==="\\u2014"?A.muted:_l[u.level])}}}var Ds=600,Is=136;function Hl(e){let t=Fo(e.lanes);return{atWork:t.running+t.preparing,waiting:t.waiting,asleep:t.asleep,succeeded:t.succeeded,failed:t.failed,treasury:Io(e.lanes)}}function Wl(e){return 1-(1-e)**3}function Yl(e,t,n,o=Ds){if(!(n<o)||o<=0)return t;let r=Math.max(0,n/o);return e+(t-e)*Wl(r)}function ql(e,t=Ds){let n=[],o=[],r=0,s=i=>o.map((a,l)=>Yl(n[l]??0,a,i-r,t));return{set(i,a){if(i.length===o.length&&i.every((u,d)=>u===o[d]))return;let l=s(a);n=e?[...i]:i.map((u,d)=>l[d]??0),o=[...i],r=a},value:s}}function Kl(e){let t=je(e);return t*4<=Is?4:t*3<=Is?3:2}var dn=e=>Math.round(e??0),zl=[{key:"at-work",label:"AT WORK",icon:"hammer",values:e=>[e.atWork],format:e=>String(dn(e[0])),color:A.text},{key:"waiting",label:"WAITING",icon:"hourglass",values:e=>[e.waiting],format:e=>String(dn(e[0])),color:A.text},{key:"asleep",label:"ASLEEP",icon:"zzz",values:e=>[e.asleep],format:e=>String(dn(e[0])),color:A.text},{key:"finished",label:"FINISHED",icon:"check",values:e=>[e.succeeded,e.failed],format:e=>`\\u2713${dn(e[0])} \\u2717${dn(e[1])}`,color:A.text},{key:"treasury",label:"TREASURY",icon:"coin",values:e=>[e.treasury],format:e=>`$${(e[0]??0).toFixed(2)}`,color:A.gold}];function jl(e,t){let n=e.format(t);return{text:n,zero:!/[1-9]/.test(n)}}function Us(e,t,n){let o=zl.map(s=>{let i=T(e,"li","kpi frame");i.setAttribute("data-kpi",s.key);let a=Wn(e,s.icon,2,n.dpr,16),l=z(e,{scale:4,color:A.muted,dpr:n.dpr,className:"kpi-number"}),u=z(e,{scale:1,color:A.muted,dpr:n.dpr,className:"kpi-label"},s.label);return a&&i.appendChild(a),i.appendChild(l.el),i.appendChild(u.el),{spec:s,counter:ql(n.reducedMotion),number:l,li:i}});t.replaceChildren(...o.map(s=>s.li));let r=(s,i)=>{let{text:a,zero:l}=jl(s.spec,s.counter.value(i));s.li.setAttribute("data-zero",String(l)),s.number.set(a,l?A.muted:s.spec.color,Kl(a))};return{update(s,i){let a=Hl(s);for(let l of o)l.counter.set(l.spec.values(a),i),r(l,i)},tick(s){for(let i of o)r(i,s)}}}var Jn=[{key:"lane",label:"lane",numeric:!1},{key:"role",label:"role",numeric:!1},{key:"state",label:"state",numeric:!1},{key:"attempt",label:"attempt",numeric:!0},{key:"calls",label:"calls",numeric:!0},{key:"lastTool",label:"last tool",numeric:!1},{key:"elapsed",label:"elapsed",numeric:!0},{key:"cost",label:"cost",numeric:!0}],Vl={key:"state",dir:"ascending"};function Xl(e){let t=jt[e.state]??9;return e.state==="finished"&&e.endState!=="success"?t+1:t}function $s(e,t,n){switch(t){case"lane":return e.name;case"role":return e.role;case"state":return Xl(e);case"attempt":return e.attempt;case"calls":return e.toolCalls;case"lastTool":return e.lastTool;case"elapsed":return kt(e,n);case"cost":return e.costUsd!==null&&Number.isFinite(e.costUsd)?e.costUsd:null}}function _s(e,t){return e<t?-1:e>t?1:0}function Ql(e,t,n){let o=t.dir==="ascending"?1:-1;return[...e].sort((r,s)=>{let i=$s(r,t.key,n),a=$s(s,t.key,n);if(i===null||a===null){if(i!==a)return i===null?1:-1}else{let l=_s(i,a);if(l!==0)return o*l}return _s(r.name,s.name)})}function Jl(e,t){return e.key===t?{key:t,dir:e.dir==="ascending"?"descending":"ascending"}:{key:t,dir:"ascending"}}function Gs(e,t){let n=kt(e,t);return[e.name,e.role,on(e).label,String(e.attempt),String(e.toolCalls),e.lastTool??"\\u2014",n===null?"\\u2014":wt(n),Ke(e.costUsd)]}function Hs(e,t,n,o){let r=z(e,{scale:2,color:A.gold,dpr:n},"LEDGER");t.title.replaceChildren(r.el);let s=Vl,i=[],a=0,l=new Map,u=[],d=Jn.map(w=>{let x=T(e,"th",w.numeric?"num":"");x.setAttribute("scope","col");let k=T(e,"button","sort",w.label);return k.setAttribute("type","button"),k.addEventListener("click",()=>g.sortBy(w.key)),x.appendChild(k),{th:x,key:w.key}});t.head.replaceChildren(...d.map(w=>w.th));let f=()=>{for(let w of d)w.th.setAttribute("aria-sort",w.key===s.key?s.dir:"none")};f();let m=(w,x)=>{let k=T(e,"tr"),S=z(e,{scale:1,color:Tt,dpr:n,className:"badge"}),C=Jn.map((O,I)=>{let P=T(e,I===0?"th":"td",O.numeric?"num":"");return I===0&&P.setAttribute("scope","row"),O.key==="state"&&P.appendChild(S.el),k.appendChild(P),P});return k.addEventListener("mouseenter",()=>o.enter(w)),k.addEventListener("mouseleave",()=>o.leave(w)),k.addEventListener("click",()=>o.toggle(w)),{tr:k,cells:C,badge:S,lane:x}},y=(w,x)=>{let k=Gs(w.lane,x);Jn.forEach((S,C)=>{if(S.key==="state"){let{tone:I,label:P}=on(w.lane);w.badge.el.className=`pxt badge tone-${I}`,w.badge.set(P,Hn(I).ink);return}let O=w.cells[C];O&&(O.textContent=k[C]??"")})},E=()=>{let w=Ql(i,s,a).map(x=>x.name);u=vt(t.body,u,w,x=>l.get(x)?.tr)},g={update(w,x){i=w.lanes,a=x;let k=new Set(i.map(S=>S.name));for(let S of i){let C=l.get(S.name);C||(C=m(S.name,S),l.set(S.name,C)),C.lane=S,y(C,x)}E();for(let S of[...l.keys()])k.has(S)||l.delete(S)},tick(w){a=w;let x=Jn.findIndex(k=>k.key==="elapsed");for(let k of l.values()){let S=k.cells[x];S&&(S.textContent=Gs(k.lane,w)[x]??"")}},setPinned(w){for(let[x,k]of l)k.tr.className=x===w?"pinned":""},sort:()=>s,sortBy(w){s=Jl(s,w),f(),E()},order:()=>u};return g}var Zl={done:"\\u2713",failed:"\\u2717",pending:"\\xB7"};function Te(e,t,n){return{label:e,state:t,mark:Zl[t],detail:n}}var ec=(e,t)=>`${e} ${t}${e===1?"":"s"}`;function tc(e){return`${e.lenses} ${e.lenses===1?"lens":"lenses"} \\xB7 ${e.confirmed} confirmed \\xB7 ${e.unverified} unverified`}function nc(e,t){let n=e.verify,o=e.ready,r=qe(e.landedAt);return[Te("INTEGRATED","done",ec(e.lanes.length,"lane")),n==="passed"?Te("VERIFY","done","passed"):n==="failed"?Te("VERIFY","failed","failed"):Te("VERIFY","pending","not run"),e.review?Te("REVIEW","done",tc(e.review)):Te("REVIEW","pending","not run"),o===!0?Te("READY","done","ready"):o===!1?Te("READY","failed","not ready"):Te("READY","pending","not checked"),e.landedAt!==null?Te("LANDED","done",Number.isFinite(r)?St(t-r):"landed"):Te("LANDED","pending","not landed")]}var Ws={done:A.gold,failed:A["st-failed"],pending:A.faint};function Ys(e,t,n){let o=z(e,{scale:2,color:A.gold,dpr:n},"MONUMENT");t.title.replaceChildren(o.el);let r=T(e,"p","monument-head"),s=T(e,"span","name"),i=T(e,"code","sha");r.appendChild(s),r.appendChild(i);let a=T(e,"ol","stepper"),l=[0,1,2,3,4].map(()=>{let d=T(e,"li","step"),f=z(e,{scale:1,color:A.faint,dpr:n,className:"node"}),m=z(e,{scale:1,color:A.faint,dpr:n,className:"step-label"}),y=T(e,"span","detail");return d.appendChild(f.el),d.appendChild(m.el),d.appendChild(y),a.appendChild(d),{li:d,mark:f,label:m,detail:y}}),u=T(e,"p","empty","No integration yet.");return t.body.replaceChildren(r,a,u),{update(d,f){let m=Or(d);r.hidden=m===null,a.hidden=m===null,u.hidden=m!==null,m&&(s.textContent=m.name,i.textContent=m.headSha.slice(0,7),nc(m,f).forEach((y,E)=>{let g=l[E];g&&(g.li.setAttribute("data-state",y.state),g.mark.set(y.mark,Ws[y.state]),g.label.set(y.label,Ws[y.state]),g.detail.textContent=y.detail)}))}}}var Zn="This session ended or restarted. Use the tab the new `arbab ui` opened, or the URL it printed.",qs="This page is one too many: arbab ui serves 16 at once. Close another of its tabs and reload.",Ks="arbab ui is not running.";function ar(e){return e===null?Ks:e.status===200?qs:Zn}function zs(e){switch(e){case"live":return{text:"LIVE",color:A["st-success"]};case"lost":return{text:"RECONNECTING",color:A["st-waiting"]};case"closed":return{text:"OFFLINE",color:A["st-failed"]};default:return{text:"CONNECTING",color:A.muted}}}var to={header:"top",logo:"logo",title:"title",project:"project",version:"version",gauge5h:"gauge-5h",gauge7d:"gauge-7d",held:"held",connection:"connection",sound:"sound",banner:"banner",kpis:"kpis",site:"site",siteTitle:"site-title",siteFullscreen:"site-fullscreen",stage:"stage",canvas:"scene",titleCard:"title-card",titleCardLogo:"title-card-logo",titleCardWord:"title-card-word",tooltip:"tooltip",notice:"notice",caption:"caption",crewPanel:"crew-panel",crewTitle:"crew-title",crewScroll:"crew-scroll",crew:"crew",crewEmpty:"crew-empty",recentGroup:"recent-group",recentTitle:"recent-title",recent:"recent",monumentTitle:"monument-title",monument:"monument",chronicleTitle:"chronicle-title",chronicle:"chronicle",chronicleEmpty:"chronicle-empty",ledgerTitle:"ledger-title",ledgerHead:"ledger-head",table:"lanes",footer:"footer",live:"live"},F=to,Kf=`<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n<meta name="robots" content="noindex">\n<meta name="color-scheme" content="dark">\n<title>arbab \\xB7 pyramid</title>\n<link rel="icon" href="${st.icon}" type="image/svg+xml">\n<link rel="stylesheet" href="${st.style}">\n<script src="${st.script}" defer><\\/script>\n</head>\n<body>\n<header id="${F.header}" class="topbar">\n<div class="brand">\n<canvas id="${F.logo}" class="px logo" width="32" height="32" aria-hidden="true"></canvas>\n<h1 id="${F.title}" class="wordmark">arbab</h1>\n<p class="project"><span id="${F.project}">connecting\\u2026</span> <span id="${F.version}" class="version"></span></p>\n</div>\n<div class="status">\n<div class="gauges">\n<div id="${F.gauge5h}" class="gauge" data-level="ok"></div>\n<div id="${F.gauge7d}" class="gauge" data-level="ok"></div>\n</div>\n<div class="controls">\n<span id="${F.held}" class="pill held" hidden>held</span>\n<span id="${F.connection}" class="pill connection" data-state="connecting">connecting</span>\n<button id="${F.sound}" type="button" aria-pressed="false">sound</button>\n</div>\n</div>\n</header>\n<p id="${F.banner}" class="banner" role="alert" hidden></p>\n<main class="hud">\n<section class="kpi-row" aria-labelledby="kpi-heading">\n<h2 id="kpi-heading" class="visually-hidden">Lanes at a glance</h2>\n<ul id="${F.kpis}" class="kpis"></ul>\n</section>\n<div class="grid">\n<section id="${F.site}" class="frame panel site" aria-labelledby="${F.siteTitle}">\n<div class="titlebar">\n<h2 id="${F.siteTitle}">The site</h2>\n<button id="${F.siteFullscreen}" type="button" class="small" aria-controls="${F.site}">full screen</button>\n</div>\n<div id="${F.stage}" class="stage">\n<canvas id="${F.canvas}" width="480" height="270" role="img" aria-label="The pyramid scene: each lane is a worker building a block, and arbab hands out the work. The crew, the chronicle and the ledger say the same in text."></canvas>\n<div id="${F.titleCard}" class="title-card" aria-hidden="true">\n<canvas id="${F.titleCardLogo}" class="px" width="64" height="64"></canvas>\n<div id="${F.titleCardWord}" class="title-card-word">ARBAB</div>\n<p class="awakens">the site awakens\\u2026</p>\n</div>\n<div id="${F.tooltip}" class="tooltip frame" role="tooltip" hidden></div>\n<div id="${F.notice}" class="notice" hidden></div>\n</div>\n<p id="${F.caption}" class="caption">THE SITE IS QUIET</p>\n</section>\n<aside class="side" aria-label="Crew and monument">\n<section id="${F.crewPanel}" class="frame panel crew-panel" aria-labelledby="${F.crewTitle}" data-more="false">\n<div class="titlebar"><h2 id="${F.crewTitle}">Crew</h2></div>\n<div id="${F.crewScroll}" class="crew-scroll">\n<ul id="${F.crew}" class="crew"></ul>\n<div id="${F.crewEmpty}" class="crew-empty"></div>\n<details id="${F.recentGroup}" class="recent-group" hidden>\n<summary id="${F.recentTitle}">Recently finished</summary>\n<ul id="${F.recent}" class="recent"></ul>\n</details>\n</div>\n</section>\n<section class="frame panel monument-panel" aria-labelledby="${F.monumentTitle}">\n<div class="titlebar"><h2 id="${F.monumentTitle}">Monument</h2></div>\n<div id="${F.monument}" class="monument"></div>\n</section>\n</aside>\n</div>\n<div class="below">\n<section class="frame panel" aria-labelledby="${F.chronicleTitle}">\n<div class="titlebar"><h2 id="${F.chronicleTitle}">Chronicle</h2></div>\n<ol id="${F.chronicle}" class="chronicle"></ol>\n<p id="${F.chronicleEmpty}" class="empty">Nothing has happened yet.</p>\n</section>\n<section class="frame panel" aria-labelledby="${F.ledgerTitle}">\n<div class="titlebar"><h2 id="${F.ledgerTitle}">Ledger</h2></div>\n<div class="table-wrap">\n<table aria-labelledby="${F.ledgerTitle}">\n<thead><tr id="${F.ledgerHead}"><th scope="col">lane</th><th scope="col">role</th><th scope="col">state</th><th scope="col">attempt</th><th scope="col">calls</th><th scope="col">last tool</th><th scope="col">elapsed</th><th scope="col">cost</th></tr></thead>\n<tbody id="${F.table}"></tbody>\n</table>\n</div>\n</section>\n</div>\n</main>\n<footer>\n<p id="${F.footer}">Read-only</p>\n</footer>\n<div id="${F.live}" class="visually-hidden" aria-live="polite"></div>\n</body>\n</html>\n`,js=(e,t="")=>e.map(([n,o])=>`  --${t}${n}: ${o};`).join(`\n`),eo=(e,t,n="var(--frame-hi)",o="var(--frame-lo)")=>`0 -${e}px 0 0 var(--frame-dark), 0 ${e}px 0 0 var(--frame-dark), -${e}px 0 0 0 var(--frame-dark), ${e}px 0 0 0 var(--frame-dark),\n    inset ${t}px ${t}px 0 0 ${n}, inset -${t}px -${t}px 0 0 ${o}`,zf=`:root {\n  color-scheme: dark;\n${js(Object.entries(A))}\n${js(Object.entries(Xo),"chip-")}\n  --s1: 4px;\n  --s2: 8px;\n  --s3: 12px;\n  --s4: 16px;\n  --s5: 20px;\n  --s6: 24px;\n  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;\n  font-size: 14px;\n  font-variant-numeric: tabular-nums;\n}\n* { box-sizing: border-box; }\nbody {\n  margin: 0; color: var(--text); line-height: 1.45;\n  background: radial-gradient(ellipse 120% 60% at 50% -10%, #2a1d12 0, var(--bg) 70%) fixed, var(--bg);\n}\np { margin: 0; }\ncode { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--sand); }\ncanvas.px { display: inline-block; vertical-align: middle; image-rendering: crisp-edges; image-rendering: pixelated; }\n.pxt { display: inline-flex; align-items: center; line-height: 0; }\n:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }\n.visually-hidden {\n  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;\n  overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;\n}\n[hidden] { display: none !important; }\n\n/* Pixel frames: square, notched corners; never rounded. */\n.frame {\n  margin: var(--s1); background: var(--panel); border-radius: 0;\n  box-shadow: ${eo(4,2)};\n}\nbutton {\n  font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 0; border-radius: 0;\n  margin: 2px; padding: var(--s1) 10px; cursor: pointer; white-space: nowrap;\n  box-shadow: ${eo(2,2)};\n}\nbutton:hover { background: var(--panel-hi); }\nbutton:active, button[aria-pressed="true"] {\n  color: var(--gold); background: var(--panel);\n  box-shadow: ${eo(2,2,"var(--frame-lo)","var(--frame-hi)")};\n}\nbutton.small { font-size: 12px; padding: 2px var(--s2); }\n\n/* Top bar */\n.topbar {\n  position: sticky; top: 0; z-index: 10; height: 56px; display: flex; align-items: center; gap: var(--s4);\n  padding: 0 var(--s4); background: var(--bg-2); border-bottom: 2px solid var(--frame);\n  box-shadow: 0 2px 0 0 var(--frame-dark);\n}\n.brand { display: flex; align-items: center; gap: var(--s3); min-width: 0; }\n.logo { width: 32px; height: 32px; }\nh1 { margin: 0; font-size: 18px; line-height: 0; color: var(--gold); }\n.project { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n#${F.project} { color: var(--text); font-weight: 600; }\n.version { color: var(--muted); }\n.status, .gauges, .controls { display: flex; align-items: center; gap: var(--s3); min-width: 0; }\n.status { margin-left: auto; }\n.gauge { display: flex; align-items: center; gap: 6px; --level: var(--sand); }\n.gauge[data-level="warn"] { --level: var(--gold-2); }\n.gauge[data-level="hold"] { --level: var(--st-failed); }\n.gauge-bar {\n  position: relative; width: 96px; height: 10px; background: var(--frame-dark);\n  box-shadow: 0 0 0 1px var(--frame-lo);\n}\n.gauge-fill {\n  position: absolute; left: 0; top: 0; bottom: 0; width: 0;\n  background: repeating-linear-gradient(90deg, var(--level) 0 3px, transparent 3px 4px);\n}\n.gauge-tick { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--text); }\n.pill {\n  display: inline-flex; align-items: center; gap: 6px; padding: 3px var(--s2); margin: 2px; line-height: 0;\n  background: var(--panel); box-shadow: ${eo(2,1)}; font-size: 12px;\n}\n.pill.held { line-height: 1; color: var(--bg); background: var(--st-waiting); font-weight: 700; text-transform: uppercase; }\n.connection::before { content: ""; width: 6px; height: 6px; background: var(--muted); }\n.connection[data-state="live"]::before { background: var(--st-success); animation: pulse 2s steps(4) infinite; }\n.connection[data-state="lost"]::before { background: var(--st-waiting); }\n.connection[data-state="closed"]::before { background: var(--st-failed); }\n@keyframes pulse { 50% { opacity: 0.3; } }\n.banner { padding: var(--s2) var(--s4); background: var(--st-failed); color: #fff; font-weight: 600; }\n\n/* The dashboard. Its vertical spacing around the scene card is PAGE_GAPS in hud.ts: keep the two in step. */\n.hud { display: grid; gap: var(--s3); padding: var(--s3) var(--s4) var(--s4); max-width: 1880px; margin: 0 auto; }\n.grid, .side, .below { display: grid; gap: var(--s3); grid-template-columns: minmax(0, 1fr); align-items: start; }\n.hud > *, .grid > *, .side > *, .below > * { min-width: 0; }\n.side { align-content: start; }\n@media (min-width: 900px) {\n  .side { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n  .below { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }\n}\n@media (min-width: 1280px) {\n  .grid { grid-template-columns: minmax(0, 1fr) 360px; align-items: stretch; }\n  /* As tall as the scene card and no taller: size containment keeps the crew from stretching the row. The items\n     stretch, so the crew panel fills the first row instead of shrinking to its title around a zero-basis list. */\n  .side { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; align-content: stretch; align-items: stretch; contain: size; }\n  .crew-panel { display: flex; flex-direction: column; min-height: 0; }\n  .crew-panel > .titlebar { flex: none; }\n  .crew-panel .crew-scroll { flex: 1 1 0; min-height: 0; max-height: none; overflow-y: auto; }\n}\n.panel { padding: var(--s3); min-width: 0; }\n.titlebar {\n  display: flex; align-items: center; justify-content: space-between; gap: var(--s2);\n  min-height: 30px; margin-bottom: var(--s3); padding-bottom: var(--s2); border-bottom: 2px solid var(--frame-lo);\n}\nh2 { margin: 0; font-size: 14px; line-height: 0; color: var(--gold); }\n.empty { color: var(--muted); padding: var(--s2) 0; }\n\n/* KPI cards */\n.kpis { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }\n.kpi { display: grid; grid-template-columns: 16px minmax(0, 1fr); grid-template-areas: "icon label" "num num"; gap: var(--s2) var(--s2); align-items: center; padding: var(--s3) 14px; }\n.kpi .icon { grid-area: icon; width: 16px; height: 16px; }\n.kpi .kpi-label { grid-area: label; }\n.kpi .kpi-number { grid-area: num; min-height: 44px; }\n/* Wide: one row per card (icon, label, number), so the KPI row leaves the scene its height. */\n@media (min-width: 1280px) {\n  .kpi { grid-template-columns: 16px auto minmax(0, 1fr); grid-template-areas: "icon label num"; padding: var(--s2) 14px; }\n  .kpi .kpi-number { justify-self: end; }\n}\n\n/* The scene card: lean chrome, so 3\\xD7 fits a 1080-px screen (stageRoom in hud.ts measures it). */\n.site { padding: var(--s2); }\n.site .titlebar { min-height: 28px; margin-bottom: var(--s2); padding-bottom: 6px; }\n.stage {\n  position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; overflow: hidden;\n  background-color: var(--frame-dark);\n  background-image:\n    repeating-linear-gradient(45deg, rgb(255 255 255 / 0.025) 0 2px, transparent 2px 8px),\n    repeating-linear-gradient(-45deg, rgb(0 0 0 / 0.25) 0 2px, transparent 2px 8px),\n    radial-gradient(ellipse at center, var(--bg-2) 0, var(--frame-dark) 80%);\n  box-shadow: inset 0 0 0 2px var(--frame-lo);\n}\n#${F.canvas} { display: block; flex: none; width: 480px; height: 270px; image-rendering: crisp-edges; image-rendering: pixelated; }\n/* Below 1\\xD7: the stage\'s width, the height by the art\'s aspect ratio. */\n#${F.canvas}.fluid { flex: 1 1 auto; max-width: 100%; aspect-ratio: 480 / 270; }\n.caption {\n  display: flex; justify-content: center; min-height: 27px; margin-top: 6px; padding: var(--s2);\n  line-height: 0; color: var(--sand); background: var(--bg-2); box-shadow: inset 0 0 0 2px var(--frame-lo);\n}\n.site:fullscreen { margin: 0; width: 100vw; height: 100vh; display: flex; flex-direction: column; background: var(--bg); box-shadow: none; }\n.site:fullscreen .stage { flex: 1; min-height: 0; }\n.title-card {\n  position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; align-items: center; justify-content: center;\n  gap: var(--s4); background: radial-gradient(ellipse at center, var(--panel) 0, var(--bg) 75%);\n  transition: opacity 0.6s steps(6), visibility 0s linear 0.6s;\n}\n.title-card.gone { opacity: 0; visibility: hidden; }\n.title-card-word { line-height: 0; color: var(--gold); font-size: 32px; }\n.awakens { color: var(--muted); font-style: italic; }\n.tooltip { position: absolute; z-index: 4; pointer-events: none; min-width: 190px; max-width: 320px; padding: 10px 12px; font-size: 13px; }\n.tooltip .tip-title { margin-bottom: 6px; line-height: 0; }\n.tooltip div + div { color: var(--muted); }\n.notice {\n  position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: var(--s4); text-align: center;\n  background: rgb(18 13 10 / 0.94); font-size: 15px;\n}\n\n/* Crew: the list scrolls inside its panel, with a fade at the bottom edge while there is more below. */\n.crew-panel { position: relative; }\n.crew-scroll { min-height: 0; max-height: 640px; overflow: auto; }\n.crew-panel[data-more="true"]::after {\n  content: ""; position: absolute; left: var(--s3); right: var(--s3); bottom: var(--s3); height: 36px; pointer-events: none;\n  background: linear-gradient(to bottom, transparent, var(--panel));\n}\n.crew { list-style: none; margin: 0; padding: 2px; display: grid; gap: var(--s3); }\n.card {\n  width: calc(100% - 4px); display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; align-items: start;\n  padding: var(--s2); text-align: left; white-space: normal; font-size: 14px; color: var(--text); background: var(--panel-2);\n}\n.card[aria-pressed="true"] { color: var(--text); }\n.card[aria-pressed="true"] .name { color: var(--gold); }\n.tile {\n  display: grid; place-items: end center; width: 44px; height: 62px; padding-bottom: var(--s1);\n  background: color-mix(in srgb, var(--chip, var(--frame)) 38%, var(--bg-2)); box-shadow: inset 0 0 0 2px var(--frame-dark);\n}\n.tile .avatar { width: 36px; height: 54px; }\n.tile-arbab { flex: none; width: 56px; height: 86px; background: var(--bg-2); }\n.tile-arbab .avatar { width: 48px; height: 78px; }\n.tile.ghost .avatar { opacity: 0.75; }\n${Object.keys(Xo).map(e=>`.cast-${e} { --chip: var(--chip-${e}); }`).join(`\n`)}\n.card-body { display: grid; gap: 3px; min-width: 0; }\n.card-head, .card-foot { display: flex; align-items: center; justify-content: space-between; gap: var(--s2); min-width: 0; }\n.name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n.meta, .stats, .calls, .elapsed, .num { color: var(--muted); font-size: 13px; }\n.stats { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }\n.elapsed, .calls { white-space: nowrap; }\n.progress { display: flex; align-items: center; gap: var(--s2); }\n.bar { position: relative; flex: 1; height: 8px; overflow: hidden; background: var(--frame-dark); box-shadow: 0 0 0 1px var(--frame-lo); }\n.bar-fill {\n  position: absolute; left: 0; top: 0; bottom: 0; width: 0;\n  background: repeating-linear-gradient(90deg, var(--gold) 0 4px, var(--gold-2) 4px 5px, var(--frame-dark) 5px 6px);\n}\n.badge { display: inline-flex; align-items: center; flex: none; padding: 2px var(--s1); background: var(--tone, var(--st-orphaned)); box-shadow: 0 0 0 1px var(--frame-dark); }\n${["running","preparing","waiting","asleep","success","orphaned"].map(e=>`.tone-${e} { --tone: var(--st-${e}); }`).join(`\n`)}\n.tone-failed { --tone: var(--badge-failed); }\n.crew-empty { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) 0; }\n.empty-lead { font-weight: 600; }\n.empty-hint { color: var(--muted); font-size: 13px; }\n.recent-group { margin-top: var(--s3); }\n.recent-group summary { cursor: pointer; padding: var(--s1) 0; line-height: 0; }\n.recent { list-style: none; margin: var(--s2) 0 0; padding: 0; display: grid; gap: var(--s1); }\n.recent-item { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto auto auto; gap: var(--s2); align-items: center; }\n.recent-item .tile { height: 44px; overflow: hidden; }\n\n/* Monument */\n.monument-head { display: flex; align-items: baseline; gap: var(--s2); margin-bottom: 10px; }\n.stepper { list-style: none; margin: 0; padding: 0; }\n.step { position: relative; display: grid; grid-template-columns: 20px auto minmax(0, 1fr); gap: 10px; align-items: center; padding: 6px 0; }\n.step + .step::before { content: ""; position: absolute; left: 9px; top: -8px; width: 2px; height: 16px; background: var(--frame-lo); }\n.step[data-state="done"] + .step::before { background: var(--gold-2); }\n.node {\n  position: relative; z-index: 1; justify-content: center; width: 20px; height: 20px; background: var(--bg-2);\n  box-shadow: 0 0 0 2px var(--frame-dark), inset 0 0 0 2px var(--frame-lo);\n}\n.step[data-state="done"] .node { box-shadow: 0 0 0 2px var(--frame-dark), inset 0 0 0 2px var(--gold-2); }\n.step[data-state="failed"] .node { box-shadow: 0 0 0 2px var(--frame-dark), inset 0 0 0 2px var(--st-failed); }\n.detail { color: var(--muted); font-size: 13px; text-align: right; }\n\n/* Chronicle */\n.chronicle { list-style: none; margin: 0; padding: 0; max-height: 380px; overflow: auto; }\n.chronicle-line {\n  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: var(--s2); align-items: center;\n  padding: 5px var(--s1); border-bottom: 1px solid var(--frame-lo);\n}\n.chronicle-line .ago { color: var(--muted); font-size: 12px; white-space: nowrap; }\n.chronicle-line.enter { animation: slide-in 0.4s steps(5) both; }\n@keyframes slide-in { from { transform: translateX(-16px); opacity: 0; } to { transform: none; opacity: 1; } }\n\n/* Ledger */\n.table-wrap { max-height: 380px; overflow: auto; box-shadow: inset 0 0 0 1px var(--frame-lo); }\ntable { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }\nthead th { position: sticky; top: 0; z-index: 1; padding: 0; text-align: left; background: var(--panel-hi); border-bottom: 2px solid var(--frame-dark); }\nthead th.num { text-align: right; }\nbutton.sort {\n  width: 100%; margin: 0; padding: 6px var(--s2); text-align: inherit; font-size: 12px; font-weight: 600;\n  color: var(--muted); background: transparent; box-shadow: none; text-transform: uppercase; letter-spacing: 0.04em;\n}\nbutton.sort:hover { color: var(--text); }\nth[aria-sort="ascending"] .sort, th[aria-sort="descending"] .sort { color: var(--gold); }\nth[aria-sort="ascending"] .sort::after { content: " \\u25B2"; }\nth[aria-sort="descending"] .sort::after { content: " \\u25BC"; }\ntbody th, tbody td { padding: 5px var(--s2); text-align: left; font-weight: 400; white-space: nowrap; border-bottom: 1px solid var(--frame-lo); }\ntbody th { font-weight: 600; }\ntbody tr { cursor: pointer; }\ntbody tr:nth-child(even) { background: var(--panel-2); }\ntbody tr:hover, tbody tr.pinned { background: var(--panel-hi); }\ntbody tr.pinned th { color: var(--gold); }\ntbody .num { text-align: right; color: var(--text); }\n\nfooter { padding: 0 var(--s4) var(--s4); color: var(--muted); font-size: 13px; text-align: center; }\n\n@media (max-width: 899px) {\n  .topbar { height: auto; min-height: 56px; flex-wrap: wrap; padding: var(--s2) var(--s4); }\n  .status { flex-wrap: wrap; }\n}\n/* Narrow (a phone): nothing wider than the screen. The top bar stacks its rows: the logo, the gauges, the buttons. */\n@media (max-width: 599px) {\n  .topbar { flex-direction: column; align-items: stretch; gap: var(--s2); }\n  .status { margin-left: 0; flex-direction: column; align-items: flex-start; gap: var(--s2); }\n  .gauges, .controls { flex-wrap: wrap; }\n  .hud { padding: var(--s2); }\n  .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }\n  .card-head, .card-foot { flex-wrap: wrap; }\n  .recent-item { grid-template-columns: 44px minmax(0, 1fr) auto; }\n}\n@media (prefers-reduced-motion: reduce) {\n  *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }\n}\n`;function Xs(e){let t="",n=null,o=0,r=0,s=(i,a,l,u,d)=>{let f=n?n(d):d,m=Math.round(i)+o,y=Math.round(a)+r,E=m+Math.round(l),g=y+Math.round(u);m=Math.max(0,m),y=Math.max(0,y),E=Math.min(480,E),g=Math.min(270,g),!(E<=m||g<=y)&&(f!==t&&(e.fillStyle=f,t=f),e.fillRect(m,y,E-m,g-y))};return{rect:s,rects(i,a=0,l=0){for(let u of i)s(u.x+a,u.y+l,u.w,u.h,u.color)},sprite(i,a,l,u=!1){for(let d of u?i.mirrored:i.runs)s(a+d.x,l+d.y,d.w,1,d.color)},alpha(i){e.globalAlpha=Math.min(1,Math.max(0,Number.isFinite(i)?i:1))},tint(i){n=i},offset(i,a){o=Number.isFinite(i)?Math.round(i):0,r=Number.isFinite(a)?Math.round(a):0},text(i,a,l,u){let d=n?n(u):u;return t=d,Yn(e,i,Math.round(a)+o,Math.round(l)+r,d,1)}}}var oc={day:null,dusk:{color:"#B04A64",amount:.3},night:{color:"#16286A",amount:.58}},Vs=new Map;function Bt(e){let t=oc[e];if(!t)return null;let n=Vs.get(e);if(!n){let o=new Map;n=r=>{let s=o.get(r);return s===void 0&&(s=W(r,t.color,t.amount),o.set(r,s)),s},Vs.set(e,n)}return n}function Z(e){let t=e>>>0;return()=>{t=t+1831565813>>>0;let n=t;return n=Math.imul(n^n>>>15,n|1),n^=n+Math.imul(n^n>>>7,n|61),((n^n>>>14)>>>0)/4294967296}}var rc=[[0,8,2,10],[12,4,14,6],[3,11,1,9],[15,7,13,5]];function sc(e,t){return rc[t&3]?.[e&3]??0}function ee(e,t,n){return sc(e,t)<n*16}function te(e){return Number.isFinite(e)&&e>0?e:0}function no(e,t){return(e%t+t)%t}var de=class{constructor(t,n){xt(this,"width");xt(this,"height");xt(this,"cells");xt(this,"palette",[]);xt(this,"index",new Map);this.width=t,this.height=n,this.cells=new Int32Array(t*n).fill(-1)}set(t,n,o){let r=Math.round(t),s=Math.round(n);if(r<0||s<0||r>=this.width||s>=this.height)return;let i=this.index.get(o);i===void 0&&(i=this.palette.length,this.palette.push(o),this.index.set(o,i)),this.cells[s*this.width+r]=i}get(t,n){if(t<0||n<0||t>=this.width||n>=this.height)return null;let o=this.cells[n*this.width+t]??-1;return o<0?null:this.palette[o]??null}fill(t,n,o,r,s){for(let i=n;i<n+r;i++)for(let a=t;a<t+o;a++)this.set(a,i,s)}runs(t=null,n=0,o=0){let r=[],s=i=>{let a=this.palette[i]??"#000000";return t?t(a):a};for(let i=0;i<this.height;i++){let a=i*this.width,l=0;for(;l<this.width;){if((this.cells[a+l]??-1)<0){l++;continue}let u=l;for(;u<this.width&&(this.cells[a+u]??-1)>=0;)u++;let d=new Map;for(let E=l;E<u;E++){let g=this.cells[a+E]??-1;(E===l||this.cells[a+E-1]!==g)&&d.set(g,(d.get(g)??0)+1)}let f=-1,m=1;for(let[E,g]of d)g>m&&(m=g,f=E);f>=0&&r.push({x:l+n,y:i+o,w:u-l,h:1,color:s(f)});let y=l;for(;y<u;){let E=this.cells[a+y]??-1;if(E===f){y++;continue}let g=y+1;for(;g<u&&this.cells[a+g]===E;)g++;r.push({x:y+n,y:i+o,w:g-y,h:1,color:s(E)}),y=g}l=u}}return r}};function ke(e,t,n,o,r){for(let s=-o;s<=o;s++){let i=Math.floor(Math.sqrt((o+.5)**2-s*s));e.push({x:t-i,y:n+s,w:i*2+1,h:1,color:r})}}function Ft(e,t,n,o,r,s,i){for(let a=-r;a<=r;a++)for(let l=-r;l<=r;l++){let u=Math.sqrt(l*l+a*a);if(u<o-.5||u>r+.5)continue;let d=r===o?1:1-(u-o)/(r-o+1);ee(t+l,n+a,s*d)&&e.push({x:t+l,y:n+a,w:1,h:1,color:i})}}function Qs(e,t){let n=[];for(let o=-t;o<=t;o++){let r=t===0?0:o/(t+.5),s=Math.round(e*Math.sqrt(Math.max(0,1-r*r)));s<=0||(n.push({dx:-s,dy:o,w:s*2}),(o&1)===0&&n.push({dx:-s-1,dy:o,w:1},{dx:s,dy:o,w:1}))}return n}function so(e){let n=40+400*(Number.isFinite(e)?Math.min(1,Math.max(0,e)):.5);return{x:n,y:26+86/200**2*(n-240)**2}}var re={x:400,y:30};function ic(e){let t=Math.min(1,Math.max(0,(112-e)/86)),n=Math.round(t**.8*24)/24;return{core:W(Dn.core,Un.core,n),rim:W(Dn.rim,Un.rim,n),halo:W(Dn.halo,Un.halo,n)}}function ac(e){let t=[];for(let n=1;n<e;n++)t.push(Math.round(128*(n/e)**.78));return t}var Js=new Map,It=6;function lc(e,t,n,o,r){for(let s=o;s<r;s++){let i=n.findIndex(m=>s<m);i<0&&(i=t.length-1);let a=t[i]??"#000000",l=null,u=0,d=n[i],f=i>0?n[i-1]:void 0;d!==void 0&&d-s<=It/2?(l=t[i+1]??a,u=(It/2-(d-s)+.5)/It):f!==void 0&&s-f<It/2&&(l=t[i-1]??a,u=(It/2-(s-f)-.5)/It),l&&u>.5&&([a,l,u]=[l,a,1-u]);for(let m=0;m<480;m++)e.set(m,s,l&&ee(m,s,u)?l:a)}}function cc(e){let t=Js.get(e);if(t)return t;let n=Lt[e],o=new de(480,128);lc(o,n,ac(n.length),0,128),e==="night"&&uc(o);let r=o.runs();return Js.set(e,r),r}function uc(e){let t=Z(4242);for(let n=0;n<520;n++){let o=t(),r=Math.floor(o*480),s=(t()+t()+t()-1.5)*14,i=Math.round(8+o*70+s+6*Math.sin(o*7));if(i<0||i>=100)continue;let a=e.get(r,i);if(!a)continue;let l=Math.abs(s)<6;e.set(r,i,W(a,J.dim,l?.32:.18))}}var Zs=new Map;function dc(e){let t=`${e.core}${e.rim}`,n=Zs.get(t);if(!n){let o=[];ke(o,0,0,14,e.halo),Ft(o,0,0,15,19,.5,e.halo);let r=[];ke(r,0,0,11,e.halo),Ft(r,0,0,12,13,.5,e.rim);let s=[];ke(s,0,0,9,e.rim);let i=[];ke(i,0,0,7,e.rim),ke(i,0,0,6,e.core),i.push({x:-3,y:-4,w:4,h:1,color:e.rim},{x:-4,y:-3,w:3,h:2,color:e.rim}),n={inner:s,mid:r,outer:o,body:i},Zs.set(t,n)}return n}function fc(e,t){let n=so(t),o=Math.round(n.x),r=Math.round(n.y),s=dc(ic(n.y));e.alpha(.14),e.rects(s.outer,o,r),e.alpha(1),e.alpha(.22),e.rects(s.mid,o,r),e.alpha(1),e.alpha(.4),e.rects(s.inner,o,r),e.alpha(1),e.rects(s.body,o,r)}var pc=(()=>{let e=[];return ke(e,re.x,re.y,11,"#B9C3E6"),Ft(e,re.x,re.y,12,15,.5,"#B9C3E6"),e})(),mc=(()=>{let e=[];ke(e,re.x,re.y,7,Wo);for(let t=-6;t<=6;t++){let n=Math.floor(Math.sqrt(56.25-t*t));e.push({x:re.x+n-1,y:re.y+t,w:2,h:1,color:Zt})}return e.push({x:re.x+1,y:re.y-3,w:2,h:2,color:Zt},{x:re.x-3,y:re.y+1,w:3,h:2,color:Zt},{x:re.x+3,y:re.y+3,w:1,h:1,color:Zt},{x:re.x-4,y:re.y-4,w:2,h:1,color:"#F6F4EA"}),e})();function hc(e){e.alpha(.1),e.rects(pc),e.alpha(1),e.rects(mc)}var io=(()=>{let e=Z(1907),t=[];for(let n=0;n<90;n++){let o=Math.floor(e()*480),r=2+Math.floor(e()**1.3*98),s=e(),i=s<.45?0:s<.8?1:s<.95?2:3,l=e()<.3?1.6+e()*2.6:0,u=e()*Math.PI*2;Math.abs(o-re.x)<14&&Math.abs(r-re.y)<14||t.push({x:o,y:r,level:i,speed:l,phase:u})}return t})();function gc(e,t){let n=io[e];if(!n)return-1;if(n.speed===0)return n.level;let o=Math.sin(te(t)*n.speed+n.phase);return Math.max(-1,Math.min(3,n.level+(o>.55?1:o<-.55?-1:0)))}var op=io.length,bc=(()=>{let e=[];for(let t of io)t.speed===0&&ni(e,t.x,t.y,t.level);return e})();function ni(e,t,n,o){if(o<0)return;let r=o===0?J.dim:o===1?J.mid:J.bright;e.push({x:t,y:n,w:1,h:1,color:r}),o>=3&&e.push({x:t-1,y:n,w:1,h:1,color:J.mid},{x:t+1,y:n,w:1,h:1,color:J.mid},{x:t,y:n-1,w:1,h:1,color:J.mid},{x:t,y:n+1,w:1,h:1,color:J.mid})}function yc(e,t){e.rects(bc);let n=[];io.forEach((o,r)=>{o.speed!==0&&ni(n,o.x,o.y,gc(r,t))}),e.rects(n)}var oo={every:40,lasts:.6};function xc(e){let t=te(e),n=t%oo.every;if(n>=oo.lasts)return null;let o=Z(Math.floor(t/oo.every)*7919+13),r=o()<.5?-1:1,s=90+Math.floor(o()*260),i=8+Math.floor(o()*30),a=n/oo.lasts,l=84*a;return{x:Math.round(s+r*l),y:Math.round(i+l*.42),dir:r,progress:a}}var ei=["#FFFFFF",J.bright,J.bright,J.mid,J.mid,J.mid,J.dim,J.dim,J.dim,J.dim,J.dim,J.dim];function wc(e,t){let n=xc(t);if(!n)return;let o=Math.min(ei.length,3+Math.round(n.progress*22)),r=n.progress>.8?(1-n.progress)/.2:1;r<1&&e.alpha(r);for(let s=o-1;s>=0;s--){let i=n.x-n.dir*s,a=Math.round(n.y-s*.42);e.rect(i,a,1,1,ei[s]??J.dim)}e.rect(n.x,n.y+1,1,1,J.mid),r<1&&e.alpha(1)}var ro=[{speed:2,count:4,minW:24,maxW:34,y0:70,y1:90,alpha:.7},{speed:4,count:3,minW:32,maxW:46,y0:42,y1:62,alpha:.88},{speed:6,count:2,minW:44,maxW:56,y0:10,y1:30,alpha:1}],lr=600;function kc(e,t){let n=Z(t),o=4+Math.floor(e/18),r=Math.floor(o*.4+n()*1.2),s=[];for(let g=0;g<o;g++)s.push(Math.max(.35,1-Math.abs(g-r)*(.22+n()*.12))*(.85+n()*.3));let i=[],a=s[0]??1;s.forEach((g,w)=>{w>0&&(a+=.65*((s[w-1]??g)+g)),i.push(a)});let l=a+(s[o-1]??1),u=(e-1)/l,d=Math.max(6,Math.round(Math.max(...s)*u*1.5)),f=d-1,m=s.map((g,w)=>{let x=g*u;return{cx:(i[w]??0)*u,cy:f-x*.5,r:x}}),y=new Array(e*d).fill(-1),E=(g,w)=>m.some(x=>(g-x.cx)**2+(w-x.cy)**2<=x.r*x.r);for(let g=0;g<d;g++)for(let w=0;w<e;w++){let x=g===d-1?2:g===d-2?1:0;w<x||w>=e-x||E(w,g)&&(y[g*e+w]=1)}for(let g=0;g<e;g++){let w=-1;for(let x=0;x<d;x++)if((y[x*e+g]??-1)>=0){w=x;break}if(!(w<0))for(let x=w;x<d;x++){let k=x*e+g;if((y[k]??-1)<0)continue;let S=x-w,C=d-1-x,O=(y[k-1]??-1)<0||g===0;S<=1||S<=2&&O?y[k]=0:(C<=1||C===2&&(g+x)%2===0)&&(y[k]=2)}}return{w:e,h:d,tones:y}}var ao=(()=>{let e=Z(611),t=[];return ro.forEach((n,o)=>{for(let r=0;r<n.count;r++){let s=n.minW+Math.floor(e()*(n.maxW-n.minW+1)),i=n.y0+Math.floor(e()*(n.y1-n.y0)),a=r*lr/n.count+Math.floor(e()*60);t.push({layer:o,x0:a,y:i,shape:kc(s,100+o*10+r)})}}),t})();function Sc(e,t){let n=ao[e];if(!n)return 0;let o=ro[n.layer]?.speed??0;return Math.floor(no(n.x0+o*te(t),lr))-(lr-480)}var rp=ao.length,ti=new Map;function vc(e,t){let n=`${e}:${t}`,o=ti.get(n);if(!o){let r=ao[e];if(o=[],r){let{w:s,h:i,tones:a}=r.shape,l=new de(s,i),u=ss[t];for(let d=0;d<i;d++)for(let f=0;f<s;f++){let m=a[d*s+f]??-1;m>=0&&l.set(f,d,u[m]??u[1])}o=l.runs()}ti.set(n,o)}return o}function Ec(e,t,n){for(let o=0;o<ro.length;o++){let r=(ro[o]?.alpha??1)*(t==="night"?.5:1);r<1&&e.alpha(r),ao.forEach((s,i)=>{s.layer===o&&e.rects(vc(i,t),Sc(i,n),s.y)}),r<1&&e.alpha(1)}}var fn={every:45,speed:30},Cc=570/fn.speed;function Mc(e){let t=te(e),n=t%fn.every;if(n>=Cc)return[];let o=Math.floor(t/fn.every),r=Z(o*104729+7),s=3+Math.floor(r()*3),i=44+Math.floor(r()*28),a=o%2===0?1:-1,l=a===1?-12+fn.speed*n:492-fn.speed*n,u=[];for(let d=0;d<s;d++){let f=d===0?0:6*Math.ceil(d/2)+Math.floor(r()*3),m=d===0?0:(d%2===1?-1:1)*(3*Math.ceil(d/2)+Math.floor(r()*2)),y=Math.round(Math.sin(n*2.1+d*1.7)),E=Math.floor(n*6+d*.5)%2;u.push({x:Math.round(l-a*f),y:i+m+y,frame:E})}return u}function Ac(e,t,n){if(t==="night")return;let o=is[t];for(let r of Mc(n))r.frame===0?(e.rect(r.x-1,r.y,1,1,o),e.rect(r.x+1,r.y,1,1,o),e.rect(r.x,r.y+1,1,1,o)):(e.rect(r.x,r.y,1,1,o),e.rect(r.x-1,r.y+1,1,1,o),e.rect(r.x+1,r.y+1,1,1,o))}function oi(e,t,n){e.rects(cc(t.phase)),t.phase==="night"?(yc(e,n),wc(e,n),hc(e)):fc(e,t.sun),Ec(e,t.phase,n),Ac(e,t.phase,n)}function ui(e,t){if(!(e>0)||!Number.isFinite(e))return{dx:0,dy:0};let n=te(t);return{dx:Math.round(e*Math.sin(53*n))||0,dy:Math.round(e*Math.cos(47*n))||0}}function di(e,t){if(e.phase==="night")return 0;let n=so(e.sun),o=Math.min(1,Math.max(0,(112-n.y)/86)),r=1+Math.round(2*(1-o));return Math.sign(Math.round(t)-Math.round(n.x))*r}var ri=new Map;function Nc(e,t){let n=`${e}x${t}`,o=ri.get(n);return o||(o=Qs(e,t),ri.set(n,o)),o}function pn(e,t,n,o=1){if(n.length===0)return;let r=t.phase==="night",s=(r?.14:.25)*Math.min(1,Math.max(0,o));if(s<=0)return;let i=r?us:_n;e.alpha(s);for(let a of n){let l=Math.round(a.cx)+di(t,a.cx),u=Math.round(a.y);for(let d of Nc(Math.max(1,Math.round(a.rx)),Math.max(0,Math.round(a.ry))))e.rect(l+d.dx,u+d.dy,d.w,1,i)}e.alpha(1)}function Tc(e,t){let n=te(t),o=Math.sin(n*9.1+e.seed*1.7)*.6+Math.sin(n*23.3+e.seed*2.9)*.4;return{radius:e.radius+Math.round(o*1.5),alpha:.11+.025*o}}var si=new Map;function Rc(e){let t=si.get(e);if(!t){let n=[];Ft(n,0,0,Math.round(e*.66),e,.5,Gn);let o=[];ke(o,0,0,Math.round(e*.66),Gn);let r=[];ke(r,0,0,Math.round(e*.33),Gn),t={outer:n,mid:o,core:r},si.set(e,t)}return t}function fi(e,t,n){for(let o of t){let{radius:r,alpha:s}=Tc(o,n),i=Rc(r);e.alpha(s),e.rects(i.outer,o.x,o.y),e.rects(i.mid,o.x,o.y),e.rects(i.core,o.x,o.y),e.alpha(1)}}var Pc={day:.045,dusk:.06,night:.1},ii=[12,10,8,6,4,2];function Oc(e,t,n){e.push({x:0,y:0,w:480,h:t,color:n},{x:0,y:270-t,w:480,h:t,color:n},{x:0,y:t,w:t,h:270-2*t,color:n},{x:480-t,y:t,w:t,h:270-2*t,color:n})}var ai=new Map;function Bc(e){let t=ai.get(e);if(!t){let n=ds[e];t=[];for(let r of ii)Oc(t,r,n);let o=ii[0];for(let r=0;r<480;r++)ee(r,o,.5)&&t.push({x:r,y:o,w:1,h:1,color:n}),ee(r,270-o-1,.5)&&t.push({x:r,y:270-o-1,w:1,h:1,color:n});for(let r=o+1;r<270-o-1;r++)ee(o,r,.5)&&t.push({x:o,y:r,w:1,h:1,color:n}),ee(480-o-1,r,.5)&&t.push({x:480-o-1,y:r,w:1,h:1,color:n});ai.set(e,t)}return t}function pi(e,t){e.alpha(Pc[t]),e.rects(Bc(t)),e.alpha(1)}var Fc=6;function mi(e,t,n){let o=Number.isFinite(t.glow)?Math.min(1,t.glow):0;if(!(o>0)||t.state==="none")return;let r=Math.round(t.state==="set"?n.x:t.x),s=Math.round(t.state==="set"?n.y:t.y)-Fc,i=o*.5;e.alpha(i),e.rect(r-4,0,8,s,U.light),e.rect(r-2,0,4,s,U.gleam),e.rect(r-1,0,2,s,"#FFFFFF");for(let l=0;l<s;l++)ee(r-5,l,.5)&&e.rect(r-5,l,1,1,U.light),ee(r+4,l,.5)&&e.rect(r+4,l,1,1,U.light);for(let l of[-75,-50,-28,28,50,75]){let u=l*Math.PI/180,d=16+Math.abs(l)/4;for(let f=5;f<d;f++)f>d*.6&&f%2===1||e.rect(Math.round(r+Math.sin(u)*f),Math.round(s-Math.cos(u)*f*.7),1,1,f<9?U.gleam:U.light)}let a=[];ke(a,r,s,5,U.light),ke(a,r,s,3,U.gleam),e.rects(a),e.alpha(1)}function hi(e,t,n,o){let{base:r,blockW:s,blockH:i}=o;if(t.phase==="night"||!(r>0)||!(s>0)||!(i>0))return;let a=r*s/2,l=di(t,n.centerX),u=l>=0,d=4+4*Math.max(1,Math.abs(l)),f=Math.min(2*i,24);e.alpha(.25);for(let m=0;m<f;m++){let y=n.baseY-1-m,E=Math.round(d*(1-m/f));if(E<=0)continue;let g=a-Math.floor(m/i)*(s/2),w=u?n.centerX+g:n.centerX-g-E;e.rect(w,y,E,1,_n);let x=u?w+E:w-1;ee(x,y,.5)&&e.rect(x,y,1,1,_n)}e.alpha(1)}var Ic=13;function gi(e,t){if(je(e)<=t)return e;let n=[...e];for(;n.length>0&&je(`${n.join("")}\\u2026`)>t;)n.pop();return`${n.join("")}\\u2026`}function Dc(e,t,n,o){let r=gi(e,468),s=je(r)+8,i=Ic,a=Math.min(479-s,Math.max(1,Math.round(t-s/2)+o.dx))-o.dx,l=Math.min(269-i,Math.max(1,Math.round(n-i)+o.dy))-o.dy;return{text:r,x:a,y:l,w:s,h:i}}function bi(e,t,n,o,r){let s=Dc(t,n,o,r),{x:i,y:a,w:l,h:u}=s;e.rect(i+1,a,l-2,1,dt.rim),e.rect(i+1,a+u-1,l-2,1,dt.rim),e.rect(i,a+1,1,u-2,dt.rim),e.rect(i+l-1,a+1,1,u-2,dt.rim),e.rect(i+1,a+1,l-2,u-2,dt.fill),e.rect(i+1,a+u-2,l-2,1,"#1F140D"),e.text(s.text,i+4,a+2,dt.text)}var Re={light:"#9C8E84",face:"#7E7068",shade:"#5C5049",dark:"#463C37"},li=15;function cr(e,t,n){let o=gi(e.toUpperCase(),200),r=je(o)+12;return{text:o,x:Math.round(t-r/2),y:Math.round(n)-3-li,w:r,h:li}}function yi(e,t,n,o){let{text:r,x:s,y:i,w:a,h:l}=cr(t,n,o);e.rect(s-2,i+l,a+4,3,Re.shade),e.rect(s-2,i+l,a+4,1,Re.face),e.rect(s-2,i+l+2,a+4,1,Re.dark),e.rect(s,i,a,l,Re.face),e.rect(s,i,a,1,Re.light),e.rect(s,i,1,l,Re.light),e.rect(s+a-1,i+1,1,l-1,Re.shade),e.rect(s+2,i+2,a-4,1,Re.shade),e.rect(s+2,i+l-3,a-4,1,Re.light),e.rect(s+2,i+2,1,l-4,Re.shade),e.rect(s+a-3,i+3,1,l-5,Re.light),e.text(r,s+6,i+4,U.shadow),e.text(r,s+6,i+3,U.light)}var lo=128,We=136;function xi(e,t,n,o){let r=Z(e),s=[];for(let i=0;i<t;i++){let a=r()<.55;s.push({c:Math.floor((i+r()*.9)/t*560)-40,half:a?14+Math.floor(r()*26):3+Math.floor(r()*8),h:a?n+Math.floor(r()*(o-n+1)):n-2+Math.floor(r()*6)})}return s}function co(e){let t=Math.imul(e^2654435769,2246822507);return t^=t>>>13,t=Math.imul(t,3266489909),(t^t>>>16)>>>0}function wi(e,t,n){let o=[];for(let s=0;s<480;s++){let i=t(s);for(let a of e){let l=Math.abs(s-a.c)-a.half,u=a.h-(l<=0?Math.round((Math.abs(s-a.c)/Math.max(1,a.half))**3*1.5):0),d=l<=0?u:Math.max(a.h-2.6*l,a.h*.6-.5*l);i=Math.max(i,d)}o.push(i)}let r=Z(n);for(let s=0;s<14;s++){let i=Math.floor(r()*480),a=1+Math.floor(r()*3),l=1+Math.floor(r()*2);for(let u=-l;u<=l;u++){let d=i+u;d<0||d>=480||(o[d]=(o[d]??0)-Math.max(0,a-Math.abs(u)))}}return o.map((s,i)=>Math.round(s-(co(i*3+n)%7===0?1:0)))}function ur(e,t,n,o,r){for(let s=0;s<480;s++){let i=t[s]??0,a=o-i,l=(t[s+1]??i)-(t[s-1]??i),u=r&&co(s*11+5)%13===0?2+co(s)%6:0;for(let d=a;d<o;d++){let f=d-a,m=n.face;if(l>=2&&f<Math.max(2,i*.55)?m=n.light:l<=-2&&f<Math.max(2,i*.6)?m=n.shade:l<=-2&&f<i*.75?m=ee(s,d,.5)?n.shade:n.face:f===0&&(m=n.light),r&&f>=3){let y=o-d;y%4===0&&co(Math.floor((s+y*13)/17)*7+y)%4!==0&&(m=m===n.light?n.face:n.shade),f>1&&f<2+u&&(m=n.shade)}e.set(s,d,m)}}}function Uc(){let e=[];for(let t=0;t<480;t++)e.push(Math.max(3,Math.round(8+3*Math.sin(t/37+.5)+2*Math.sin(t/13+2))));return e}function $c(e){let[t,n]=as,o=wi(xi(31,11,21,31),s=>14+2*Math.sin(s/29),3);ur(e,o,t,128,!0);let r=wi(xi(57,9,12,19),s=>9+2*Math.sin(s/23+1),4);ur(e,r,n,128,!0),ur(e,Uc(),ls,128,!1)}var _c=428,Gc=[404,454];function Hc(e){let t=Z(97);for(let o=0;o<480;o++)e.set(o,125,ee(o,125,.5)?be.light:be.face),e.set(o,126,be.face),e.set(o,127,be.shade);let n=4;for(;n<480;){let o=1+Math.floor(t()*4);for(let r=0;r<o;r++){let s=n+r*4;if(t()<.3){let i=119-Math.floor(t()*2);for(let a=i+2;a<126;a++)e.set(s,a,be.shade);e.fill(s-2,i,5,1,be.face),e.set(s-3,i+1,be.shade),e.set(s+3,i+1,be.shade),e.fill(s-1,i-1,3,1,be.light)}else{let i=2+Math.floor(t()*2),a=125-i;for(let l=-i;l<=i;l++)for(let u=-i;u<=i;u++){if(u*u+l*l>i*i+1)continue;let d=u+l<-1,f=u+l>1;e.set(s+u,a+l,d?be.light:f?be.shade:be.face)}}}n+=o*4+10+Math.floor(t()*26)}Wc(e,_c,127);for(let o of Gc)Yc(e,o,127)}function Wc(e,t,n){let o=(r,s)=>{for(let d=0;d<17;d++){let f=n-d,m=Math.floor(d/6),y=r+m,E=s-m;for(let g=y;g<=E;g++){let w=V.face;g===y?w=V.light:g>=E-1&&(w=V.shade),e.set(g,f,w)}}let a=n-17,l=Math.floor(16/6);e.fill(r+l-1,a,s-r-2*l+3,1,V.light),e.fill(r+l,a+1,s-r-2*l+1,1,V.shade);for(let d=0;d<2;d++){let f=r+3+d*4;e.fill(f,n-11,1,5,V.shade),e.set(f+1,n-10,V.shade)}let u=r+1+Math.floor((s-r)/2);for(let d=a-6;d<=n;d++)e.set(u,d,V.dark);e.fill(u+1,a-6,2,1,"#B8433A"),e.set(u+1,a-5,"#8E2F2B")};o(t-15,t-4),o(t+4,t+15),e.fill(t-4,n-11,9,1,V.light),e.fill(t-4,n-10,9,1,V.face),e.fill(t-3,n-9,7,10,V.face),e.fill(t-2,n-8,5,9,V.dark),e.fill(t-2,n-8,5,1,V.shade)}function Yc(e,t,n){for(let r=0;r<18;r++){let s=n-r,i=r<9;e.set(t-1,s,V.light),e.set(t,s,V.face),i&&e.set(t+1,s,V.shade)}e.set(t-1,n-21+3,U.light),e.set(t,n-21+3,U.mid),e.set(t,n-21+2,U.light),e.fill(t-2,n,5,1,V.shade)}function qc(e,t,n){let o=Lt[n],r=W(ie.sky,o[o.length-1]??ie.sky,.6),s=W(ie.light,o[o.length-2]??ie.light,.45);[[W(be.shade,ie.face,.45),r,.25],[r,s,.25],[s,r,.25],[s,ie.face,.5],[ie.face,ie.light,.12],[ie.face,ie.deep,.25],[ie.deep,ie.face,.25],[ie.deep,ie.bank,.12]].forEach(([a,l,u],d)=>{let f=lo+d;for(let m=0;m<480;m++)e.set(m,f,ee(m,f,u)?l:a)});for(let a=0;a<480;a++)for(let l=1;l<=5;l++){let u=t.get(a,125-l);if(!u||!ee(a,lo+l,.55-l*.08))continue;let d=lo+l;e.set(a,d,W(e.get(a,d)??ie.face,u,.45))}}var Kc=(()=>{let e=Z(23);return Array.from({length:26},()=>({x:e()*480,y:lo+1+Math.floor(e()*6),w:1+Math.floor(e()*3),speed:3+e()*4,blink:1.2+e()*2.4,phase:e()*Math.PI*2}))})(),zc=488;function jc(e){let t=te(e),n=[];for(let o of Kc)Math.sin(t*o.blink+o.phase)<-.3||n.push({x:Math.floor(no(o.x+o.speed*t,zc))-4,y:o.y,w:o.w});return n}var Vc=["....y................","....nS...............","....nSS..............","....nsSS.............","....nsSSS............","....nssSSS...........",".....nsSSSS..........",".....nssSSSS.........",".....nssSSSSS........",".....nssSSSSSS.......",".....nssSSSSSSS......","...k.nssSSSSSSSn.....","...w.NnnnnnnnnnnN...n","n..w.....N.........nN","NnnnnnnnnnnnnnnnnnnN.",".NNNNNNNNNNNNNNNNNNN.","..oooooooooooooooo..."],Xc={S:$n.light,s:$n.shade,n:K[0],N:K[1],o:"#4A2E18",y:U.light,k:"#B9784E",w:"#F4F0E2"},fr=ue(Vc,Xc),dr={every:120,crossing:80};function Qc(e){let t=te(e)%dr.every;if(t>=dr.crossing)return null;let n=-fr.w-2,o=482,r=Math.round(n+(o-n)*t/dr.crossing),s=Math.sin(t*1.9)>.55?-1:0;return{x:r,y:We-1+s}}function Jc(e,t){let n=Qc(t);if(!n)return;let o=n.y-fr.h+1;e.sprite(fr,n.x,o);for(let r=6;r<15;r++)(r+n.x)%2===0&&e.rect(n.x+r,n.y+1,1,1,$n.shade)}var Zc=[[".ll.........","lffl........","o.ff..rqr...","..ff.lrqrl..","..fflffffffl","...ffffffffs","...sssssss..","...f.s..f.s.","...f.s..f.s.","...d.d..d.d."],[".ll.........","lffl........","o.ff..rqr...","..ff.lrqrl..","..fflffffffl","...ffffffffs","...sssssss..","....fs...fs.","....fs...fs.","....dd...dd."]],eu=[[".w..","wwk.",".wn.",".Bn.",".Bn.",".Wn.",".W.n","k.k."],[".w..","wwk.",".wn.",".Bn.",".Bn.",".Wn.",".Wn.",".kk."]],vi={l:He.light,f:He.face,s:He.shade,d:He.dark,o:He.dark,r:"#B8433A",q:"#F2E4C2",w:"#F4F0E2",W:"#D6CFBC",B:"#3C6FB0",k:"#925A38",n:K[0]},ki=Zc.map(e=>ue(e,vi)),tu=eu.map(e=>ue(e,vi)),uo={every:180,crossing:70,feet:124};function nu(e){let t=te(e)%uo.every;if(t>=uo.crossing)return[];let n=550,o=Math.round(486-n*t/uo.crossing),r=Math.floor(t*4);return[{kind:"walker",x:o,frame:r%2},{kind:"camel",x:o+6,frame:(r+1)%2},{kind:"camel",x:o+20,frame:r%2},{kind:"camel",x:o+34,frame:(r+1)%2}]}function ou(e,t){for(let n of nu(t)){let o=(n.kind==="walker"?tu:ki)[n.frame]??ki[0];o&&e.sprite(o,n.x,uo.feet-o.h)}}var ru=[[[-12,250],[40,252],[96,256],[L.audience.x,L.audience.y-1]],[[52,230],[84,240],[118,250],[L.audience.x,L.audience.y-1]],[[L.audience.x,L.audience.y-1],[176,246],[206,230],[236,216],[258,211]]];function su(e,t,n){let o=1/0;for(let r=0;r+1<n.length;r++){let[s,i]=n[r]??[0,0],[a,l]=n[r+1]??[0,0],u=a-s,d=l-i,f=u*u+d*d,m=f===0?0:Math.max(0,Math.min(1,((e-s)*u+(t-i)*d)/f)),y=Math.hypot(e-(s+m*u),t-(i+m*d));o=Math.min(o,y)}return o}function iu(e){let t=We,n=[t,146,166,196,232,262];for(let o=t;o<270;o++){let r=n.findIndex((d,f)=>o>=d&&o<(n[f+1]??270));r<0&&(r=0);let s=lt[r]??lt[0],i=n[r+1],a=n[r],l=null,u=0;i!==void 0&&i-o<=2?(l=lt[r+1]??s,u=i-o===1?3/8:1/8):a!==void 0&&r>0&&o-a<=1&&(l=lt[r-1]??s,u=o-a===0?3/8:1/8);for(let d=0;d<480;d++)e.set(d,o,l&&ee(d,o,u)?l:s)}for(let o=0;o<480;o++)e.set(o,t,ie.bank),ee(o,t+1,.5)&&e.set(o,t+1,ie.bank);lu(e),uu(e),du(e),fu(e),cu(e),pu(e),mu(e)}var au=[{cx:300,hw:120,h:16,bottom:272},{cx:470,hw:86,h:26,bottom:272},{cx:214,hw:56,h:7,bottom:238},{cx:372,hw:50,h:6,bottom:224}];function lu(e){for(let t of au){let n=t.bottom-t.h;for(let o=Math.max(0,t.cx-t.hw);o<Math.min(480,t.cx+t.hw);o++){let r=(o-t.cx)/t.hw,s=Math.round(t.bottom-t.h*(1-r*r)**.8);for(let i=s;i<Math.min(270,t.bottom);i++){let a=e.get(o,i);if(!a)continue;let l=t.cx+(i-n)*.9,u=o<l,d=Math.abs(o-l)<2,f=W(a,"#FFF4D6",.26),m=W(a,"#8A5E2E",.17),y;i===s?y=u?W(a,"#FFF4D6",.5):W(a,"#8A5E2E",.26):d?y=ee(o,i,.5)?f:m:i-s<2?y=ee(o,i,.5)?u?f:m:a:y=u?f:m,e.set(o,i,y)}}}}function cu(e){let t=[{x:6,y:266,w:10,h:6},{x:16,y:268,w:6,h:4},{x:228,y:266,w:9,h:5},{x:238,y:267,w:5,h:3},{x:404,y:240,w:8,h:5},{x:336,y:228,w:6,h:4},{x:182,y:186,w:7,h:4}];for(let n of t){let o=e.get(n.x+n.w,n.y);o&&e.fill(n.x+2,n.y,n.w,1,W(o,"#6B4A28",.35));for(let r=0;r<n.h;r++){let s=n.y-n.h+r,i=r===0?2:r===1?1:0;for(let a=n.x+i;a<n.x+n.w-i;a++){let l=(a-n.x)/n.w+r/n.h,u=l<.5?ze.light:l<1.15?ze.face:ze.shade;(r===n.h-1||a===n.x+n.w-i-1)&&(u=ze.shade),e.set(a,s,u)}}}}function uu(e){let t=Z(77);for(let n=0;n<150;n++){let o=t()**.8,r=Math.floor(We+6+o*(270-We-8)),s=Math.floor(t()*480),i=3+Math.floor(o*12+t()*4),a=Math.max(1,Math.round(i/9));for(let l=0;l<i;l++){let u=s+l,d=-Math.round(Math.sin(Math.PI*l/Math.max(1,i-1))*a),f=e.get(u,r+d);if(!f)continue;e.set(u,r+d,W(f,"#FFF4DA",.32));let m=e.get(u,r+d+1);m&&e.set(u,r+d+1,W(m,"#8A5E2E",.22))}}}function du(e){for(let t=We;t<270;t++){let n=2+(t-200)/40;if(!(n<1.5))for(let o=0;o<480;o++){let r=1/0;for(let a of ru)r=Math.min(r,su(o,t,a));if(r>n+1)continue;let s=r<n-.5;if(!s&&!ee(o,t,.5))continue;let i=s?tn.face:tn.light;s&&((o*13+t*7)%17===0||(o*5+t*11)%23===0)?i=tn.track:s&&ee(o,t,.2)&&(i=tn.light),e.set(o,t,i)}}}function fu(e){let t=Z(301);for(let n=0;n<56;n++){let o=t(),r=Math.floor(We+8+o*(270-We-12)),s=Math.floor(t()*480),i=o>.6&&t()<.5?3:o>.25?2:1,a=e.get(s+i,r+1);if(a&&e.fill(s+1,r+1,i,1,W(a,"#6B4A28",.3)),i===1){e.set(s,r,ze.face);continue}e.fill(s,r,i,i-1,ze.face),e.fill(s,r,i-1,1,ze.light),e.fill(s,r+i-1,i,1,ze.shade)}}function pu(e){let t=Z(503);for(let n=0;n<22;n++){let o=n<12,r=Math.floor(t()*480),s=o?We+4+Math.floor(t()*14):150+Math.floor(t()*110),i=3+Math.floor(t()*4),a=e.get(r,s+1);a&&e.fill(r,s+1,i,1,W(a,"#6B4A28",.25));for(let l=0;l<i;l++){let u=1+Math.round(Math.sin(Math.PI*(l+.5)/i)*(1+(i>4?1:0)));for(let d=0;d<u;d++){let f=d===u-1?l<i/2?nn.light:nn.face:(l+d)%2===0?nn.face:nn.shade;e.set(r+l,s-d,f)}}}}function mu(e){let t=Z(211),n=0;for(;n<480;){let o=2+Math.floor(t()*4);for(let r=0;r<o;r++){let s=n+r,i=2+Math.floor(t()*4);for(let a=0;a<i;a++){let l=We+1-a;e.set(s,l,a===i-1&&t()<.4?en.tip:r%2===0?en.face:a>i/2?en.light:en.shade)}}n+=o+2+Math.floor(t()*9)}}var Si=new Map;function Ei(e){let t=Si.get(e);if(!t){let n=Bt(e),o=new de(480,270);$c(o);let r=new de(480,270);Hc(r);let s=new de(480,270);qc(s,r,e);let i=new de(480,270);iu(i),t={far:o.runs(n),bank:r.runs(n),water:s.runs(n),plain:i.runs(n)},Si.set(e,t)}return t}function Ci(e,t,n){let o=Ei(t);e.rects(o.far),e.tint(Bt(t)),ou(e,n),e.tint(null),e.rects(o.bank)}function Mi(e,t,n){let o=Ei(t);e.rects(o.water);let r=cs[t];for(let s of jc(n))e.rect(s.x,s.y,s.w,1,r);e.tint(Bt(t)),Jc(e,n),e.tint(null),e.rects(o.plain),t==="day"&&gu(e,n)}function hu(e){return Math.floor(te(e)*5)%8}function gu(e,t){let n=hu(t);e.alpha(.22);for(let o=0;o<3;o++){let r=We+3+o*2,s=o%2===0?n:7-n;for(let i=-8+s;i<480;i+=8)e.rect(i,r,3,1,"#FFF6E0")}e.alpha(1)}var Ut="#4A3020";function bn(e){let t=e.runs().map(n=>({x:n.x,y:n.y,w:n.w,color:n.color}));return{w:e.width,h:e.height,top:0,runs:t,mirrored:t.map(n=>({...n,x:e.width-n.x-n.w}))}}function pt(e,t,n){return{left:t-Math.floor(e.w/2),top:n-e.h}}function Ai(e,t,n){let o=e+8,r=t+5,s=new de(o,r),i=Math.floor(o/2),a=5,l=r-1,u=Math.floor(e/2);for(let m of[-1,1]){let y=i+m*3,E=i+m*(u+3);for(let g=a+3;g<=l;g++){let w=(g-a-3)/(l-a-3);s.set(Math.round(y+(E-y)*w),g,"#8A6A44")}s.set(E,l,Ut)}for(let m=1;m<a;m++)s.set(i,m,K[1]);let d=n%2===0?Ge.stripe:Fn;s.fill(i+1,1,3,1,d),s.fill(i+1,2,2,1,d);for(let m=a;m<=l;m++){let y=m-a,E=Math.round(u*y/(l-a));for(let g=-E;g<=E;g++){let w=i+g,x=g<0?g>-E+1||y<3?Ge.cloth:"#F3E6C8":Ge.shade;g<0&&g>=-Math.max(1,Math.floor(E/3))&&(x=W(Ge.cloth,Ge.shade,.35)),(l-m===3||l-m===4)&&(x=g<0?Ge.stripe:"#8E2F2B"),Math.abs(g)===E&&(x=Ut),s.set(w,m,x)}}let f=a+Math.floor((l-a)*.42);for(let m=f;m<l;m++){let y=Math.floor((m-f)*3/(l-f))+1;for(let E=-y;E<=y;E++)s.set(i+E,m,m===f?Ut:"#3E2A1C");s.set(i-y-1,m,"#F6EBD2")}return s.fill(i-u,l,2*u+1,1,Ut),bn(s)}var Di=[{x:24,bottom:L.camp.y-24,sprite:Ai(28,15,0)},{x:63,bottom:L.camp.y-26,sprite:Ai(24,13,1)}],Se={x:86,y:197},bu=[["...r...","..ro...","..roy..",".royyr.",".oyWyo.","royWyor",".ryyyr."],["....r..","...or..","..ryo..",".roWyr.",".oyWyo.","royyWor",".ryyyr."],["..r....","..oy...",".royo..",".ryWyr.","royWyo.","royWyor",".ryyyr."]],yu=[["..r..",".roy.",".oWo.","ryWyr",".ryr."],["...r.","..or.",".ryo.","royWr",".ryr."],[".r...",".oy..",".oWr.","ryWyo",".ryr."]],Ui={W:ct.white,y:ct.yellow,o:ct.orange,r:ct.red},Li=bu.map(e=>ue(e,Ui)),Ni=yu.map(e=>ue(e,Ui));function $i(e,t){return(Math.floor(te(e)*8)+t)%3}var Ti=ue(["..ennnNe..",".gnNnnNNg.","GgsgGgsgGg",".gGgsgGg.."],{n:K[0],N:K[1],e:ct.ember,g:zo.shade,G:zo.light,s:"#5A4636"}),pr=4;function xu(e){let t=te(e),n=[];for(let o=0;o<5;o++){let r=(t+o*(pr/5))%pr/pr;n.push({x:Math.round(Se.x+Math.sin(r*5+o)*1.5+r*9),y:Math.round(Se.y-11-r*30),r:r<.25?1:r<.6?2:3,alpha:.7*(1-r)**1.2})}return n}var Ri=new Map;function wu(e){let t=Ri.get(e);if(!t){t=[];for(let n=-e;n<=e;n++){let o=Math.round(Math.sqrt(Math.max(0,(e+.4)**2-n*n)));t.push({x:-o,y:n,w:2*o+1,h:1,color:n<0?W(Ko,"#FFFFFF",.2):Ko})}Ri.set(e,t)}return t}function ku(e,t,n){let o=pt(Ti,Se.x,Se.y);e.sprite(Ti,o.left,o.top);for(let i of xu(t))e.alpha(i.alpha),e.rects(wu(i.r),i.x,i.y),e.alpha(1);e.tint(null);let r=Li[$i(t,0)]??Li[0];r&&e.sprite(r,Se.x-3,Se.y-3-r.h);let s=Math.floor(te(t)*3)%5;e.rect(Se.x-2+s,Se.y-11-s%3,1,1,ct.yellow),e.tint(n)}var mr=["..oo....................",".olloo..................","olllffo.................","offeffo.................","ommfffo.................",".oofffo.................","...offfo.......ooooo....","...offfo.....oolllllo...","....offfo...ollllllllo..","....offffo.ollqqqqqllfo.","....offfffollqrrrrrqfffo","....offffffffqqqqqqqffso","...ooffffffffffffffsssso","..offssooooooooooossssso","..oooooo..........oooooo"],hr={o:"#5A3A20",l:He.light,f:He.face,s:He.shade,e:"#2E1E12",m:"#E2C090",q:ce.cream,r:ce.red},Pi=(e,t)=>{let n=[...e];for(let[o,r,s]of t){let i=n[o]??"";n[o]=i.slice(0,r)+s+i.slice(r+1)}return n},Su={rest:ue(mr,hr),blink:ue(Pi(mr,[[3,3,"s"]]),hr),chew:ue(Pi(mr,[[4,1,"f"],[4,2,"f"],[5,1,"m"],[5,2,"m"],[6,1,"o"],[6,2,"o"]]),hr)},hn={x:112,y:178};function vu(e){let t=te(e);if(t%3.7<.15)return"blink";let n=t%9;return n<3&&Math.floor(n*4)%2===1?"chew":"rest"}function Eu(){let e=new de(46,22),t=(n,o,r,s)=>{e.fill(n,o,r,2,he.light),e.fill(n,o+2,r,s-2,he.face),e.fill(n+r-2,o+2,1,s-3,he.shade),e.fill(n,o+s-2,r-1,1,he.shade),e.fill(n,o+s-1,r,1,he.edge),e.fill(n+r-1,o,1,s,he.edge),e.fill(n,o+2,1,s-3,W(he.light,he.face,.4));for(let i=2;i<r-3;i+=3)e.set(n+i,o+3+i%2,he.shade)};for(let n=0;n<32;n++){let o=9+Math.round(3*Math.sin(n/5))-(n>22?n-22:0)-(n<3?3-n:0);for(let r=15-o;r<15;r++){let s=(r+Math.floor(n/6))%4===0,i=r===15-o?he.face:s?he.edge:n%6===5?he.edge:he.shade;e.set(n,r,i)}}t(2,14,10,7),t(12,14,10,7),t(22,14,10,7),t(7,8,10,6),t(17,8,10,6),t(12,3,9,5),e.fill(33,19,13,1,K[0]),e.fill(33,20,13,1,K[1]),e.set(45,18,K[0]),t(35,13,9,6);for(let n=44;n<46;n++)e.set(n,16,"#8A6A44");for(let[n,o]of[[0,21],[31,21],[4,20],[27,21]])e.set(n,o,he.light);return bn(e)}var Oi=Eu(),gn={x:128,y:204},Dt={light:"#79A84C",face:"#4C8A3C",shade:"#2F612C",dark:"#234A22"},mn={light:"#A47447",face:"#7A5230",shade:"#563A22"};function Pe(e,t,n,o=1){let r=Z(n),s=[{a:168,len:12},{a:148,len:13},{a:118,len:9},{a:88,len:7},{a:60,len:10},{a:30,len:13},{a:10,len:12},{a:200,len:9},{a:-22,len:9}].map(l=>({a:l.a+(r()-.5)*12,len:Math.max(3,Math.round((l.len+Math.floor(r()*3))*o))})),i=34,a=e+10;return[0,1].map(l=>{let u=new de(i,a),d={x:Math.floor(i/2),y:a-1},f={x:d.x+t,y:a-1-e};for(let E=d.y;E>=f.y;E--){let g=(d.y-E)/e,w=Math.round(d.x+t*g*g+(l===1?Math.round(g*g*1.2):0)),x=(d.y-E)%3===0;u.set(w,E,x?mn.face:mn.light),u.set(w+1,E,x?mn.shade:mn.face),E>d.y-3&&u.set(w+2,E,mn.shade)}let m=f.x+(l===1?1:0),y=f.y;for(let E of s){let g=E.a*Math.PI/180;for(let w=1;w<=E.len;w++){let x=w/E.len,k=l===1?Math.round(x*x*1.4):0,S=Math.round(m+Math.cos(g)*w)+k,C=Math.round(y-Math.sin(g)*w+x*x*E.len*.55);u.set(S,C,x<.4?Dt.face:Dt.light),w>2&&u.set(S,C+1,x>.7?Dt.shade:Dt.face),w>3&&w%2===0&&u.set(S,C+2,Dt.dark)}}return u.fill(m-1,y-1,3,2,Dt.shade),u.set(m-1,y+1,"#B8642E"),u.set(m+1,y+2,"#8E4A22"),u.set(m,y+1,"#B8642E"),bn(u)})}var po=[{x:7,bottom:194,frames:Pe(30,2,1),phase:0},{x:470,bottom:202,frames:Pe(32,-3,2),phase:.7},{x:182,bottom:156,frames:Pe(22,1,3),phase:1.3},{x:424,bottom:258,frames:Pe(36,3,4),phase:1.9},{x:456,bottom:266,frames:Pe(40,-2,5),phase:.4},{x:6,bottom:142,frames:Pe(16,1,6,.6),phase:.2},{x:19,bottom:140,frames:Pe(12,-1,7,.5),phase:1.1},{x:31,bottom:143,frames:Pe(18,2,8,.62),phase:2},{x:447,bottom:141,frames:Pe(14,-1,9,.55),phase:.9},{x:460,bottom:143,frames:Pe(19,-2,10,.65),phase:1.6},{x:474,bottom:140,frames:Pe(12,1,11,.5),phase:.5}],Bi=2.4;function Cu(e,t){let n=po[e];return n?Math.floor((te(t)+n.phase)%Bi/(Bi/2)):0}var kp=po.length,Me={left:97,right:135,top:257,bottom:266},fo=[98,134];function Mu(){let e=Me.right-Me.left+1,t=new de(e,Me.bottom-Me.top+1),n="#A86E38";for(let o=0;o<5;o++)for(let r=0;r<e;r++){let s=(r+o%2*5)%10===0;t.set(r,o,s?K[1]:o===0?n:o%2===0?K[0]:W(K[0],n,.4))}t.fill(9,0,21,5,ce.red),t.fill(9,0,21,1,U.mid),t.fill(9,4,21,1,U.shadow);for(let o=11;o<28;o+=3)t.set(o,2,U.light);t.fill(0,5,e,1,U.mid),t.fill(0,6,e,3,K[1]);for(let o=2;o<e;o+=4)t.fill(o,6,1,3,"#553418");for(let o of[0,Math.floor(e/2),e-2])t.fill(o,6,2,4,"#553418");return t.fill(0,9,e,1,"#3E2614"),bn(t)}var gr=219,Au=231;function Lu(){let e=fo[0]-2,n=fo[1]+2-e+1,o=Au-gr+1,r=new de(n,o),s=Math.floor(n/2),i=a=>Math.floor((a+1)/4)%2===0;for(let a=0;a<4;a++){let l=Math.round(s*(.6+.4*(a/3)));for(let u=s-l;u<=s+l;u++){let d=u<s,f=i(u)?d?ce.red:ce.redShade:d?ce.cream:ce.creamShade;(Math.abs(u-s)===l||a===0)&&(f=Ut),r.set(u,a,f)}}r.fill(s-1,0,3,1,U.light);for(let a=4;a<10;a++)for(let l=0;l<n;l++){let u=a>=8,d=i(l)?u?ce.redShade:ce.red:u?ce.creamShade:ce.cream;a===4&&(d=U.mid),a===5&&(d=U.shadow),(l===0||l===n-1)&&(d=Ut),r.set(l,a,d)}for(let a=1;a<n-1;a++){let l=(a+1)%4;l>=1&&r.set(a,10,i(a)?ce.redShade:ce.creamShade),l===2&&r.set(a,11,i(a)?ce.redShade:ce.creamShade),l===2&&r.set(a,12,U.mid)}return bn(r)}var Nu=[["yyyyy..","yBBBBy.","yBGBBBy","yBBBBy.","yyyyy.."],["yyyy...","yBBBy..","yBGBBy.","yBBBBBy","yyyyyy."],["yyyyyy.","yBBBBBy","yBGBBy.","yBBBy..","yyyy..."]],Fi=Nu.map(e=>ue(e,{y:U.mid,B:Fn,G:U.gleam}));function Tu(e,t){return(Math.floor(te(e)*5)+t)%3}var Ru=Mu(),Pu=Lu();function Ou(e,t){e.sprite(Ru,Me.left,Me.top);let n=gr-6;fo.forEach((o,r)=>{e.rect(o-1,n,1,Me.top+6-n,"#7E522A"),e.rect(o,n,1,Me.top+6-n,"#5A3618"),e.rect(o-1,n-2,2,2,U.light);let s=Fi[Tu(t,r)]??Fi[0];s&&e.sprite(s,o+1,n)}),e.sprite(Pu,fo[0]-2,gr)}var Bu=ue(["oyyyyyyo","obbbbbbo",".oBBBBo.","..oBBo..","...oo...","..o..o..",".o....o.","o......o"],{o:"#4A2E18",y:ut.light,b:ut.face,B:ut.shade}),_i=ue(["oyyyo","obbbo",".oBo.","..n..","..n..","..N..","..n..","..n..","..N..","..n..","..n..","..N..","..n..",".nNn."],{o:"#4A2E18",y:ut.light,b:ut.face,B:ut.shade,n:K[0],N:K[1]}),yr=[{x:103,y:259,seed:1},{x:129,y:259,seed:2}],xr=[{x:422,y:214,seed:2}],Fu=128,Iu=26;function Gi(e){let t=e.base>0&&e.blockW>0?e.base*e.blockW:Fu,n=Math.min(q.maxWidth,t)/2,o=q.baseY+6;return[{x:Math.round(q.centerX-n-7),y:o,seed:0},{x:Math.min(Math.round(q.centerX+n+7),L.sledge.x-26),y:o,seed:1}]}function Hi(e){return{y:e.y,draw:(t,n,o)=>br(t,_i,e.x,e.y,e.seed,n,o)}}function Wi(e){return{x:e.x,y:e.y-16,radius:Iu,seed:e.seed+3}}function Yi(e){return{cx:e.x,y:e.y,rx:3,ry:1}}function br(e,t,n,o,r,s,i){let a=pt(t,n,o);e.sprite(t,a.left,a.top),e.tint(null);let l=Ni[$i(s,r)]??Ni[0];l&&e.sprite(l,n-2,a.top-l.h+1),e.tint(i)}var Ii=Ot(Ce.well),qi=[{x:Se.x,y:Se.y-4,radius:26,seed:0},...yr.map(e=>({x:e.x,y:e.y-12,radius:20,seed:e.seed})),...xr.map(e=>({x:e.x,y:e.y-16,radius:20,seed:e.seed+3}))],Ki=[...Di.map(e=>({cx:e.x,y:e.bottom,rx:Math.floor(e.sprite.w/2)-3,ry:2})),...po.map(e=>({cx:e.x+1,y:e.bottom,rx:e.bottom<150?3:6,ry:1})),{cx:Se.x,y:Se.y,rx:6,ry:1},{cx:hn.x,y:hn.y,rx:12,ry:2},{cx:gn.x,y:gn.y,rx:23,ry:2},{cx:L.well.x,y:L.well.y-2,rx:11,ry:2},{cx:Math.round((Me.left+Me.right)/2)+1,y:Me.bottom,rx:21,ry:2},...yr.map(e=>({cx:e.x,y:e.y,rx:4,ry:1})),...xr.map(e=>({cx:e.x,y:e.y,rx:3,ry:1}))];function zi(){let e=[];for(let o of Di){let r=pt(o.sprite,o.x,o.bottom);e.push({y:o.bottom,draw:s=>s.sprite(o.sprite,r.left,r.top)})}po.forEach((o,r)=>{e.push({y:o.bottom,draw:(s,i)=>{let a=o.frames[Cu(r,i)]??o.frames[0];if(!a)return;let l=pt(a,o.x,o.bottom+1);s.sprite(a,l.left,l.top)}})}),e.push({y:hn.y,draw:(o,r)=>{let s=Su[vu(r)],i=pt(s,hn.x,hn.y);o.sprite(s,i.left,i.top)}}),e.push({y:Se.y,draw:ku});let t=pt(Oi,gn.x,gn.y);e.push({y:gn.y,draw:o=>o.sprite(Oi,t.left,t.top)});let n=pt(Ii,L.well.x,L.well.y-2);e.push({y:L.well.y-2,draw:o=>o.sprite(Ii,n.left,n.top)}),e.push({y:Me.top+1,draw:(o,r)=>Ou(o,r)});for(let o of yr)e.push({y:o.y,draw:(r,s,i)=>br(r,Bu,o.x,o.y,o.seed,s,i)});for(let o of xr)e.push({y:o.y,draw:(r,s,i)=>br(r,_i,o.x,o.y,o.seed,s,i)});return e}var $t=q.baseY+2,Du=Qn(),ji=new Map;function _t(e){let t=ji.get(e);return t||(t=Ot(e),ji.set(e,t)),t}function Uu(e,t,n){return e.runs.map(o=>({x:t+o.x,y:n+o.y,w:o.w,h:1,color:o.color}))}function wr(e,t,n){let o=_t(e);return Uu(o,t-Math.floor(o.w/2),n-o.h)}var kr=L.rations.y+3,Sr=L.sledge.y+6,bo=(e,t)=>({y:e,draw:n=>n.rects(t)}),$u=[bo(Sr,wr(Ce.sledge,L.sledge.x+1,Sr)),bo(L.treasury.y,wr(Ce.chest,L.treasury.x,L.treasury.y)),bo(kr,wr(Ce.table,L.rations.x,kr))],_u=[{cx:L.sledge.x+1,y:Sr,rx:12,ry:1},{cx:L.treasury.x,y:L.treasury.y,rx:8,ry:1},{cx:L.rations.x,y:kr,rx:11,ry:1},{cx:L.treasury.x-22,y:L.treasury.y+1,rx:12,ry:1}],mt={x:q.centerX,y:q.baseY+22},Zi=zi(),Gu=Zi.filter(e=>e.y<q.baseY).sort((e,t)=>e.y-t.y),Hu=Zi.filter(e=>e.y>=q.baseY);function Wu(e,t){let n=[...Hu,...$u,bo(L.treasury.y+1,qu(e.coins)),...t.map(Hi)],o=e.pyramid.monument;return o&&n.push({y:mt.y,draw:r=>yi(r,o,mt.x,mt.y)}),n.sort((r,s)=>r.y-s.y)}function Yu(e,t){let n=[...Ki,..._u,...t.map(Yi)],o=e.pyramid.monument;if(o){let r=cr(o,mt.x,mt.y);n.push({cx:mt.x,y:mt.y,rx:Math.ceil(r.w/2)+2,ry:1})}return n}var yn=6,Vi=new Map;function qu(e){let t=Math.max(0,Math.min(48,Math.floor(Number.isFinite(e)?e:0))),n=Vi.get(t);if(n)return n;let o=new Array(yn).fill(0);for(let s=0;s<t;s++){let i=0,a=1/0;for(let l=0;l<yn;l++){let u=(o[l]??0)+Math.abs(l-(yn-1)/2)*1.8;u<a&&(a=u,i=l)}o[i]=(o[i]??0)+1}n=[];let r=L.treasury.y+1;for(let s=0;s<yn;s++){let i=o[s]??0;if(i===0)continue;let a=L.treasury.x-10-(yn-s)*4;n.push({x:a-1,y:r-i,w:1,h:i,color:xe});for(let l=0;l<i;l++)n.push({x:a,y:r-1-l,w:3,h:1,color:l%2===0?In.shadow:In.face});n.push({x:a,y:r-i-1,w:3,h:1,color:In.face},{x:a+1,y:r-i-1,w:1,h:1,color:U.gleam})}return Vi.set(t,n),n}var Xi=new Map;function Ku(e,t){let n=`${e}x${t}`,o=Xi.get(n);if(o)return o;let r=e>=16,s=r?8:4,i=r?4:2;o=[];let a=Math.max(1,Math.ceil(t/i));for(let l=0;l<a;l++){let u=t-l*i,d=Math.max(0,u-i);for(let f=l%2===1?-s/2:0;f<e;f+=s){let m=Math.max(0,f),y=Math.min(e,f+s);y>m&&o.push({dx:m,dy:d,w:y-m,h:u-d})}}return Xi.set(n,o),o}var Qi=ge,zu={light:Nt(ge.light),face:Nt(ge.face),mortar:Nt(ge.mortar),edge:Nt(ge.edge)},ju={light:W(Mt.light,"#FFFFFF",.25),face:Mt.light,mortar:Mt.dark,edge:Mt.dark};function Vu(e,t,n,o,r){e.rect(t+o.dx,n+o.dy,o.w,o.h,r.mortar);let s=Math.max(1,o.w-1),i=Math.max(1,o.h-1);e.rect(t+o.dx,n+o.dy,s,i,r.face),o.h>=3&&(e.rect(t+o.dx,n+o.dy,s,1,r.light),e.rect(t+o.dx,n+o.dy,1,i,r.light))}function ea(e,t,n){e.rect(t.x,t.y,t.w,1,n),e.rect(t.x,t.y+t.h-1,t.w,1,n),e.rect(t.x,t.y,1,t.h,n),e.rect(t.x+t.w-1,t.y,1,t.h,n)}function mo(e,t,n){for(let o=0;o<t.w;o+=2)e.rect(t.x+o,t.y,1,1,n),e.rect(t.x+o,t.y+t.h-1,1,1,n);for(let o=2;o<t.h-1;o+=2)e.rect(t.x,t.y+o,1,1,n),e.rect(t.x+t.w-1,t.y+o,1,1,n)}function ho(e,t,n,o){let r=Ku(t.w,t.h),s=Number.isFinite(n)?Math.min(1,Math.max(0,n)):0,i=Math.round(s*r.length);for(let a=0;a<i;a++){let l=r[a];l&&Vu(e,t.x,t.y,l,o)}}function Xu(e,t){switch(t.look){case"empty":ea(e,t,rs);break;case"planned":mo(e,t,Bn);break;case"building":mo(e,t,Bn),ho(e,t,t.fill,Qi);break;case"stalled":mo(e,t,Nt(Bn)),ho(e,t,t.fill,zu);break;case"orphaned":mo(e,t,Mt.dark),ho(e,t,Math.max(t.fill,.15),ju);break;case"set":ho(e,t,1,Qi),e.rect(t.x,t.y,t.w,1,ge.light),e.rect(t.x+t.w-1,t.y+1,1,t.h-1,ge.edge);break;case"fallen":{e.rect(t.x,t.y,t.w,t.h,Ct.gap),e.rect(t.x,t.y,t.w,1,Ct.crack);let n=Z(t.x*31+t.y*17),o=t.x+Math.floor(t.w/2);for(let r=t.y+1;r<t.y+t.h;r++)o=Math.min(t.x+t.w-2,Math.max(t.x+1,o+Math.floor(n()*3)-1)),e.rect(o,r,1,1,Ct.crack),r%3===0&&e.rect(o+1,r,1,1,Ct.crack);break}}}function Qu(e,t,n){let o=Number.isFinite(e)?Math.min(1,Math.max(0,e)):0;return Math.round((1-o)*(t+n+4))-2}function Ju(e,t){let n=Qu(t.flash,t.w,t.h);e.alpha(.75);for(let o=0;o<t.h;o++){let r=t.x+n-o;for(let[s,i,a]of[[0,3,qo],[-3,1,U.gleam]]){let l=Math.max(t.x,r+s),u=Math.min(t.x+t.w,r+s+i);u>l&&e.rect(l,t.y+o,u-l,1,a)}}e.alpha(1)}function Zu(e,t){let n=t.base>0?t.base*t.blockW:q.maxWidth/2,o=Math.imul(e+1,2654435761)>>>0,r=Math.max(0,n-4);return{x:q.centerX-r/2+o%1e3/1e3*r,y:q.baseY+1+(o>>>12)%7}}function ed(e,t){for(let r of t.blocks)Xu(e,r);for(let r of t.blocks)r.flash>0&&(e.alpha(Math.min(1,r.flash)*.6),e.rect(r.x,r.y,r.w,r.h,qo),e.alpha(1),r.look==="set"&&Ju(e,r));for(let r of t.blocks)r.highlight&&ea(e,r,U.light);let n=Math.max(0,Math.min(200,Math.floor(t.rubble)));for(let r=0;r<n;r++){let s=Zu(r,t),i=Ce.rubble[r%Ce.rubble.length]??Ce.rubble[0],a=_t(i);e.sprite(a,Math.round(s.x)-Math.floor(a.w/2),Math.round(s.y)-a.h+1)}let o=t.capstone;if(o.state!=="none"){if(o.state==="waiting"&&o.flag!=="none"){let r=L.sledge.x+15,s=L.sledge.y+5;e.rect(r,s-18,1,18,K[1]),e.rect(r,s-19,1,1,U.light);let i=o.flag==="passed"?Yo.green:Yo.red;for(let a=0;a<4;a++)e.rect(r+1,s-18+a,6-a*1.5,1,i);e.rect(r+1,s-15,1,1,xe)}ta(e,o)}}function ta(e,t){let n=_t(t.ready?Ce.capstoneGleam:Ce.capstone),o=Math.round(t.x)-Math.floor(n.w/2),r=Math.round(t.y)-n.h;e.sprite(n,o,r),t.ready&&e.sprite(_t(Ce.glint),o-3,r-2)}function td(e,t,n,o){let r=Math.max(4,Math.min(40,Math.round(o))),s=Math.round(t),i=Math.round(n);for(let a=0;a<r;a++){let l=r-(a-a%2),u=i-1-a,d=a>=r-3,f=a%2===1;e.rect(s-l,u,l,1,d?U.light:f?V.face:V.light),e.rect(s,u,l,1,d?U.mid:f?V.dark:V.shade)}e.rect(s-r-1,i-1,2*r+2,1,V.dark)}var nd=new Set(["walk","carry-scroll","carry-stone","carry-ration"]),od=new Set(["laborer","mason","scribe","skeptic","surveyor"]);function rd(e,t){if(t<=1)return 0;if(e.pose==="work"&&od.has(e.cast))return e.stroke<.5?1:0;let n=nd.has(e.pose)?8:4,o=Number.isFinite(e.poseTime)?Math.max(0,e.poseTime):0;return Math.floor(o*n)%t}function sd(e){let t=Du.frames(e.cast,e.pose,e.ration,e.ghost);return t[rd(e,t.length)]??null}function id(e,t){let n=t.blockH;if(!(n>0)||!Number.isFinite(e))return e-8;let o=Math.max(1,Math.ceil((q.baseY-(e-6))/n));return o<=t.base?q.baseY-o*n:e-8}function ad(e,t,n,o){let r=id(n,o);if(!(r>=$t)){e.rect(t-4,r,1,$t-r,K[1]),e.rect(t+3,r,1,$t-r,K[1]);for(let s=$t-2;s>=r;s-=3)e.rect(t-3,s,6,1,K[0])}}function ld(e,t,n){e.rect(t-7,n+2,1,$t-n-2,K[1]),e.rect(t+6,n+2,1,$t-n-2,K[1]),e.rect(t-9,n,18,1,K[0]),e.rect(t-9,n+1,18,1,K[1])}function Ji(e,t){return Math.round(e.y)-t.h+t.top}function cd(e,t,n,o){let r=Z(t.seed),s=3+Math.floor(r()*5),i=s>4?2:1,a=Math.ceil(s/i),l=a*4-1+6,u=i*5-1+6,d=Number.isFinite(t.open)?Math.min(1,Math.max(0,t.open)):1;if(d<=0)return o;let f=Math.max(4,Math.round(l*d)),m=Math.max(4,Math.round(u*d)),y=d>=.5?3:1,g=Math.max(m+1,o-1-y)-m,w=Math.min(479-f,Math.max(1,n-Math.floor(f/2)-2));e.rect(w+1,g,f-2,1,xe),e.rect(w+1,g+m-1,f-2,1,xe),e.rect(w,g+1,1,m-2,xe),e.rect(w+f-1,g+1,1,m-2,xe),e.rect(w+1,g+1,f-2,m-2,At.fill);let x=Math.min(w+f-4,Math.max(w+2,n-1));if(e.rect(x,g+m-1,2,1,At.fill),y>=3&&(e.rect(x-1,g+m-1,1,2,xe),e.rect(x,g+m,1,1,At.fill),e.rect(x+1,g+m,1,1,xe),e.rect(x+2,g+m-1,1,1,xe),e.rect(x,g+m+1,1,1,xe)),d<1)return g;for(let k=0;k<s;k++){let S=Xn[Math.floor(r()*Xn.length)]??Xn[0]??[],C=Math.floor(k/a),O=w+3+k%a*4,I=g+3+C*5;S.forEach((P,G)=>{for(let Y=0;Y<P.length;Y++)P[Y]==="#"&&e.rect(O+Y,I+G,1,1,At.glyph)})}return g}function na(e){return Math.min(1,Math.max(0,Number.isFinite(e.alpha)?e.alpha:1))*(e.ghost?.5:1)}function oa(e){return e.pose==="work"&&Math.round(e.y)<q.baseY}function ud(e){let t=[],n=[];for(let o of e.actors){if(o.pose==="climb"||o.pose==="climb-stone"||oa(o)||!Number.isFinite(o.x)||!Number.isFinite(o.y))continue;let r=na(o);if(r<=0)continue;let s=o.cast==="arbab"?7:o.pose==="sleep"?8:5,i={cx:Math.round(o.x),y:Math.round(o.y),rx:s,ry:1};r>=1?t.push(i):n.push({spot:i,alpha:r})}return{solid:t,faded:n}}function dd(e,t,n,o,r){let s=t.actors.map((u,d)=>({actor:u,i:d}));s.sort((u,d)=>u.actor.y-d.actor.y||u.i-d.i);let i=Wu(t,n),a=0,l=[];for(let{actor:u}of s){for(;a<i.length&&(i[a]?.y??0)<=u.y;a++)i[a]?.draw(e,r,o);let d=sd(u);if(!d)continue;let f=Math.round(u.x),m=Math.round(u.y);(u.pose==="climb"||u.pose==="climb-stone")&&ad(e,f,m,t.pyramid);let y=na(u);oa(u)&&(ld(e,f,m),e.tint(null),pn(e,t.sky,[{cx:f,y:m,rx:4,ry:0}],y),e.tint(o)),!(y<=0)&&(y<1&&e.alpha(y),e.sprite(d,f-Math.floor(d.w/2),m-d.h,u.facing===-1),y<1&&e.alpha(1),l.push({actor:u,sprite:d}))}for(;a<i.length;a++)i[a]?.draw(e,r,o);return l}function fd(e,t,n,o){let r=new Map;for(let{actor:s,sprite:i}of n){let a=Math.round(s.x),l=Ji(s,i);if(s.icon){let u=_t(Vn[s.icon]);l-=u.h+2,e.sprite(u,a-Math.floor(u.w/2),l)}if(s.highlight){let u=_t(Es);(t.reducedMotion||Math.floor(Math.max(0,s.poseTime)*4)%2===0)&&e.sprite(u,a-Math.floor(u.w/2),l-u.h-1),l-=u.h+1}r.set(s,l)}for(let{actor:s,sprite:i}of n){if(!s.bubble)continue;let a=cd(e,s.bubble,Math.round(s.x),Ji(s,i));r.set(s,Math.min(r.get(s)??a,a))}for(let{actor:s}of n)s.highlight&&bi(e,s.lane??s.id,Math.round(s.x),(r.get(s)??Math.round(s.y))-2,o)}var go="#FBF0D6",pd=.3;function md(e,t){let{x:n,y:o}=t;switch(t.kind){case"dust":t.life>pd?(e.rect(n,o-1,2,1,go),e.rect(n,o,1,1,go),e.rect(n+1,o,1,1,On[2])):(e.alpha(.8),e.rect(n-1,o,3,1,go),e.rect(n,o-1,1,1,go),e.rect(n+1,o+1,1,1,On[2]),e.alpha(1));break;case"stone":e.rect(n,o,2,2,ge.face),e.rect(n,o,1,1,ge.light);break;case"sparkle":e.rect(n,o,1,1,Math.floor(t.life*10)%2===0?U.gleam:U.light);break;case"coin":e.rect(n,o,2,2,U.light);break}}function ra(e,t){e.imageSmoothingEnabled=!1,e.globalAlpha=1;let n=Xs(e),o=t.sky.phase,r=te(t.time),s=Bt(o),i=ui(t.shake,r);(i.dx!==0||i.dy!==0)&&(n.rect(0,0,480,128,Lt[o][0]??"#000000"),n.tint(s),n.rect(0,128,480,142,lt[4]),n.tint(null)),n.offset(i.dx,i.dy),oi(n,t.sky,r),Ci(n,o,r),n.tint(s);for(let f of t.far.slice(0,3))td(n,f.x,f.y,f.height);n.tint(null),Mi(n,o,r);let a=Gi(t.pyramid);pn(n,t.sky,Yu(t,a)),t.pyramid.blocks.some(f=>f.look!=="empty"&&f.look!=="planned")&&hi(n,t.sky,q,t.pyramid),n.tint(s);for(let f of Gu)f.draw(n,r,s);ed(n,t.pyramid),n.tint(null);let l=ud(t);pn(n,t.sky,l.solid);for(let f of l.faded)pn(n,t.sky,[f.spot],f.alpha);n.tint(s);let u=dd(n,t,a,s,r);for(let f of t.particles)md(n,f);n.tint(null),o==="night"&&fi(n,[...qi,...a.map(Wi)],r);let d=t.pyramid.capstone;mi(n,d,t.pyramid.apex),d.state!=="none"&&d.glow>0&&ta(n,d),fd(n,t,u,i),n.offset(0,0),pi(n,o),e.globalAlpha=1}var sa="arbab-ui-sound";var hd=[{at:0,freq:3150},{at:.065,freq:3420},{at:.14,freq:2980}];function gd(e){try{return e()?.getItem(sa)==="on"}catch{return!1}}function bd(e,t){try{e()?.setItem(sa,t?"on":"off")}catch{}}function ia(e){let t=gd(e.storage),n=null,o=null,r=null,s=[],i=[],a=(g,w)=>{let x=e.now();for(;g.length>0&&x-(g[0]??0)>=1e3;)g.shift();return g.length>=w?!1:(g.push(x),!0)},l=()=>{if(!(n||!e.AudioContext))try{n=new e.AudioContext;let g=n.createGain();g.gain.value=.25,g.connect(n.destination),o=g;let w=Math.floor(n.sampleRate*.2);r=n.createBuffer(1,w,n.sampleRate);let x=r.getChannelData(0),k=12345;for(let S=0;S<x.length;S++)k=Math.imul(k,1103515245)+12345>>>0,x[S]=k/4294967296*2-1}catch{n=null,o=null}},u=()=>{n&&n.state==="suspended"&&n.resume().catch(()=>{})},d=(g,w,x,k,S)=>{let C=g.createOscillator();C.type="sine",C.frequency.setValueAtTime(k,x),C.frequency.exponentialRampToValueAtTime(k*.4,x+.16);let O=g.createGain();if(O.gain.setValueAtTime(S,x),O.gain.exponentialRampToValueAtTime(.001,x+.22),C.connect(O),O.connect(w),C.start(x),C.stop(x+.25),r){let I=g.createBufferSource();I.buffer=r;let P=g.createBiquadFilter();P.type="lowpass",P.frequency.setValueAtTime(1800,x);let G=g.createGain();G.gain.setValueAtTime(S*.35,x),G.gain.exponentialRampToValueAtTime(.001,x+.06),I.connect(P),P.connect(G),G.connect(w),I.start(x),I.stop(x+.08)}},f=(g,w,x,k,S=.4)=>{let C=g.createBiquadFilter();C.type="lowpass",C.frequency.setValueAtTime(900,x);let O=g.createGain();O.gain.setValueAtTime(1e-4,x),O.gain.linearRampToValueAtTime(.35,x+.05),O.gain.setValueAtTime(.3,x+S-.1),O.gain.exponentialRampToValueAtTime(.001,x+S),C.connect(O),O.connect(w);for(let I of[-7,7]){let P=g.createOscillator();P.type="sawtooth",P.frequency.setValueAtTime(k,x),P.detune.setValueAtTime(I,x),P.connect(C),P.start(x),P.stop(x+S+.02)}},m=(g,w,x)=>{f(g,w,x,196,.35),f(g,w,x+.3,294,.5)},y=(g,w,x,k,S,C,O)=>{let I=g.createOscillator();I.type=k,I.frequency.setValueAtTime(S,x);let P=g.createGain();P.gain.setValueAtTime(C,x),P.gain.exponentialRampToValueAtTime(.001,x+O),I.connect(P),P.connect(w),I.start(x),I.stop(x+O+.01)},E=(g,w,x)=>{let k=g.createOscillator();k.type="sine",k.frequency.setValueAtTime(160,x),k.frequency.exponentialRampToValueAtTime(120,x+.06);let S=g.createGain();S.gain.setValueAtTime(.15,x),S.gain.exponentialRampToValueAtTime(.001,x+.06),k.connect(S),S.connect(w),k.start(x),k.stop(x+.07);for(let C of hd)y(g,w,x+C.at,"triangle",C.freq,.1,.12),y(g,w,x+C.at,"sine",C.freq*1.3,.04,.09)};return{get enabled(){return t},toggle(){return t=!t,bd(e.storage,t),t&&(l(),u()),t},unlock(){t&&(l(),u())},play(g){if(!t||!n||!o)return;let w=n,x=o,k=w.currentTime+.01;switch(g){case"brief":case"report":f(w,x,k,220);break;case"stone":if(!a(s,3))return;d(w,x,k,140,.5);break;case"pay":if(!a(i,2))return;E(w,x,k);break;case"set":m(w,x,k);break;case"fall":d(w,x,k,60,.8);break;case"capstone":m(w,x,k);for(let S=0;S<10;S++)d(w,x,k+.9+S*.06,120,.2+S*.05);break}}}}var yd="This page needs its session token. Use the tab `arbab ui` opened, or run `arbab ui --no-open` to print a URL that carries it.",xd=2,wd=3e4,kd=600;function Sd(e){let t={};for(let[n,o]of Object.entries(to)){let r=e.getElementById(o);if(!r)return null;t[n]=r}return t}function aa(e,t,n){if(!e)return;Qt(e,16*t,16*t,n);let o=e.getContext("2d");o&&Jo(o,Qo,0,0,t*n)}function vd(e){let t=e.document,n=Sd(t),o=Xt(t.getElementById(to.canvas));if(!n||!o)return null;let{stage:r,tooltip:s,notice:i,banner:a,connection:l,live:u,site:d}=n,f=ns(e.devicePixelRatio),m=R=>{i.textContent=R,i.hidden=!1},y=z(t,{scale:1,color:A.muted,dpr:f});l.replaceChildren(y.el);let E=R=>{l.setAttribute("data-state",R);let{text:D,color:$}=zs(R);y.set(D,$)};E("connecting");let g=Gr(e.location.hash);if(!g)return m(yd),n.project.textContent="no session token",E("closed"),null;let w=o.getContext("2d");if(!w)return m("This browser cannot draw the scene; the ledger below still works."),null;o.width=480,o.height=270;let x=!1;try{x=e.matchMedia("(prefers-reduced-motion: reduce)").matches}catch{x=!1}let k=Bo({reducedMotion:x,random:Math.random}),S=Qn();aa(Xt(n.logo),2,f),aa(Xt(n.titleCardLogo),4,f),n.title.replaceChildren(z(t,{scale:3,color:A.gold,dpr:f},"ARBAB").el),n.titleCardWord.replaceChildren(z(t,{scale:6,color:A.gold,dpr:f},"ARBAB").el),n.siteTitle.replaceChildren(z(t,{scale:2,color:A.gold,dpr:f},"THE SITE").el);let C=z(t,{scale:1,color:A.sand,dpr:f},"THE SITE IS QUIET");n.caption.replaceChildren(C.el);let O="",I=(R,D)=>{O=$o(k.world),C.set(ts(R,D,k.world))},P=[ir(t,n.gauge5h,"5h",f),ir(t,n.gauge7d,"7d",f)],G=Us(t,n.kpis,{dpr:f,reducedMotion:x}),Y=ia({AudioContext:e.AudioContext,storage:e.storage,now:e.now}),Oe=()=>{n.sound.setAttribute("aria-pressed",String(Y.enabled)),n.sound.textContent=Y.enabled?"sound on":"sound off"};Oe(),n.sound.addEventListener("click",()=>{Y.toggle(),Oe()});let Be=()=>t.fullscreenElement!==void 0&&t.fullscreenElement!==null&&t.fullscreenElement===d;n.siteFullscreen.hidden=typeof d.requestFullscreen!="function",n.siteFullscreen.addEventListener("click",()=>{try{let R=Be()&&typeof t.exitFullscreen=="function"?t.exitFullscreen():d.requestFullscreen?.();R instanceof Promise&&R.catch(()=>{})}catch{}});let ve=()=>n.crewPanel.setAttribute("data-more",String(Rs(n.crewScroll)));n.crewScroll.addEventListener("scroll",ve);let Fe=()=>{let R=r.getBoundingClientRect(),D=Be()?R.height:_r(e.window.innerHeight,n.header.getBoundingClientRect().height,n.kpis.getBoundingClientRect().height,d.getBoundingClientRect().height-R.height),$=$r(R.width,D,e.devicePixelRatio);o.className=$.fluid?"fluid":"",o.style.width=$.fluid?"100%":`${$.width}px`,o.style.height=$.fluid?"auto":`${$.height}px`,ve()};Fe(),e.window.addEventListener("resize",Fe),t.addEventListener("fullscreenchange",Fe);let fe=null,Ie=new Map,De=0,le=null,ne=null,nt="crew",pe=null,Ue=null,ht=[],$e=()=>e.now()+De,Gt=R=>{a.textContent=R,a.hidden=!1},Ht=()=>{a.hidden=!0,a.textContent=""},Ye=()=>k.highlight(le??ne??pe),yo=()=>{let R=o.getBoundingClientRect(),D=r.getBoundingClientRect();return{x:R.left-D.left,y:R.top-D.top}},xo=R=>{let D=yo(),$=o.getBoundingClientRect().width,Q=$>0?$/480:1,se=k.world.actors.find(_e=>_e.lane===R);if(se)return{x:D.x+se.x*Q,y:D.y+(se.y-20)*Q};let ye=k.world.pyramid.blocks.find(_e=>_e.lane===R);return ye?{x:D.x+(ye.x+ye.w)*Q,y:D.y+ye.y*Q}:{x:D.x+8,y:D.y+8}},xn=z(t,{scale:1,color:A.gold,dpr:f}),wn=T(t,"div","tip-title");wn.appendChild(xn.el);let Ve=()=>{let R=le??ne??pe,D=R===null?void 0:Ie.get(R);if(!R||!D){s.hidden=!0;return}let[$=R,...Q]=qr(D,e.now(),De);xn.set($),s.replaceChildren(wn,...Q.map(_e=>T(t,"div","",_e)));let se=le!==null&&Ue?Ue:xo(R),ye=r.getBoundingClientRect().width;s.style.left=`${Math.max(0,Math.min(ye-220,se.x+12))}px`,s.style.top=`${Math.max(0,se.y+12)}px`,s.hidden=!1},Wt=R=>{pe=R,gt.setPinned(R),ot.setPinned(R),Ye(),Ve()},Yt=R=>({enter(D){ne=D,nt=R,Ye(),Ve()},leave(D){ne===D&&(ne=null),Ye(),Ve()},toggle(D){Wt(pe===D?null:D)}}),gt=Bs(t,{title:n.crewTitle,list:n.crew,empty:n.crewEmpty,recentGroup:n.recentGroup,recentTitle:n.recentTitle,recent:n.recent},S,f,Yt("crew")),kn=Ys(t,{title:n.monumentTitle,body:n.monument},f),Sn=ys(t,{title:n.chronicleTitle,list:n.chronicle,empty:n.chronicleEmpty},f),ot=Hs(t,{title:n.ledgerTitle,head:n.ledgerHead,body:n.table},f,Yt("ledger")),vn=()=>{ne!==null&&!(nt==="crew"?gt.order().includes(ne):Ie.has(ne))&&(ne=null),le!==null&&!Ie.has(le)&&(le=null)};t.addEventListener("pointerdown",()=>Y.unlock()),t.addEventListener("keydown",R=>{Y.unlock(),R.key==="Escape"&&pe!==null&&Wt(null)}),o.addEventListener("pointermove",R=>{let D=o.getBoundingClientRect();if(D.width<=0||D.height<=0)return;let $=R.clientX??0,Q=R.clientY??0;le=k.pick(($-D.left)*480/D.width,(Q-D.top)*270/D.height);let se=r.getBoundingClientRect();Ue={x:$-se.left,y:Q-se.top},Ye(),Ve()}),o.addEventListener("pointerleave",()=>{le=null,Ue=null,Ye(),Ve()});let wo=R=>{let D=Hr(R);if(!D.ok){Gt(D.message);return}let $=D.snapshot;Ht(),E("live");let Q=Date.parse($.now);De=Number.isNaN(Q)?0:Q-e.now();let se=$e();try{k.apply($)}catch{Gt("The scene could not show this snapshot; the ledger is up to date.")}if(fe===null){n.titleCard.className="title-card gone";let c=()=>{n.titleCard.hidden=!0};x?c():e.setTimeout(c,kd)}let ye=Yr($);n.project.textContent=ye.project,n.version.textContent=ye.version,n.held.hidden=!ye.held,n.footer.textContent=ye.footer;let _e=se/1e3;P[0].update(sr("5h",$.quota.fiveHour,$.quota.holdAbove.fiveHour,_e)),P[1].update(sr("7d",$.quota.sevenDay,$.quota.holdAbove.sevenDay,_e)),G.update($,e.now()),I($,se),Ie=new Map($.lanes.map(c=>[c.name,c])),pe!==null&&!Ie.has(pe)&&(pe=null),gt.update($,se),ve(),ot.update($,se),vn(),kn.update($,se),ht=Uo(ht,fe===null?Jr($):Zr(fe,$)),Sn.update(ht,se);let Cn=Kr(fe,$);Cn.length>0&&(u.textContent=Cn.join(". ")),fe=$,Wt(pe)},rt=!1,ko=()=>{let R=e.fetch;if(!R){m(Zn);return}let D;try{D=R(`${st.snapshot}?${So}=${encodeURIComponent(g)}`)}catch{D=Promise.reject(new Error("fetch threw"))}D.then($=>{rt||m(ar($))},()=>{rt||m(ar(null))})},Xe=new e.EventSource(`${st.events}?${So}=${encodeURIComponent(g)}`);Xe.addEventListener("open",()=>E("live")),Xe.addEventListener(vo.snapshot,R=>wo(R.data)),Xe.addEventListener(vo.problem,R=>Gt(Wr(R.data))),Xe.addEventListener("error",()=>{Xe.readyState===xd?(E("closed"),ko()):E("lost")});let qt=null,bt=0,En=0,Kt=R=>{if(rt)return;let D=qt===null?16:Math.max(0,R-qt);qt=R,k.step(D),ra(w,k.world),fe&&$o(k.world)!==O&&I(fe,$e());let $=k.world.events;for(let Q of $)Y.play(Q.kind);if($.length=0,G.tick(e.now()),R-bt>=1e3){bt=R;let Q=$e();gt.tick(Q),ot.tick(Q),s.hidden||Ve()}if(R-En>=wd){En=R;let Q=$e();Sn.refresh(Q),fe&&(kn.update(fe,Q),I(fe,Q))}e.requestAnimationFrame(Kt)};return e.requestAnimationFrame(Kt),{stop(){rt=!0,Xe.close()}}}function Ed(){let e=globalThis,t=e.document,n=e.window;if(typeof t!="object"||t===null||typeof n!="object"||n===null||typeof e.EventSource!="function"||typeof e.requestAnimationFrame!="function")return null;let o=e.requestAnimationFrame,r=typeof e.matchMedia=="function"?e.matchMedia:null,s=typeof e.AudioContext=="function"?e.AudioContext:typeof e.webkitAudioContext=="function"?e.webkitAudioContext:null,i=typeof e.fetch=="function"?e.fetch:null;return{document:t,window:n,location:e.location,EventSource:e.EventSource,fetch:i?a=>i.call(n,a):null,AudioContext:s,storage:()=>{try{return e.localStorage??null}catch{return null}},matchMedia:a=>r?r.call(n,a):{matches:!1},requestAnimationFrame:a=>o.call(n,a),setTimeout:(a,l)=>e.setTimeout.call(n,a,l),devicePixelRatio:typeof e.devicePixelRatio=="number"?e.devicePixelRatio:1,now:()=>Date.now()}}var la=Ed();la&&vd(la);})();\n';
@@ -11947,7 +12269,7 @@ Content-Length: 0\r
 \r
 `);
   });
-  return new Promise((resolve19, reject) => {
+  return new Promise((resolve20, reject) => {
     server.once("error", (err) => {
       reject(new ArbabError("runtime", `cannot listen on 127.0.0.1:${options.port}: ${err.message}`, { cause: err }));
     });
@@ -11960,7 +12282,7 @@ Content-Length: 0\r
       }
       port = address.port;
       let closing = null;
-      resolve19({
+      resolve20({
         url: `http://127.0.0.1:${port}/#${UI_TOKEN_PARAM}=${options.token}`,
         port,
         close: () => {
@@ -11979,14 +12301,14 @@ Content-Length: 0\r
 }
 
 // src/ui/server/snapshot.ts
-import { statSync as statSync7 } from "node:fs";
-import { basename as basename5, isAbsolute as isAbsolute16, join as join47, relative as relative14, sep as sep13 } from "node:path";
+import { statSync as statSync8 } from "node:fs";
+import { basename as basename6, isAbsolute as isAbsolute17, join as join49, relative as relative15, sep as sep14 } from "node:path";
 var MAX_LANES = 300;
 var LANDED_KEPT = 5;
 var REASON_MAX = 200;
 var TOOL_NAME2 = /^[A-Za-z0-9_.:-]{1,64}$/;
 var REPORT_STATUSES = ["done", "partial", "blocked"];
-var isObject8 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isObject10 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var finiteOrNull = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
 var countOrZero = (v) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0;
 var tokenOrNull = (v) => typeof v === "string" && TOOL_NAME2.test(v) ? v : null;
@@ -11998,8 +12320,8 @@ var parsedMs = (v) => {
 var stateKey = (r) => JSON.stringify([r.state, r.attempt, r.since, r.shepherdPid, r.endState ?? null, r.reason ?? null]);
 function briefUnderPreflight(root, brief) {
   if (typeof brief !== "string" || brief === "") return false;
-  const rel = relative14(join47(root, PREFLIGHT_DIR), isAbsolute16(brief) ? brief : join47(root, brief));
-  return rel !== "" && !isAbsolute16(rel) && rel.split(sep13)[0] !== "..";
+  const rel = relative15(join49(root, PREFLIGHT_DIR), isAbsolute17(brief) ? brief : join49(root, brief));
+  return rel !== "" && !isAbsolute17(rel) && rel.split(sep14)[0] !== "..";
 }
 function laneKind(name2, generatedBy, preflightBrief) {
   if (generatedBy !== null) {
@@ -12013,28 +12335,28 @@ function laneKind(name2, generatedBy, preflightBrief) {
 function readSummary(runsRoot, lane, attempt) {
   const value = readJson(attemptFiles(runPaths(runsRoot, lane).attemptDir(attempt)).summary);
   if (value === null) return null;
-  if (!isObject8(value)) throw new ArbabError("io", `the summary of ${lane} attempt ${attempt} is not a JSON object`);
+  if (!isObject10(value)) throw new ArbabError("io", `the summary of ${lane} attempt ${attempt} is not a JSON object`);
   return value;
 }
 function readLane(source, name2, record2, state, nowMs) {
   const { runsRoot } = source;
   const paths = runPaths(runsRoot, name2);
   const spec = readJson(paths.laneFile);
-  const role2 = isObject8(spec) ? spec["role"] : void 0;
+  const role2 = isObject10(spec) ? spec["role"] : void 0;
   if (!ROLES.includes(role2)) throw new ArbabError("io", `the lane file of ${name2} has no valid role`);
-  const worktree = isObject8(spec) ? spec["worktree"] : void 0;
-  const preflightBrief = briefUnderPreflight(source.root, isObject8(spec) ? spec["brief"] : void 0);
+  const worktree = isObject10(spec) ? spec["worktree"] : void 0;
+  const preflightBrief = briefUnderPreflight(source.root, isObject10(spec) ? spec["brief"] : void 0);
   const generatedBy = generatingIntegration(readGenerated(runsRoot, name2)?.by ?? null);
   const attempts = listAttempts(runsRoot, name2);
   const files = (n) => attemptFiles(paths.attemptDir(n));
   let firstMs = null;
   if (attempts[0] !== void 0) {
     const started = readJson(files(attempts[0]).started);
-    firstMs = isObject8(started) ? parsedMs(started["startedAt"]) : null;
+    firstMs = isObject10(started) ? parsedMs(started["startedAt"]) : null;
   }
   if (firstMs === null) {
     const shepherd = readJson(paths.shepherdFile);
-    firstMs = isObject8(shepherd) ? parsedMs(shepherd["startedAt"]) : null;
+    firstMs = isObject10(shepherd) ? parsedMs(shepherd["startedAt"]) : null;
   }
   firstMs ??= parsedMs(record2.since);
   const current = record2.attempt >= 1 && attempts.includes(record2.attempt) ? record2.attempt : null;
@@ -12058,9 +12380,9 @@ function readLane(source, name2, record2, state, nowMs) {
   if (reported && (role2 === "implementer" || role2 === "verifier" || role2 === "reviewer")) {
     const report = latestReport(runsRoot, name2);
     if (role2 === "reviewer") {
-      findings = isObject8(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
+      findings = isObject10(report) && Array.isArray(report["findings"]) ? report["findings"].length : null;
     } else {
-      const status = isObject8(report) ? report["status"] : void 0;
+      const status = isObject10(report) ? report["status"] : void 0;
       reportStatus = REPORT_STATUSES.find((s) => s === status) ?? null;
     }
   }
@@ -12096,7 +12418,7 @@ function readLane(source, name2, record2, state, nowMs) {
 }
 function integrationSignature(files) {
   return files.map((file) => {
-    const st = statSync7(file, { throwIfNoEntry: false });
+    const st = statSync8(file, { throwIfNoEntry: false });
     return st === void 0 ? "-" : `${st.size}:${st.mtimeMs}`;
   }).join("|");
 }
@@ -12114,7 +12436,7 @@ function readUiIntegration(source, name2) {
     reviewCounts = { lenses: review.lenses.length, confirmed: 0, refuted: 0, unverified: 0 };
     for (const finding of review.findings) reviewCounts[finding.verdict]++;
   }
-  const landedAt = isObject8(landing) && landing["name"] === name2 && parsedMs(landing["landedAt"]) !== null ? landing["landedAt"] : null;
+  const landedAt = isObject10(landing) && landing["name"] === name2 && parsedMs(landing["landedAt"]) !== null ? landing["landedAt"] : null;
   return {
     name: name2,
     lanes: record2.merged.map((m) => m.lane),
@@ -12219,7 +12541,7 @@ function createSnapshotBuilder(source) {
       return {
         protocol: UI_PROTOCOL,
         version: source.version,
-        project: basename5(source.root),
+        project: basename6(source.root),
         now: new Date(nowMs).toISOString(),
         lanes: kept.map((k) => k.lane),
         hiddenLanes: hidden,
@@ -12396,7 +12718,7 @@ async function runUi(argv2, ctx) {
     } else {
       const opened = values["no-open"] !== true && await ctx.openUrl(server.url);
       const where = opened ? `http://127.0.0.1:${server.port}/ (opened in your browser)` : server.url;
-      ctx.stdout(`arbab ui: ${basename6(project.root)} at ${where}
+      ctx.stdout(`arbab ui: ${basename7(project.root)} at ${where}
 read-only; Ctrl-C stops it
 `);
       if (!opened && values["no-open"] !== true) ctx.stderr("open the URL above in a browser\n");
@@ -12529,15 +12851,22 @@ var USAGE = {
       JSON_OPT
     ]
   ),
-  summary: block2(["summary [--all] [--json]"], [["--all", "every project that launched a lane on this machine"], JSON_OPT]),
+  summary: block2(
+    ["summary [--all] [--since <when>] [--json]"],
+    [
+      ["--all", "every project that launched a lane on this machine"],
+      ["--since <when>", "also list what landed after <when>: <n>m, <n>h, <n>d ago (up to 3650d), YYYY-MM-DD (midnight UTC) or an ISO date-time with Z or an offset"],
+      JSON_OPT
+    ]
+  ),
   report: block2(["report <lane> [--attempt <n>] [--json]"], [["--attempt <n>", "this attempt instead of the latest"], JSON_OPT]),
-  hook: block2(["hook <pre-tool-use|stop>"]),
+  hook: block2(["hook <pre-tool-use|stop|user-prompt-submit|session-start>"]),
   "host-check": block2(["host-check <name>"])
 };
 
 // src/commands/verify.ts
-import { createHash as createHash5 } from "node:crypto";
-import { join as join48 } from "node:path";
+import { createHash as createHash6 } from "node:crypto";
+import { join as join50 } from "node:path";
 var DEFAULT_TIMEOUT_MIN3 = 90;
 var REFS_DIR = ".arbab/refs";
 var REF_SLUG_MAX = 22;
@@ -12550,7 +12879,7 @@ function refSlug(branch) {
   return branch.toLowerCase().replace(/[^a-z0-9]/g, "-").slice(0, REF_SLUG_MAX);
 }
 function refId(branch) {
-  const hash = createHash5("sha1").update(branch).digest("hex").slice(0, REF_HASH_HEX);
+  const hash = createHash6("sha1").update(branch).digest("hex").slice(0, REF_HASH_HEX);
   return `ref-${refSlug(branch)}-${hash}`;
 }
 function refHead(ctx, project, branch) {
@@ -12594,12 +12923,12 @@ async function runVerify(argv2, ctx) {
     const branch = ref2 ?? "";
     const head = refHead(ctx, project, branch);
     const prefix = refId(branch);
-    const dir = confine(project.root, join48(REFS_DIR, prefix));
+    const dir = confine(project.root, join50(REFS_DIR, prefix));
     target = {
       label: `ref:${branch}`,
       prefix,
-      lanesDir: join48(dir, "lanes"),
-      recordPath: join48(dir, "verify.json"),
+      lanesDir: join50(dir, "lanes"),
+      recordPath: join50(dir, "verify.json"),
       // The branch head is landed code, so the install runs on it: nothing is merged on top.
       start: { base: head },
       owner: { integration: prefix, branch: `refs/heads/${branch}`, head },
@@ -12658,7 +12987,7 @@ async function verifyTarget(ctx, project, target, timeoutMs, json3) {
 }
 var MAX_LISTED = 5;
 function worktreeChanges(ctx, project, lane) {
-  const worktree = join48(project.worktreeRoot, lane);
+  const worktree = join50(project.worktreeRoot, lane);
   const gitCommonDir2 = resolveGitCommonDir(ctx.git, project.root);
   if (gitCommonDir2 === void 0) return `the git directory of ${project.root} could not be resolved, so ${worktree} was not checked`;
   const verified = verifyWorktreeGit({ worktree, branch: `arbab/${lane}`, gitCommonDir: gitCommonDir2 });
@@ -12678,7 +13007,7 @@ function worktreeChanges(ctx, project, lane) {
 import { execFile, execFileSync as execFileSync3, spawn as spawn3 } from "node:child_process";
 import { closeSync as closeSync7, openSync as openSync7 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join49 } from "node:path";
+import { join as join51 } from "node:path";
 var NOTIFY_TIMEOUT_MS = 5e3;
 var nodeNotifyExec = (file, args, opts, done) => {
   execFile(file, args, { timeout: opts.timeout, windowsHide: true }, (err) => done(err));
@@ -12696,11 +13025,11 @@ function makeNotify(platform, execFileImpl = nodeNotifyExec) {
     } else {
       return Promise.resolve(false);
     }
-    return new Promise((resolve19) => {
+    return new Promise((resolve20) => {
       try {
-        execFileImpl(argv2[0], argv2[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve19(err === null || err === void 0));
+        execFileImpl(argv2[0], argv2[1], { timeout: NOTIFY_TIMEOUT_MS }, (err) => resolve20(err === null || err === void 0));
       } catch {
-        resolve19(false);
+        resolve20(false);
       }
     });
   };
@@ -12708,10 +13037,10 @@ function makeNotify(platform, execFileImpl = nodeNotifyExec) {
 function makeReadStdin(stdin) {
   return () => {
     if (stdin.isTTY === true) return Promise.resolve("");
-    return new Promise((resolve19, reject) => {
+    return new Promise((resolve20, reject) => {
       const chunks = [];
       stdin.on("data", (chunk) => chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk));
-      stdin.once("end", () => resolve19(Buffer.concat(chunks).toString("utf8")));
+      stdin.once("end", () => resolve20(Buffer.concat(chunks).toString("utf8")));
       stdin.once("error", (err) => reject(new ArbabError("io", `cannot read stdin: ${err.message}`, { cause: err })));
     });
   };
@@ -12721,12 +13050,12 @@ function makeOpenUrl(platform, spawnFn = spawn3) {
   const opener = platform === "darwin" ? "open" : platform === "linux" ? "xdg-open" : null;
   return (url) => {
     if (opener === null) return Promise.resolve(false);
-    return new Promise((resolve19) => {
-      const timer = setTimeout(() => resolve19(true), OPENER_WAIT_MS);
+    return new Promise((resolve20) => {
+      const timer = setTimeout(() => resolve20(true), OPENER_WAIT_MS);
       timer.unref();
       const settle = (opened) => {
         clearTimeout(timer);
-        resolve19(opened);
+        resolve20(opened);
       };
       let child2;
       try {
@@ -12748,7 +13077,7 @@ function makeSpawnShepherd(execPath, scriptPath2, env2) {
   return (root, lane, mode) => {
     const laneDir = runPaths(confine(root, loadConfig(root).runsRoot), lane).laneDir;
     ensureDir(laneDir);
-    const log = openSync7(join49(laneDir, "shepherd.log"), "a");
+    const log = openSync7(join51(laneDir, "shepherd.log"), "a");
     try {
       const child2 = spawn3(execPath, shepherdArgv(scriptPath2, root, lane, mode), {
         cwd: root,
@@ -12790,8 +13119,8 @@ function defaultContext(opts) {
     stdout: (text2) => process.stdout.write(text2),
     stderr: (text2) => process.stderr.write(text2),
     hostEnv: { ...process.env },
-    home: join49(home, ".arbab"),
-    claudeHome: join49(home, ".claude"),
+    home: join51(home, ".arbab"),
+    claudeHome: join51(home, ".claude"),
     clock: systemClock,
     sleep,
     alive: isAlive,
@@ -12893,7 +13222,10 @@ var HELP = `usage: arbab [-C <dir>] <command> [options]
                                           unless --keep-worktrees
   ui [--port N] [--hours N] [--no-open] [--json]
                                           serve the pyramid scene on 127.0.0.1 until stopped (read-only)
-  summary [--all] [--json]                plans, lanes by state, integrations by stage and what needs you
+  summary [--all] [--since <when>] [--json]
+                                          plans, lanes by state, integrations by stage and what needs you;
+                                          --since: what landed after <when> (<n>m, <n>h, <n>d ago, YYYY-MM-DD
+                                          as midnight UTC, or an ISO date-time with Z or an offset)
   report <lane> [--attempt <n>] [--json]  an attempt's summary and report, the latest unless --attempt
   host-check <name>                       run hostGates on the integration head from a terminal
   help [<command>], --help                this text, or a command's options
@@ -12908,8 +13240,8 @@ function globalDir(argv2, cwd) {
   const dir = argv2[1];
   if (dir === void 0 || dir === "") throw new ArbabError("usage", "-C needs a directory");
   if (dir === "-C" || argv2[2] === "-C") throw new ArbabError("usage", "-C given twice");
-  const abs = resolve18(cwd, dir);
-  const stat = statSync8(abs, { throwIfNoEntry: false });
+  const abs = resolve19(cwd, dir);
+  const stat = statSync9(abs, { throwIfNoEntry: false });
   if (stat === void 0) throw new ArbabError("usage", `-C ${JSON.stringify(dir)}: no such directory ${abs}`);
   if (!stat.isDirectory()) throw new ArbabError("usage", `-C ${JSON.stringify(dir)}: not a directory: ${abs}`);
   return { cwd: abs, argv: argv2.slice(2) };
@@ -12957,9 +13289,9 @@ ${HELP}`);
 
 // src/cli.ts
 function readVersion2() {
-  if (true) return "0.2.1";
+  if (true) return "0.2.2";
   try {
-    const pkg = JSON.parse(readFileSync10(new URL("../package.json", import.meta.url), "utf8"));
+    const pkg = JSON.parse(readFileSync12(new URL("../package.json", import.meta.url), "utf8"));
     return typeof pkg.version === "string" ? pkg.version : "0.0.0";
   } catch {
     return "0.0.0";

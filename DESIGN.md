@@ -122,9 +122,10 @@ the lane-worktree test above (src/commands/project.ts, so the hook's `-C` check 
 `worktreeRoot` and `runsRoot` are not the project root and do not overlap the integration records
 (src/config/load.ts, so `.arbab/integrationſ` is refused); by the credential matcher's containment checks
 (src/profile/credentials.ts, §21); by lane inputs, to find the project root of an input's path as given and to
-refuse a folder holding the home directory or the worktree (src/shepherd/inputs.ts); and by `otherSessions`, to
-match a registry entry's project and runner (src/registry/sessions.ts, §21). The lane-worktree test, the config
-checks, lane inputs, `otherSessions` (and the `runner` it reads, recorded by the same `runnerPath`) and
+refuse a folder holding the home directory or the worktree (src/shepherd/inputs.ts); by `otherSessions`, to
+match a registry entry's project and runner (src/registry/sessions.ts, §21); and by the catch-up hooks, to find the
+registered project a session works in (src/hook/catchup.ts, §21). The lane-worktree test, the config
+checks, lane inputs, `otherSessions` (and the `runner` it reads, recorded by the same `runnerPath`), the catch-up hooks and
 `homeSpellings` (the home directories handed to the credential matcher) resolve a path with `realpathSync.native`,
 which gives its spelling on disk, before they fold it. The other callers of the credential matcher resolve the file
 they check and the project root with `realpathSync`, which follows links but may keep the spelling as given: land's
@@ -134,12 +135,13 @@ checks still fold, so a spelling of case does not matter to them. The real-path 
 themselves (`existingFile` in src/config/check.ts with `path.relative`, `--lens-file` and `--message` with
 `confine()`) compares the two real paths exactly, without folding: a real path whose case differs from the real
 root's is refused as outside the project.
-Two comparisons do not fold. The credential matcher's glob regexes (name rules and patterns) match the NFC pattern
-against the NFC path with the `iu` flags: NFC so that the NFC and NFD spellings of a name are one, as APFS takes
+Two more comparisons do not go through foldPath. The credential matcher's glob regexes (name rules and patterns)
+ignore case their own way: they match the NFC pattern against the NFC path with the `iu` flags: NFC so that the NFC and NFD spellings of a name are one, as APFS takes
 them, while a precomposed `é` stays one code point that a `?` matches (NFD would split it into `e` and a combining
 accent); `iu` is Unicode case folding that takes `ſ` as `s` and U+212A as `k` but keeps every character one
-character, so a `?` still matches `ß`, which foldPath would turn into `ss`. And an input's real path is inside the project only when
-it is inside the project's real path exactly: both are spellings on disk, so a sibling that differs only in case is
+character, so a `?` still matches `ß`, which foldPath would turn into `ss`. And, like the real-path containment
+above, an input's real path is inside the project only when it is inside the project's real path exactly (its path
+as given still finds its root through `sameOrInside`): both are spellings on disk, so a sibling that differs only in case is
 another directory where the file system tells them apart.
 
 Repository build output (git-ignored): `dist/arbab.mjs` (the bundle) and `plugin/` (what a marketplace installs, §17).
@@ -158,7 +160,11 @@ shepherds/<pid>.json              {pid, lane, project, owner, startedAt, runner}
 waiters/<pid>.json                {pid, project, owner, startedAt, runner} while that `arbab wait` runs, or a `verify`,
                                   `review` or `preflight` waits for its lanes (`runner`: §21, absent before 0.2.1)
 projects/<sha1(root)>.json        {root, lastLaunchAt}: a project that launched a lane (`summary --all`, the hook's
-                                  `-C` check, §21)
+                                  `-C` check, the catch-up hooks, §21)
+sessions/<sha256(session)>.json   {seenAt, projects: {<root>: {seenAt, reported}}}: when the catch-up hooks last
+                                  answered that Claude Code session, and per project root when they last answered for
+                                  it and the last 100 landing keys they reported there (§21); `cleanup` removes one
+                                  not modified for 30 days
 tmp/                              `quota --refresh`'s working directory, removed after the call
 ```
 
@@ -414,8 +420,11 @@ arbab status [--active] [--mine] [lane…]
                                      one row per lane: state, attempt, elapsed, turns, calls, last tool, effort,
                                      failed, cost Δ (the tokens when there is no cost), quota, why (the state's
                                      reason, at most 40 characters); failures by cause are in summary.json
-arbab summary [--all]                lanes by state, plans, integrations by stage, what needs attention, quota and
-                                     slots; --all: every project in ~/.arbab/projects/ (§21)
+arbab summary [--all] [--since <when>]
+                                     lanes by state, plans, integrations by stage, what needs attention, quota and
+                                     slots; --all: every project in ~/.arbab/projects/; --since: what landed after
+                                     <when>: <n>m, <n>h, <n>d back (up to 3650 days), a date YYYY-MM-DD
+                                     (midnight UTC) or an ISO date-time with Z or an offset (§21)
 arbab report <lane> [--attempt <n>]  one attempt's summary and report, the latest by default (§21)
 arbab wait [--any|--all] [--all-sessions] [--timeout-min N] [--notify] [lane…]
                                      level-triggered: prints the finished lane runs not yet acked (end state, reason,
@@ -430,7 +439,8 @@ arbab preflight <lane.json>          a probe attempt with the lane's binary, fla
 arbab quota [--reset | --refresh]    the account snapshot and hold decision; --reset or --refresh after an account
                                      switch (§21)
 arbab cleanup [--worktrees [--older-than <days>]] [--mine]
-                                     reap orphans, release stale slots/leases/locks, remove empty lock directories;
+                                     reap orphans, release stale slots/leases/locks, remove empty lock directories
+                                     and session watermarks unused for 30 days;
                                      remove finished lanes' clean worktrees merged or landed, and landed integrations'
                                      worktrees and branches (§17, §21)
 arbab plan check|next|status <plan>  M2 (§16); next takes --retry <phase> (§21)
@@ -443,7 +453,8 @@ arbab land <name> [--squash] [--message <file>] [--keep-worktrees]
                                      M3 (§17), with §21's additions
 arbab ui [--port N] [--hours N] [--no-open]
                                      the pyramid scene on 127.0.0.1 (§19)
-arbab hook pre-tool-use|stop         the plugin's hooks (§21); not listed in the help
+arbab hook pre-tool-use|stop|user-prompt-submit|session-start
+                                     the plugin's hooks (§21); not listed in the help
 arbab __shepherd <root> <lane> <mode-json>
                                      internal
 ```
@@ -755,7 +766,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
 
     At every tier: `deps` (manifests changed, install not confirmed) and, with config `hostGates`, `host` (§21).
     Each skipped item stays until it runs or is waived by name; `--waive` needs a terminal (§21).
-  - **risks**, by weight (§21): first one `session:<id>` per other session the landing affects, or one
+  - **risks**, by weight (§21): first `base-moved` when the base's head is not in the integration head (§21), then
+    one `session:<id>` per other session the landing affects, or one
     `session:unknown` when the machine registry cannot be listed (§21), then every
     confirmed finding, unverified MEDIUM+ findings and one line for the unverified
     LOW ones, manifest changes, host gates, stale or unmatched items, then the merged lanes' `open_questions` and
@@ -771,14 +783,15 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   - refuses unless the main checkout is on the integration's base and contained in the verified head, with no
     tracked change and no untracked file where the merge writes (§21: other untracked files are left alone and
     listed as `left alone:`);
-  - prints a `warning:` line on stderr for each other session the landing affects (§21), and never blocks on them:
-    it merges in the same call, so these lines are a last record, and the sessions are told from readiness's list;
   - merges `integrate/<name>` into it (`--no-ff`) and records `landing.json`; with `--squash` (or config
     `landing.squash`) it makes one commit instead (`merge --squash`, then a commit, hooks off). `--message <file>`
     replaces the `Land <name>` message of either; the file must lie inside the project, also after resolving links,
     and neither its path nor its real path may be a credential file by the same list and matcher as `--lens-file`
-    (ignoring case), so a landing cannot commit credentials. `landing.json` records `squash` and the
-    `lanes` it carried;
+    (ignoring case), so a landing cannot commit credentials. `landing.json` records `squash`, the
+    `lanes` it carried and, as `owner`, the landing session (null outside Claude Code; §21);
+  - once the merge or the squash's commit has succeeded, prints a `warning:` line on stderr for each other session
+    the landing affects (§21). It never blocks on them and a failed landing prints none: these lines are a last
+    record, and the sessions are told from readiness's list;
   - prints the push command and "not pushed". It never pushes;
   - then cleans up what it landed, unless `--keep-worktrees`: the worktrees of the merged lanes, of the lanes
     generated for the integration and of the integration itself. A worktree is removed only when its lane is
@@ -1064,11 +1077,6 @@ Decided while building it (plan `ui2`):
 - `land --squash` has no opposite: with config `landing.squash` set, a single landing cannot ask for a merge commit.
 - Readiness drops a damaged `reviews/<round>.json` from its round counts without saying so, while
   `readReviewHistory` refuses the whole history for it.
-- A session that comes back (a lane resumed after a usage limit, an orchestrator back from a pause) gets no summary
-  of what other sessions landed meanwhile. Its lanes do not need one, since each works on its own base; the
-  orchestrator learns at `land`, which refuses a base that moved, or from another session's message (§21). Planned:
-  a summary built from the landing records, from `summary --since <time>` and from a readiness line that names
-  what landed on the base since the integration started.
 
 ## 21. Field fixes (2026-10-21)
 
@@ -1130,7 +1138,8 @@ The decisions below answer what that use showed.
   as another, the orchestrator's own included, so its lanes and waiters are named too.
   - `readiness` checks the paths the integration changes since its merge base with the base, and lists each such
     session as a risk `session:<id>` (`<id>` is the first 8 characters of the session id, or `outside` for
-    processes started outside Claude Code), first among the risks; it is never a skipped item and no waiver answers
+    processes started outside Claude Code), first among the risks after `base-moved` (§21 Catching up), which comes
+    before everything; it is never a skipped item and no waiver answers
     it. The report, `readiness.json` and `--json`, also carries them as `otherSessions`. It is advisory, as in
     `land`: when the registries cannot be read, the report holds one risk `session:unknown` ("cannot tell which
     other sessions are working here: <reason>"), no `otherSessions`, and is otherwise the same. An empty
@@ -1155,6 +1164,73 @@ The decisions below answer what that use showed.
     is not ListAgents' short reference and does not match it (observed 2026-10-23).
 - A Stop hook (`arbab hook stop`) keeps the orchestrator from ending its turn when it owns live shepherds and no live
   waiter, once: `stop_hook_active` lets the next stop through.
+
+### Catching up (0.2.2)
+
+A session that comes back (after a pause, a usage limit or `claude --resume`) used to learn what other sessions
+landed only when `land` refused its moved base, or from another session's message. Its lanes need no news, since
+each works on its own base; the orchestrator does, before it builds on a stale one.
+
+- `landing.json` records `owner`, the landing session's `CLAUDE_CODE_SESSION_ID`, for merge and squash landings;
+  null outside Claude Code. A record from before 0.2.2 has none and reads as `session unknown`, nobody's own.
+- `landingsSince(root, sinceMs)` (src/summary/landings.ts) lists the project's landing records whose `landedAt` is
+  after a moment, oldest first (ties by name); a record that is missing, does not parse or names another
+  integration is skipped.
+- `summary --since <when>`: `<n>m`, `<n>h`, `<n>d` back from now, at most 3650 days in any unit; a date
+  (`YYYY-MM-DD`) as midnight UTC; or an ISO date-time with `Z` or an offset (without one, the machine's time zone
+  would decide). Anything else, a longer span, and a date or time that does not exist (`2026-02-30`, `24:00`) are
+  usage errors.
+  It adds a `Landed since <time>` section after Integrations, said even when empty (`nothing landed`): per landing
+  its name, `into <base>`, time, owner (`session <first 8 characters>`, `outside Claude Code` or `session unknown`)
+  and lane count (`, squashed` after a squash). `--json` adds `since` and `landedSince` (oldest first) to the
+  project's summary, and to each with `--all`.
+- `readiness` adds the risk `base-moved`, first among the risks, when the base's head is not in the integration
+  head, which `land` would refuse. It names the landing records into the base whose commit is among the commits the
+  head lacks (name, time, owner), or else how many commits that is ("it has new commits" when git cannot count
+  them), and asks for the merge `land`'s refusal asks for, in the same words (`baseMergeInstruction`,
+  src/readiness/moved.ts): the base merged into `integrate/<name>` in its worktree with hooks off (`untrustedTree()`,
+  `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again. Both
+  name the worktree from `integrationPaths`, and quote it and the base as shell words (`shellWord`: bare when it
+  needs no quoting, else POSIX single quotes with each `'` as `'\''`; never double quotes, where bash keeps the
+  backslash of `\!`), since the human pastes the command into a shell.
+  `integration.json` keeps no start time, so the commits, not a time, say which landings the integration lacks. The
+  integration's own landing record is never among them, and once it landed (its `landing.json` exists) there is no
+  such risk: its own merge commit is what the base gained. It is advisory: when git cannot tell there is no risk, and
+  `land` checks again. Like every risk it takes no waiver.
+- The plugin's `hooks/hooks.json` adds UserPromptSubmit and SessionStart entries, running `arbab hook
+  user-prompt-submit` and `arbab hook session-start` (src/hook/catchup.ts). Each reads the hook input's `session_id`
+  and `cwd` and answers only for projects registered in `~/.arbab/projects/`: the one the working directory lies in,
+  and every one that lies inside it, so an orchestrator started in a parent folder of several repositories (`-C`,
+  §21 Orchestrator approvals) hears about each (the working directory as written or by real path, through foldPath,
+  §3). Never in a lane worktree, nor of the projects inside one. A directory with no registered project at, above or
+  below it costs no git call, nor does a parent folder; no project's config is ever loaded. Per session it keeps one
+  file, `~/.arbab/sessions/<sha256 of the session id>.json`, holding the session's watermark (its last message the
+  hooks answered) and one per project root (the registered root, matched through foldPath):
+  `{"seenAt": "<ISO>", "projects": {"<root>": {seenAt, reported}}}`, `reported` the keys (`<name>@<mergeSha>`) of
+  the landings already reported there, the last 100. The set of projects a message covers depends on the working
+  directory, so each keeps its own: a session that moves to project B and comes back to A hears what landed in A
+  meanwhile. A project without its own watermark (one registered while a parent-folder session was away, or one the
+  session moves to) is read from the session's. Only a session with no file (its first message) gets no history: each
+  project it covers only gets a watermark, with the keys of the landings on disk since 10 minutes before. Otherwise
+  it lists each project's landings since its watermark's `seenAt` minus 10 minutes whose key is not in its
+  `reported` and whose `owner` is not this session (an ownerless or pre-0.2.2 landing counts as another's): `land`
+  stamps `landedAt` before it writes `landing.json`, so a record written while a hook ran can fall just behind the
+  watermark, and the keys say it once. A file in the earlier single-watermark shape (`{seenAt, reported}`,
+  `reported` possibly missing) reads as the session's watermark, its keys those of every project it answers for; a
+  per-project file without the session's `seenAt` takes the latest project's. Either is rewritten in the current
+  shape. It moves the session's watermark and those of the projects it covers to now, keeps the others, adds the
+  keys it reported, and, when
+  there are any, answers with `additionalContext`: what other sessions landed "while this session was away" (no time
+  of its own: the 10 minutes of slack can list a landing stamped before the session's last message), up to five
+  landings by name, time and owner, oldest first across projects, each followed by `in <project>` when there is more
+  than one project (its path from the working directory, measured through foldPath and spelled as the root is, so
+  two repositories named `app` read differently; the basename for the project the directory lies in), the rest counted, and that lanes keep their own base while an integration started before them must merge
+  the base in before it can land. Record text reaches the model's context with control characters and line breaks
+  replaced by spaces. SessionStart's `source` (startup,
+  resume, clear, compact) changes nothing: the watermark says what the session saw. As with the other hooks, a hook
+  that cannot decide prints nothing and exits 0.
+- `cleanup` removes watermarks not modified for 30 days, prints `removed <n> session watermarks unused for 30 days`,
+  and adds `sessionWatermarksRemoved` to `--json`.
 
 ### Fence
 

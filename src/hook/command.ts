@@ -53,9 +53,11 @@ export function tokenize(command: string): Word[] | null {
   return words;
 }
 
-/** `s` as one shell word tokenize() reads back as `s` when it can: bare, else single- or double-quoted. */
+/**
+ * `s` as one POSIX shell word: bare when it needs no quoting, else single-quoted with each `'` as `'\''`. Double quotes
+ * are no option: bash keeps the backslash of `\!` there. tokenize() reads it back unless it holds a `'`.
+ */
 export function shellWord(s: string): string {
   if (UNQUOTED.test(s)) return s;
-  if (!s.includes("'")) return `'${s}'`;
-  return `"${s.replace(/[$`\\!"]/g, "\\$&")}"`;
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }

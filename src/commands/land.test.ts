@@ -296,6 +296,7 @@ describe("runLand", () => {
       integrationHead: head,
       mergeSha,
       landedAt: "2026-10-09T12:00:00.000Z",
+      owner: null,
       pushed: false,
       squash: false,
       lanes: [{ lane: "a", sha: a }],
@@ -369,6 +370,16 @@ describe("runLand", () => {
     expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
     expect(JSON.parse(p.stdout())).not.toHaveProperty("otherSessions");
     expect(p.stderr()).toMatch(/^warning: cannot tell which other sessions this landing affects: cannot list .*shepherds: /);
+  });
+
+  it("records the landing session as owner, for a merge and a squash", async () => {
+    for (const args of [["rel"], ["rel", "--squash"]]) {
+      ({ t: p } = await ready());
+      p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+      expect(await runLand(args, p.ctx)).toBe(0);
+      expect(readRecord<LandingRecord>(join(dir(p), "landing.json")).owner, args.join(" ")).toBe(SESSION);
+      p.dispose();
+    }
   });
 
   it("says nothing about other sessions when it refuses", async () => {
@@ -585,10 +596,49 @@ describe("runLand", () => {
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
 
+    // Readiness asks for the same merge, word for word.
+    const refusal = await runLand(["rel"], p.ctx).then(
+      () => "",
+      (err: unknown) => (err as Error).message,
+    );
+    const instruction = refusal.slice(refusal.indexOf("Merge main into"));
+    expect(instruction).toMatch(/^Merge main into integrate\/rel with hooks off: .* again$/);
+    expect(await runReadiness(["rel"], p.ctx)).toBe(0);
+    const risk = readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks.find((r) => r.id === "base-moved");
+    expect(risk?.text).toBe(`main moved since this integration started: 1 new commit, so land would refuse. ${instruction}.`);
+    p.out.length = 0;
+
+    // From the same source too: a worktree integration.json spells otherwise changes neither.
+    const record = join(dir(p), "integration.json");
+    const saved = readFileSync(record, "utf8");
+    writeJsonAtomic(record, { ...readRecord<IntegrationRecord>(record), worktree: "/elsewhere/integrate-rel" });
+    expect(await runReadiness(["rel"], p.ctx)).toBe(0);
+    const again = readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks.find((r) => r.id === "base-moved");
+    expect(again?.text).toBe(risk?.text);
+    await expect(runLand(["rel"], p.ctx)).rejects.toThrow(`. ${instruction}`);
+    writeFileSync(record, saved);
+    p.out.length = 0;
+
     const newHead = await mergeMainAndVerify(p);
     expect(await runLand(["rel"], p.ctx)).toBe(0);
     // The merge commit holds exactly the verified tree.
     expect(p.ok(["rev-parse", "main^{tree}"]).trim()).toBe(p.ok(["rev-parse", `${newHead}^{tree}`]).trim());
+  });
+
+  it("leaves its own landing out of a readiness run again afterwards: no base-moved risk", async () => {
+    for (const args of [["rel"], ["rel", "--squash"]]) {
+      p?.dispose();
+      ({ t: p } = await ready());
+      expect(await runLand(args, p.ctx)).toBe(0);
+      // The base now holds the landing's own commit, which the integration head does not.
+      const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
+      expect(p.git(["merge-base", "--is-ancestor", "main", head], p.root).code, args.join(" ")).toBe(1);
+      p.out.length = 0;
+      await runReadiness(["rel"], p.ctx);
+      const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+      expect(report.risks.map((r) => r.id), args.join(" ")).not.toContain("base-moved");
+      expect(p.stdout()).not.toContain("moved since this integration started");
+    }
   });
 
   it("refuses when the integration branch moved past the verified head", async () => {
@@ -697,6 +747,7 @@ describe("runLand --squash and --message", () => {
       integrationHead: head,
       mergeSha,
       landedAt: T,
+      owner: null,
       pushed: false,
       squash: true,
       lanes: [{ lane: "a", sha: a }],

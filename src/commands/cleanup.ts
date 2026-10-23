@@ -1,7 +1,8 @@
 // arbab cleanup [--worktrees [--older-than <days>]] [--mine] [--json]
 //
 // Marks lanes whose shepherd died orphaned and reaps their worker; removes pool entries (slots, semaphores, leases,
-// writer locks) whose holder is dead, then the empty directories under <home>/locks/; with --worktrees, removes the
+// writer locks) whose holder is dead, then the empty directories under <home>/locks/, then the session watermarks
+// (<home>/sessions/, the catch-up hooks') not modified for 30 days; with --worktrees, removes the
 // worktrees of finished lanes that are clean and merged into baseBranch or landed by record (a landing.json lists the
 // lane, and its branch head is that sha or an ancestor of it), then the worktree and branch of every landed
 // integration. --older-than also removes a finished lane's clean, unborrowed worktree whose state is older than that
@@ -9,14 +10,17 @@
 // Of lane branches only generated lanes' go: a later plan phase merges an earlier one's arbab/<lane> by name. The
 // same rules (removeLaneWorktrees) serve `arbab land`, which cleans up what it landed.
 // Text: one line per action (`orphaned <lane>`, `reaped <lane> pgid <n>`, `released <file>`,
-// `removed <n> empty lock directories`, `removed worktree <path>: <reason>`, `deleted branch <branch>`,
-// `kept worktree <path>: <reason>`, `kept branch <branch>: <reason>`), or `nothing to clean`.
+// `removed <n> empty lock directories`, `removed <n> session watermarks unused for 30 days`,
+// `removed worktree <path>: <reason>`, `deleted branch <branch>`, `kept worktree <path>: <reason>`,
+// `kept branch <branch>: <reason>`), or `nothing to clean`.
 // --json: {"orphaned": string[], "reaped": [{"lane", "pgid"}], "released": string[], "worktreesRemoved": string[],
 //          "branchesDeleted": string[], "worktreesKept": [{"path", "reason"}], "branchesKept": [{"branch", "reason"}],
-//          "warnings": string[], "worktreeRemovals": [{"path", "reason"}], "lockDirsRemoved": number}
+//          "warnings": string[], "worktreeRemovals": [{"path", "reason"}], "lockDirsRemoved": number,
+//          "sessionWatermarksRemoved": number}
 import { existsSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { INTEGRATION_WORKTREE_PREFIX } from "../config/lane";
+import { removeStaleWatermarks } from "../hook/catchup";
 import { integrationPaths, listIntegrations, readIntegration, type IntegrationPaths } from "../integrate";
 import { effectiveState, listAttempts, listLanes, ownedBy, readAttempt, readShepherdRecord, readState, runPaths, sessionOf, writeState } from "../registry";
 import { listPoolEntries, reap, releaseIfStale, untrustedTree, verifyWorktreeGit, WORKER_TMP_DIR, worktreeStatus, type GitRunner } from "../run";
@@ -52,6 +56,8 @@ export interface CleanupReport extends WorktreeCleanup {
   /** Why each of worktreesRemoved went, in its order. */
   worktreeRemovals: Array<{ path: string; reason: string }>;
   lockDirsRemoved: number;
+  /** Session watermarks (~/.arbab/sessions/) not modified for 30 days, removed. */
+  sessionWatermarksRemoved: number;
 }
 
 /** What `cleanup --worktrees` adds to the rules land shares; land passes none. */
@@ -503,6 +509,9 @@ export function formatCleanup(report: CleanupReport): string {
     ...report.reaped.map((r) => `reaped ${r.lane} pgid ${r.pgid}`),
     ...report.released.map((path) => `released ${path}`),
     ...(report.lockDirsRemoved > 0 ? [`removed ${report.lockDirsRemoved} empty lock ${report.lockDirsRemoved === 1 ? "directory" : "directories"}`] : []),
+    ...(report.sessionWatermarksRemoved > 0
+      ? [`removed ${report.sessionWatermarksRemoved} session ${report.sessionWatermarksRemoved === 1 ? "watermark" : "watermarks"} unused for 30 days`]
+      : []),
     ...formatWorktreeCleanup(report, report.worktreeRemovals),
   ];
   return lines.length === 0 ? "nothing to clean" : lines.join("\n");
@@ -532,11 +541,20 @@ export async function runCleanup(argv: string[], ctx: CommandContext): Promise<n
   const session = sessionOf(ctx.hostEnv);
   const include =
     values.mine === true && session !== null ? (lane: string) => ownedBy(readShepherdRecord(project.runsRoot, lane), session, { ownerless: false }) : undefined;
-  const report: CleanupReport = { orphaned: [], reaped: [], released: [], ...emptyWorktreeCleanup(), worktreeRemovals: [], lockDirsRemoved: 0 };
+  const report: CleanupReport = {
+    orphaned: [],
+    reaped: [],
+    released: [],
+    ...emptyWorktreeCleanup(),
+    worktreeRemovals: [],
+    lockDirsRemoved: 0,
+    sessionWatermarksRemoved: 0,
+  };
   await reapOrphans(ctx, project, report, include);
   report.released = releaseStalePoolFiles(ctx.home, ctx.alive, ctx.clock.now());
   // After the release: a dead holder's entry was what kept its directory.
   report.lockDirsRemoved = removeEmptyLockDirs(ctx.home);
+  report.sessionWatermarksRemoved = removeStaleWatermarks(ctx.home, ctx.clock.now());
   if (values.worktrees === true) removeMergedWorktrees(ctx, project, report, { olderThanMs: ageMs, include });
   if (values.json === true) printJson(ctx, report);
   else ctx.stdout(formatCleanup(report) + "\n");

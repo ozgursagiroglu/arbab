@@ -1,5 +1,5 @@
 {
-  "description": "arbab: approve bare runner calls; keep an orchestrator from ending its turn with unwatched lanes",
+  "description": "arbab: approve bare runner calls; keep an orchestrator from ending its turn with unwatched lanes; tell a returning session what other sessions landed in its project",
   "hooks": {
     "PreToolUse": [
       {
@@ -11,6 +11,12 @@
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs", "hook", "stop"], "timeout": 10 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs", "hook", "user-prompt-submit"], "timeout": 10 } ] }
+    ],
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs", "hook", "session-start"], "timeout": 10 } ] }
     ]
   }
 }

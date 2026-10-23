@@ -777,6 +777,11 @@ export interface LandingRecord {
   /** The merge commit, or the single commit of a squash landing. */
   mergeSha: string;
   landedAt: string;
+  /**
+   * The Claude Code session that landed it (CLAUDE_CODE_SESSION_ID); null outside Claude Code. Absent before 0.2.2.
+   * How a returning session tells another session's landing from its own (DESIGN.md §21).
+   */
+  owner?: string | null;
   pushed: false;
   /** One commit on the base instead of a merge (`land --squash`, config landing.squash). Absent before §21. */
   squash?: boolean;

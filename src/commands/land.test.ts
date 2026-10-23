@@ -296,6 +296,7 @@ describe("runLand", () => {
       integrationHead: head,
       mergeSha,
       landedAt: "2026-10-09T12:00:00.000Z",
+      owner: null,
       pushed: false,
       squash: false,
       lanes: [{ lane: "a", sha: a }],
@@ -369,6 +370,16 @@ describe("runLand", () => {
     expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
     expect(JSON.parse(p.stdout())).not.toHaveProperty("otherSessions");
     expect(p.stderr()).toMatch(/^warning: cannot tell which other sessions this landing affects: cannot list .*shepherds: /);
+  });
+
+  it("records the landing session as owner, for a merge and a squash", async () => {
+    for (const args of [["rel"], ["rel", "--squash"]]) {
+      ({ t: p } = await ready());
+      p.ctx.hostEnv = { CLAUDE_CODE_SESSION_ID: SESSION };
+      expect(await runLand(args, p.ctx)).toBe(0);
+      expect(readRecord<LandingRecord>(join(dir(p), "landing.json")).owner, args.join(" ")).toBe(SESSION);
+      p.dispose();
+    }
   });
 
   it("says nothing about other sessions when it refuses", async () => {
@@ -697,6 +708,7 @@ describe("runLand --squash and --message", () => {
       integrationHead: head,
       mergeSha,
       landedAt: T,
+      owner: null,
       pushed: false,
       squash: true,
       lanes: [{ lane: "a", sha: a }],

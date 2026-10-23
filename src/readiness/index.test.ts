@@ -391,6 +391,33 @@ describe("computeReadiness: risks", () => {
     expect(unknown.ready).toBe(true);
   });
 
+  it("puts a moved base first, naming the landings that moved it, as a risk that needs no waiver", () => {
+    const landings = [
+      { name: "hot", into: "main", landedAt: NOW, owner: "cccccccc-1111", mergeSha: OLD, squash: false, lanes: 1 },
+      { name: "cold", into: "main", landedAt: NOW, owner: null, mergeSha: OLD, squash: true, lanes: 2 },
+    ];
+    const report = computeReadiness(input({ sessionsUnknown: "x", baseMoved: { base: "main", landings, commits: 4 } }));
+    expect(report.risks[0]).toEqual({
+      id: "base-moved",
+      text:
+        `main moved since this integration started: hot at ${NOW} (session cccccccc), cold at ${NOW} (outside Claude Code) landed. ` +
+        "Merge main into integrate/m3 before landing.",
+    });
+    expect(report.risks[1]?.id).toBe("session:unknown");
+    expect(report.skipped).toEqual([]);
+    expect(report.ready).toBe(true);
+  });
+
+  it("counts the new commits when no landing record explains a moved base, and says nothing of a base that did not move", () => {
+    const risk = (commits: number | null) =>
+      computeReadiness(input({ baseMoved: { base: "dev", landings: [], commits } })).risks.find((r) => r.id === "base-moved")?.text;
+    expect(risk(1)).toBe("dev moved since this integration started: 1 new commit. Merge dev into integrate/m3 before landing.");
+    expect(risk(3)).toBe("dev moved since this integration started: 3 new commits. Merge dev into integrate/m3 before landing.");
+    expect(risk(null)).toBe("dev moved since this integration started: it has new commits. Merge dev into integrate/m3 before landing.");
+    expect(riskIds({ baseMoved: null })).not.toContain("base-moved");
+    expect(riskIds({})).not.toContain("base-moved");
+  });
+
   it("records an empty otherSessions when given none, and leaves it out of a report computed without", () => {
     expect(computeReadiness(input({ otherSessions: [] })).otherSessions).toEqual([]);
     expect("otherSessions" in computeReadiness(input())).toBe(false);

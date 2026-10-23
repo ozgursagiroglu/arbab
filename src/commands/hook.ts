@@ -1,18 +1,25 @@
-// arbab hook <pre-tool-use|stop>
+// arbab hook <pre-tool-use|stop|user-prompt-submit|session-start>
 //
 // The plugin's Claude Code hooks: approve bare runner calls, keep an orchestrator with live shepherds from stopping
-// unwatched (DESIGN.md §21). A hook that cannot decide prints nothing and exits 0, so Claude Code goes on as without it.
+// unwatched, and tell a returning session what other sessions landed in its project since its last message
+// (user-prompt-submit, session-start: additionalContext; DESIGN.md §21). A hook that cannot decide prints nothing and
+// exits 0, so Claude Code goes on as without it.
 import { realpathSync } from "node:fs";
 import { approves, APPROVAL, TEMP_DIRS } from "../hook/approve";
+import { catchUpDecision } from "../hook/catchup";
 import { stopDecision } from "../hook/stop";
 import { listProjects } from "../registry";
 import { ArbabError } from "../util/errors";
 import type { CommandContext } from "./context";
 import { COMMANDS } from "./index";
+import { findProjectRoot, inLaneWorktree } from "./project";
 
-export const HOOK_EVENTS = ["pre-tool-use", "stop"] as const;
+export const HOOK_EVENTS = ["pre-tool-use", "stop", "user-prompt-submit", "session-start"] as const;
+type HookEvent = (typeof HOOK_EVENTS)[number];
 
-async function answer(event: (typeof HOOK_EVENTS)[number], ctx: CommandContext, tempDirs: readonly string[]): Promise<string | null> {
+const isHookEvent = (value: string | undefined): value is HookEvent => (HOOK_EVENTS as readonly (string | undefined)[]).includes(value);
+
+async function answer(event: HookEvent, ctx: CommandContext, tempDirs: readonly string[]): Promise<string | null> {
   const input = await ctx.readStdin();
   if (event === "pre-tool-use") {
     const tmp = ctx.hostEnv["TMPDIR"];
@@ -27,13 +34,21 @@ async function answer(event: (typeof HOOK_EVENTS)[number], ctx: CommandContext, 
     });
     return ok ? APPROVAL : null;
   }
+  if (event === "user-prompt-submit" || event === "session-start") {
+    return catchUpDecision(input, event === "session-start" ? "SessionStart" : "UserPromptSubmit", {
+      home: ctx.home,
+      clock: ctx.clock,
+      // A worker's worktree is no project of the human's; findProjectRoot would refuse it after a git call.
+      findRoot: (cwd) => (inLaneWorktree(cwd) ? null : findProjectRoot(cwd, ctx.git)),
+    });
+  }
   return stopDecision(input, { home: ctx.home, alive: ctx.alive, scriptPath: ctx.scriptPath, cwd: ctx.cwd });
 }
 
 /** `tempDirs`: where `-C` is never approved besides the hook's TMPDIR; a parameter so tests under them can differ. */
 export async function runHook(argv: string[], ctx: CommandContext, tempDirs: readonly string[] = TEMP_DIRS): Promise<number> {
   const [event, ...rest] = argv;
-  if (event !== "pre-tool-use" && event !== "stop") {
+  if (!isHookEvent(event)) {
     throw new ArbabError("usage", `hook takes one of ${HOOK_EVENTS.join(", ")}, got ${JSON.stringify(event ?? "")}`);
   }
   if (rest.length > 0) throw new ArbabError("usage", `hook ${event} takes no arguments`);

@@ -624,7 +624,7 @@ function loadLane(projectRoot, lanePath, credentialPaths = []) {
 // src/hook/catchup.ts
 import { createHash as createHash4 } from "node:crypto";
 import { readdirSync as readdirSync10, readFileSync as readFileSync7, realpathSync as realpathSync6, rmSync as rmSync7, statSync as statSync5 } from "node:fs";
-import { basename, join as join22 } from "node:path";
+import { basename, isAbsolute as isAbsolute7, join as join22, relative as relative8, sep as sep8 } from "node:path";
 
 // src/registry/paths.ts
 import { existsSync, mkdirSync as mkdirSync2, readdirSync } from "node:fs";
@@ -4228,13 +4228,7 @@ var LANDING_SLACK_MS = 10 * 6e4;
 function landingKey(landing) {
   return `${landing.name}@${landing.mergeSha}`;
 }
-function readWatermark(path) {
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync7(path, "utf8"));
-  } catch {
-    return null;
-  }
+function parseWatermark(raw) {
   if (!isObject5(raw)) return null;
   const seenAt = raw["seenAt"];
   const ms = typeof seenAt === "string" ? Date.parse(seenAt) : NaN;
@@ -4243,8 +4237,37 @@ function readWatermark(path) {
   const reported = Array.isArray(keys) ? keys.filter((k) => typeof k === "string").slice(-REPORTED_KEPT) : [];
   return { seenMs: ms, reported };
 }
-function writeWatermark(path, seenAt, reported) {
-  writeJsonAtomic(path, { seenAt, reported: [...new Set(reported)].slice(-REPORTED_KEPT) });
+function readWatermarks(path) {
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync7(path, "utf8"));
+  } catch {
+    return null;
+  }
+  if (!isObject5(raw)) return null;
+  const projects = raw["projects"];
+  if (isObject5(projects)) {
+    const marks = /* @__PURE__ */ new Map();
+    for (const [root, value] of Object.entries(projects)) {
+      const mark = parseWatermark(value);
+      if (root !== "" && mark !== null) marks.set(root, mark);
+    }
+    return { projects: marks, every: null };
+  }
+  const every = parseWatermark(raw);
+  return every === null ? null : { projects: /* @__PURE__ */ new Map(), every };
+}
+function watermarkOf(marks, root) {
+  const folded = foldPath(root);
+  for (const entry of marks) if (foldPath(entry[0]) === folded) return entry;
+  return null;
+}
+function writeWatermarks(path, marks) {
+  const projects = {};
+  for (const [root, { seenMs, reported }] of marks) {
+    projects[root] = { seenAt: new Date(seenMs).toISOString(), reported: [...new Set(reported)].slice(-REPORTED_KEPT) };
+  }
+  writeJsonAtomic(path, { projects });
 }
 function isObject5(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -4261,12 +4284,7 @@ function catchUpText(landings) {
     `arbab: while this session was away, other sessions landed into ${into}${here}: ${named2.join(", ")}${more}. Lanes keep their own base; an integration started before these must merge ${merge} in before it can land.`
   );
 }
-function registeredAround(home, cwd, realpath2) {
-  let real2 = null;
-  try {
-    real2 = realpath2(cwd);
-  } catch {
-  }
+function registeredAround(home, cwd, real2) {
   const around = [];
   const below = [];
   for (const { root } of listProjects(home)) {
@@ -4274,6 +4292,11 @@ function registeredAround(home, cwd, realpath2) {
     else if (sameOrInside(cwd, root) || real2 !== null && sameOrInside(real2, root)) below.push(root);
   }
   return { around, below };
+}
+function projectName(root, cwd, real2) {
+  const from = [cwd, real2].find((dir) => dir !== null && sameOrInside(dir, root));
+  const rel = from === void 0 ? "" : relative8(from, root);
+  return rel === "" || rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute7(rel) ? basename(root) : rel;
 }
 function sameRoot(a, b, realpath2) {
   if (foldPath(a) === foldPath(b)) return true;
@@ -4296,34 +4319,46 @@ function catchUpDecision(input, event, opts) {
   if (name2 !== void 0 && name2 !== event) return null;
   if (source !== void 0 && typeof source !== "string") return null;
   const realpath2 = opts.realpath ?? ((path2) => realpathSync6.native(path2));
-  const { around, below } = registeredAround(opts.home, cwd, realpath2);
+  let real2 = null;
+  try {
+    real2 = realpath2(cwd);
+  } catch {
+  }
+  const { around, below } = registeredAround(opts.home, cwd, real2);
   if (around.length === 0 && below.length === 0) return null;
   const roots = [];
   if (around.length > 0) {
     const root = opts.findRoot(cwd);
     if (root === null) return null;
-    if (around.some((r) => sameRoot(r, root, realpath2))) roots.push(root);
+    const key = around.find((r) => sameRoot(r, root, realpath2));
+    if (key !== void 0) roots.push({ root, key });
   }
-  for (const root of below) if (!roots.some((r) => sameRoot(r, root, realpath2))) roots.push(root);
+  for (const root of below) if (!roots.some((r) => sameRoot(r.root, root, realpath2))) roots.push({ root, key: root });
   if (roots.length === 0) return null;
-  const since = (sinceMs) => {
-    const all = roots.flatMap(
-      (root) => landingsSince(root, sinceMs).map((l) => roots.length > 1 ? { ...l, project: basename(root) } : l)
-    );
-    return all.sort((a, b) => (Date.parse(a.landedAt) || 0) - (Date.parse(b.landedAt) || 0));
-  };
   const path = watermarkPath(opts.home, session);
-  const watermark = readWatermark(path);
+  const marks = readWatermarks(path) ?? { projects: /* @__PURE__ */ new Map(), every: null };
+  const next = new Map(marks.projects);
   const nowMs = opts.clock.now();
-  const now = isoAt(opts.clock);
-  if (watermark === null) {
-    writeWatermark(path, now, since(nowMs - LANDING_SLACK_MS).map(landingKey));
-    return null;
+  const landings = [];
+  for (const { root, key } of roots) {
+    const found = watermarkOf(marks.projects, key);
+    if (found !== null) next.delete(found[0]);
+    const mark = found?.[1] ?? marks.every;
+    if (mark === null) {
+      next.set(key, { seenMs: nowMs, reported: landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey) });
+      continue;
+    }
+    const reported = new Set(mark.reported);
+    const news = landingsSince(root, mark.seenMs - LANDING_SLACK_MS).filter(
+      (l) => l.owner !== session && !reported.has(landingKey(l))
+    );
+    next.set(key, { seenMs: nowMs, reported: [...mark.reported, ...news.map(landingKey)] });
+    const project = roots.length > 1 ? projectName(root, cwd, real2) : void 0;
+    landings.push(...news.map((l) => project === void 0 ? l : { ...l, project }));
   }
-  const reported = new Set(watermark.reported);
-  const landings = since(watermark.seenMs - LANDING_SLACK_MS).filter((l) => l.owner !== session && !reported.has(landingKey(l)));
-  writeWatermark(path, now, [...watermark.reported, ...landings.map(landingKey)]);
+  writeWatermarks(path, next);
   if (landings.length === 0) return null;
+  landings.sort((a, b) => (Date.parse(a.landedAt) || 0) - (Date.parse(b.landedAt) || 0));
   return JSON.stringify({ hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(landings) } });
 }
 function removeStaleWatermarks(home, nowMs, maxAgeMs = WATERMARK_MAX_AGE_MS) {
@@ -4896,7 +4931,7 @@ function lintBrief(markdown, source, profile) {
 
 // src/config/load.ts
 import { existsSync as existsSync10, lstatSync as lstatSync3, realpathSync as realpathSync7 } from "node:fs";
-import { dirname as dirname4, isAbsolute as isAbsolute7, join as join24, relative as relative8, sep as sep8 } from "node:path";
+import { dirname as dirname4, isAbsolute as isAbsolute8, join as join24, relative as relative9, sep as sep9 } from "node:path";
 
 // src/util/env-policy.ts
 var FORBIDDEN_PREFIX = /^(CLAUDE|VSCODE|CURSOR|TERM_PROGRAM)/;
@@ -5040,7 +5075,7 @@ function readableEnvFiles(v) {
   const seen = /* @__PURE__ */ new Set();
   return stringArray(v, "fence.readableEnvFiles").map((p, i) => {
     const field = `fence.readableEnvFiles[${i}]`;
-    if (isAbsolute7(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (isAbsolute8(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
     if (/[\0\n\r]/.test(p)) fail(field, "must not contain NUL or a newline");
     const segments = p.split(/[\\/]/);
     if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
@@ -5073,8 +5108,8 @@ function arbabRoot(projectRoot, v, field) {
   checkArbabRoot(path, root, records, field);
   const real2 = realExisting(path);
   const realRoot = realpathSync7.native(projectRoot);
-  const rel = real2 === null ? ".." : relative8(realRoot, real2);
-  if (rel === ".." || rel.startsWith(`..${sep8}`) || isAbsolute7(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
+  const rel = real2 === null ? ".." : relative9(realRoot, real2);
+  if (rel === ".." || rel.startsWith(`..${sep9}`) || isAbsolute8(rel)) fail(field, `${s} leads outside the project through a symbolic link`);
   if (real2 !== null) checkArbabRoot(real2, realRoot, realExisting(records), field);
   return s;
 }
@@ -5094,7 +5129,7 @@ function realExisting(path) {
     }
     if (present) {
       try {
-        const tail = relative8(p, path);
+        const tail = relative9(p, path);
         return tail === "" ? realpathSync7.native(p) : join24(realpathSync7.native(p), tail);
       } catch {
         return null;
@@ -5351,12 +5386,12 @@ function dedupe(items) {
 }
 
 // src/profile/compile.ts
-import { isAbsolute as isAbsolute8, relative as relative9, resolve as resolve10 } from "node:path";
+import { isAbsolute as isAbsolute9, relative as relative10, resolve as resolve10 } from "node:path";
 var FILE_TOOLS2 = /* @__PURE__ */ new Set(["Read", "Glob", "Grep", "Edit", "Write"]);
 var WRITE_TOOLS2 = /* @__PURE__ */ new Set(["Edit", "Write"]);
 var WRITERS = ["implementer", "verifier", "probe"];
 function compileProfile(input) {
-  if (!isAbsolute8(input.worktree)) {
+  if (!isAbsolute9(input.worktree)) {
     throw new ArbabError("usage", `worktree ${JSON.stringify(input.worktree)} must be an absolute path`);
   }
   const gitDir = input.gitCommonDir === void 0 ? void 0 : absoluteDir("gitCommonDir", input.gitCommonDir);
@@ -5410,7 +5445,7 @@ function compileProfile(input) {
   return { tools: input.tools, settings };
 }
 function absoluteDir(field, dir) {
-  if (!isAbsolute8(dir)) {
+  if (!isAbsolute9(dir)) {
     throw new ArbabError("usage", `${field} ${JSON.stringify(dir)} must be an absolute path`);
   }
   const normal = resolve10(dir);
@@ -5419,10 +5454,10 @@ function absoluteDir(field, dir) {
 }
 function envAllowReads(worktree, paths) {
   return dedupe(paths.map((path) => {
-    if (!isAbsolute8(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
+    if (!isAbsolute9(path)) throw new ArbabError("usage", `env template ${JSON.stringify(path)} must be an absolute path`);
     const normal = resolve10(path);
-    const rel = relative9(resolve10(worktree), normal);
-    if (rel === "" || rel.startsWith("..") || isAbsolute8(rel)) {
+    const rel = relative10(resolve10(worktree), normal);
+    if (rel === "" || rel.startsWith("..") || isAbsolute9(rel)) {
       throw new ArbabError("usage", `env template ${path} is outside the worktree ${worktree}`);
     }
     return normal;
@@ -5447,7 +5482,7 @@ function roleAllow(role2) {
 
 // src/profile/envfiles.ts
 import { readdirSync as readdirSync11, realpathSync as realpathSync8 } from "node:fs";
-import { basename as basename2, dirname as dirname5, join as join26, posix as posix2, relative as relative10, sep as sep9 } from "node:path";
+import { basename as basename2, dirname as dirname5, join as join26, posix as posix2, relative as relative11, sep as sep10 } from "node:path";
 function envFileAllowReads(input) {
   let real2;
   try {
@@ -5465,7 +5500,7 @@ function envFileAllowReads(input) {
     } catch {
       continue;
     }
-    const rel = relative10(input.worktree, path).split(sep9).join("/");
+    const rel = relative11(input.worktree, path).split(sep10).join("/");
     if (rel === "") continue;
     if (isRegularFile(input.worktree, real2, path)) candidates.set(rel, path);
   }
@@ -5485,7 +5520,7 @@ function trackedOf(git, worktree, gitDir, rels) {
 function isRegularFile(worktree, realWorktree, path) {
   const dir = dirname5(path);
   try {
-    if (realpathSync8(dir) !== join26(realWorktree, relative10(worktree, dir))) return false;
+    if (realpathSync8(dir) !== join26(realWorktree, relative11(worktree, dir))) return false;
     const entry = readdirSync11(dir, { withFileTypes: true }).find((e) => e.name === basename2(path));
     return entry !== void 0 && entry.isFile();
   } catch {
@@ -5550,7 +5585,7 @@ function buildClaudeArgs(input) {
 }
 
 // src/profile/env.ts
-import { isAbsolute as isAbsolute9 } from "node:path";
+import { isAbsolute as isAbsolute10 } from "node:path";
 var HOST_KEYS = ["HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "SHELL"];
 var SYSTEM_PATH = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
 var ENV_NAME2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -5559,7 +5594,7 @@ function workerEnv(host, opts) {
   for (const name2 of Object.keys(opts.extra)) assertWorkerEnvName(name2, isReservedEnv);
   const dirs = opts.pnpmDir === void 0 ? [opts.nodeDir] : [opts.nodeDir, opts.pnpmDir];
   for (const dir of dirs) {
-    if (!isAbsolute9(dir) || dir.includes(":")) {
+    if (!isAbsolute10(dir) || dir.includes(":")) {
       throw new ArbabError("config", `PATH entry ${JSON.stringify(dir)} must be an absolute path without ":"`);
     }
   }
@@ -5676,10 +5711,10 @@ function wildcardPrefix(content) {
 
 // src/commands/project.ts
 import { existsSync as existsSync11, readFileSync as readFileSync8, realpathSync as realpathSync9 } from "node:fs";
-import { dirname as dirname6, join as join27, resolve as resolve12, sep as sep10 } from "node:path";
+import { dirname as dirname6, join as join27, resolve as resolve12, sep as sep11 } from "node:path";
 import { parseArgs } from "node:util";
 function hasWorktreesPair(path) {
-  const parts = path.split(sep10).map(foldPath);
+  const parts = path.split(sep11).map(foldPath);
   return parts.some((part, i) => part === ".arbab" && parts[i + 1] === "worktrees");
 }
 function configuredWorktreeRoots(dir, io) {
@@ -5975,7 +6010,7 @@ async function runLaunch(argv2, ctx) {
 
 // src/commands/preflight.ts
 import { existsSync as existsSync17 } from "node:fs";
-import { join as join38, relative as relative11 } from "node:path";
+import { join as join38, relative as relative12 } from "node:path";
 
 // src/commands/doctor.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
@@ -5996,7 +6031,7 @@ function realpath(p) {
 }
 
 // src/binary/resolve.ts
-import { isAbsolute as isAbsolute10, join as join30 } from "node:path";
+import { isAbsolute as isAbsolute11, join as join30 } from "node:path";
 function parseVersion(text2) {
   const m = /(\d+)\.(\d+)\.(\d+)/.exec(text2);
   if (m === null) return null;
@@ -6018,7 +6053,7 @@ function compareVersions(a, b) {
 function findOnPath(cmd, pathEnv, exists) {
   if (cmd === "" || cmd.includes("/")) return null;
   for (const dir of pathEnv.split(":")) {
-    if (dir === "" || !isAbsolute10(dir)) continue;
+    if (dir === "" || !isAbsolute11(dir)) continue;
     const candidate = join30(dir, cmd);
     if (exists(candidate)) return candidate;
   }
@@ -6690,7 +6725,7 @@ function writeProbeLanes(project, lane) {
     );
   }
   const dir = preflightDir(project, lane.name);
-  const rel = (path) => relative11(project.root, path);
+  const rel = (path) => relative12(project.root, path);
   const owner = lane.worktree ?? lane.name;
   const worktree = lane.worktree !== void 0 || existsSync17(join38(project.worktreeRoot, owner)) ? owner : void 0;
   const shared = {
@@ -7575,7 +7610,7 @@ async function runCleanup(argv2, ctx) {
 import { realpathSync as realpathSync12 } from "node:fs";
 
 // src/hook/approve.ts
-import { isAbsolute as isAbsolute11, resolve as resolve14, sep as sep11 } from "node:path";
+import { isAbsolute as isAbsolute12, resolve as resolve14, sep as sep12 } from "node:path";
 
 // src/hook/command.ts
 var UNQUOTED = /^[A-Za-z0-9_@%+=:,./~-]+$/;
@@ -7616,8 +7651,7 @@ function tokenize(command) {
 }
 function shellWord(s) {
   if (UNQUOTED.test(s)) return s;
-  if (!s.includes("'")) return `'${s}'`;
-  return `"${s.replace(/[$`\\!"]/g, "\\$&")}"`;
+  return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
 // src/hook/approve.ts
@@ -7639,25 +7673,25 @@ function sameFile(a, b, realpath2) {
 }
 function under(base, path) {
   const b = resolve14(base);
-  return path === b || path.startsWith(b.endsWith(sep11) ? b : b + sep11);
+  return path === b || path.startsWith(b.endsWith(sep12) ? b : b + sep12);
 }
 function knownProject(dir, opts) {
-  if (!isAbsolute11(dir)) return false;
+  if (!isAbsolute12(dir)) return false;
   const path = real(dir, opts.realpath);
   if (path === null || inLaneWorktree(dir, { realpath: opts.realpath })) return false;
   for (const temp of opts.tempDirs) {
-    if (!isAbsolute11(temp)) continue;
+    if (!isAbsolute12(temp)) continue;
     const realTemp = real(temp, opts.realpath);
     if (under(temp, path) || realTemp !== null && under(realTemp, path)) return false;
   }
-  return opts.projectRoots().some((root) => isAbsolute11(root) && (root === path || real(root, opts.realpath) === path));
+  return opts.projectRoots().some((root) => isAbsolute12(root) && (root === path || real(root, opts.realpath) === path));
 }
 function isRunnerCall(command, opts) {
   const words = tokenize(command);
   if (words === null || words.length < 3) return false;
   const [node, runner] = words;
   if (node?.value !== "node" || runner === void 0) return false;
-  if (!isAbsolute11(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
+  if (!isAbsolute12(runner.value) || !sameFile(runner.value, opts.scriptPath, opts.realpath)) return false;
   let at = 2;
   if (words[at]?.value === "-C") at += 2;
   const name2 = words[at]?.value;
@@ -7694,10 +7728,13 @@ function isObject7(v) {
 function runnerWord(path) {
   return /[$`\\!"]/.test(path) ? shellWord(path) : `"${path}"`;
 }
+function projectWord(path) {
+  return path.includes("'") && !/[$`\\!"]/.test(path) ? `"${path}"` : shellWord(path);
+}
 function waitCommand(scriptPath2, lanes, cwd) {
   const projects = new Set(lanes.map((l) => l.project));
   const [project] = projects;
-  const dir = projects.size === 1 && project !== void 0 && project !== cwd ? ` -C ${shellWord(project)}` : "";
+  const dir = projects.size === 1 && project !== void 0 && project !== cwd ? ` -C ${projectWord(project)}` : "";
   return `node ${runnerWord(scriptPath2)}${dir} wait --any`;
 }
 function blockReason(lanes, scriptPath2, cwd) {
@@ -8282,7 +8319,7 @@ function coordination(plan, siblings) {
 }
 
 // src/plan/load.ts
-import { isAbsolute as isAbsolute12, resolve as resolve15 } from "node:path";
+import { isAbsolute as isAbsolute13, resolve as resolve15 } from "node:path";
 var PLAN_KEYS = ["name", "base", "defaults", "phases"];
 var PHASE_KEYS = ["name", "brief", "scope", "dependsOn", ...PHASE_LANE_KEYS];
 function loadPlan(projectRoot, planPath, credentialPaths = []) {
@@ -8321,7 +8358,7 @@ function scope(v, field) {
   if (!Array.isArray(v) || v.length === 0) fail(field, "must be a non-empty array of globs");
   return v.map((item, i) => {
     const glob = nonEmptyString(item, `${field}[${i}]`);
-    if (isAbsolute12(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
+    if (isAbsolute13(glob) || /^[A-Za-z]:/.test(glob)) fail(`${field}[${i}]`, `${glob} must be relative`);
     if (glob.split(/[\\/]/).includes("..")) fail(`${field}[${i}]`, `${glob} must not contain ".."`);
     return glob;
   });
@@ -9004,7 +9041,7 @@ function sessionsAffected(ctx, root, changed) {
   const changedBase = changed.length === 0 ? root : gitOut(ctx.git, ["rev-parse", "--show-toplevel"], root).trim();
   return otherSessions({ home: ctx.home, projectRoot: root, session: sessionOf(ctx.hostEnv), alive: ctx.alive, changed, changedBase });
 }
-var firstFive = (items, sep14) => items.slice(0, 5).join(sep14) + (items.length > 5 ? `${sep14}and ${items.length - 5} more` : "");
+var firstFive = (items, sep15) => items.slice(0, 5).join(sep15) + (items.length > 5 ? `${sep15}and ${items.length - 5} more` : "");
 function assertCleanBase(git, root, base, head) {
   const r = git(["symbolic-ref", "--quiet", "--short", "HEAD"], root);
   const branch = r.code === 0 ? r.stdout.trim() : null;
@@ -9853,7 +9890,7 @@ function child(path, key) {
 
 // src/shepherd/prompt.ts
 import { realpathSync as realpathSync14 } from "node:fs";
-import { isAbsolute as isAbsolute13, relative as relative12 } from "node:path";
+import { isAbsolute as isAbsolute14, relative as relative13 } from "node:path";
 
 // src/digest/index.ts
 var REPORT_TOOL2 = "StructuredOutput";
@@ -9993,7 +10030,7 @@ function readRequired2(path, what) {
 function resumePrompt(laneDir, mode) {
   if (mode.promptFile === void 0) return mode.prompt ?? CONTINUATION_PROMPT;
   const file = mode.promptFile;
-  if (!isAbsolute13(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
+  if (!isAbsolute14(file)) throw new ArbabError("usage", `prompt file ${file} is not an absolute path`);
   let real2;
   let base;
   try {
@@ -10002,8 +10039,8 @@ function resumePrompt(laneDir, mode) {
   } catch (err) {
     throw new ArbabError("io", `cannot resolve prompt file ${file}: ${err.message}`, { cause: err });
   }
-  const rel = relative12(base, real2);
-  if (rel === "" || rel.startsWith("..") || isAbsolute13(rel)) {
+  const rel = relative13(base, real2);
+  if (rel === "" || rel.startsWith("..") || isAbsolute14(rel)) {
     throw new ArbabError("usage", `prompt file ${file} is not inside the lane's run dir ${laneDir}`);
   }
   const text2 = readRequired2(real2, "prompt file");
@@ -10425,7 +10462,7 @@ async function runAttempt(ctx, request) {
 
 // src/shepherd/inputs.ts
 import { closeSync as closeSync5, constants as constants2, fstatSync, lstatSync as lstatSync4, mkdirSync as mkdirSync5, openSync as openSync5, readdirSync as readdirSync15, readFileSync as readFileSync11, realpathSync as realpathSync15, rmSync as rmSync11, unlinkSync as unlinkSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { basename as basename5, dirname as dirname9, isAbsolute as isAbsolute14, join as join45, relative as relative13, resolve as resolve17, sep as sep12 } from "node:path";
+import { basename as basename5, dirname as dirname9, isAbsolute as isAbsolute15, join as join45, relative as relative14, resolve as resolve17, sep as sep13 } from "node:path";
 var MAX_INPUTS_BYTES = 50 * 1024 * 1024;
 var LIBRARY = "~/Library/**";
 function realOr(path) {
@@ -10436,8 +10473,8 @@ function realOr(path) {
   }
 }
 function inputRoots(roots, path, real2) {
-  const rel = relative13(roots.real, real2);
-  const exactlyInside = rel === "" || rel !== ".." && !rel.startsWith(`..${sep12}`) && !isAbsolute14(rel);
+  const rel = relative14(roots.real, real2);
+  const exactlyInside = rel === "" || rel !== ".." && !rel.startsWith(`..${sep13}`) && !isAbsolute15(rel);
   return {
     pathRoot: [.../* @__PURE__ */ new Set([roots.lexical, roots.real])].find((r) => sameOrInside(r, path)),
     realRoot: exactlyInside ? roots.real : void 0
@@ -11243,7 +11280,7 @@ async function runReview(argv2, ctx) {
 }
 
 // src/commands/shepherd.ts
-import { isAbsolute as isAbsolute15 } from "node:path";
+import { isAbsolute as isAbsolute16 } from "node:path";
 function parseMode(text2) {
   let value;
   try {
@@ -11262,7 +11299,7 @@ function parseMode(text2) {
   if (kind === "resume") {
     if (prompt !== void 0 && promptFile !== void 0) throw new ArbabError("usage", "shepherd mode takes prompt or promptFile, not both");
     if (promptFile !== void 0) {
-      if (typeof promptFile === "string" && isAbsolute15(promptFile)) return { kind, promptFile };
+      if (typeof promptFile === "string" && isAbsolute16(promptFile)) return { kind, promptFile };
       throw new ArbabError("usage", "shepherd mode promptFile must be an absolute path");
     }
     if (prompt === void 0) return { kind };
@@ -11276,7 +11313,7 @@ async function runShepherdProcess(argv2, ctx) {
   if (root === void 0 || lane === void 0 || modeText === void 0 || rest.length > 0) {
     throw new ArbabError("usage", "usage: arbab __shepherd <root> <lane> <mode-json>");
   }
-  if (!isAbsolute15(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
+  if (!isAbsolute16(root)) throw new ArbabError("usage", `project root ${root} must be absolute`);
   assertValidName(lane, "lane");
   const mode = parseMode(modeText);
   const controller = new AbortController();
@@ -11363,11 +11400,11 @@ function isoSince(text2) {
   return ms - (sign === "-" ? -1 : 1) * (Number(oh) * 60 + Number(om)) * 6e4;
 }
 function parseSince(text2, nowMs) {
-  const relative15 = /^(\d{1,9})([mhd])$/.exec(text2);
+  const relative16 = /^(\d{1,9})([mhd])$/.exec(text2);
   let ms;
-  if (relative15 === null) ms = isoSince(text2);
+  if (relative16 === null) ms = isoSince(text2);
   else {
-    const back = Number(relative15[1]) * (UNIT_MS[relative15[2] ?? ""] ?? NaN);
+    const back = Number(relative16[1]) * (UNIT_MS[relative16[2] ?? ""] ?? NaN);
     ms = back <= SINCE_MAX_DAYS * DAY_MS2 ? nowMs - back : NaN;
   }
   if (Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime())) return ms;
@@ -12260,7 +12297,7 @@ Content-Length: 0\r
 
 // src/ui/server/snapshot.ts
 import { statSync as statSync8 } from "node:fs";
-import { basename as basename6, isAbsolute as isAbsolute16, join as join49, relative as relative14, sep as sep13 } from "node:path";
+import { basename as basename6, isAbsolute as isAbsolute17, join as join49, relative as relative15, sep as sep14 } from "node:path";
 var MAX_LANES = 300;
 var LANDED_KEPT = 5;
 var REASON_MAX = 200;
@@ -12278,8 +12315,8 @@ var parsedMs = (v) => {
 var stateKey = (r) => JSON.stringify([r.state, r.attempt, r.since, r.shepherdPid, r.endState ?? null, r.reason ?? null]);
 function briefUnderPreflight(root, brief) {
   if (typeof brief !== "string" || brief === "") return false;
-  const rel = relative14(join49(root, PREFLIGHT_DIR), isAbsolute16(brief) ? brief : join49(root, brief));
-  return rel !== "" && !isAbsolute16(rel) && rel.split(sep13)[0] !== "..";
+  const rel = relative15(join49(root, PREFLIGHT_DIR), isAbsolute17(brief) ? brief : join49(root, brief));
+  return rel !== "" && !isAbsolute17(rel) && rel.split(sep14)[0] !== "..";
 }
 function laneKind(name2, generatedBy, preflightBrief) {
   if (generatedBy !== null) {

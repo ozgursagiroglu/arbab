@@ -126,6 +126,16 @@ describe("waitCommand", () => {
 
   it("quotes a runner path that double quotes would not keep literal", () => {
     expect(waitCommand("/p/$x/arbab.mjs", [lane(1, "a")], "/work/repo")).toBe("node '/p/$x/arbab.mjs' wait --any");
+    expect(waitCommand("/p/it's!/arbab.mjs", [lane(1, "a")], "/work/repo")).toBe("node '/p/it'\\''s!/arbab.mjs' wait --any");
+  });
+
+  it("double-quotes a project holding a single quote when that keeps it literal, and single-quotes it otherwise", () => {
+    const command = waitCommand(RUNNER, [lane(1, "a", { project: "/work/it's" })], "/elsewhere");
+    expect(command).toBe(`node "${RUNNER}" -C "/work/it's" wait --any`);
+    expect(tokenize(command)?.map((w) => w.value)).toEqual(["node", RUNNER, "-C", "/work/it's", "wait", "--any"]);
+    expect(waitCommand(RUNNER, [lane(1, "a", { project: "/work/it's!" })], "/elsewhere")).toBe(
+      `node "${RUNNER}" -C '/work/it'\\''s!' wait --any`,
+    );
   });
 });
 

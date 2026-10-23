@@ -1189,8 +1189,9 @@ each works on its own base; the orchestrator does, before it builds on a stale o
   them), and asks for the merge `land`'s refusal asks for, in the same words (`baseMergeInstruction`,
   src/readiness/moved.ts): the base merged into `integrate/<name>` in its worktree with hooks off (`untrustedTree()`,
   `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again. Both
-  name the worktree from `integrationPaths`, and quote it and the base as shell words (`shellWord`), since the human
-  pastes the command into a shell.
+  name the worktree from `integrationPaths`, and quote it and the base as shell words (`shellWord`: bare when it
+  needs no quoting, else POSIX single quotes with each `'` as `'\''`; never double quotes, where bash keeps the
+  backslash of `\!`), since the human pastes the command into a shell.
   `integration.json` keeps no start time, so the commits, not a time, say which landings the integration lacks. The
   integration's own landing record is never among them, and once it landed (its `landing.json` exists) there is no
   such risk: its own merge commit is what the base gained. It is advisory: when git cannot tell there is no risk, and
@@ -1202,17 +1203,23 @@ each works on its own base; the orchestrator does, before it builds on a stale o
   §21 Orchestrator approvals) hears about each (the working directory as written or by real path, through foldPath,
   §3). Never in a lane worktree, nor of the projects inside one. A directory with no registered project at, above or
   below it costs no git call, nor does a parent folder; no project's config is ever loaded. Per session it keeps one
-  watermark for all of them, `~/.arbab/sessions/<sha256 of the session id>.json` holding `{seenAt, reported}`,
-  `reported` the keys (`<name>@<mergeSha>`) of the landings already reported, the last 100. A session's first message only sets it, with the keys of the landings on disk since 10
-  minutes before: a new session gets no history. Later, it lists the landings since `seenAt` minus 10 minutes whose
-  key is not in `reported` and whose `owner` is not this session (an ownerless or pre-0.2.2 landing counts as
-  another's): `land` stamps `landedAt` before it writes `landing.json`, so a record written while a hook ran can fall
-  just behind the watermark, and the keys say it once. A watermark of 0.2.2 without `reported` reads as having none.
-  It moves the watermark to now, adds the keys it reported, and, when there are any, answers with
-  `additionalContext`: what other sessions landed "while this session was away" (no time of its own: the 10 minutes
-  of slack can list a landing stamped before the session's last message), up to five landings by name, time and
-  owner, oldest first across projects, each followed by `in <project directory name>` when there is more than one
-  project, the rest counted, and that lanes keep their own base while an integration started before them must merge
+  file, `~/.arbab/sessions/<sha256 of the session id>.json`, holding a watermark per project root (the registered
+  root, matched through foldPath): `{"projects": {"<root>": {seenAt, reported}}}`, `reported` the keys
+  (`<name>@<mergeSha>`) of the landings already reported there, the last 100. The set of projects a message covers
+  depends on the working directory, so each keeps its own: a session that moves to project B and comes back to A
+  hears what landed in A meanwhile. A project the session has not seen yet (its first message included) only gets a
+  watermark, with the keys of the landings on disk since 10 minutes before: a new session gets no history. Later, it
+  lists each project's landings since its `seenAt` minus 10 minutes whose key is not in its `reported` and whose
+  `owner` is not this session (an ownerless or pre-0.2.2 landing counts as another's): `land` stamps `landedAt`
+  before it writes `landing.json`, so a record written while a hook ran can fall just behind the watermark, and the
+  keys say it once. A file in the earlier single-watermark shape (`{seenAt, reported}`, `reported` possibly missing)
+  reads as that watermark for every project the message covers, and is rewritten in the per-project shape.
+  It moves the watermarks of the projects it covers to now, keeps the others, adds the keys it reported, and, when
+  there are any, answers with `additionalContext`: what other sessions landed "while this session was away" (no time
+  of its own: the 10 minutes of slack can list a landing stamped before the session's last message), up to five
+  landings by name, time and owner, oldest first across projects, each followed by `in <project>` when there is more
+  than one project (its path from the working directory, so two repositories named `app` read differently; the
+  basename for the project the directory lies in), the rest counted, and that lanes keep their own base while an integration started before them must merge
   the base in before it can land. Record text reaches the model's context with control characters and line breaks
   replaced by spaces. SessionStart's `source` (startup,
   resume, clear, compact) changes nothing: the watermark says what the session saw. As with the other hooks, a hook

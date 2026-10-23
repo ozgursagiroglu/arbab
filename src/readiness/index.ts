@@ -1,6 +1,7 @@
 // The FR-21 readiness report (DESIGN §17 `arbab readiness`): verified, skipped and risks, and the landing decision.
 import { sessionId, sessionText } from "../registry";
 import { BUILTIN_LENSES } from "../review";
+import { landingText, type LandingSince } from "../summary";
 import type {
   HostCheckRecord,
   IntegrationRecord,
@@ -16,6 +17,7 @@ import { commandLine } from "../verify";
 import { groupLaneNotes, uniqueTexts, type LaneEntry } from "./notes";
 
 export { reviewCarriesOver } from "./carry";
+export { baseMoved } from "./moved";
 export { fenceKind, groupLaneNotes, noteKey, uniqueTexts, type LaneEntry, type LaneNote } from "./notes";
 
 /** One round of an integration's review history (reviews/<round>.json). */
@@ -55,6 +57,31 @@ export interface ReadinessInput {
   otherSessions?: SessionActivity[];
   /** Why the other sessions could not be told (the machine registry could not be listed): a risk `session:unknown`. */
   sessionsUnknown?: string;
+  /** Set when the base's head is not in the integration head, so land would refuse: a risk `base-moved`. */
+  baseMoved?: BaseMoved | null;
+}
+
+/** What the base gained that the integration head does not hold. */
+export interface BaseMoved {
+  base: string;
+  /** The landings into the base whose commit the head does not hold, oldest first. */
+  landings: LandingSince[];
+  /** How many commits of the base the head does not hold; null when git could not count them. */
+  commits: number | null;
+}
+
+/** The `base-moved` risk: what moved the base, by landing record or else by count, and the merge that answers it. */
+export function baseMovedRisk(name: string, moved: BaseMoved): ReadinessItem {
+  const what =
+    moved.landings.length > 0
+      ? `${moved.landings.map(landingText).join(", ")} landed`
+      : moved.commits === null
+        ? "it has new commits"
+        : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
+  return {
+    id: "base-moved",
+    text: `${moved.base} moved since this integration started: ${what}. Merge ${moved.base} into integrate/${name} before landing.`,
+  };
 }
 
 type Skipped = ReadinessItem & { waived: boolean };
@@ -348,6 +375,8 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
   if (input.sessionsUnknown !== undefined) {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }
+  // Before the sessions: land refuses until it is answered.
+  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.baseMoved));
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,

@@ -10,7 +10,8 @@
 // for the head, when the head is already in the base or landing.json exists, when the branch moved since, unless the main checkout (the
 // project root) is on the recorded base with no tracked change and no untracked file where the merge writes, and
 // unless the base's HEAD is in the verified head (otherwise the merge would hold a tree nobody verified).
-// Writes .arbab/integrations/<name>/landing.json (LandingRecord, pushed: false, with squash and the lanes it carried).
+// Writes .arbab/integrations/<name>/landing.json (LandingRecord, pushed: false, with squash, the lanes it carried and
+// the landing session as owner, null outside Claude Code).
 // Then, unless --keep-worktrees, it removes the worktrees of the finished merged lanes, of the lanes generated for the
 // integration and of the integration itself, by `cleanup --worktrees`' rules (after a squash, against the landed head),
 // and deletes the generated lanes' branches and integrate/<name>. Merged lanes keep arbab/<lane>: a later plan phase
@@ -274,6 +275,7 @@ export async function runLand(argv: string[], ctx: CommandContext): Promise<numb
     integrationHead: head,
     mergeSha,
     landedAt: isoAt(ctx.clock),
+    owner: sessionOf(ctx.hostEnv),
     pushed: false,
     squash,
     lanes: record.merged.map((m) => ({ lane: m.lane, sha: m.sha })),

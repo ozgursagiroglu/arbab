@@ -5,6 +5,7 @@ import { registerProject } from "../registry";
 import type { ProjectSummary } from "../summary";
 import {
   writeIntegration,
+  writeLanding,
   writeOwner,
   writePlanPhase,
   writeQuota,
@@ -12,7 +13,7 @@ import {
   writeSlot,
   writeVerify,
 } from "../summary/testkit";
-import { runSummary } from "./summary";
+import { parseSince, runSummary } from "./summary";
 import { NOW_MS, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 const made: TestProject[] = [];
@@ -155,5 +156,90 @@ describe("arbab summary", () => {
     const p = project();
     await expect(runSummary(["demo"], p.ctx)).rejects.toMatchObject({ code: "usage" });
     await expect(runSummary(["--mine"], p.ctx)).rejects.toMatchObject({ code: "usage" });
+  });
+});
+
+describe("arbab summary --since", () => {
+  const OTHER = "bbbbbbbb-1111-2222-3333-444444444444";
+  const SHA = "1".repeat(40);
+
+  /** Landings at 09:00 (before 2h ago), 11:00 by another session and 11:30 from outside Claude Code, squashed. */
+  function landed(t: TestProject): void {
+    writeLanding(t.root, "early", { landedAt: "2026-10-09T09:00:00.000Z", owner: OTHER });
+    writeLanding(t.root, "rel", { landedAt: "2026-10-09T11:00:00.000Z", owner: OTHER, lanes: [{ lane: "a", sha: SHA }, { lane: "b", sha: SHA }] });
+    writeLanding(t.root, "hot", { landedAt: "2026-10-09T11:30:00.000Z", owner: null, squash: true, lanes: [{ lane: "c", sha: SHA }] });
+  }
+
+  it("lists the landings after 2h ago, oldest first", async () => {
+    const p = project();
+    landed(p);
+    expect(await runSummary(["--since", "2h"], p.ctx)).toBe(0);
+    expect(p.stdout()).toContain(
+      "Landed since 2026-10-09T10:00:00.000Z\n" +
+        "  rel  into main  2026-10-09T11:00:00.000Z  session bbbbbbbb     2 lanes\n" +
+        "  hot  into main  2026-10-09T11:30:00.000Z  outside Claude Code  1 lane, squashed\n",
+    );
+    expect(p.stdout()).not.toContain("early");
+  });
+
+  it("adds since and landedSince to --json", async () => {
+    const p = project();
+    landed(p);
+    expect(await runSummary(["--since", "2026-10-09T10:30:00Z", "--json"], p.ctx)).toBe(0);
+    const s = JSON.parse(p.stdout()) as ProjectSummary;
+    expect(s.since).toBe("2026-10-09T10:30:00.000Z");
+    expect(s.landedSince).toEqual([
+      { name: "rel", into: "main", landedAt: "2026-10-09T11:00:00.000Z", owner: OTHER, mergeSha: "c".repeat(40), squash: false, lanes: 2 },
+      { name: "hot", into: "main", landedAt: "2026-10-09T11:30:00.000Z", owner: null, mergeSha: "c".repeat(40), squash: true, lanes: 1 },
+    ]);
+  });
+
+  it("says nothing landed when nothing did, and leaves output unchanged without --since", async () => {
+    const p = project();
+    expect(await runSummary(["--since", "30m"], p.ctx)).toBe(0);
+    expect(p.stdout()).toContain("Landed since 2026-10-09T11:30:00.000Z\n  nothing landed\n");
+    landed(p);
+    p.out.length = 0;
+    expect(await runSummary([], p.ctx)).toBe(0);
+    expect(p.stdout()).not.toContain("Landed since");
+    p.out.length = 0;
+    expect(await runSummary(["--json"], p.ctx)).toBe(0);
+    const s = JSON.parse(p.stdout()) as ProjectSummary;
+    expect(s).not.toHaveProperty("landedSince");
+    expect(s).not.toHaveProperty("since");
+  });
+
+  it("lists each project's landings with --all", async () => {
+    const a = project();
+    const b = project();
+    landed(a);
+    writeLanding(b.root, "other", { landedAt: "2026-10-09T11:45:00.000Z", owner: OTHER });
+    registerProject(a.home, a.root, "2026-10-09T10:00:00.000Z");
+    registerProject(a.home, b.root, "2026-10-09T10:00:00.000Z");
+    expect(await runSummary(["--all", "--since", "1d", "--json"], a.ctx)).toBe(0);
+    const list = JSON.parse(a.stdout()) as ProjectSummary[];
+    const names = new Map(list.map((s) => [s.root, s.landedSince?.map((l) => l.name)]));
+    expect(names.get(a.root)).toEqual(["early", "rel", "hot"]);
+    expect(names.get(b.root)).toEqual(["other"]);
+  });
+
+  it("refuses a --since that is neither an ISO time nor <n>m, <n>h, <n>d", async () => {
+    const p = project();
+    for (const when of ["", "2", "2w", "-2h", "2 hours", "1.5h", "yesterday", "2026-13-45", "10/09/2026"]) {
+      await expect(runSummary([`--since=${when}`], p.ctx), when).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--since takes /) });
+    }
+    await expect(runSummary(["--since"], p.ctx)).rejects.toMatchObject({ code: "usage" });
+  });
+});
+
+describe("parseSince", () => {
+  it("reads minutes, hours and days back from the clock, and ISO times", () => {
+    expect(parseSince("30m", NOW_MS)).toBe(NOW_MS - 30 * 60_000);
+    expect(parseSince("2h", NOW_MS)).toBe(NOW_MS - 2 * 3_600_000);
+    expect(parseSince("7d", NOW_MS)).toBe(NOW_MS - 7 * 86_400_000);
+    expect(parseSince("0m", NOW_MS)).toBe(NOW_MS);
+    expect(parseSince("2026-10-09T08:00:00Z", NOW_MS)).toBe(Date.parse("2026-10-09T08:00:00Z"));
+    expect(parseSince("2026-10-09T08:00:00.250+02:00", NOW_MS)).toBe(Date.parse("2026-10-09T06:00:00.250Z"));
+    expect(parseSince("2026-10-09", NOW_MS)).toBe(Date.parse("2026-10-09"));
   });
 });

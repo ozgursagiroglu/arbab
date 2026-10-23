@@ -183,6 +183,77 @@ describe("runReadiness", () => {
     ]);
   });
 
+  it("risks a base that moved since the integration started, counting its new commits when no landing explains them", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks.map((r) => r.id)).not.toContain("base-moved");
+
+    for (const file of ["b.txt", "c.txt"]) {
+      p.write(file, "main moves\n");
+      p.ok(["add", "--", file]);
+      p.ok(["commit", "-q", "-m", `main writes ${file}`]);
+    }
+    p.out.length = 0;
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+    expect(report.risks[0]).toEqual({
+      id: "base-moved",
+      text: "main moved since this integration started: 2 new commits. Merge main into integrate/rel before landing.",
+    });
+    // A risk, not a skipped item: nothing to waive.
+    expect(report.skipped).toEqual([]);
+    expect(report.ready).toBe(true);
+    expect(p.stdout()).toContain("- main moved since this integration started: 2 new commits.");
+  });
+
+  it("names the landings that moved the base, with their time and session, and not those the head holds", async () => {
+    let head: string;
+    ({ t: p, head } = await integrated());
+    writeJsonAtomic(join(dir(p), "verify.json"), passedVerify(head));
+    const landing = (name: string, mergeSha: string, landedAt: string, owner?: string | null): void =>
+      writeJsonAtomic(join(p.root, ".arbab", "integrations", name, "landing.json"), {
+        name,
+        into: "main",
+        integrationHead: mergeSha,
+        mergeSha,
+        landedAt,
+        ...(owner !== undefined && { owner }),
+        pushed: false,
+      });
+    // Landed before the integration started: the head holds it.
+    landing("before", p.ok(["rev-parse", "main"]).trim(), "2026-10-09T10:00:00.000Z", OTHER_SESSION);
+    p.write("b.txt", "hot\n");
+    p.ok(["add", "--", "b.txt"]);
+    p.ok(["commit", "-q", "-m", "Land hot"]);
+    landing("hot", p.ok(["rev-parse", "main"]).trim(), "2026-10-09T12:30:00.000Z", OTHER_SESSION);
+    p.write("c.txt", "cold\n");
+    p.ok(["add", "--", "c.txt"]);
+    p.ok(["commit", "-q", "-m", "Land cold"]);
+    landing("cold", p.ok(["rev-parse", "main"]).trim(), "2026-10-09T12:40:00.000Z");
+    // Into another branch: not what moved main.
+    landing("elsewhere", p.ok(["rev-parse", "main"]).trim(), "2026-10-09T12:50:00.000Z", OTHER_SESSION);
+    writeJsonAtomic(join(p.root, ".arbab", "integrations", "elsewhere", "landing.json"), {
+      ...readRecord<Record<string, unknown>>(join(p.root, ".arbab", "integrations", "elsewhere", "landing.json")),
+      into: "dev",
+    });
+
+    expect(await runReadiness(["rel", "--tier", "low"], p.ctx)).toBe(0);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks[0]).toEqual({
+      id: "base-moved",
+      text:
+        "main moved since this integration started: hot at 2026-10-09T12:30:00.000Z (session bbbbbbbb), " +
+        "cold at 2026-10-09T12:40:00.000Z (session unknown) landed. Merge main into integrate/rel before landing.",
+    });
+
+    // Merged in, the base no longer moved.
+    mergeIntoIntegration(p, "main");
+    p.out.length = 0;
+    await runReadiness(["rel", "--tier", "low"], p.ctx);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks.map((r) => r.id)).not.toContain("base-moved");
+  });
+
   it("records no other sessions when none is live", async () => {
     let head: string;
     ({ t: p, head } = await integrated());

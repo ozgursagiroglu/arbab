@@ -7,11 +7,13 @@
 // host-checks.json passed on the head. --waive needs a terminal: waivers are the human's.
 // Other sessions the landing would affect (otherSessions, against the paths the integration changes) are risks
 // `session:<owner>`, never skipped items; when the machine registry cannot be listed, one risk `session:unknown` says so.
+// A base whose head is not in the integration head (land would refuse) is the first risk, `base-moved`, naming the
+// landing records that moved it (name, time, owner session) or else the number of new commits; it needs no waiver.
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
 import { join } from "node:path";
-import { computeReadiness, renderReadiness, reviewCarriesOver, type ReadinessInput, type ReviewRound } from "../readiness";
+import { baseMoved, computeReadiness, renderReadiness, reviewCarriesOver, type ReadinessInput, type ReviewRound } from "../readiness";
 import { listLanes, runPaths } from "../registry";
 import { lensNames, reviewRoundPath, reviewRounds as roundsOnDisk } from "../review";
 import { HOST_CHECKS_FILE, TIERS, type SessionActivity, type Tier } from "../types";
@@ -138,6 +140,7 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     reviewRounds: reviewRounds(paths.dir, name),
     ...(otherSessions !== undefined && { otherSessions }),
     ...(sessionsUnknown !== undefined && { sessionsUnknown }),
+    baseMoved: baseMoved(ctx.git, project.root, base, record.headSha),
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);

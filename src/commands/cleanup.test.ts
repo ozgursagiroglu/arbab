@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { watermarkPath } from "../hook/catchup";
 import { readState } from "../registry";
 import { untrustedTree } from "../run";
 import { plantNestedRepo } from "../run/testkit";
@@ -27,7 +28,15 @@ const T = "2026-10-09T12:00:00.000Z";
 const OLD = "2026-08-30T12:00:00.000Z";
 const RECENT = "2026-10-07T12:00:00.000Z";
 
-const empty = (): CleanupReport => ({ orphaned: [], reaped: [], released: [], ...emptyWorktreeCleanup(), worktreeRemovals: [], lockDirsRemoved: 0 });
+const empty = (): CleanupReport => ({
+  orphaned: [],
+  reaped: [],
+  released: [],
+  ...emptyWorktreeCleanup(),
+  worktreeRemovals: [],
+  lockDirsRemoved: 0,
+  sessionWatermarksRemoved: 0,
+});
 
 const hasBranch = (t: TestProject, branch: string): boolean => t.git(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`], t.root).code === 0;
 
@@ -181,6 +190,7 @@ describe("runCleanup", () => {
       "warnings",
       "worktreeRemovals",
       "lockDirsRemoved",
+      "sessionWatermarksRemoved",
     ]);
     expect(out.worktreesRemoved).toEqual([merged]);
     expect(out.worktreeRemovals).toEqual([{ path: merged, reason: "merged into main" }]);
@@ -577,6 +587,25 @@ describe("runCleanup", () => {
     expect((JSON.parse(p.stdout()) as CleanupReport).lockDirsRemoved).toBe(0);
   });
 
+  it("removes session watermarks not modified for 30 days on every run and reports how many", async () => {
+    p = makeProject();
+    const DAY = 86_400_000;
+    const old = [watermarkPath(p.home, "session-1"), watermarkPath(p.home, "session-2")];
+    const fresh = watermarkPath(p.home, "session-3");
+    for (const path of old) entry(path, null, 31 * DAY);
+    entry(fresh, null, 29 * DAY);
+    // Not a watermark's name: left alone whatever its age.
+    const other = entry(join(p.home, "sessions", "notes.json"), null, 40 * DAY);
+    expect(await runCleanup([], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("removed 2 session watermarks unused for 30 days\n");
+    for (const path of old) expect(existsSync(path)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(other)).toBe(true);
+    p.out.length = 0;
+    expect(await runCleanup(["--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as CleanupReport).sessionWatermarksRemoved).toBe(0);
+  });
+
   it("warns about an unreadable state file instead of failing", async () => {
     p = makeProject();
     writeLaneRun(p.runsRoot, "demo", { state: "finished" });
@@ -611,9 +640,11 @@ describe("formatCleanup", () => {
         warnings: ["w"],
         worktreeRemovals: [{ path: "/w/b", reason: "merged into main" }],
         lockDirsRemoved: 3,
+        sessionWatermarksRemoved: 2,
       }),
     ).toBe(
       "orphaned a\nreaped a pgid 5\nreleased /h/slots/0.json\nremoved 3 empty lock directories\n" +
+        "removed 2 session watermarks unused for 30 days\n" +
         "removed worktree /w/b: merged into main\nremoved worktree /w/e\ndeleted branch arbab/b\n" +
         "kept worktree /w/c: uncommitted changes\nkept branch arbab/d: branch arbab/d is not merged into main\nwarning w",
     );
@@ -621,6 +652,10 @@ describe("formatCleanup", () => {
 
   it("says one lock directory in the singular", () => {
     expect(formatCleanup({ ...empty(), lockDirsRemoved: 1 })).toBe("removed 1 empty lock directory");
+  });
+
+  it("says one session watermark in the singular", () => {
+    expect(formatCleanup({ ...empty(), sessionWatermarksRemoved: 1 })).toBe("removed 1 session watermark unused for 30 days");
   });
 
   it("says when there is nothing to clean", () => {

@@ -40,7 +40,8 @@ describe("USAGE", () => {
     expect(USAGE.review).toContain("review <name> [--lenses a,b] [--lens-file <name>=<file>]… [--since <sha>]");
     expect(USAGE.land).toContain("land <name> [--squash] [--message <file>]");
     expect(USAGE["host-check"]).toBe("usage: arbab host-check <name>\n");
-    expect(USAGE.summary).toContain("summary [--all] [--json]");
+    expect(USAGE.summary).toContain("summary [--all] [--since <when>] [--json]");
+    expect(USAGE.hook).toBe("usage: arbab hook <pre-tool-use|stop|user-prompt-submit|session-start>\n");
     expect(USAGE.report).toContain("report <lane> [--attempt <n>] [--json]");
   });
 

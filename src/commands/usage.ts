@@ -125,8 +125,15 @@ export const USAGE: Readonly<Record<string, string>> = {
       JSON_OPT,
     ],
   ),
-  summary: block(["summary [--all] [--json]"], [["--all", "every project that launched a lane on this machine"], JSON_OPT]),
+  summary: block(
+    ["summary [--all] [--since <when>] [--json]"],
+    [
+      ["--all", "every project that launched a lane on this machine"],
+      ["--since <when>", "also list what landed after <when>: an ISO time, or <n>m, <n>h, <n>d ago"],
+      JSON_OPT,
+    ],
+  ),
   report: block(["report <lane> [--attempt <n>] [--json]"], [["--attempt <n>", "this attempt instead of the latest"], JSON_OPT]),
-  hook: block(["hook <pre-tool-use|stop>"]),
+  hook: block(["hook <pre-tool-use|stop|user-prompt-submit|session-start>"]),
   "host-check": block(["host-check <name>"]),
 };

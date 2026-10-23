@@ -737,7 +737,8 @@ export const HOST_CHECKS_FILE = "host-checks.json";
 /**
  * A line of the readiness report. Skipped items carry stable ids a human may waive: "review", "review:<lens>",
  * "skeptic", "smoke", "deps" ("verify" is listed but cannot be waived: land needs it passed). Verified items and risks
- * carry ids too ("verify:<command>", "finding:<id>", "manifest:<path>", "report:<lane>", "stale:verify", …).
+ * carry ids too ("verify:<command>", "finding:<id>", "manifest:<path>", "report:<lane>", "stale:verify", "base-moved",
+ * "session:<id>", …).
  */
 export interface ReadinessItem {
   id: string;

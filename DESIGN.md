@@ -1064,6 +1064,11 @@ Decided while building it (plan `ui2`):
 - `land --squash` has no opposite: with config `landing.squash` set, a single landing cannot ask for a merge commit.
 - Readiness drops a damaged `reviews/<round>.json` from its round counts without saying so, while
   `readReviewHistory` refuses the whole history for it.
+- A session that comes back (a lane resumed after a usage limit, an orchestrator back from a pause) gets no summary
+  of what other sessions landed meanwhile. Its lanes do not need one, since each works on its own base; the
+  orchestrator learns at `land`, which refuses a base that moved, or from another session's message (§21). Planned:
+  a summary built from the landing records, from `summary --since <time>` and from a readiness line that names
+  what landed on the base since the integration started.
 
 ## 21. Field fixes (2026-10-21)
 

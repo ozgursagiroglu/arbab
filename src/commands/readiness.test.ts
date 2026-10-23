@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { baseMergeInstruction } from "../readiness";
 import { registerShepherd, registerWaiter } from "../registry";
 import type { HostCheckRecord, IntegrationRecord, ReadinessReport, ReviewRecord } from "../types";
 import { writeJsonAtomic } from "../util/fs";
@@ -13,6 +14,7 @@ afterEach(() => p?.dispose());
 
 const dir = (t: TestProject): string => join(t.root, ".arbab", "integrations", "rel");
 const readRecord = <T>(path: string): T => JSON.parse(readFileSync(path, "utf8")) as T;
+const worktree = (t: TestProject): string => readRecord<IntegrationRecord>(join(dir(t), "integration.json")).worktree;
 const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 const OTHER_SESSION = "bbbbbbbb-1111-2222-3333-444444444444";
 const AT = "2026-10-09T12:00:00.000Z";
@@ -200,12 +202,12 @@ describe("runReadiness", () => {
     const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
     expect(report.risks[0]).toEqual({
       id: "base-moved",
-      text: "main moved since this integration started: 2 new commits. Merge main into integrate/rel before landing.",
+      text: `main moved since this integration started: 2 new commits, so land would refuse. ${baseMergeInstruction("main", "rel", worktree(p))}.`,
     });
     // A risk, not a skipped item: nothing to waive.
     expect(report.skipped).toEqual([]);
     expect(report.ready).toBe(true);
-    expect(p.stdout()).toContain("- main moved since this integration started: 2 new commits.");
+    expect(p.stdout()).toContain("- main moved since this integration started: 2 new commits, so land would refuse. Merge main into");
   });
 
   it("names the landings that moved the base, with their time and session, and not those the head holds", async () => {
@@ -244,7 +246,8 @@ describe("runReadiness", () => {
       id: "base-moved",
       text:
         "main moved since this integration started: hot at 2026-10-09T12:30:00.000Z (session bbbbbbbb), " +
-        "cold at 2026-10-09T12:40:00.000Z (session unknown) landed. Merge main into integrate/rel before landing.",
+        "cold at 2026-10-09T12:40:00.000Z (session unknown) landed, so land would refuse. " +
+        `${baseMergeInstruction("main", "rel", worktree(p))}.`,
     });
 
     // Merged in, the base no longer moved.

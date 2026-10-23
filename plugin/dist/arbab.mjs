@@ -4223,6 +4223,11 @@ var WATERMARK_FILE = /^[0-9a-f]{64}\.json$/;
 function watermarkPath(home, session) {
   return join22(home, SESSIONS_DIR, `${createHash4("sha256").update(session).digest("hex")}.json`);
 }
+var REPORTED_KEPT = 100;
+var LANDING_SLACK_MS = 10 * 6e4;
+function landingKey(landing) {
+  return `${landing.name}@${landing.mergeSha}`;
+}
 function readWatermark(path) {
   let raw;
   try {
@@ -4233,7 +4238,13 @@ function readWatermark(path) {
   if (!isObject5(raw)) return null;
   const seenAt = raw["seenAt"];
   const ms = typeof seenAt === "string" ? Date.parse(seenAt) : NaN;
-  return Number.isFinite(ms) ? ms : null;
+  if (!Number.isFinite(ms)) return null;
+  const keys = raw["reported"];
+  const reported = Array.isArray(keys) ? keys.filter((k) => typeof k === "string").slice(-REPORTED_KEPT) : [];
+  return { seenMs: ms, reported };
+}
+function writeWatermark(path, seenAt, reported) {
+  writeJsonAtomic(path, { seenAt, reported: [...new Set(reported)].slice(-REPORTED_KEPT) });
 }
 function isObject5(v) {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -4283,17 +4294,21 @@ function catchUpDecision(input, event, opts) {
   const root = opts.findRoot(cwd);
   if (root === null || !roots.some((r) => sameRoot(r, root, realpath2))) return null;
   const path = watermarkPath(opts.home, session);
-  const seenMs = readWatermark(path);
+  const watermark = readWatermark(path);
+  const nowMs = opts.clock.now();
   const now = isoAt(opts.clock);
-  if (seenMs === null) {
-    writeJsonAtomic(path, { seenAt: now });
+  if (watermark === null) {
+    writeWatermark(path, now, landingsSince(root, nowMs - LANDING_SLACK_MS).map(landingKey));
     return null;
   }
-  const landings = landingsSince(root, seenMs).filter((l) => l.owner !== session);
-  writeJsonAtomic(path, { seenAt: now });
+  const reported = new Set(watermark.reported);
+  const landings = landingsSince(root, watermark.seenMs - LANDING_SLACK_MS).filter(
+    (l) => l.owner !== session && !reported.has(landingKey(l))
+  );
+  writeWatermark(path, now, [...watermark.reported, ...landings.map(landingKey)]);
   if (landings.length === 0) return null;
   return JSON.stringify({
-    hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(new Date(seenMs).toISOString(), landings) }
+    hookSpecificOutput: { hookEventName: event, additionalContext: catchUpText(new Date(watermark.seenMs).toISOString(), landings) }
   });
 }
 function removeStaleWatermarks(home, nowMs, maxAgeMs = WATERMARK_MAX_AGE_MS) {
@@ -8524,8 +8539,427 @@ async function runIntegrate(argv2, ctx) {
 }
 
 // src/commands/land.ts
-import { existsSync as existsSync21, readFileSync as readFileSync10, realpathSync as realpathSync13 } from "node:fs";
+import { existsSync as existsSync22, readFileSync as readFileSync10, realpathSync as realpathSync13 } from "node:fs";
 import { dirname as dirname8, resolve as resolve16 } from "node:path";
+
+// src/readiness/moved.ts
+import { existsSync as existsSync21 } from "node:fs";
+var SHA6 = /^[0-9a-f]{40,64}$/;
+function baseMergeInstruction(base, name2, worktree) {
+  return `Merge ${base} into integrate/${name2} with hooks off: git -C ${worktree} ${untrustedTree().join(" ")} merge --no-verify --no-edit ${base}; then arbab integrate ${name2} --refresh to record the new head, and verify, review and readiness for ${name2} again`;
+}
+function baseMoved(git, projectRoot, base, head, own2) {
+  if (base === "" || base.startsWith("-") || !SHA6.test(head)) return null;
+  if (existsSync21(own2.landing)) return null;
+  if (git(["merge-base", "--is-ancestor", base, head], projectRoot).code !== 1) return null;
+  const listed = git(["rev-list", `${head}..${base}`, "--"], projectRoot);
+  if (listed.code !== 0) return { base, landings: [], commits: null };
+  const commits = new Set(listed.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== ""));
+  const landings = landingsSince(projectRoot, -Infinity).filter((l) => l.into === base && l.name !== own2.name && commits.has(l.mergeSha));
+  return { base, landings, commits: commits.size };
+}
+
+// src/readiness/notes.ts
+var FENCE_KINDS = [
+  ["database", /\bno database\b/i],
+  ["browser", /\bbrowsers?\b/i],
+  ["network", /\bnetwork\b/i],
+  ["sandbox", /\bsandbox|\bEPERM\b|\bcannot run\b|\bnot permitted\b/i]
+];
+var MAX_EXAMPLES = 3;
+var EXAMPLE_CHARS = 100;
+function fenceKind(text2) {
+  return FENCE_KINDS.find(([, pattern]) => pattern.test(text2))?.[0] ?? null;
+}
+function noteKey(text2) {
+  return text2.trim().toLowerCase().replace(/\d+/g, "N").replace(/\s+/g, " ");
+}
+function flat2(text2) {
+  return text2.trim().replace(/\s+/g, " ");
+}
+function example(note) {
+  const text2 = flat2(note.text);
+  return `${note.lane}: ${text2.length > EXAMPLE_CHARS ? `${text2.slice(0, EXAMPLE_CHARS - 1)}\u2026` : text2}`;
+}
+function groupLaneNotes(entries3) {
+  const fence2 = /* @__PURE__ */ new Map();
+  const lanesOf = /* @__PURE__ */ new Map();
+  for (const entry of entries3) {
+    if (!("note" in entry)) continue;
+    const kind = fenceKind(entry.note.text);
+    if (kind !== null) {
+      fence2.set(kind, [...fence2.get(kind) ?? [], entry.note]);
+      continue;
+    }
+    const key = noteKey(entry.note.text);
+    lanesOf.set(key, (lanesOf.get(key) ?? /* @__PURE__ */ new Set()).add(entry.note.lane));
+  }
+  const out = [];
+  const emitted = /* @__PURE__ */ new Set();
+  for (const entry of entries3) {
+    if (!("note" in entry)) {
+      out.push(entry.risk);
+      continue;
+    }
+    const { note } = entry;
+    const kind = fenceKind(note.text);
+    if (kind !== null) {
+      if (emitted.has(`fence:${kind}`)) continue;
+      emitted.add(`fence:${kind}`);
+      const notes = fence2.get(kind) ?? [note];
+      const examples = [...new Set(notes.map(example))].slice(0, MAX_EXAMPLES);
+      out.push({
+        id: `fence:${kind}`,
+        text: `Not run inside the fence (${notes.length} ${notes.length === 1 ? "note" : "notes"}): ${examples.join("; ")}`
+      });
+      continue;
+    }
+    const key = noteKey(note.text);
+    const lanes = lanesOf.get(key)?.size ?? 1;
+    if (lanes < 2) {
+      out.push({ id: note.id, text: `${note.lane} (${note.label}): ${note.text}` });
+      continue;
+    }
+    if (emitted.has(`notes:${key}`)) continue;
+    emitted.add(`notes:${key}`);
+    out.push({ id: `notes:${note.id}`, text: `${lanes} lanes: ${flat2(note.text)}` });
+  }
+  return out;
+}
+function uniqueTexts(items) {
+  const seen = /* @__PURE__ */ new Set();
+  return items.filter((item) => {
+    if (seen.has(item.text)) return false;
+    seen.add(item.text);
+    return true;
+  });
+}
+
+// src/readiness/carry.ts
+var SHA7 = /^[0-9a-f]{40,64}$/;
+function line(git, args, cwd) {
+  const r = git([...untrustedTree(), ...args], cwd);
+  return r.code === 0 ? r.stdout.trim() : null;
+}
+function reviewCarriesOver(git, cwd, reviewed, head, baseBranch) {
+  if (!SHA7.test(reviewed) || !SHA7.test(head) || reviewed === head || baseBranch.startsWith("-")) return false;
+  const parents = line(git, ["rev-list", "--parents", "-n", "1", head], cwd)?.split(/\s+/);
+  if (parents === void 0 || parents.length !== 3 || parents[0] !== head) return false;
+  const [, first, second] = parents;
+  if (first !== reviewed) return false;
+  if (git(["merge-base", "--is-ancestor", second, baseBranch], cwd).code !== 0) return false;
+  const merged = line(git, ["merge-tree", "--write-tree", first, second], cwd)?.split("\n")[0]?.trim();
+  const tree = line(git, ["rev-parse", "--verify", "--quiet", `${head}^{tree}`], cwd);
+  return merged !== void 0 && tree !== null && SHA7.test(tree) && merged === tree;
+}
+
+// src/readiness/index.ts
+function baseMovedRisk(name2, worktree, moved) {
+  const what = moved.landings.length > 0 ? `${moved.landings.map(landingText).join(", ")} landed` : moved.commits === null ? "it has new commits" : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
+  return {
+    id: "base-moved",
+    text: `${moved.base} moved since this integration started: ${what}, so land would refuse. ${baseMergeInstruction(moved.base, name2, worktree)}.`
+  };
+}
+function exitText(code4) {
+  return code4 === null ? "missing (counts as a failure)" : `exit ${code4}`;
+}
+function isMediumPlus(finding) {
+  return finding.severity === "HIGH" || finding.severity === "MEDIUM";
+}
+function lensShortfall(entry) {
+  if (entry.endState !== "success") return `ended ${entry.endState ?? "without an end state"}`;
+  if (entry.coverage === null || entry.coverage.trim() === "") return "no coverage";
+  if (!(entry.pathsChecked >= 1)) return "no paths checked";
+  return null;
+}
+function findingText(finding) {
+  const where = finding.line === void 0 ? finding.file : `${finding.file}:${finding.line}`;
+  return `${finding.id}: ${finding.title} (${where}) \u2014 ${finding.severity}, ${finding.verdict}`;
+}
+function unique(values) {
+  return [...new Set(values)];
+}
+function stringList(value) {
+  if (!Array.isArray(value)) return null;
+  return value.every((entry) => typeof entry === "string") ? value : null;
+}
+function verifyFailure(verify) {
+  const reason = verify.reason;
+  if (typeof reason === "string" && reason.trim() !== "") return `: ${reason.trim()}`;
+  const failing = verify.results.filter((result) => result.exitCode !== 0);
+  if (failing.length === 0) return "";
+  return `: failing ${failing.map((result) => `${result.command} (${exitText(result.exitCode)})`).join(", ")}`;
+}
+function laneEntries(lane, report) {
+  if (typeof report !== "object" || report === null || Array.isArray(report)) {
+    return [{ risk: { id: `report:${lane}`, text: `${lane}: the report is missing or not an object` } }];
+  }
+  const fields = report;
+  const out = [];
+  for (const [field, label] of [
+    ["open_questions", "open question"],
+    ["not_verified", "not verified"]
+  ]) {
+    const entries3 = stringList(fields[field]);
+    if (entries3 === null) {
+      out.push({ risk: { id: `report:${lane}:${field}`, text: `${lane}: the report's ${field} is not a list of strings` } });
+      continue;
+    }
+    entries3.forEach((text2, index) => {
+      out.push({ note: { id: `${field}:${lane}:${index + 1}`, lane, label, text: text2 } });
+    });
+  }
+  return out;
+}
+var SEVERITY_ORDER = ["HIGH", "MEDIUM", "LOW"];
+function roundsLine(rounds) {
+  if (rounds.length === 0) return null;
+  const parts = [...rounds].sort((a, b) => a.round - b.round).map(({ round, findings }) => {
+    const standing = findings.filter((finding) => finding.verdict !== "refuted");
+    const counts = SEVERITY_ORDER.map((severity2) => [severity2, standing.filter((f) => f.severity === severity2).length]).filter(([, n]) => n > 0).map(([severity2, n]) => `${n} ${severity2}`);
+    return `${round}: ${counts.length === 0 ? "none" : counts.join(", ")}`;
+  });
+  return `review rounds: ${parts.join(" \xB7 ")}`;
+}
+function hostShortfall(gates, checks, head, name2) {
+  const run = `run arbab host-check ${name2} in a terminal`;
+  if (checks === null) return `the host gates have not run; ${run}`;
+  if (checks.headSha !== head) return `the host gates ran on ${checks.headSha}, not on the head ${head}; ${run}`;
+  const failing = gates.map((argv2) => {
+    const command = commandLine(argv2);
+    const result = checks.results.find((r) => r.command === command);
+    return result === void 0 ? `${command} (not run)` : result.exitCode === 0 ? null : `${command} (${exitText(result.exitCode)})`;
+  }).filter((text2) => text2 !== null);
+  if (failing.length > 0) return `the host gates did not pass on the head: ${failing.join(", ")}`;
+  if (!checks.passed) return "the host gates did not pass on the head";
+  return null;
+}
+function computeReadiness(input) {
+  const { integration, verify, review, tier: tier2 } = input;
+  const head = integration.headSha;
+  const currentVerify = verify !== null && verify.headSha === head ? verify : null;
+  const carry = input.reviewCarryOver ?? null;
+  const carriedFrom = review !== null && review.headSha !== head && carry !== null && carry.from === review.headSha ? review.headSha : null;
+  const currentReview = review !== null && (review.headSha === head || carriedFrom !== null) ? review : null;
+  const hostGates = input.hostGates ?? [];
+  const hostChecks = input.hostChecks ?? null;
+  const verified = [];
+  const skipped = [];
+  if (currentVerify !== null) {
+    for (const result of currentVerify.results) {
+      verified.push({ id: `verify:${result.command}`, text: `${result.kind}: ${exitText(result.exitCode)}` });
+    }
+  }
+  const hostMissing = hostGates.length === 0 ? null : hostShortfall(hostGates, hostChecks, head, input.name);
+  if (hostGates.length > 0 && hostMissing === null) {
+    for (const argv2 of hostGates) verified.push({ id: `host:${commandLine(argv2)}`, text: "host gate: exit 0" });
+  }
+  if (carriedFrom !== null && carry !== null) {
+    verified.push({
+      id: "review-carried-over",
+      text: `review carried over from ${carriedFrom.slice(0, 7)}: the head adds only a clean merge of ${carry.base}`
+    });
+  }
+  const succeeded = /* @__PURE__ */ new Set();
+  const shortfalls = /* @__PURE__ */ new Map();
+  if (currentReview !== null) {
+    for (const entry of currentReview.lenses) {
+      const shortfall = lensShortfall(entry);
+      if (shortfall !== null) {
+        if (!shortfalls.has(entry.lens)) shortfalls.set(entry.lens, shortfall);
+        continue;
+      }
+      if (succeeded.has(entry.lens)) continue;
+      succeeded.add(entry.lens);
+      verified.push({ id: `review:${entry.lens}`, text: `lens ran, ${entry.pathsChecked} paths checked` });
+    }
+    for (const lens of succeeded) shortfalls.delete(lens);
+    const count = (verdict) => currentReview.findings.filter((finding) => finding.verdict === verdict).length;
+    verified.push({
+      id: "findings",
+      text: `${count("confirmed")} confirmed, ${count("refuted")} refuted, ${count("unverified")} unverified`
+    });
+  }
+  const rounds = roundsLine(input.reviewRounds ?? []);
+  if (rounds !== null) verified.push({ id: "review-rounds", text: rounds });
+  if (currentVerify === null) {
+    skipped.push({
+      id: "verify",
+      text: verify === null ? "verify has not run" : `verify ran on ${verify.headSha}, not on the head ${head}`
+    });
+  } else if (!currentVerify.passed) {
+    skipped.push({ id: "verify", text: `verify did not pass on the head${verifyFailure(currentVerify)}` });
+  }
+  const manifests = unique(integration.manifests).map((manifest) => {
+    const lanes = integration.merged.filter((lane) => lane.manifests.includes(manifest)).map((lane) => lane.lane);
+    return { manifest, by: lanes.length > 0 ? unique(lanes).join(", ") : "a commit arbab did not merge" };
+  });
+  if (manifests.length > 0 && !integration.depsConfirmed) {
+    skipped.push({
+      id: "deps",
+      text: `dependency manifests changed (${manifests.map((m) => `${m.manifest} by ${m.by}`).join("; ")}) and their install is not confirmed`
+    });
+  }
+  const named2 = /* @__PURE__ */ new Set();
+  if (tier2 === "medium" && succeeded.size === 0) {
+    const reasons = [...shortfalls].map(([lens, why]) => `${lens}: ${why}`);
+    for (const lens of shortfalls.keys()) named2.add(lens);
+    skipped.push({
+      id: "review",
+      text: currentReview === null ? "no review of the head" : `no review lens succeeded on the head${reasons.length > 0 ? ` (${reasons.join("; ")})` : ""}`
+    });
+  }
+  if (tier2 === "high") {
+    for (const lens of unique([...Object.keys(BUILTIN_LENSES), ...input.configLenses])) {
+      if (succeeded.has(lens)) continue;
+      named2.add(lens);
+      const why = shortfalls.get(lens);
+      skipped.push({
+        id: `review:${lens}`,
+        text: why === void 0 ? `the ${lens} lens did not succeed on the head` : `the ${lens} lens does not count on the head: ${why}`
+      });
+    }
+    const unrefuted = (currentReview?.findings ?? []).filter(
+      (finding) => isMediumPlus(finding) && finding.verdict === "unverified"
+    );
+    if (unrefuted.length > 0) {
+      const lenses2 = unique(unrefuted.map((finding) => finding.lens));
+      skipped.push({
+        id: "skeptic",
+        text: `${unrefuted.length} MEDIUM+ findings still unverified (${lenses2.join(", ")})`
+      });
+    }
+    if (!input.smokeConfigured) {
+      skipped.push({ id: "smoke", text: "smoke is not configured" });
+    } else {
+      const smoke = currentVerify?.results.filter((result) => result.kind === "smoke") ?? [];
+      if (smoke.length === 0 || smoke.some((result) => result.exitCode !== 0)) {
+        skipped.push({ id: "smoke", text: "smoke did not pass in a verify of the head" });
+      }
+    }
+  }
+  if (hostMissing !== null) skipped.push({ id: "host", text: hostMissing });
+  const findings = review?.findings ?? [];
+  const confirmed = findings.filter((finding) => finding.verdict === "confirmed").map((finding) => ({ id: `finding:${finding.id}`, text: findingText(finding) }));
+  const unverified = findings.filter((finding) => isMediumPlus(finding) && finding.verdict === "unverified").map((finding) => ({ id: `finding:${finding.id}`, text: findingText(finding) }));
+  const lowUnverified = findings.filter((finding) => finding.severity === "LOW" && finding.verdict === "unverified");
+  if (lowUnverified.length > 0) {
+    unverified.push({
+      id: "findings:low-unverified",
+      text: `${lowUnverified.length} LOW findings unverified: ${lowUnverified.map((finding) => `${finding.id} (${finding.title})`).join(", ")}`
+    });
+  }
+  const reports = /* @__PURE__ */ new Map();
+  const borrowers = /* @__PURE__ */ new Map();
+  for (const entry of input.laneReports) {
+    if (entry.worktree === void 0) {
+      if (!reports.has(entry.lane)) reports.set(entry.lane, entry.report);
+    } else {
+      borrowers.set(entry.worktree, [...borrowers.get(entry.worktree) ?? [], entry]);
+    }
+  }
+  const mergedLanes = unique(integration.merged.map((lane) => lane.lane));
+  const reported = new Set(mergedLanes);
+  const notes = [];
+  for (const lane of mergedLanes) {
+    notes.push(...laneEntries(lane, reports.get(lane)));
+    for (const borrower of borrowers.get(lane) ?? []) {
+      if (reported.has(borrower.lane)) continue;
+      reported.add(borrower.lane);
+      notes.push(...laneEntries(borrower.lane, borrower.report));
+    }
+  }
+  const manifestRisks = manifests.map(({ manifest, by }) => ({ id: `manifest:${manifest}`, text: `${manifest} changed by ${by}` }));
+  const hostRisks = hostMissing === null ? [] : [{ id: "host-gates", text: hostMissing }];
+  const stale = [];
+  for (const [lens, why] of shortfalls) {
+    if (!named2.has(lens)) stale.push({ id: `lens:${lens}`, text: `the ${lens} lens does not count: ${why}` });
+  }
+  if (verify !== null && currentVerify === null) {
+    stale.push({ id: "stale:verify", text: `verify (${verify.lane}) is stale: it ran on ${verify.headSha}, the head is ${head}` });
+  }
+  if (review !== null && currentReview === null) {
+    stale.push({ id: "stale:review", text: `review is stale: it ran on ${review.headSha}, the head is ${head}` });
+  }
+  const waivers = unique(input.waivers.map((waiver) => waiver.trim()).filter((waiver) => waiver !== ""));
+  const skippedIds = new Set(skipped.map((item) => item.id));
+  for (const waiver of waivers) {
+    if (!skippedIds.has(waiver)) stale.push({ id: `waiver:${waiver}`, text: `waiver ${waiver} matches no skipped item` });
+  }
+  const waived = new Set(waivers);
+  const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
+  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity, "readiness") }));
+  if (input.sessionsUnknown !== void 0) {
+    sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
+  }
+  if (input.baseMoved !== void 0 && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, integration.worktree, input.baseMoved));
+  const risks = uniqueTexts([
+    ...sessionRisks,
+    ...confirmed,
+    ...unverified,
+    ...manifestRisks,
+    ...hostRisks,
+    ...stale,
+    ...groupLaneNotes(notes)
+  ]);
+  return {
+    name: input.name,
+    tier: tier2,
+    headSha: head,
+    verified,
+    skipped: skippedOut,
+    risks,
+    ready: currentVerify !== null && currentVerify.passed && skippedOut.every((item) => item.waived),
+    createdAt: input.now,
+    ...carriedFrom !== null && { reviewCarriedOverFrom: carriedFrom },
+    ...input.otherSessions !== void 0 && { otherSessions: input.otherSessions }
+  };
+}
+function inline(text2) {
+  return text2.replace(/\s*[\r\n]+\s*/g, " ");
+}
+function code2(text2) {
+  const flat3 = inline(text2);
+  let longest = 0;
+  for (const run of flat3.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
+  const fence2 = "`".repeat(longest + 1);
+  const pad = flat3.startsWith("`") || flat3.endsWith("`") ? " " : "";
+  return `${fence2}${pad}${flat3}${pad}${fence2}`;
+}
+function cell(text2) {
+  return text2.replace(/\|/g, "\\|");
+}
+function list2(lines) {
+  return lines.length === 0 ? ["None."] : lines;
+}
+function renderReadiness(report) {
+  const date = /^\d{4}-\d{2}-\d{2}/.exec(report.createdAt)?.[0] ?? report.createdAt;
+  const lines = [
+    `# Readiness report \u2014 ${inline(report.name)}`,
+    "",
+    `Tier: ${report.tier} \xB7 Head: ${code2(report.headSha)} \xB7 Date: ${inline(date)}`,
+    "",
+    "## Verified",
+    ""
+  ];
+  if (report.verified.length === 0) {
+    lines.push("None.");
+  } else {
+    lines.push("| Check | Result |", "| --- | --- |");
+    for (const item of report.verified) lines.push(`| ${cell(code2(item.id))} | ${cell(inline(item.text))} |`);
+  }
+  lines.push("", "## Skipped (each needs a waiver)", "");
+  lines.push(
+    ...list2(report.skipped.map((item) => `- ${code2(item.id)}${item.waived ? " (waived)" : ""}: ${inline(item.text)}`))
+  );
+  lines.push("", "## Risks", "");
+  lines.push(...list2(report.risks.map((item) => `- ${inline(item.text)}`)));
+  lines.push("", `Ready to land: ${report.ready ? "yes" : "no"}`, "");
+  return lines.join("\n");
+}
+
+// src/commands/land.ts
 var refuse = (message5) => new ArbabError("usage", `not landed: ${message5}`);
 function gitOut(git, args, cwd) {
   const r = git(args, cwd);
@@ -8606,7 +9040,7 @@ function assertBaseInHead(git, root, base, head, name2, worktree) {
   if (r.code === 0) return;
   if (r.code !== 1) throw new ArbabError("git", `git merge-base --is-ancestor HEAD ${head} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
   throw refuse(
-    `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree nobody verified. Merge ${base} into integrate/${name2} with hooks off: git -C ${worktree} ${untrustedTree().join(" ")} merge --no-verify --no-edit ${base}; then arbab integrate ${name2} --refresh to record the new head, and verify, review and readiness for ${name2} again`
+    `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree nobody verified. ${baseMergeInstruction(base, name2, worktree)}`
   );
 }
 var notBefore = (later, earlier) => Date.parse(later) >= Date.parse(earlier);
@@ -8653,7 +9087,7 @@ async function runLand(argv2, ctx) {
   assertReadinessCurrent(readiness, verify, readReviewRecord(paths.review, name2), name2);
   const leftAlone = assertCleanBase(ctx.git, project.root, base, head);
   if (ctx.git(["merge-base", "--is-ancestor", head, "HEAD"], project.root).code === 0) throw refuse(`${head} is already in ${base}`);
-  if (existsSync21(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
+  if (existsSync22(paths.landing)) throw refuse(`${name2} already landed (${paths.landing})`);
   const branchAt = branchHead(ctx.git, project.root, paths.branch);
   if (branchAt !== head) throw refuse(`${paths.branch} is at ${branchAt ?? "no commit"}, not the verified head ${head}`);
   assertBaseInHead(ctx.git, project.root, base, head, name2, paths.worktree);
@@ -8999,420 +9433,6 @@ ${formatHold(hold)}
 
 // src/commands/readiness.ts
 import { join as join43 } from "node:path";
-
-// src/readiness/notes.ts
-var FENCE_KINDS = [
-  ["database", /\bno database\b/i],
-  ["browser", /\bbrowsers?\b/i],
-  ["network", /\bnetwork\b/i],
-  ["sandbox", /\bsandbox|\bEPERM\b|\bcannot run\b|\bnot permitted\b/i]
-];
-var MAX_EXAMPLES = 3;
-var EXAMPLE_CHARS = 100;
-function fenceKind(text2) {
-  return FENCE_KINDS.find(([, pattern]) => pattern.test(text2))?.[0] ?? null;
-}
-function noteKey(text2) {
-  return text2.trim().toLowerCase().replace(/\d+/g, "N").replace(/\s+/g, " ");
-}
-function flat2(text2) {
-  return text2.trim().replace(/\s+/g, " ");
-}
-function example(note) {
-  const text2 = flat2(note.text);
-  return `${note.lane}: ${text2.length > EXAMPLE_CHARS ? `${text2.slice(0, EXAMPLE_CHARS - 1)}\u2026` : text2}`;
-}
-function groupLaneNotes(entries3) {
-  const fence2 = /* @__PURE__ */ new Map();
-  const lanesOf = /* @__PURE__ */ new Map();
-  for (const entry of entries3) {
-    if (!("note" in entry)) continue;
-    const kind = fenceKind(entry.note.text);
-    if (kind !== null) {
-      fence2.set(kind, [...fence2.get(kind) ?? [], entry.note]);
-      continue;
-    }
-    const key = noteKey(entry.note.text);
-    lanesOf.set(key, (lanesOf.get(key) ?? /* @__PURE__ */ new Set()).add(entry.note.lane));
-  }
-  const out = [];
-  const emitted = /* @__PURE__ */ new Set();
-  for (const entry of entries3) {
-    if (!("note" in entry)) {
-      out.push(entry.risk);
-      continue;
-    }
-    const { note } = entry;
-    const kind = fenceKind(note.text);
-    if (kind !== null) {
-      if (emitted.has(`fence:${kind}`)) continue;
-      emitted.add(`fence:${kind}`);
-      const notes = fence2.get(kind) ?? [note];
-      const examples = [...new Set(notes.map(example))].slice(0, MAX_EXAMPLES);
-      out.push({
-        id: `fence:${kind}`,
-        text: `Not run inside the fence (${notes.length} ${notes.length === 1 ? "note" : "notes"}): ${examples.join("; ")}`
-      });
-      continue;
-    }
-    const key = noteKey(note.text);
-    const lanes = lanesOf.get(key)?.size ?? 1;
-    if (lanes < 2) {
-      out.push({ id: note.id, text: `${note.lane} (${note.label}): ${note.text}` });
-      continue;
-    }
-    if (emitted.has(`notes:${key}`)) continue;
-    emitted.add(`notes:${key}`);
-    out.push({ id: `notes:${note.id}`, text: `${lanes} lanes: ${flat2(note.text)}` });
-  }
-  return out;
-}
-function uniqueTexts(items) {
-  const seen = /* @__PURE__ */ new Set();
-  return items.filter((item) => {
-    if (seen.has(item.text)) return false;
-    seen.add(item.text);
-    return true;
-  });
-}
-
-// src/readiness/carry.ts
-var SHA6 = /^[0-9a-f]{40,64}$/;
-function line(git, args, cwd) {
-  const r = git([...untrustedTree(), ...args], cwd);
-  return r.code === 0 ? r.stdout.trim() : null;
-}
-function reviewCarriesOver(git, cwd, reviewed, head, baseBranch) {
-  if (!SHA6.test(reviewed) || !SHA6.test(head) || reviewed === head || baseBranch.startsWith("-")) return false;
-  const parents = line(git, ["rev-list", "--parents", "-n", "1", head], cwd)?.split(/\s+/);
-  if (parents === void 0 || parents.length !== 3 || parents[0] !== head) return false;
-  const [, first, second] = parents;
-  if (first !== reviewed) return false;
-  if (git(["merge-base", "--is-ancestor", second, baseBranch], cwd).code !== 0) return false;
-  const merged = line(git, ["merge-tree", "--write-tree", first, second], cwd)?.split("\n")[0]?.trim();
-  const tree = line(git, ["rev-parse", "--verify", "--quiet", `${head}^{tree}`], cwd);
-  return merged !== void 0 && tree !== null && SHA6.test(tree) && merged === tree;
-}
-
-// src/readiness/moved.ts
-var SHA7 = /^[0-9a-f]{40,64}$/;
-function baseMoved(git, projectRoot, base, head) {
-  if (base === "" || base.startsWith("-") || !SHA7.test(head)) return null;
-  if (git(["merge-base", "--is-ancestor", base, head], projectRoot).code !== 1) return null;
-  const listed = git(["rev-list", `${head}..${base}`, "--"], projectRoot);
-  if (listed.code !== 0) return { base, landings: [], commits: null };
-  const commits = new Set(listed.stdout.split("\n").map((l) => l.trim()).filter((l) => l !== ""));
-  const landings = landingsSince(projectRoot, -Infinity).filter((l) => l.into === base && commits.has(l.mergeSha));
-  return { base, landings, commits: commits.size };
-}
-
-// src/readiness/index.ts
-function baseMovedRisk(name2, moved) {
-  const what = moved.landings.length > 0 ? `${moved.landings.map(landingText).join(", ")} landed` : moved.commits === null ? "it has new commits" : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
-  return {
-    id: "base-moved",
-    text: `${moved.base} moved since this integration started: ${what}. Merge ${moved.base} into integrate/${name2} before landing.`
-  };
-}
-function exitText(code4) {
-  return code4 === null ? "missing (counts as a failure)" : `exit ${code4}`;
-}
-function isMediumPlus(finding) {
-  return finding.severity === "HIGH" || finding.severity === "MEDIUM";
-}
-function lensShortfall(entry) {
-  if (entry.endState !== "success") return `ended ${entry.endState ?? "without an end state"}`;
-  if (entry.coverage === null || entry.coverage.trim() === "") return "no coverage";
-  if (!(entry.pathsChecked >= 1)) return "no paths checked";
-  return null;
-}
-function findingText(finding) {
-  const where = finding.line === void 0 ? finding.file : `${finding.file}:${finding.line}`;
-  return `${finding.id}: ${finding.title} (${where}) \u2014 ${finding.severity}, ${finding.verdict}`;
-}
-function unique(values) {
-  return [...new Set(values)];
-}
-function stringList(value) {
-  if (!Array.isArray(value)) return null;
-  return value.every((entry) => typeof entry === "string") ? value : null;
-}
-function verifyFailure(verify) {
-  const reason = verify.reason;
-  if (typeof reason === "string" && reason.trim() !== "") return `: ${reason.trim()}`;
-  const failing = verify.results.filter((result) => result.exitCode !== 0);
-  if (failing.length === 0) return "";
-  return `: failing ${failing.map((result) => `${result.command} (${exitText(result.exitCode)})`).join(", ")}`;
-}
-function laneEntries(lane, report) {
-  if (typeof report !== "object" || report === null || Array.isArray(report)) {
-    return [{ risk: { id: `report:${lane}`, text: `${lane}: the report is missing or not an object` } }];
-  }
-  const fields = report;
-  const out = [];
-  for (const [field, label] of [
-    ["open_questions", "open question"],
-    ["not_verified", "not verified"]
-  ]) {
-    const entries3 = stringList(fields[field]);
-    if (entries3 === null) {
-      out.push({ risk: { id: `report:${lane}:${field}`, text: `${lane}: the report's ${field} is not a list of strings` } });
-      continue;
-    }
-    entries3.forEach((text2, index) => {
-      out.push({ note: { id: `${field}:${lane}:${index + 1}`, lane, label, text: text2 } });
-    });
-  }
-  return out;
-}
-var SEVERITY_ORDER = ["HIGH", "MEDIUM", "LOW"];
-function roundsLine(rounds) {
-  if (rounds.length === 0) return null;
-  const parts = [...rounds].sort((a, b) => a.round - b.round).map(({ round, findings }) => {
-    const standing = findings.filter((finding) => finding.verdict !== "refuted");
-    const counts = SEVERITY_ORDER.map((severity2) => [severity2, standing.filter((f) => f.severity === severity2).length]).filter(([, n]) => n > 0).map(([severity2, n]) => `${n} ${severity2}`);
-    return `${round}: ${counts.length === 0 ? "none" : counts.join(", ")}`;
-  });
-  return `review rounds: ${parts.join(" \xB7 ")}`;
-}
-function hostShortfall(gates, checks, head, name2) {
-  const run = `run arbab host-check ${name2} in a terminal`;
-  if (checks === null) return `the host gates have not run; ${run}`;
-  if (checks.headSha !== head) return `the host gates ran on ${checks.headSha}, not on the head ${head}; ${run}`;
-  const failing = gates.map((argv2) => {
-    const command = commandLine(argv2);
-    const result = checks.results.find((r) => r.command === command);
-    return result === void 0 ? `${command} (not run)` : result.exitCode === 0 ? null : `${command} (${exitText(result.exitCode)})`;
-  }).filter((text2) => text2 !== null);
-  if (failing.length > 0) return `the host gates did not pass on the head: ${failing.join(", ")}`;
-  if (!checks.passed) return "the host gates did not pass on the head";
-  return null;
-}
-function computeReadiness(input) {
-  const { integration, verify, review, tier: tier2 } = input;
-  const head = integration.headSha;
-  const currentVerify = verify !== null && verify.headSha === head ? verify : null;
-  const carry = input.reviewCarryOver ?? null;
-  const carriedFrom = review !== null && review.headSha !== head && carry !== null && carry.from === review.headSha ? review.headSha : null;
-  const currentReview = review !== null && (review.headSha === head || carriedFrom !== null) ? review : null;
-  const hostGates = input.hostGates ?? [];
-  const hostChecks = input.hostChecks ?? null;
-  const verified = [];
-  const skipped = [];
-  if (currentVerify !== null) {
-    for (const result of currentVerify.results) {
-      verified.push({ id: `verify:${result.command}`, text: `${result.kind}: ${exitText(result.exitCode)}` });
-    }
-  }
-  const hostMissing = hostGates.length === 0 ? null : hostShortfall(hostGates, hostChecks, head, input.name);
-  if (hostGates.length > 0 && hostMissing === null) {
-    for (const argv2 of hostGates) verified.push({ id: `host:${commandLine(argv2)}`, text: "host gate: exit 0" });
-  }
-  if (carriedFrom !== null && carry !== null) {
-    verified.push({
-      id: "review-carried-over",
-      text: `review carried over from ${carriedFrom.slice(0, 7)}: the head adds only a clean merge of ${carry.base}`
-    });
-  }
-  const succeeded = /* @__PURE__ */ new Set();
-  const shortfalls = /* @__PURE__ */ new Map();
-  if (currentReview !== null) {
-    for (const entry of currentReview.lenses) {
-      const shortfall = lensShortfall(entry);
-      if (shortfall !== null) {
-        if (!shortfalls.has(entry.lens)) shortfalls.set(entry.lens, shortfall);
-        continue;
-      }
-      if (succeeded.has(entry.lens)) continue;
-      succeeded.add(entry.lens);
-      verified.push({ id: `review:${entry.lens}`, text: `lens ran, ${entry.pathsChecked} paths checked` });
-    }
-    for (const lens of succeeded) shortfalls.delete(lens);
-    const count = (verdict) => currentReview.findings.filter((finding) => finding.verdict === verdict).length;
-    verified.push({
-      id: "findings",
-      text: `${count("confirmed")} confirmed, ${count("refuted")} refuted, ${count("unverified")} unverified`
-    });
-  }
-  const rounds = roundsLine(input.reviewRounds ?? []);
-  if (rounds !== null) verified.push({ id: "review-rounds", text: rounds });
-  if (currentVerify === null) {
-    skipped.push({
-      id: "verify",
-      text: verify === null ? "verify has not run" : `verify ran on ${verify.headSha}, not on the head ${head}`
-    });
-  } else if (!currentVerify.passed) {
-    skipped.push({ id: "verify", text: `verify did not pass on the head${verifyFailure(currentVerify)}` });
-  }
-  const manifests = unique(integration.manifests).map((manifest) => {
-    const lanes = integration.merged.filter((lane) => lane.manifests.includes(manifest)).map((lane) => lane.lane);
-    return { manifest, by: lanes.length > 0 ? unique(lanes).join(", ") : "a commit arbab did not merge" };
-  });
-  if (manifests.length > 0 && !integration.depsConfirmed) {
-    skipped.push({
-      id: "deps",
-      text: `dependency manifests changed (${manifests.map((m) => `${m.manifest} by ${m.by}`).join("; ")}) and their install is not confirmed`
-    });
-  }
-  const named2 = /* @__PURE__ */ new Set();
-  if (tier2 === "medium" && succeeded.size === 0) {
-    const reasons = [...shortfalls].map(([lens, why]) => `${lens}: ${why}`);
-    for (const lens of shortfalls.keys()) named2.add(lens);
-    skipped.push({
-      id: "review",
-      text: currentReview === null ? "no review of the head" : `no review lens succeeded on the head${reasons.length > 0 ? ` (${reasons.join("; ")})` : ""}`
-    });
-  }
-  if (tier2 === "high") {
-    for (const lens of unique([...Object.keys(BUILTIN_LENSES), ...input.configLenses])) {
-      if (succeeded.has(lens)) continue;
-      named2.add(lens);
-      const why = shortfalls.get(lens);
-      skipped.push({
-        id: `review:${lens}`,
-        text: why === void 0 ? `the ${lens} lens did not succeed on the head` : `the ${lens} lens does not count on the head: ${why}`
-      });
-    }
-    const unrefuted = (currentReview?.findings ?? []).filter(
-      (finding) => isMediumPlus(finding) && finding.verdict === "unverified"
-    );
-    if (unrefuted.length > 0) {
-      const lenses2 = unique(unrefuted.map((finding) => finding.lens));
-      skipped.push({
-        id: "skeptic",
-        text: `${unrefuted.length} MEDIUM+ findings still unverified (${lenses2.join(", ")})`
-      });
-    }
-    if (!input.smokeConfigured) {
-      skipped.push({ id: "smoke", text: "smoke is not configured" });
-    } else {
-      const smoke = currentVerify?.results.filter((result) => result.kind === "smoke") ?? [];
-      if (smoke.length === 0 || smoke.some((result) => result.exitCode !== 0)) {
-        skipped.push({ id: "smoke", text: "smoke did not pass in a verify of the head" });
-      }
-    }
-  }
-  if (hostMissing !== null) skipped.push({ id: "host", text: hostMissing });
-  const findings = review?.findings ?? [];
-  const confirmed = findings.filter((finding) => finding.verdict === "confirmed").map((finding) => ({ id: `finding:${finding.id}`, text: findingText(finding) }));
-  const unverified = findings.filter((finding) => isMediumPlus(finding) && finding.verdict === "unverified").map((finding) => ({ id: `finding:${finding.id}`, text: findingText(finding) }));
-  const lowUnverified = findings.filter((finding) => finding.severity === "LOW" && finding.verdict === "unverified");
-  if (lowUnverified.length > 0) {
-    unverified.push({
-      id: "findings:low-unverified",
-      text: `${lowUnverified.length} LOW findings unverified: ${lowUnverified.map((finding) => `${finding.id} (${finding.title})`).join(", ")}`
-    });
-  }
-  const reports = /* @__PURE__ */ new Map();
-  const borrowers = /* @__PURE__ */ new Map();
-  for (const entry of input.laneReports) {
-    if (entry.worktree === void 0) {
-      if (!reports.has(entry.lane)) reports.set(entry.lane, entry.report);
-    } else {
-      borrowers.set(entry.worktree, [...borrowers.get(entry.worktree) ?? [], entry]);
-    }
-  }
-  const mergedLanes = unique(integration.merged.map((lane) => lane.lane));
-  const reported = new Set(mergedLanes);
-  const notes = [];
-  for (const lane of mergedLanes) {
-    notes.push(...laneEntries(lane, reports.get(lane)));
-    for (const borrower of borrowers.get(lane) ?? []) {
-      if (reported.has(borrower.lane)) continue;
-      reported.add(borrower.lane);
-      notes.push(...laneEntries(borrower.lane, borrower.report));
-    }
-  }
-  const manifestRisks = manifests.map(({ manifest, by }) => ({ id: `manifest:${manifest}`, text: `${manifest} changed by ${by}` }));
-  const hostRisks = hostMissing === null ? [] : [{ id: "host-gates", text: hostMissing }];
-  const stale = [];
-  for (const [lens, why] of shortfalls) {
-    if (!named2.has(lens)) stale.push({ id: `lens:${lens}`, text: `the ${lens} lens does not count: ${why}` });
-  }
-  if (verify !== null && currentVerify === null) {
-    stale.push({ id: "stale:verify", text: `verify (${verify.lane}) is stale: it ran on ${verify.headSha}, the head is ${head}` });
-  }
-  if (review !== null && currentReview === null) {
-    stale.push({ id: "stale:review", text: `review is stale: it ran on ${review.headSha}, the head is ${head}` });
-  }
-  const waivers = unique(input.waivers.map((waiver) => waiver.trim()).filter((waiver) => waiver !== ""));
-  const skippedIds = new Set(skipped.map((item) => item.id));
-  for (const waiver of waivers) {
-    if (!skippedIds.has(waiver)) stale.push({ id: `waiver:${waiver}`, text: `waiver ${waiver} matches no skipped item` });
-  }
-  const waived = new Set(waivers);
-  const skippedOut = skipped.map((item) => ({ ...item, waived: waived.has(item.id) }));
-  const sessionRisks = (input.otherSessions ?? []).map((activity) => ({ id: sessionId(activity), text: sessionText(activity, "readiness") }));
-  if (input.sessionsUnknown !== void 0) {
-    sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
-  }
-  if (input.baseMoved !== void 0 && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.baseMoved));
-  const risks = uniqueTexts([
-    ...sessionRisks,
-    ...confirmed,
-    ...unverified,
-    ...manifestRisks,
-    ...hostRisks,
-    ...stale,
-    ...groupLaneNotes(notes)
-  ]);
-  return {
-    name: input.name,
-    tier: tier2,
-    headSha: head,
-    verified,
-    skipped: skippedOut,
-    risks,
-    ready: currentVerify !== null && currentVerify.passed && skippedOut.every((item) => item.waived),
-    createdAt: input.now,
-    ...carriedFrom !== null && { reviewCarriedOverFrom: carriedFrom },
-    ...input.otherSessions !== void 0 && { otherSessions: input.otherSessions }
-  };
-}
-function inline(text2) {
-  return text2.replace(/\s*[\r\n]+\s*/g, " ");
-}
-function code2(text2) {
-  const flat3 = inline(text2);
-  let longest = 0;
-  for (const run of flat3.matchAll(/`+/g)) longest = Math.max(longest, run[0].length);
-  const fence2 = "`".repeat(longest + 1);
-  const pad = flat3.startsWith("`") || flat3.endsWith("`") ? " " : "";
-  return `${fence2}${pad}${flat3}${pad}${fence2}`;
-}
-function cell(text2) {
-  return text2.replace(/\|/g, "\\|");
-}
-function list2(lines) {
-  return lines.length === 0 ? ["None."] : lines;
-}
-function renderReadiness(report) {
-  const date = /^\d{4}-\d{2}-\d{2}/.exec(report.createdAt)?.[0] ?? report.createdAt;
-  const lines = [
-    `# Readiness report \u2014 ${inline(report.name)}`,
-    "",
-    `Tier: ${report.tier} \xB7 Head: ${code2(report.headSha)} \xB7 Date: ${inline(date)}`,
-    "",
-    "## Verified",
-    ""
-  ];
-  if (report.verified.length === 0) {
-    lines.push("None.");
-  } else {
-    lines.push("| Check | Result |", "| --- | --- |");
-    for (const item of report.verified) lines.push(`| ${cell(code2(item.id))} | ${cell(inline(item.text))} |`);
-  }
-  lines.push("", "## Skipped (each needs a waiver)", "");
-  lines.push(
-    ...list2(report.skipped.map((item) => `- ${code2(item.id)}${item.waived ? " (waived)" : ""}: ${inline(item.text)}`))
-  );
-  lines.push("", "## Risks", "");
-  lines.push(...list2(report.risks.map((item) => `- ${inline(item.text)}`)));
-  lines.push("", `Ready to land: ${report.ready ? "yes" : "no"}`, "");
-  return lines.join("\n");
-}
-
-// src/commands/readiness.ts
 function parseTier(text2, fallback) {
   if (text2 === void 0) return fallback;
   if (!TIERS.includes(text2)) throw new ArbabError("usage", `--tier ${JSON.stringify(text2)} must be one of ${TIERS.join(", ")}`);
@@ -9501,7 +9521,7 @@ async function runReadiness(argv2, ctx) {
     reviewRounds: reviewRounds2(paths.dir, name2),
     ...otherSessions2 !== void 0 && { otherSessions: otherSessions2 },
     ...sessionsUnknown !== void 0 && { sessionsUnknown },
-    baseMoved: baseMoved(ctx.git, project.root, base, record2.headSha)
+    baseMoved: baseMoved(ctx.git, project.root, base, record2.headSha, { name: name2, landing: paths.landing })
   });
   const markdown = renderReadiness(report);
   writeJsonAtomic(paths.readiness, report);
@@ -9512,7 +9532,7 @@ async function runReadiness(argv2, ctx) {
 }
 
 // src/commands/status.ts
-import { existsSync as existsSync22 } from "node:fs";
+import { existsSync as existsSync23 } from "node:fs";
 function laneRole(runsRoot, lane) {
   const spec = readJson(runPaths(runsRoot, lane).laneFile);
   const role2 = typeof spec === "object" && spec !== null ? spec.role : void 0;
@@ -9550,7 +9570,7 @@ function laneStatus(project, lane, alive, nowMs) {
   let summary = null;
   if (record2.attempt >= 1) {
     const dir = runPaths(project.runsRoot, lane).attemptDir(record2.attempt);
-    if (existsSync22(dir)) {
+    if (existsSync23(dir)) {
       const attempt = readAttempt(dir);
       summary = attempt.summary;
       if (summary === null && effective.state === "running" && attempt.started !== null) {
@@ -9571,7 +9591,7 @@ async function runStatus(argv2, ctx) {
   const named2 = positionals.length > 0;
   for (const lane of positionals) {
     assertValidName(lane, "lane");
-    if (!existsSync22(runPaths(project.runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+    if (!existsSync23(runPaths(project.runsRoot, lane).laneDir)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   }
   const nowMs = ctx.clock.now();
   const rows = [];
@@ -9633,7 +9653,7 @@ async function runReport(argv2, ctx) {
 }
 
 // src/commands/resume.ts
-import { existsSync as existsSync24, realpathSync as realpathSync17 } from "node:fs";
+import { existsSync as existsSync25, realpathSync as realpathSync17 } from "node:fs";
 import { join as join48 } from "node:path";
 
 // src/shepherd/index.ts
@@ -9642,7 +9662,7 @@ import { homedir } from "node:os";
 import { dirname as dirname11, join as join47 } from "node:path";
 
 // src/shepherd/lifecycle.ts
-import { existsSync as existsSync23, mkdirSync as mkdirSync6, realpathSync as realpathSync16 } from "node:fs";
+import { existsSync as existsSync24, mkdirSync as mkdirSync6, realpathSync as realpathSync16 } from "node:fs";
 import { dirname as dirname10, join as join46, resolve as resolve18 } from "node:path";
 
 // src/shepherd/attempt.ts
@@ -10800,7 +10820,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
   ensureArbabMarkers(root);
   const owner = lane.worktree ?? lane.name;
-  if (owner !== lane.name && !existsSync23(join46(confine(root, config.worktreeRoot), owner))) {
+  if (owner !== lane.name && !existsSync24(join46(confine(root, config.worktreeRoot), owner))) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist`);
   }
   const base = lane.base ?? config.baseBranch;
@@ -10846,7 +10866,7 @@ async function prepare(root, config, lane, deps, holder2, held, userHome, wait) 
   if (realpathSync16(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
   let merged = [];
   const runsRoot = confine(root, config.runsRoot);
-  const pristine = wt.created || !existsSync23(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
+  const pristine = wt.created || !existsSync24(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0;
   if (pristine && owner !== lane.name) {
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, where no attempt has run yet; launch ${owner} first`);
   }
@@ -10993,7 +11013,7 @@ async function runResume(argv2, ctx) {
   }
   const project = openProject(ctx);
   const paths = runPaths(project.runsRoot, lane);
-  if (!existsSync24(paths.laneFile)) throw new ArbabError("usage", `no runs for lane ${lane}`);
+  if (!existsSync25(paths.laneFile)) throw new ArbabError("usage", `no runs for lane ${lane}`);
   if (values.digest === true) {
     const seeded = await resumeWithDigest(ctx, project, lane);
     if (values.json === true) {
@@ -11290,7 +11310,7 @@ async function runStop(argv2, ctx) {
 }
 
 // src/commands/summary.ts
-import { existsSync as existsSync25 } from "node:fs";
+import { existsSync as existsSync26 } from "node:fs";
 function machineConfig(ctx, errors) {
   try {
     return loadMachineConfig(ctx.home);
@@ -11304,16 +11324,40 @@ function summarize(ctx, project, machine, machineErrors, nowMs, sinceMs) {
   const summary = projectSummary({ project, home: ctx.home, machine, alive: ctx.alive, nowMs, ...sinceMs !== void 0 && { sinceMs } });
   return { ...summary, errors: [...machineErrors, ...summary.errors] };
 }
-var UNIT_MS = { m: 6e4, h: 36e5, d: 864e5 };
-var ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+var DAY_MS2 = 864e5;
+var UNIT_MS = { m: 6e4, h: 36e5, d: DAY_MS2 };
+var SINCE_MAX_DAYS = 3650;
+var ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+var ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?(?:(Z)|([+-])(\d{2}):(\d{2}))$/;
+function utcMs(year, month, day, hour = 0, minute = 0, second = 0, ms = 0) {
+  if (month < 1 || month > 12 || day < 1 || hour > 23 || minute > 59 || second > 59) return NaN;
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, ms));
+  date.setUTCFullYear(year);
+  return date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date.getTime() : NaN;
+}
+function isoSince(text2) {
+  const date = ISO_DATE.exec(text2);
+  if (date !== null) return utcMs(Number(date[1]), Number(date[2]), Number(date[3]));
+  const time = ISO_DATE_TIME.exec(text2);
+  if (time === null) return NaN;
+  const [, y, mo, d, h, mi, s, frac, zulu, sign, oh, om] = time;
+  const ms = utcMs(Number(y), Number(mo), Number(d), Number(h), Number(mi), Number(s ?? 0), Number((frac ?? "0").padEnd(3, "0").slice(0, 3)));
+  if (zulu !== void 0) return ms;
+  if (Number(oh) > 23 || Number(om) > 59) return NaN;
+  return ms - (sign === "-" ? -1 : 1) * (Number(oh) * 60 + Number(om)) * 6e4;
+}
 function parseSince(text2, nowMs) {
   const relative15 = /^(\d{1,9})([mhd])$/.exec(text2);
-  if (relative15 !== null) return nowMs - Number(relative15[1]) * (UNIT_MS[relative15[2] ?? ""] ?? 0);
-  const ms = ISO_TIME.test(text2) ? Date.parse(text2) : NaN;
-  if (Number.isFinite(ms)) return ms;
+  let ms;
+  if (relative15 === null) ms = isoSince(text2);
+  else {
+    const back = Number(relative15[1]) * (UNIT_MS[relative15[2] ?? ""] ?? NaN);
+    ms = back <= SINCE_MAX_DAYS * DAY_MS2 ? nowMs - back : NaN;
+  }
+  if (Number.isFinite(ms) && Number.isFinite(new Date(ms).getTime())) return ms;
   throw new ArbabError(
     "usage",
-    `--since takes an ISO time (2026-10-09T12:00:00Z) or <n>m, <n>h, <n>d back from now, not ${JSON.stringify(text2)} (see arbab summary --help)`
+    `--since takes <n>m, <n>h or <n>d back from now (at most ${SINCE_MAX_DAYS} days), a date (2026-10-09, midnight UTC) or an ISO time with Z or an offset (2026-10-09T12:00:00Z), not ${JSON.stringify(text2)} (see arbab summary --help)`
   );
 }
 function openRoot(root) {
@@ -11339,7 +11383,7 @@ async function runSummary(argv2, ctx) {
   }
   const summaries = [];
   for (const entry of listProjects(ctx.home)) {
-    if (!existsSync25(entry.root)) continue;
+    if (!existsSync26(entry.root)) continue;
     let project;
     try {
       project = openRoot(entry.root);
@@ -12753,7 +12797,7 @@ var USAGE = {
     ["summary [--all] [--since <when>] [--json]"],
     [
       ["--all", "every project that launched a lane on this machine"],
-      ["--since <when>", "also list what landed after <when>: an ISO time, or <n>m, <n>h, <n>d ago"],
+      ["--since <when>", "also list what landed after <when>: <n>m, <n>h, <n>d ago (up to 3650d), YYYY-MM-DD (UTC) or an ISO time with Z or an offset"],
       JSON_OPT
     ]
   ),

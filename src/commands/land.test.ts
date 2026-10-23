@@ -596,10 +596,38 @@ describe("runLand", () => {
     expect(p.ok(["rev-parse", "main"]).trim()).toBe(main);
     expect(existsSync(join(dir(p), "landing.json"))).toBe(false);
 
+    // Readiness asks for the same merge, word for word.
+    const refusal = await runLand(["rel"], p.ctx).then(
+      () => "",
+      (err: unknown) => (err as Error).message,
+    );
+    const instruction = refusal.slice(refusal.indexOf("Merge main into"));
+    expect(instruction).toMatch(/^Merge main into integrate\/rel with hooks off: .* again$/);
+    expect(await runReadiness(["rel"], p.ctx)).toBe(0);
+    const risk = readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks.find((r) => r.id === "base-moved");
+    expect(risk?.text).toBe(`main moved since this integration started: 1 new commit, so land would refuse. ${instruction}.`);
+    p.out.length = 0;
+
     const newHead = await mergeMainAndVerify(p);
     expect(await runLand(["rel"], p.ctx)).toBe(0);
     // The merge commit holds exactly the verified tree.
     expect(p.ok(["rev-parse", "main^{tree}"]).trim()).toBe(p.ok(["rev-parse", `${newHead}^{tree}`]).trim());
+  });
+
+  it("leaves its own landing out of a readiness run again afterwards: no base-moved risk", async () => {
+    for (const args of [["rel"], ["rel", "--squash"]]) {
+      p?.dispose();
+      ({ t: p } = await ready());
+      expect(await runLand(args, p.ctx)).toBe(0);
+      // The base now holds the landing's own commit, which the integration head does not.
+      const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
+      expect(p.git(["merge-base", "--is-ancestor", "main", head], p.root).code, args.join(" ")).toBe(1);
+      p.out.length = 0;
+      await runReadiness(["rel"], p.ctx);
+      const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
+      expect(report.risks.map((r) => r.id), args.join(" ")).not.toContain("base-moved");
+      expect(p.stdout()).not.toContain("moved since this integration started");
+    }
   });
 
   it("refuses when the integration branch moved past the verified head", async () => {

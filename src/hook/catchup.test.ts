@@ -6,10 +6,13 @@ import { registerProject } from "../registry";
 import type { LandingSince } from "../summary";
 import { writeLanding } from "../summary/testkit";
 import {
+  LANDING_SLACK_MS,
   NAMED_LANDINGS,
+  REPORTED_KEPT,
   WATERMARK_MAX_AGE_MS,
   catchUpDecision,
   catchUpText,
+  landingKey,
   readWatermark,
   removeStaleWatermarks,
   watermarkPath,
@@ -57,13 +60,19 @@ const prompt = (over: Record<string, unknown> = {}, o: Partial<CatchUpOptions> =
   catchUpDecision(input(over), "UserPromptSubmit", opts(o));
 
 const seenAt = (session = SESSION): unknown => JSON.parse(readFileSync(watermarkPath(home, session), "utf8"));
+/** The key of a landing writeLanding wrote with its default merge sha. */
+const key = (name: string): string => `${name}@${"c".repeat(40)}`;
 
 describe("catchUpDecision", () => {
-  it("writes the watermark on a session's first message and prints nothing", () => {
+  it("writes the watermark on a session's first message and prints nothing, then or later", () => {
     registerProject(home, root, iso(T0));
     writeLanding(root, "old", { landedAt: iso(T0 - MIN), owner: OTHER });
+    writeLanding(root, "older", { landedAt: iso(T0 - LANDING_SLACK_MS - MIN), owner: OTHER });
     expect(prompt()).toBeNull();
-    expect(seenAt()).toEqual({ seenAt: iso(T0) });
+    // What lies in the slack window already is history too.
+    expect(seenAt()).toEqual({ seenAt: iso(T0), reported: [key("old")] });
+    now.ms = T0 + MIN;
+    expect(prompt()).toBeNull();
   });
 
   it("reports another session's landing after the watermark once, then not again", () => {
@@ -83,11 +92,62 @@ describe("catchUpDecision", () => {
           "must merge main in before it can land.",
       },
     });
-    expect(seenAt()).toEqual({ seenAt: iso(T0 + 5 * MIN) });
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 5 * MIN), reported: [key("rel")] });
 
     now.ms = T0 + 6 * MIN;
     expect(prompt()).toBeNull();
-    expect(seenAt()).toEqual({ seenAt: iso(T0 + 6 * MIN) });
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 6 * MIN), reported: [key("rel")] });
+  });
+
+  it("reports once a landing stamped just before the watermark but written after it, then not again", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    now.ms = T0 + 5 * MIN;
+    expect(prompt()).toBeNull();
+    // land stamped landedAt, the hook answered at T0 + 5 min, then land wrote landing.json.
+    writeLanding(root, "race", { landedAt: iso(T0 + 5 * MIN - 1000), owner: OTHER });
+    now.ms = T0 + 6 * MIN;
+    const out = prompt();
+    expect(out).toContain(`race at ${iso(T0 + 5 * MIN - 1000)} (session bbbbbbbb)`);
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 6 * MIN), reported: [key("race")] });
+    now.ms = T0 + 7 * MIN;
+    expect(prompt()).toBeNull();
+    now.ms = T0 + 20 * MIN;
+    expect(prompt()).toBeNull();
+  });
+
+  it("looks back no further than the slack before the watermark", () => {
+    registerProject(home, root, iso(T0));
+    expect(prompt()).toBeNull();
+    writeLanding(root, "late", { landedAt: iso(T0 - LANDING_SLACK_MS - 1000), owner: OTHER });
+    writeLanding(root, "near", { landedAt: iso(T0 - LANDING_SLACK_MS + 1000), owner: OTHER });
+    now.ms = T0 + MIN;
+    const out = prompt() ?? "";
+    expect(out).toContain("near at");
+    expect(out).not.toContain("late at");
+  });
+
+  it("reads a watermark from 0.2.2 without keys, and writes the keys from then on", () => {
+    registerProject(home, root, iso(T0));
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0) }));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    expect(prompt()).toContain("rel at");
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 2 * MIN), reported: [key("rel")] });
+    now.ms = T0 + 3 * MIN;
+    expect(prompt()).toBeNull();
+  });
+
+  it("keeps the latest keys only, at most REPORTED_KEPT", () => {
+    registerProject(home, root, iso(T0));
+    mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
+    const old = Array.from({ length: REPORTED_KEPT }, (_, i) => `gone${i}@${"1".repeat(40)}`);
+    writeFileSync(watermarkPath(home, SESSION), JSON.stringify({ seenAt: iso(T0), reported: old }));
+    writeLanding(root, "rel", { landedAt: iso(T0 + MIN), owner: OTHER });
+    now.ms = T0 + 2 * MIN;
+    expect(prompt()).not.toBeNull();
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 2 * MIN), reported: [...old.slice(1), key("rel")] });
   });
 
   it("leaves out this session's own landing and one before the watermark, and only moves the watermark", () => {
@@ -97,7 +157,7 @@ describe("catchUpDecision", () => {
     writeLanding(root, "mine", { landedAt: iso(T0 + MIN), owner: SESSION });
     now.ms = T0 + 2 * MIN;
     expect(prompt()).toBeNull();
-    expect(seenAt()).toEqual({ seenAt: iso(T0 + 2 * MIN) });
+    expect(seenAt()).toEqual({ seenAt: iso(T0 + 2 * MIN), reported: [key("before")] });
   });
 
   it("names landings from outside Claude Code and from before 0.2.2, and answers SessionStart as such", () => {
@@ -162,7 +222,7 @@ describe("catchUpDecision", () => {
     mkdirSync(dirname(watermarkPath(home, SESSION)), { recursive: true });
     writeFileSync(watermarkPath(home, SESSION), '{"seenAt": "yesterday"}');
     expect(prompt()).toBeNull();
-    expect(seenAt()).toEqual({ seenAt: iso(T0) });
+    expect(seenAt()).toEqual({ seenAt: iso(T0), reported: [key("rel")] });
   });
 
   it("keeps one watermark per session", () => {
@@ -207,15 +267,24 @@ describe("watermarks", () => {
     expect(watermarkPath("/h", "x")).toBe(join("/h", "sessions", "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881.json"));
   });
 
-  it("reads a watermark's time, and null for a missing or malformed one", () => {
+  it("reads a watermark's time and keys, and null for a missing or malformed one", () => {
     const path = join(dir, "w.json");
     expect(readWatermark(path)).toBeNull();
-    for (const text of ["x", "[]", "{}", '{"seenAt": 5}', '{"seenAt": "soon"}']) {
+    for (const text of ["x", "[]", "{}", '{"seenAt": 5}', '{"seenAt": "soon"}', '{"reported": []}']) {
       writeFileSync(path, text);
       expect(readWatermark(path), text).toBeNull();
     }
+    // The 0.2.2 shape, without keys.
     writeFileSync(path, JSON.stringify({ seenAt: iso(T0) }));
-    expect(readWatermark(path)).toBe(T0);
+    expect(readWatermark(path)).toEqual({ seenMs: T0, reported: [] });
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0), reported: "a@1" }));
+    expect(readWatermark(path)).toEqual({ seenMs: T0, reported: [] });
+    writeFileSync(path, JSON.stringify({ seenAt: iso(T0), reported: ["a@1", 7, null, "b@2"] }));
+    expect(readWatermark(path)).toEqual({ seenMs: T0, reported: ["a@1", "b@2"] });
+  });
+
+  it("keys a landing by name and merge commit", () => {
+    expect(landingKey({ name: "rel", mergeSha: "1".repeat(40) })).toBe(`rel@${"1".repeat(40)}`);
   });
 
   it("removes watermarks older than the age and nothing else", () => {

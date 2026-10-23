@@ -223,9 +223,49 @@ describe("arbab summary --since", () => {
     expect(names.get(b.root)).toEqual(["other"]);
   });
 
+  it("takes a bare date as midnight UTC and a date-time with Z", async () => {
+    const p = project();
+    expect(await runSummary(["--since", "2026-10-20", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as ProjectSummary).since).toBe("2026-10-20T00:00:00.000Z");
+    p.out.length = 0;
+    expect(await runSummary(["--since", "2026-10-20T10:00:00Z", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as ProjectSummary).since).toBe("2026-10-20T10:00:00.000Z");
+    p.out.length = 0;
+    expect(await runSummary(["--since", "3650d"], p.ctx)).toBe(0);
+    expect(p.stdout()).toContain(`Landed since ${new Date(NOW_MS - 3650 * 86_400_000).toISOString()}\n`);
+  });
+
   it("refuses a --since that is neither an ISO time nor <n>m, <n>h, <n>d", async () => {
     const p = project();
-    for (const when of ["", "2", "2w", "-2h", "2 hours", "1.5h", "yesterday", "2026-13-45", "10/09/2026"]) {
+    for (const when of [
+      "",
+      "2",
+      "2w",
+      "-2h",
+      "2 hours",
+      "1.5h",
+      "yesterday",
+      "2026-13-45",
+      "10/09/2026",
+      // Too far back, and far enough to overflow a Date.
+      "3651d",
+      "87601h",
+      "5256001m",
+      "99999999d",
+      "1000000000d",
+      // No offset: the machine's time zone would decide.
+      "2026-10-20T10:00:00",
+      "2026-10-20T10:00",
+      // No such date or time.
+      "2026-02-30",
+      "2026-02-29T10:00:00Z",
+      "2026-04-31",
+      "2026-10-20T24:00:00Z",
+      "2026-10-20T10:60:00Z",
+      "2026-10-20T10:00:61Z",
+      "2026-10-20T10:00:00+24:00",
+      "2026-10-20T10:00:00+05:60",
+    ]) {
       await expect(runSummary([`--since=${when}`], p.ctx), when).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^--since takes /) });
     }
     await expect(runSummary(["--since"], p.ctx)).rejects.toMatchObject({ code: "usage" });
@@ -240,6 +280,19 @@ describe("parseSince", () => {
     expect(parseSince("0m", NOW_MS)).toBe(NOW_MS);
     expect(parseSince("2026-10-09T08:00:00Z", NOW_MS)).toBe(Date.parse("2026-10-09T08:00:00Z"));
     expect(parseSince("2026-10-09T08:00:00.250+02:00", NOW_MS)).toBe(Date.parse("2026-10-09T06:00:00.250Z"));
-    expect(parseSince("2026-10-09", NOW_MS)).toBe(Date.parse("2026-10-09"));
+    expect(parseSince("2026-10-09", NOW_MS)).toBe(Date.parse("2026-10-09T00:00:00Z"));
+    expect(parseSince("2026-10-09T08:00-05:30", NOW_MS)).toBe(Date.parse("2026-10-09T13:30:00Z"));
+    expect(parseSince("2026-10-09T08:00:00.5Z", NOW_MS)).toBe(Date.parse("2026-10-09T08:00:00.500Z"));
+    expect(parseSince("2024-02-29T00:00:00Z", NOW_MS)).toBe(Date.parse("2024-02-29T00:00:00Z"));
+    expect(parseSince("0050-01-01", NOW_MS)).toBe(Date.parse("0050-01-01T00:00:00Z"));
+  });
+
+  it("reaches back at most 3650 days, in any unit", () => {
+    expect(parseSince("3650d", NOW_MS)).toBe(NOW_MS - 3650 * 86_400_000);
+    expect(parseSince("87600h", NOW_MS)).toBe(NOW_MS - 3650 * 86_400_000);
+    expect(parseSince("5256000m", NOW_MS)).toBe(NOW_MS - 3650 * 86_400_000);
+    for (const when of ["3651d", "87601h", "5256001m", "999999999d"]) {
+      expect(() => parseSince(when, NOW_MS), when).toThrow(expect.objectContaining({ code: "usage", message: expect.stringContaining("at most 3650 days") }));
+    }
   });
 });

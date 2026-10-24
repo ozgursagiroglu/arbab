@@ -1,7 +1,8 @@
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, statfsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { loadConfig, loadMachineConfig } from "../config";
 import { listProjects } from "../registry";
+import { unusedText } from "../summary";
 import type { MachineConfig, ProjectEntry } from "../types";
 import type { DoctorCheck } from "./types";
 
@@ -28,22 +29,80 @@ export function countEmptyDirs(dir: string): number {
   return entries(dir).filter((e) => e.isDirectory() && entries(join(dir, e.name)).length === 0).length;
 }
 
-/** Worktrees of finished lanes and dead writer locks pile up until `arbab cleanup` removes them. */
-export function checkDisk(worktreeDir: string, worktreeLabel: string, home: string): DoctorCheck[] {
-  const worktrees = countDirs(worktreeDir);
-  const locks = countEmptyDirs(join(home, "locks"));
+/** Below this many bytes free on the worktrees' volume, doctor warns: a worktree with dependencies takes gigabytes. */
+export const MIN_FREE_BYTES = 20e9;
+
+/**
+ * The bytes free to an unprivileged user (`bavail * bsize`) on the volume holding `path`, asked of its nearest existing
+ * ancestor; null when even that cannot be read.
+ */
+export function volumeFreeBytes(path: string, statfs: (path: string) => { bavail: number; bsize: number } = statfsSync): number | null {
+  for (let p = resolve(path); ; p = dirname(p)) {
+    if (existsSync(p)) {
+      try {
+        const s = statfs(p);
+        const free = s.bavail * s.bsize;
+        return Number.isFinite(free) && free >= 0 ? free : null;
+      } catch {
+        return null;
+      }
+    }
+    if (dirname(p) === p) return null;
+  }
+}
+
+export const formatGb = (bytes: number): string => `${(bytes / 1e9).toFixed(1)} GB`;
+
+function sweepAdvice(idleDays: number): string {
+  const now = "arbab cleanup --worktrees --older-than <days> removes unused ones now";
+  return idleDays === 0
+    ? `the automatic sweep is off (worktrees.idleDays 0); ${now}`
+    : `the automatic sweep (worktrees.idleDays ${idleDays}) removes them after a launch; ${now}`;
+}
+
+export interface DiskInput {
+  worktreeDir: string;
+  worktreeLabel: string;
+  home: string;
+  /** Worktrees of finished lanes and unlanded integrations unused for more than idleDays (worktreeOverview). */
+  idle: number;
+  /** config worktrees.idleDays; 0 = the automatic sweep is off. */
+  idleDays: number;
+  /** Free space on the worktrees' volume; null when unknown. */
+  freeBytes: number | null;
+}
+
+/**
+ * Worktrees of finished lanes and dead writer locks pile up until the automatic sweep or `arbab cleanup` removes them;
+ * warns on too many worktrees, too little free space for them, or too many empty lock directories.
+ */
+export function checkDisk(input: DiskInput): DoctorCheck[] {
+  const { worktreeLabel, idle, idleDays, freeBytes } = input;
+  const worktrees = countDirs(input.worktreeDir);
+  const locks = countEmptyDirs(join(input.home, "locks"));
+  const unused = unusedText(idle, idleDays);
   const out: DoctorCheck[] = [];
   if (worktrees > MAX_WORKTREE_DIRS) {
     out.push({
       status: "warn",
       check: "disk",
-      detail: `${worktrees} directories in ${worktreeLabel} (more than ${MAX_WORKTREE_DIRS}): arbab cleanup --worktrees removes finished lanes' worktrees`,
+      detail: `${worktrees} directories in ${worktreeLabel} (more than ${MAX_WORKTREE_DIRS}; ${unused}): ${sweepAdvice(idleDays)}`,
+    });
+  }
+  if (freeBytes !== null && freeBytes < MIN_FREE_BYTES) {
+    out.push({
+      status: "warn",
+      check: "disk",
+      detail: `${formatGb(freeBytes)} free on the volume of ${worktreeLabel} (less than ${formatGb(MIN_FREE_BYTES)}; ${unused}): ${sweepAdvice(idleDays)}`,
     });
   }
   if (locks > MAX_EMPTY_LOCK_DIRS) {
     out.push({ status: "warn", check: "disk", detail: `${locks} empty lock directories (more than ${MAX_EMPTY_LOCK_DIRS}): arbab cleanup removes them` });
   }
-  if (out.length === 0) out.push({ status: "ok", check: "disk", detail: `${worktrees} worktree directories, ${locks} empty lock directories` });
+  if (out.length === 0) {
+    const free = freeBytes === null ? "free space unknown" : `${formatGb(freeBytes)} free`;
+    out.push({ status: "ok", check: "disk", detail: `${worktrees} worktree directories (${unused}), ${free}, ${locks} empty lock directories` });
+  }
   return out;
 }
 

@@ -1,6 +1,8 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ArbabError } from "../util/errors";
-import { COMMANDS, HELP, dispatch, type CommandContext } from "./index";
+import { COMMANDS, HELP, INTERNAL_COMMANDS, dispatch, type CommandContext } from "./index";
 import { DEFAULT_BRIEF, DEFAULT_CONFIG, makeProject, type TestProject } from "./testkit";
 import { USAGE } from "./usage";
 
@@ -95,6 +97,20 @@ describe("dispatch", () => {
     p = makeProject();
     expect(await dispatch(["lint", "lanes/demo.json"], p.ctx)).toBe(0);
     expect(p.stdout()).toBe("demo: ok\n");
+  });
+
+  it("runs __sweep, which is in neither COMMANDS nor the help and takes no --help", async () => {
+    p = makeProject();
+    expect(Object.hasOwn(COMMANDS, "__sweep")).toBe(false);
+    expect(Object.hasOwn(INTERNAL_COMMANDS, "__sweep")).toBe(true);
+    expect(HELP).not.toContain("__sweep");
+    expect(await dispatch(["__sweep", p.root], p.ctx)).toBe(0);
+    expect(p.stdout()).toMatch(/sweep of .* \(unused for 3\+ days\)\nnothing to remove\n$/);
+    expect(existsSync(join(p.root, ".arbab", "sweep.json"))).toBe(true);
+    p.out.length = 0;
+    expect(await dispatch(["__sweep", p.root, "--help"], p.ctx)).toBe(1);
+    expect(p.stdout()).toBe("");
+    expect(p.stderr()).toBe("arbab __sweep: usage: arbab __sweep <root>\n");
   });
 });
 

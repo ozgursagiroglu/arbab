@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { readState, writeState } from "../registry";
 import { markGenerated } from "./generated";
 import { takeLaunchLock } from "./launch";
 import { openProject } from "./project";
@@ -128,6 +129,41 @@ describe("runResume", () => {
   });
 
   const STREAM = `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "Working on it." }] } })}\n`;
+
+  /** The new shepherd writes its first state on the first poll; returns the lane's state each sweep start saw. */
+  function watchSweeps(t: TestProject): Array<string | undefined> {
+    const seen: Array<string | undefined> = [];
+    t.ctx.sleep = async (ms) => {
+      writeState(t.runsRoot, { lane: "demo", state: "queued", attempt: 1, since: "2026-10-09T12:00:00.000Z", shepherdPid: SHEPHERD_PID });
+      t.now.ms += ms;
+    };
+    t.ctx.spawnSweep = (root) => {
+      seen.push(readState(t.runsRoot, "demo")?.state);
+      t.sweeps.push(root);
+      return 0;
+    };
+    return seen;
+  }
+
+  it("starts a sweep of idle worktrees after the new shepherd's first state, with and without --digest", async () => {
+    p = makeProject();
+    writeLaneRun(p.runsRoot, "demo", { state: "finished", endState: "max-turns", started: { sessionId: SESSION }, stream: STREAM, shepherdPid: 77 });
+    const seen = watchSweeps(p);
+    expect(await runResume(["demo"], p.ctx)).toBe(0);
+    expect(seen).toEqual(["queued"]);
+    writeLaneRun(p.runsRoot, "demo", { state: "finished", endState: "max-turns", started: { sessionId: SESSION }, stream: STREAM, shepherdPid: 77 });
+    expect(await runResume(["demo", "--digest"], p.ctx)).toBe(0);
+    expect(seen).toEqual(["queued", "queued"]);
+    expect(p.sweeps).toEqual([p.root, p.root]);
+  });
+
+  it("starts no sweep when it refuses", async () => {
+    p = makeProject();
+    p.alive.add(88);
+    writeLaneRun(p.runsRoot, "demo", { state: "running", shepherdPid: 88, started: { sessionId: SESSION } });
+    await expect(runResume(["demo"], p.ctx)).rejects.toMatchObject({ code: "usage" });
+    expect(p.sweeps).toEqual([]);
+  });
 
   it("--digest starts a fresh shepherd seeded with the latest attempt", async () => {
     p = makeProject();

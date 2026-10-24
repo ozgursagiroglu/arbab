@@ -2,8 +2,9 @@
 //
 // One screen for the project (DESIGN.md §21): Lanes (counts by state, one line per lane not finished), Plans (the
 // phases each .arbab/plans/<plan>/ launched), Integrations (stage and what each waits for), Needs attention (lanes
-// whose latest run needs the orchestrator, with what to do), Quota and slots. Sections with nothing to say are left
-// out; records that cannot be read are listed last instead of failing the command.
+// whose latest run needs the orchestrator, with what to do), Quota, slots and worktrees (`worktrees: <total> (<idle>
+// unused for <idleDays>+ days)[; last sweep <time>: removed <n>]`, or `(automatic sweep off)`). Sections with nothing
+// to say are left out; records that cannot be read are listed last instead of failing the command.
 // --since <when>: <n>m, <n>h, <n>d back from the clock (at most 3650 days), a date (YYYY-MM-DD, midnight UTC), or an
 // ISO date-time with Z or an offset (without one it would depend on the machine's time zone). Adds a `Landed since <time>` section after
 // Integrations: each landing after it (name, into, time, owner session's first 8 characters or `outside Claude Code`,
@@ -11,7 +12,7 @@
 // --all: every project in ~/.arbab/projects/ whose root still exists, each under a `== <root> ==` heading, its config
 // loaded from its root. A project whose config does not load is named on stderr and skipped.
 // --json: ProjectSummary (src/summary/project.ts), or an array of them with --all; --since adds `since` and
-// `landedSince` (LandingSince[], oldest first) to each.
+// `landedSince` (LandingSince[], oldest first) to each. Its `worktrees` is WorktreeOverview (src/summary/worktrees.ts).
 // Read-only: it writes nothing and reclaims no stale entry.
 import { existsSync } from "node:fs";
 import { loadConfig, loadMachineConfig } from "../config";

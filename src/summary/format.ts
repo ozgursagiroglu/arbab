@@ -5,6 +5,7 @@ import type { PhaseLine } from "./plans";
 import type { ProjectSummary } from "./project";
 import { SHORT_SHA } from "./integrations";
 import { landingOwner } from "./landings";
+import { formatWorktrees } from "./worktrees";
 
 const NONE = "-";
 const INDENT = "  ";
@@ -115,10 +116,11 @@ export function formatSummary(s: ProjectSummary, nowSec: number): string {
 
   const q = s.quota;
   const machine = q.slots.machineMaxParallel === null ? "" : `, machine cap ${q.slots.machineMaxParallel}`;
-  section("Quota and slots", [
+  section("Quota, slots and worktrees", [
     `quota: ${formatQuota(q.snapshot, nowSec)}`,
     q.hold.hold ? `hold: yes, ${q.hold.reason ?? "quota"}${q.hold.until === null ? "" : ` (until ${isoAt(q.hold.until)})`}` : "hold: no",
     `slots: ${q.slots.inUse.length} in use machine-wide of ${q.slots.cap} (maxParallel ${q.slots.projectMaxParallel}${machine})`,
+    formatWorktrees(s.worktrees),
   ]);
 
   if (s.errors.length > 0) section("Unreadable records", s.errors);

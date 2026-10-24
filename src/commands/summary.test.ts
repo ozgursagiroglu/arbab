@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { registerProject } from "../registry";
 import type { ProjectSummary } from "../summary";
 import {
+  integrationDir,
   writeIntegration,
   writeLanding,
   writeOwner,
@@ -45,6 +46,32 @@ function busy(t: TestProject): void {
   writeSlot(t.home, 0, { pid: LIVE, lane: "core", project: t.root, createdAt: "2026-10-09T11:00:00.000Z" });
 }
 
+/**
+ * Five worktree directories: lane `old` finished 40 days ago and integration `wip` unused as long (idle), lane `young`
+ * finished a day ago, lane `core` running, and one no run owns; and a sweep that removed one.
+ */
+function worktrees(t: TestProject): void {
+  t.alive.add(LIVE);
+  for (const dir of ["old", "young", "core", "stray", "integrate-wip"]) mkdirSync(join(t.worktreeRoot, dir), { recursive: true });
+  writeLaneRun(t.runsRoot, "old", { state: "finished", endState: "success", since: "2026-08-30T12:00:00.000Z" });
+  writeLaneRun(t.runsRoot, "young", { state: "finished", endState: "success", since: "2026-10-08T12:00:00.000Z" });
+  writeLaneRun(t.runsRoot, "core", { state: "running", shepherdPid: LIVE, since: "2026-08-30T12:00:00.000Z" });
+  writeIntegration(t.root, "wip");
+  const old = Date.parse("2026-08-30T12:00:00.000Z") / 1000;
+  utimesSync(join(integrationDir(t.root, "wip"), "integration.json"), old, old);
+  writeFileSync(
+    join(t.root, ".arbab", "sweep.json"),
+    JSON.stringify({
+      startedAt: "2026-10-09T11:00:00.000Z",
+      finishedAt: "2026-10-09T11:00:02.000Z",
+      idleDays: 3,
+      removed: [{ path: "/w/x", reason: "merged into main" }],
+      kept: 2,
+      warnings: [],
+    }),
+  );
+}
+
 describe("arbab summary", () => {
   it("prints every section for the project", async () => {
     const p = project();
@@ -83,9 +110,34 @@ describe("arbab summary", () => {
   it("leaves out empty sections and writes nothing", async () => {
     const p = project();
     await runSummary([], p.ctx);
-    expect(p.stdout()).toBe("Quota and slots\n  quota: quota unknown\n  hold: no\n  slots: 0 in use machine-wide of 4 (maxParallel 4)\n");
+    expect(p.stdout()).toBe(
+      "Quota, slots and worktrees\n  quota: quota unknown\n  hold: no\n  slots: 0 in use machine-wide of 4 (maxParallel 4)\n" +
+        "  worktrees: 0 (0 unused for 3+ days)\n",
+    );
     expect(existsSync(join(p.root, ".arbab"))).toBe(false);
     expect(existsSync(p.home)).toBe(false);
+  });
+
+  it("counts the worktrees, the unused ones and the last sweep, in text and --json", async () => {
+    const p = project();
+    worktrees(p);
+    expect(await runSummary([], p.ctx)).toBe(0);
+    expect(p.stdout()).toContain("\n  worktrees: 5 (2 unused for 3+ days); last sweep 2026-10-09T11:00:00Z: removed 1\n");
+    p.out.length = 0;
+    expect(await runSummary(["--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as ProjectSummary).worktrees).toEqual({
+      total: 5,
+      idle: 2,
+      idleDays: 3,
+      lastSweep: { startedAt: "2026-10-09T11:00:00.000Z", finishedAt: "2026-10-09T11:00:02.000Z", removed: 1 },
+    });
+  });
+
+  it("says when the automatic sweep is off", async () => {
+    const p = project({ config: { worktrees: { idleDays: 0 } } });
+    mkdirSync(join(p.worktreeRoot, "a"), { recursive: true });
+    expect(await runSummary([], p.ctx)).toBe(0);
+    expect(p.stdout()).toContain("\n  worktrees: 1 (automatic sweep off)\n");
   });
 
   it("caps the slots by machine.json and reports a machine.json it cannot read", async () => {
@@ -119,6 +171,22 @@ describe("arbab summary", () => {
     expect(out).toContain("slots: 1 in use machine-wide of 2 (maxParallel 2)");
     expect(out).toContain("1 finished (1 success)");
     expect(a.stderr()).toBe("");
+  });
+
+  it("shows each project's worktrees with --all", async () => {
+    const a = project();
+    const b = project({ config: { baseBranch: "main", worktrees: { idleDays: 0 } } });
+    worktrees(a);
+    registerProject(a.home, a.root, "2026-10-09T10:00:00.000Z");
+    registerProject(a.home, b.root, "2026-10-09T10:00:00.000Z");
+    await runSummary(["--all"], a.ctx);
+    const sections = new Map(a.stdout().split("\n\n== ").map((s) => [s.replace(/^== /, "").split(" ==")[0], s]));
+    expect(sections.get(a.root)).toContain("worktrees: 5 (2 unused for 3+ days); last sweep");
+    expect(sections.get(b.root)).toContain("worktrees: 0 (automatic sweep off)");
+    a.out.length = 0;
+    await runSummary(["--all", "--json"], a.ctx);
+    const list = JSON.parse(a.stdout()) as ProjectSummary[];
+    expect(new Map(list.map((s) => [s.root, s.worktrees.total]))).toEqual(new Map([[a.root, 5], [b.root, 0]]));
   });
 
   it("prints an array with --all --json", async () => {

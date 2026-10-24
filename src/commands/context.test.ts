@@ -1,4 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +12,9 @@ import {
   makeNotify,
   makeReadStdin,
   makeSpawnShepherd,
+  makeSpawnSweep,
   shepherdArgv,
+  sweepArgv,
   type NotifyExec,
 } from "./context";
 import { makeProject, type TestProject } from "./testkit";
@@ -58,6 +62,39 @@ describe("makeSpawnShepherd", () => {
     await until(() => existsSync(record) && existsSync(log) && readFileSync(log, "utf8").includes("hi") && !isAlive(pid));
     expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ argv: ["__shepherd", p.root, "demo", '{"kind":"start"}'], cwd: p.root });
     expect(readFileSync(log, "utf8")).toBe("shepherd says hi\n");
+  });
+});
+
+describe("makeSpawnSweep", () => {
+  it("starts the script detached with __sweep <root> and appends its output to .arbab/sweep.log", async () => {
+    p = makeProject();
+    const script = join(p.dir, "fake-arbab.mjs");
+    const record = join(p.dir, "argv.json");
+    writeFileSync(
+      script,
+      [
+        'import { writeFileSync } from "node:fs";',
+        `writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));`,
+        'console.log("sweep says hi");',
+      ].join("\n"),
+    );
+    const log = join(p.root, ".arbab", "sweep.log");
+    mkdirSync(join(p.root, ".arbab"), { recursive: true });
+    writeFileSync(log, "earlier\n");
+    const pid = makeSpawnSweep(process.execPath, script, process.env)(p.root);
+    expect(pid).toBeGreaterThan(1);
+    await until(() => existsSync(record) && readFileSync(log, "utf8").includes("hi") && !isAlive(pid));
+    expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ argv: ["__sweep", p.root], cwd: p.root });
+    expect(readFileSync(log, "utf8")).toBe("earlier\nsweep says hi\n");
+    expect(sweepArgv("/s.mjs", "/r")).toEqual(["/s.mjs", "__sweep", "/r"]);
+  });
+
+  it("throws when the process gets no pid", () => {
+    p = makeProject();
+    const child = Object.assign(new EventEmitter(), { pid: undefined, unref: () => undefined });
+    const spawnFn = (() => child) as unknown as typeof spawn;
+    expect(() => makeSpawnSweep("/node", "/s.mjs", {}, spawnFn)(p.root)).toThrow(/cannot start the worktree sweep/);
+    expect(existsSync(join(p.root, ".arbab", "sweep.log"))).toBe(true);
   });
 });
 
@@ -145,6 +182,8 @@ describe("defaultContext", () => {
     expect(ctx.scriptPath).toBe("/x/arbab.mjs");
     expect(typeof ctx.readStdin).toBe("function");
     expect(typeof ctx.notify).toBe("function");
+    expect(typeof ctx.spawnSweep).toBe("function");
+    expect(ctx.freeSpace(process.cwd())).toBeGreaterThanOrEqual(0);
     expect(ctx.pid).toBe(process.pid);
     expect(ctx.alive(process.pid)).toBe(true);
     expect(ctx.runCommand([process.execPath, "-e", "process.stdout.write('ran')"], process.cwd())).toEqual({ code: 0, output: "ran" });

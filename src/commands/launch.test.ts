@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { writeState } from "../registry";
+import { readState, writeState } from "../registry";
 import { markGenerated } from "./generated";
 import { LAUNCH_LOCK_MS, assertInactive, assertNotGeneratedWorktree, assertNoLiveWorker, launchLane, launchLockPath, runLaunch, takeLaunchLock } from "./launch";
 import { openProject } from "./project";
-import { CLI_PID, NOW_MS, SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { CLI_PID, DEFAULT_CONFIG, NOW_MS, SHEPHERD_PID, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -65,6 +65,35 @@ describe("launchLane", () => {
     await launchLane(p.ctx, openProject(p.ctx), "lanes/demo.json");
     expect(polls).toBe(3);
     expect(existsSync(lockFile())).toBe(false);
+  });
+
+  it("starts a sweep of idle worktrees once the shepherd has written its first state", async () => {
+    p = makeProject();
+    const seen: Array<string | undefined> = [];
+    p.ctx.spawnSweep = (root) => {
+      seen.push(readState(p.runsRoot, "demo")?.state);
+      p.sweeps.push(root);
+      return 0;
+    };
+    p.ctx.sleep = async (ms) => {
+      writeState(p.runsRoot, { lane: "demo", state: "queued", attempt: 0, since: "2026-10-09T12:00:00.000Z", shepherdPid: SHEPHERD_PID });
+      p.now.ms += ms;
+    };
+    await launchLane(p.ctx, openProject(p.ctx), "lanes/demo.json");
+    expect(p.sweeps).toEqual([p.root]);
+    expect(seen).toEqual(["queued"]);
+  });
+
+  it("launches all the same when the sweep cannot start, or is off", async () => {
+    p = makeProject();
+    p.ctx.spawnSweep = () => {
+      throw new Error("no node");
+    };
+    expect((await launchLane(p.ctx, openProject(p.ctx), "lanes/demo.json")).lane).toBe("demo");
+    p.dispose();
+    p = makeProject({ config: { ...DEFAULT_CONFIG, worktrees: { idleDays: 0 } } });
+    await launchLane(p.ctx, openProject(p.ctx), "lanes/demo.json");
+    expect(p.sweeps).toEqual([]);
   });
 
   it("does not take an older shepherd's state.json for the new one's", async () => {

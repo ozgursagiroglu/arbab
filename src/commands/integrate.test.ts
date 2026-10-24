@@ -351,3 +351,54 @@ describe("runIntegrate --refresh", () => {
     expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
   });
 });
+
+describe("runIntegrate on an integration whose worktree was removed", () => {
+  /** A project whose dependency command is faked, recording the commit each install ran on. */
+  const installing = (): { t: TestProject; installs: Array<{ cwd: string; head: string }> } => {
+    const t = makeProject({ config: { ...DEFAULT_CONFIG, dependencies: { strategy: "command", command: ["pnpm", "install"] } } });
+    const installs: Array<{ cwd: string; head: string }> = [];
+    t.ctx.runCommand = (_argv, cwd) => {
+      installs.push({ cwd, head: t.ok(["rev-parse", "HEAD"], cwd).trim() });
+      return { code: 0, output: "" };
+    };
+    return { t, installs };
+  };
+
+  it("rebuilds it on the branch, installing at the base, and merges the new lane", async () => {
+    let installs: Array<{ cwd: string; head: string }>;
+    ({ t: p, installs } = installing());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    const before = recordOf(p, "rel");
+    p.ok(["worktree", "remove", "--force", before.worktree]);
+    installs.length = 0;
+    const c = branchWith(p, "arbab/c", "c.txt", "c\n");
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--lanes", "c"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(installs).toEqual([{ cwd: before.worktree, head: main }]);
+    expect(record.merged.map((m) => m.lane)).toEqual(["a", "c"]);
+    expect(record.merged[1]?.sha).toBe(c);
+    expect(p.ok(["rev-parse", "HEAD^1"], record.worktree).trim()).toBe(before.headSha);
+    expect(p.stdout()).toBe(formatIntegration(record));
+  });
+
+  it("--refresh rebuilds it and records the head", async () => {
+    let installs: Array<{ cwd: string; head: string }>;
+    ({ t: p, installs } = installing());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    const before = recordOf(p, "rel");
+    p.ok(["worktree", "remove", "--force", before.worktree]);
+    installs.length = 0;
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--refresh"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(installs).toEqual([{ cwd: before.worktree, head: main }]);
+    expect(record).toMatchObject({ headSha: before.headSha, merged: before.merged });
+    expect(p.ok(["rev-parse", "--abbrev-ref", "HEAD"], record.worktree).trim()).toBe("integrate/rel");
+    expect(p.stdout()).toBe(`refreshed rel: recorded integrate/rel at ${before.headSha}\n` + formatIntegration(record));
+  });
+});

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArbabError } from "../util/errors";
 import {
+  commonDir,
   createWorktree,
   discardWorktree,
   ensureIgnored,
@@ -154,7 +155,8 @@ describe("createWorktree", () => {
     expect((err as ArbabError).code).toBe("git");
     expect((err as ArbabError).message).toBe(
       `the worktree ${first.path} is missing, and its branch arbab/a holds worker commits that are not on main; arbab ` +
-        `installs dependencies only on a trusted base. Restore the worktree at ${first.path}, or delete the branch arbab/a`,
+        "installs dependencies only on a trusted base, and rebuilds a missing worktree from its branch only for a lane " +
+        "that has run. Delete the branch arbab/a, then launch the lane again",
     );
     expect(existsSync(first.path)).toBe(false);
   });
@@ -368,6 +370,18 @@ describe("untrustedTree", () => {
   });
 });
 
+describe("commonDir", () => {
+  it("names the shared git dir from the project root and from a linked worktree", () => {
+    const shared = realpathSync(join(repo, ".git"));
+    expect(commonDir(repo, git)).toBe(shared);
+    const wt = createWorktree({ projectRoot: repo, root: "wt", lane: "a", base: "main", trustedBase: "main", git });
+    expect(commonDir(wt.path, git)).toBe(shared);
+  });
+  it("throws a git error outside a repository", () => {
+    expect(() => commonDir(mkdtempSync(join(dir, "plain-")), git)).toThrow(/rev-parse --git-common-dir/);
+  });
+});
+
 describe("verifyWorktreeGit", () => {
   it("returns the private git dir of an untouched worktree", () => {
     const wt = createWorktree({ projectRoot: repo, root: "wt", lane: "a", base: "main", trustedBase: "main", git });
@@ -381,6 +395,23 @@ describe("verifyWorktreeGit", () => {
     expect(verifyWorktreeGit({ worktree: wt.path, branch: "arbab/b", gitCommonDir: wt.gitCommonDir }).error).toMatch(/not ref: refs\/heads\/arbab\/b/);
     expect(verifyWorktreeGit({ worktree: join(dir, "nowhere"), branch: "arbab/a", gitCommonDir: wt.gitCommonDir }).gitDir).toBeNull();
     expect(verifyWorktreeGit({ worktree: repo, branch: "main", gitCommonDir: wt.gitCommonDir }).gitDir).toBeNull();
+  });
+  it("checks a detached HEAD at the given commit instead of the branch when detachedAt is set", () => {
+    const main = ok(["rev-parse", "main"]).trim();
+    const path = join(dir, "detached");
+    ok(["worktree", "add", "--detach", path, main]);
+    const gitCommonDir = realpathSync(join(repo, ".git"));
+    expect(verifyWorktreeGit({ worktree: path, branch: "arbab/a", gitCommonDir, detachedAt: main })).toEqual({
+      gitDir: join(gitCommonDir, "worktrees", "detached"),
+      error: null,
+    });
+    expect(verifyWorktreeGit({ worktree: path, branch: "arbab/a", gitCommonDir }).error).toMatch(/not ref: refs\/heads\/arbab\/a/);
+    const other = "0".repeat(40);
+    expect(verifyWorktreeGit({ worktree: path, branch: "arbab/a", gitCommonDir, detachedAt: other }).error).toMatch(new RegExp(`is "${main}", not ${other}$`));
+    expect(verifyWorktreeGit({ worktree: path, branch: "arbab/a", gitCommonDir, detachedAt: "main" }).error).toBe('"main" is not a commit sha');
+    // A worktree on the branch is not detached at its head.
+    const wt = createWorktree({ projectRoot: repo, root: "wt", lane: "a", base: "main", trustedBase: "main", git });
+    expect(verifyWorktreeGit({ worktree: wt.path, branch: "arbab/a", gitCommonDir, detachedAt: main }).gitDir).toBeNull();
   });
   it("refuses a pointer to the shared dir's worktrees root itself", () => {
     const wt = createWorktree({ projectRoot: repo, root: "wt", lane: "a", base: "main", trustedBase: "main", git });

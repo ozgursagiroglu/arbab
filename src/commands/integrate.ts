@@ -8,7 +8,9 @@
 // merge: the owner is merged instead, at the borrowing phase's place when it is not a phase). Lanes already in the
 // branch are recorded without a merge. Refused: a landed integration (choose a new name), a running lane, a lane whose
 // worker outlived its shepherd, a running lane that borrows a listed lane's worktree, and a lane whose worktree has
-// uncommitted changes. A branch integrate creates starts a new record; an older one is moved aside.
+// uncommitted changes. A branch integrate creates starts a new record; an older one is moved aside. A missing
+// worktree on an existing branch is rebuilt there: its dependencies are installed on a trusted commit (the branch head
+// once a human confirmed it), then the branch is checked out unmoved.
 // --deps-installed <sha> records that a human reviewed and installed the changed dependencies at <sha>, the head
 // integrate printed; it refuses unless the record and the branch are both still at <sha>.
 // --adopt <ref> makes a new integration whose branch is <ref>'s commit, with nothing merged, based on --base or
@@ -17,9 +19,9 @@
 // point), and with --lanes or --plan. Text: `adopted
 // <ref> as <branch> (base <base> at <sha>)`, then the lines above.
 // --refresh records an existing, unlanded integration's head again after a hand commit or a base merge in its
-// worktree: it merges nothing and runs no dependencies; refused without a record or worktree, for a landed
-// integration, with tracked changes in the worktree, and with any other mode. Text: `refreshed <name>: recorded
-// <branch> at <sha>`, then the lines above.
+// worktree: it merges nothing and runs no dependencies, except to rebuild a missing worktree as above; refused without
+// a record or branch, for a landed integration, with tracked changes in the worktree, and with any other mode. Text:
+// `refreshed <name>: recorded <branch> at <sha>`, then the lines above.
 // Text: `<lane>: already in <branch>` per such lane, `merged <lane> <sha>[  manifests: <paths>]` per recorded lane,
 // `head <sha>`, then what the human must do about unconfirmed manifest changes. --deps-installed: `deps confirmed for
 // <name> at <sha>`, or `nothing to confirm for <name>: …` when no manifest changed.

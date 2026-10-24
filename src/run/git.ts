@@ -75,7 +75,8 @@ function branchExists(projectRoot: string, branch: string, git: GitRunner): bool
 /**
  * Refuses to re-create a missing worktree on a branch that holds commits the base does not: a created worktree is
  * the shepherd's own, and it installs dependencies there on the host, which on a tree of worker commits runs worker
- * code (package.json scripts, .npmrc) outside the fence.
+ * code (package.json scripts, .npmrc) outside the fence. The worktree of a lane that has run is rebuilt instead
+ * (rebuildWorktree), with the install at a trusted commit before the checkout; the shepherd decides which applies.
  */
 function refuseWorkerBranch(projectRoot: string, branch: string, base: string, path: string, git: GitRunner): void {
   const r = git(["merge-base", "--is-ancestor", `refs/heads/${branch}`, base], projectRoot);
@@ -86,7 +87,8 @@ function refuseWorkerBranch(projectRoot: string, branch: string, base: string, p
   throw new ArbabError(
     "git",
     `the worktree ${path} is missing, and its branch ${branch} holds worker commits that are not on ${base}; arbab ` +
-      `installs dependencies only on a trusted base. Restore the worktree at ${path}, or delete the branch ${branch}`,
+      `installs dependencies only on a trusted base, and rebuilds a missing worktree from its branch only for a lane ` +
+      `that has run. Delete the branch ${branch}, then launch the lane again`,
   );
 }
 
@@ -114,7 +116,7 @@ function assertRevision(rev: string, what: string): string {
 }
 
 /** The repository's shared git directory, asked of the project root (never of a worker's worktree). */
-function commonDir(projectRoot: string, git: GitRunner): string {
+export function commonDir(projectRoot: string, git: GitRunner): string {
   const out = must(git, ["rev-parse", "--git-common-dir"], projectRoot).trim();
   if (out === "") throw new ArbabError("git", "git rev-parse --git-common-dir printed nothing");
   return canonical(resolve(projectRoot, out));
@@ -232,12 +234,15 @@ export interface WorktreeGitInput {
   /** The branch the worktree must be on, e.g. "arbab/m1-a". */
   branch: string;
   gitCommonDir: string;
+  /** When given, HEAD must instead be detached at this commit (a worktree being rebuilt, before its checkout). */
+  detachedAt?: string;
 }
 
 /**
  * The worktree's private git directory, once it is shown to be the one git made for `branch`: under
- * `<gitCommonDir>/worktrees/`, its HEAD on the branch and its commondir back at `gitCommonDir`. A worker that can
- * write these files could otherwise point a checkpoint at another branch or at a git directory of its own.
+ * `<gitCommonDir>/worktrees/`, its HEAD on the branch (or detached at `detachedAt`) and its commondir back at
+ * `gitCommonDir`. A worker that can write these files could otherwise point a checkpoint at another branch or at a git
+ * directory of its own.
  */
 export function verifyWorktreeGit(input: WorktreeGitInput): { gitDir: string; error: null } | { gitDir: null; error: string } {
   const fail = (error: string): { gitDir: null; error: string } => ({ gitDir: null, error });
@@ -257,7 +262,9 @@ export function verifyWorktreeGit(input: WorktreeGitInput): { gitDir: string; er
     return fail(`git dir ${gitDir} is not under ${join(common, "worktrees")}`);
   }
   const head = read(join(gitDir, "HEAD"))?.trim();
-  if (head !== `ref: refs/heads/${input.branch}`) return fail(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ref: refs/heads/${input.branch}`);
+  const expected = input.detachedAt ?? `ref: refs/heads/${input.branch}`;
+  if (input.detachedAt !== undefined && !/^[0-9a-f]{40,64}$/.test(input.detachedAt)) return fail(`${JSON.stringify(input.detachedAt)} is not a commit sha`);
+  if (head !== expected) return fail(`HEAD of ${gitDir} is ${JSON.stringify(head ?? null)}, not ${expected}`);
   const commondir = read(join(gitDir, "commondir"))?.trim();
   if (commondir === undefined || commondir === "" || canonical(resolve(gitDir, commondir)) !== common) {
     return fail(`commondir of ${gitDir} does not lead to ${common}`);

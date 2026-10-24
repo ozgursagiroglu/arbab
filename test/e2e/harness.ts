@@ -114,6 +114,9 @@ export function makeE2eProject(bundle: string): E2eProject {
         baseBranch: "main",
         commands: { implementer: ["pnpm test"] },
         passEnv: ["FAKE_CLAUDE_SCENARIO", "FAKE_CLAUDE_LOG"],
+        // Off: a launch would otherwise start a detached __sweep that outlives the test and races dispose's rmSync.
+        // A test about the sweep turns it back on.
+        worktrees: { idleDays: 0 },
       },
       null,
       2,
@@ -184,6 +187,11 @@ export function makeE2eProject(bundle: string): E2eProject {
         } catch {
           // No shepherd recorded.
         }
+      }
+      try {
+        kill((JSON.parse(readFileSync(join(root, ".arbab", "sweep.lock"), "utf8")) as { pid: number }).pid);
+      } catch {
+        // No sweep running.
       }
       for (const call of calls()) {
         kill(-call.pid);

@@ -171,10 +171,13 @@ describe("arbab landing end to end", () => {
       ["pnpm test", 0],
       ["pnpm typecheck", 0],
     ]);
-    // The gates ran in the verify lane's own worktree, on the integration head, as a probe worker.
+    // The gates ran in the verify lane's own worktree as a probe worker; verify removed that worktree and the
+    // generated branch once verify.json was written.
     const call = project.calls().at(-1);
     expect(call?.argv[call.argv.indexOf("-n") + 1]).toBe("rel-verify");
-    expect(project.git(["rev-parse", "HEAD"], call?.cwd).trim()).toBe(record.headSha);
+    expect(call?.cwd).toBe(join(project.worktreeRoot, "rel-verify"));
+    expect(existsSync(join(project.worktreeRoot, "rel-verify"))).toBe(false);
+    expect(project.git(["branch", "--list", "arbab/rel-verify"])).toBe("");
     expect(project.json<VerifyRecord>(join(integrationDir(project), "verify.json")).passed).toBe(true);
 
     const readiness = await project.cli("readiness", "rel", "--tier", "low");
@@ -183,18 +186,17 @@ describe("arbab landing end to end", () => {
     expect(project.json<ReadinessReport>(join(integrationDir(project), "readiness.json"))).toMatchObject({ tier: "low", ready: true, headSha: record.headSha });
     expect(readFileSync(join(integrationDir(project), "readiness.md"), "utf8")).toBe(readiness.stdout);
 
-    const lanes = ["a", "b", "rel-verify"];
+    const lanes = ["a", "b"];
     for (const lane of lanes) expect(existsSync(join(project.worktreeRoot, lane))).toBe(true);
     const land = await project.cli("land", "rel");
     expect(land.code, land.stderr).toBe(0);
     const mergeSha = project.git(["rev-parse", "main"]).trim();
-    // land cleans up what it landed: the merged lanes', the generated verify lane's and the integration's worktrees,
-    // and the generated lane's and the integration's branches. Lane branches stay: later plan phases merge them by
-    // name.
+    // land cleans up what it landed: the merged lanes' and the integration's worktrees, and the integration's branch
+    // (verify already removed its lane's). Lane branches stay: later plan phases merge them by name.
     expect(land.stdout).toBe(
       `landed rel: ${record.headSha} into main as ${mergeSha}\nNot pushed. To publish: git push <remote> main (no remote configured)\n` +
         [...lanes.map((lane) => join(project.worktreeRoot, lane)), record.worktree].map((path) => `removed worktree ${path}\n`).join("") +
-        ["arbab/rel-verify", "integrate/rel"].map((branch) => `deleted branch ${branch}\n`).join(""),
+        "deleted branch integrate/rel\n",
     );
     for (const path of [...lanes.map((lane) => join(project.worktreeRoot, lane)), record.worktree]) expect(existsSync(path)).toBe(false);
     expect(project.git(["branch", "--list", "--format=%(refname:short)", "arbab/*", "integrate/*"]).trim().split("\n")).toEqual([
@@ -203,7 +205,7 @@ describe("arbab landing end to end", () => {
     ]);
     expect(project.git(["worktree", "list", "--porcelain"]).match(/^worktree /gm)).toHaveLength(1);
     // The run dirs and the integration's records stay: they are the measurements and the record.
-    for (const lane of lanes) expect(existsSync(join(project.laneDir(lane), "state.json"))).toBe(true);
+    for (const lane of [...lanes, "rel-verify"]) expect(existsSync(join(project.laneDir(lane), "state.json"))).toBe(true);
     expect(existsSync(join(integrationDir(project), "integration.json"))).toBe(true);
     const landing = project.json<LandingRecord>(join(integrationDir(project), "landing.json"));
     expect(landing).toMatchObject({ name: "rel", into: "main", integrationHead: record.headSha, mergeSha, pushed: false });
@@ -253,12 +255,14 @@ describe("arbab landing end to end", () => {
 
     // Every install ran the base's script on the base commit: the integration worktree's, then the verify lane's.
     expect(installs(log)).toEqual([`base ${record.baseSha}`, `base ${record.baseSha}`]);
-    // The lane then worked on the integration head, with the worker's script in its tree, never run.
+    // The lane then worked on the integration head, with the worker's script in its tree, never run. Its worktree and
+    // branch are gone once verify returns.
     const call = project.calls().at(-1);
     expect(call?.argv[call.argv.indexOf("-n") + 1]).toBe("rel-verify");
-    expect(project.git(["rev-parse", "HEAD"], call?.cwd).trim()).toBe(record.headSha);
-    expect(readFileSync(join(call?.cwd ?? "", "scripts", "setup.js"), "utf8")).toContain('"pwned "');
-    expect(project.git(["rev-parse", "refs/heads/arbab/rel-verify"]).trim()).toBe(record.headSha);
+    expect(call?.cwd).toBe(join(project.worktreeRoot, "rel-verify"));
+    expect(existsSync(join(project.worktreeRoot, "rel-verify"))).toBe(false);
+    expect(project.git(["show", `${record.headSha}:scripts/setup.js`])).toContain('"pwned "');
+    expect(project.git(["branch", "--list", "arbab/rel-verify"])).toBe("");
   }, 240_000);
 
   it("installs on the head a human confirmed after a manifest change, then fast-forwards to the later head", async () => {
@@ -283,9 +287,12 @@ describe("arbab landing end to end", () => {
     expect(verify.code, verify.stderr).toBe(0);
     expect((JSON.parse(verify.stdout) as { verify: VerifyRecord }).verify).toMatchObject({ headSha: record.headSha, passed: true });
 
-    // The verify lane installed on the confirmed head, whose script is the base's, and ran on the integration head.
+    // The verify lane installed on the confirmed head, whose script is the base's, and ran on the integration head (the
+    // verify record's headSha) in its own worktree, gone once verify returns.
     expect(installs(log)).toEqual([`base ${record.baseSha}`, `base ${at}`]);
     const call = project.calls().at(-1);
-    expect(project.git(["rev-parse", "HEAD"], call?.cwd).trim()).toBe(record.headSha);
+    expect(call?.cwd).toBe(join(project.worktreeRoot, "rel-verify"));
+    expect(existsSync(join(project.worktreeRoot, "rel-verify"))).toBe(false);
+    expect(project.git(["branch", "--list", "arbab/rel-verify"])).toBe("");
   }, 240_000);
 });

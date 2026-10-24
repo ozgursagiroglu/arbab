@@ -17,6 +17,7 @@ import {
   refreshIntegration,
   type IntegrateResult,
 } from "./index";
+import { ensureIntegrationWorktree } from "./integrate";
 
 let project: TestProject;
 beforeEach(() => {
@@ -104,7 +105,7 @@ function refresh(name = "m3"): Run & { result: () => IntegrateResult } {
     return project.git(args, cwd);
   };
   const runCommand: ArgvRunner = (argv, cwd) => {
-    deps.push({ argv, cwd, head: "" });
+    deps.push({ argv, cwd, head: git(["rev-parse", "HEAD"], cwd).trim() });
     return { code: 0, output: "" };
   };
   const later: Clock = { now: () => Date.parse("2026-10-10T08:00:00.000Z") };
@@ -524,14 +525,63 @@ describe("integrate", () => {
     expect(r.deps).toHaveLength(1);
   });
 
-  it("refuses to recreate the worktree on a branch that already holds merges", () => {
+  it("rebuilds the worktree on a branch that already holds merges, installing at the base before the checkout, and merges a new lane", () => {
+    const main = git(["rev-parse", "main"]).trim();
     lane("a", { "a.txt": "a\n" });
-    run(["a"]).record();
+    const before = run(["a"]).record();
     const p = integrationPaths(project.root, config(), "m3");
     git(["worktree", "remove", "--force", p.worktree]);
+    lane("c", { "c.txt": "c\n" });
+    const r = run(["a", "c"]);
+    const { record: rec, alreadyIn } = r.result();
+    // The install saw main's tree, detached, never the merged lanes'.
+    expect(r.deps).toEqual([{ argv: ["pnpm", "install"], cwd: p.worktree, head: main }]);
+    expect(r.calls).toContainEqual([...untrustedTree(), "worktree", "add", "--detach", p.worktree, main]);
+    expect(alreadyIn).toEqual(["a"]);
+    expect(rec.merged.map((m) => m.lane)).toEqual(["a", "c"]);
+    expect(rec.baseSha).toBe(before.baseSha);
+    expect(git(["rev-parse", "HEAD^1"], p.worktree).trim()).toBe(before.headSha);
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], p.worktree).trim()).toBe("integrate/m3");
+    expect(git(["rev-parse", "integrate/m3"]).trim()).toBe(rec.headSha);
+    expect(existsSync(join(p.worktree, "a.txt")) && existsSync(join(p.worktree, "c.txt"))).toBe(true);
+  });
+
+  it("flags the manifests of a rebuilt integration, installing at the base until a human confirms the head, then at the head", () => {
+    const main = git(["rev-parse", "main"]).trim();
+    lane("a", { "package.json": '{"dependencies":{"left-pad":"1.0.0"}}\n' });
+    const listed = run(["a"]).record();
+    const p = integrationPaths(project.root, config(), "m3");
+    git(["worktree", "remove", "--force", p.worktree]);
+    const unconfirmed = run([]);
+    expect(unconfirmed.record()).toMatchObject({ headSha: listed.headSha, manifests: ["package.json"], depsConfirmedAt: null, depsConfirmed: false });
+    expect(unconfirmed.deps.map((d) => d.head)).toEqual([main]);
+
+    confirmDeps(p, listed.headSha, project.git, clock);
+    git(["worktree", "remove", "--force", p.worktree]);
+    lane("c", { "c.txt": "c\n" });
+    const confirmed = run(["c"]);
+    const rec = confirmed.record();
+    // A confirmed head is a trusted install point: the install runs on it.
+    expect(confirmed.deps.map((d) => d.head)).toEqual([listed.headSha]);
+    expect(rec).toMatchObject({ manifests: ["package.json"], depsConfirmedAt: listed.headSha, depsConfirmed: true });
+    expect(rec.merged.map((m) => m.lane)).toEqual(["a", "c"]);
+  });
+
+  it("removes a rebuilt worktree whose install failed, leaving the branch and the record; the next call rebuilds it", () => {
+    lane("a", { "a.txt": "a\n" });
+    const before = run(["a"]).record();
+    const p = integrationPaths(project.root, config(), "m3");
+    git(["worktree", "remove", "--force", p.worktree]);
+    const failing = run(["a"], { deps: () => ({ code: 4, output: "no network\n" }) });
+    expect(caught(failing.record)).toMatchObject({ code: "runtime", message: `dependencies failed in ${p.worktree} (4): no network` });
+    expect(existsSync(p.worktree)).toBe(false);
+    expect(git(["rev-parse", "integrate/m3"]).trim()).toBe(before.headSha);
+    expect(readIntegration(p)).toEqual(before);
+    expect(merges(failing.calls)).toEqual([]);
+
     const r = run(["a"]);
-    expect(caught(r.record).message).toMatch(/integrate\/m3 exists without its worktree and holds commits that are not on main/);
-    expect(r.deps).toEqual([]);
+    expect(r.record()).toEqual(before);
+    expect(r.deps).toHaveLength(1);
   });
 
   it("runs no dependency command for strategy none", () => {
@@ -1172,14 +1222,82 @@ describe("refreshIntegration", () => {
     expect(refresh().result().record.headSha).toBe(rec.headSha);
   });
 
-  it("refuses an integration whose worktree is gone, and does not recreate it", () => {
+  it("rebuilds a worktree that is gone, installing at the trusted start, and records the head", () => {
+    const main = git(["rev-parse", "main"]).trim();
     lane("a", { "a.txt": "a\n" });
-    run(["a"]).record();
+    const rec = run(["a"]).record();
     const p = integrationPaths(project.root, config(), "m3");
+    const moved = commit(p.worktree, { ".npmrc": "registry=x\n" });
     git(["worktree", "remove", "--force", p.worktree]);
     const r = refresh();
-    expect(caught(r.result)).toMatchObject({ code: "usage", message: expect.stringMatching(/^integration m3 has no worktree at /) });
+    const next = r.result().record;
+    expect(next).toEqual({ ...rec, headSha: moved, manifests: [".npmrc"], depsConfirmed: false, updatedAt: "2026-10-10T08:00:00.000Z" });
+    expect(r.deps).toEqual([{ argv: ["pnpm", "install"], cwd: p.worktree, head: main }]);
+    expect(merges(r.calls)).toEqual([]);
+    expect(git(["rev-parse", "HEAD"], p.worktree).trim()).toBe(moved);
+    expect(git(["rev-parse", "integrate/m3"]).trim()).toBe(moved);
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"], p.worktree).trim()).toBe("integrate/m3");
+  });
+
+  it("refuses an integration whose branch is gone, creating nothing", () => {
+    lane("a", { "a.txt": "a\n" });
+    const rec = run(["a"]).record();
+    const p = integrationPaths(project.root, config(), "m3");
+    git(["worktree", "remove", "--force", p.worktree]);
+    git(["branch", "-D", "integrate/m3"]);
+    const r = refresh();
+    expect(caught(r.result)).toMatchObject({ code: "usage", message: expect.stringMatching(/^integration m3 has no branch integrate\/m3; /) });
     expect(existsSync(p.worktree)).toBe(false);
+    expect(git(["branch", "--list", "integrate/m3"])).toBe("");
+    expect(readIntegration(p)).toEqual(rec);
     expect(r.deps).toEqual([]);
+  });
+});
+
+describe("ensureIntegrationWorktree", () => {
+  const setup = (calls: string[][], deps: string[]): Parameters<typeof ensureIntegrationWorktree>[0] => ({
+    projectRoot: project.root,
+    config: config({ dependencies: { strategy: "command", command: ["pnpm", "install"] } }),
+    git: (args, cwd) => {
+      calls.push(args);
+      return project.git(args, cwd);
+    },
+    runCommand: (_argv, cwd) => {
+      deps.push(git(["rev-parse", "HEAD"], cwd).trim());
+      return { code: 0, output: "" };
+    },
+  });
+
+  it("leaves an existing worktree as it is, running nothing", () => {
+    lane("a", { "a.txt": "a\n" });
+    run(["a"]).record();
+    const calls: string[][] = [];
+    const deps: string[] = [];
+    ensureIntegrationWorktree(setup(calls, deps), integrationPaths(project.root, config(), "m3"));
+    expect(calls).toEqual([]);
+    expect(deps).toEqual([]);
+  });
+
+  it("rebuilds a missing worktree on the branch, the install at the base, leaving the branch where it was", () => {
+    const main = git(["rev-parse", "main"]).trim();
+    lane("a", { "a.txt": "a\n" });
+    const rec = run(["a"]).record();
+    const p = integrationPaths(project.root, config(), "m3");
+    rmSync(p.worktree, { recursive: true, force: true });
+    const deps: string[] = [];
+    ensureIntegrationWorktree(setup([], deps), p);
+    expect(deps).toEqual([main]);
+    expect(git(["rev-parse", "HEAD"], p.worktree).trim()).toBe(rec.headSha);
+    expect(git(["rev-parse", "integrate/m3"]).trim()).toBe(rec.headSha);
+    expect(git(["status", "--porcelain"], p.worktree)).toBe("");
+  });
+
+  it("creates a new branch from the base when there is none", () => {
+    const main = git(["rev-parse", "main"]).trim();
+    const p = integrationPaths(project.root, config(), "m3");
+    const deps: string[] = [];
+    ensureIntegrationWorktree(setup([], deps), p);
+    expect(deps).toEqual([main]);
+    expect(git(["rev-parse", "integrate/m3"]).trim()).toBe(main);
   });
 });

@@ -2,11 +2,13 @@
 //
 // Runs the configured hostGates in the integration worktree, on the host, in order, all of them even after a failure
 // (DESIGN.md §21): the checks the fence cannot run (Docker, a browser, a database). The tree is worker code, so only a
-// human in a terminal may start it; nothing else in arbab runs a host gate.
+// human in a terminal may start it; nothing else in arbab runs a host gate. A missing integration worktree is rebuilt
+// on its branch first, its dependencies installed on a trusted commit before the checkout.
 // Writes .arbab/integrations/<name>/host-checks.json (HostCheckRecord) for the integration head.
 // Text: one line per gate; a failing gate's output goes to stderr. Exit 0 when every gate exited 0, 1 otherwise.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { ensureIntegrationWorktree } from "../integrate/integrate";
 import { untrustedTree } from "../run";
 import { HOST_CHECKS_FILE, type GateResult, type HostCheckRecord } from "../types";
 import { ArbabError } from "../util/errors";
@@ -47,7 +49,8 @@ export function readHostCheckRecord(path: string, name: string): HostCheckRecord
 
 /** Refuses unless the worktree is checked out at `head` with no tracked change: the record vouches for that commit. */
 function assertWorktreeAt(ctx: CommandContext, worktree: string, head: string): void {
-  if (!existsSync(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist; run arbab integrate again`);
+  // Rebuilt before this check; still missing means the rebuild did not leave it.
+  if (!existsSync(worktree)) throw new ArbabError("usage", `the integration worktree ${worktree} does not exist after its rebuild`);
   const at = ctx.git([...untrustedTree(), "rev-parse", "HEAD"], worktree);
   if (at.code !== 0 || at.stdout.trim() !== head) {
     throw new ArbabError("usage", `${worktree} is at ${at.code === 0 ? at.stdout.trim() : "no commit"}, not at the integration head ${head}`);
@@ -76,6 +79,9 @@ export async function runHostCheck(argv: string[], ctx: CommandContext): Promise
   assertRecordedHead(ctx.git, project, integration);
   const head = integration.record.headSha;
   const worktree = integration.paths.worktree;
+  // A worktree removed while idle is rebuilt on the branch, its install at a trusted commit; the branch is at the
+  // recorded head (checked above), so the rebuilt tree is too.
+  ensureIntegrationWorktree({ projectRoot: project.root, config: project.config, git: ctx.git, runCommand: ctx.runCommand }, integration.paths);
   assertWorktreeAt(ctx, worktree, head);
 
   const results: GateResult[] = [];

@@ -8,13 +8,14 @@ import {
   ensureIgnored,
   explicitGit,
   prepareDependencies,
+  rebuildWorktree,
   untrustedTree,
   verifyWorktreeGit,
   worktreeStatus,
 } from "../run";
 import type { ArgvRunner, GitRunner } from "../run";
 import { installRelevantPaths } from "../run/deps";
-import { confirmedHeads, isTrustedInstallPoint } from "../shepherd/trust";
+import { confirmedHeads, installPlan, isTrustedInstallPoint } from "../shepherd/trust";
 import { INTEGRATIONS_DIR, type IntegrationRecord, type ProjectConfig } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, ensureDir, readJson, writeJsonAtomic } from "../util/fs";
@@ -214,12 +215,16 @@ function supersedeRecord(paths: IntegrationPaths): void {
   renameSync(paths.integration, target);
 }
 
+/** What setting up an integration worktree needs. */
+export type IntegrationWorktreeInput = Pick<IntegrateInput, "projectRoot" | "config" | "git" | "runCommand">;
+
 /**
  * Creates the worktree from the base, or on the existing branch when that is still part of the base, and prepares
- * its dependencies there before anything is merged. A branch that already holds merges is refused: installing on it
- * would run worker code on the host.
+ * its dependencies there before anything is merged. A branch that already holds merges is rebuilt (rebuildWorktree):
+ * the install runs detached at the newest trusted install point of its head (installPlan: the head itself once a human
+ * confirmed it), before the checkout of the merges, which an install would run on the host.
  */
-function createIntegrationWorktree(input: IntegrateInput, paths: IntegrationPaths): void {
+function createIntegrationWorktree(input: IntegrationWorktreeInput, paths: IntegrationPaths): void {
   const { git, projectRoot } = input;
   const base = input.config.baseBranch;
   if (base === "" || base.startsWith("-")) {
@@ -237,12 +242,24 @@ function createIntegrationWorktree(input: IntegrateInput, paths: IntegrationPath
     supersedeRecord(paths);
   } else {
     if (!isAncestor(git, existing, baseSha, projectRoot)) {
-      throw new ArbabError(
-        "git",
-        `${paths.branch} exists without its worktree and holds commits that are not on ${base}; arbab prepares ` +
-          `dependencies only on the trusted base. Restore the worktree at ${paths.worktree}, or delete the branch and ` +
-          "integrate again",
-      );
+      const trust = { projectRoot, baseBranch: base, confirmed: confirmedHeads(projectRoot, input.config, git), git };
+      const { start } = installPlan(existing, trust);
+      // installPlan's start is trusted by construction; checked again by commit before anything is installed there.
+      if (!isTrustedInstallPoint(start, trust)) {
+        throw new ArbabError("git", `${start} is neither on ${base} nor an integration head a human confirmed, so arbab will not rebuild ${paths.worktree} there`);
+      }
+      // The record recomputes the manifests itself, so they are only flagged here.
+      rebuildWorktree({
+        projectRoot,
+        path: paths.worktree,
+        branch: paths.branch,
+        start,
+        dependencies: input.config.dependencies,
+        runCommand: input.runCommand,
+        manifests: "flag",
+        git,
+      });
+      return;
     }
     must(git, ["worktree", "add", paths.worktree, paths.branch], projectRoot);
   }
@@ -260,6 +277,14 @@ function createIntegrationWorktree(input: IntegrateInput, paths: IntegrationPath
     const tail = deps.output.trim().split("\n").slice(-5).join("\n");
     throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);
   }
+}
+
+/**
+ * Makes the integration worktree when it is missing (createIntegrationWorktree): from the base for a new branch, or
+ * rebuilt on the existing branch. An existing worktree is left as it is, for the caller to verify.
+ */
+export function ensureIntegrationWorktree(input: IntegrationWorktreeInput, paths: IntegrationPaths): void {
+  if (!existsSync(paths.worktree)) createIntegrationWorktree(input, paths);
 }
 
 /**
@@ -329,7 +354,7 @@ export function integrate(input: IntegrateInput): IntegrateResult {
   refuseLanded(paths);
   refuseLaneWorktree(paths, git);
   refuseDirtyLanes(input, lanes);
-  if (!existsSync(paths.worktree)) createIntegrationWorktree(input, paths);
+  ensureIntegrationWorktree(input, paths);
   // The merged branches are worker-written, so hooks their trees hold would be worker code on the host.
   const prefix = [...explicitGit(ownedGitDir(paths, git), paths.worktree), ...untrustedTree()];
   // .arbab/ as a whole covers the integration records and worktrees.
@@ -548,8 +573,9 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
 /**
  * Records an existing integration's head again (`integrate <name> --refresh`) after a hand commit or a base merge in
  * its worktree, adopted or not: merged entries the head still holds stay, manifests, baseSha, headSha and updatedAt are
- * recomputed as integrate does. Nothing is merged and no dependency runs. Refused: no record, a landed integration, a
- * missing worktree (recreating it would install), and tracked changes in the worktree (they are not the head).
+ * recomputed as integrate does. Nothing is merged, and no dependency runs unless the worktree is missing: it is then
+ * rebuilt on the branch (ensureIntegrationWorktree), its install at a trusted commit. Refused: no record, a landed
+ * integration, a missing branch, and tracked changes in the worktree (they are not the head).
  */
 export function refreshIntegration(input: Omit<IntegrateInput, "lanes">): IntegrateResult {
   const paths = integrationPaths(input.projectRoot, input.config, input.name);
@@ -557,9 +583,11 @@ export function refreshIntegration(input: Omit<IntegrateInput, "lanes">): Integr
   if (readIntegration(paths) === null) {
     throw new ArbabError("usage", `integration ${paths.name} does not exist; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
   }
-  if (!existsSync(paths.worktree)) {
-    throw new ArbabError("usage", `integration ${paths.name} has no worktree at ${paths.worktree}; restore it on ${paths.branch} to refresh`);
+  // Without the branch a worktree would start a new integration from the base, which is no refresh.
+  if (commitOf(input.git, `refs/heads/${paths.branch}`, paths.projectRoot) === null) {
+    throw new ArbabError("usage", `integration ${paths.name} has no branch ${paths.branch}; run arbab integrate ${paths.name} with its lanes, or --adopt <ref>`);
   }
+  ensureIntegrationWorktree(input, paths);
   const tracked = worktreeStatus(paths.worktree, ownedGitDir(paths, input.git), input.git)
     .filter((l) => !l.startsWith("?? "))
     .map((l) => l.slice(3));

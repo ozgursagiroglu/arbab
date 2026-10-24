@@ -872,7 +872,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   The skill asks the human before running it, and the plugin's hook never approves it (§21): it goes through
   Claude Code's normal permission flow. A lane's worktree is not removed when the lane finishes: `resume`
   continues in the same worktree, verifiers borrow a builder's worktree, and work that is not integrated stays
-  inspectable. Only the lanes `verify` and `review` generate drop theirs once their record is written. Lanes that are
+  inspectable. The lanes `verify` and `review` generate drop theirs once their record is written, as preflight's
+  probes do once their results are printed (§21). Lanes that are
   never landed are removed with `arbab cleanup --worktrees` once merged, or landed by a `landing.json` that lists them
   (§21), and the automatic sweep removes what `cleanup --worktrees --older-than <worktrees.idleDays>` removes (§9,
   §21). A removed lane worktree is rebuilt from its branch when the lane is resumed or borrowed, an integration's

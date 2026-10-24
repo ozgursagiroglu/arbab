@@ -95,14 +95,16 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
   cleanup [--worktrees [--older-than <days>]] [--mine] [--json]
                                           reap orphans, release stale pool entries, remove empty lock directories;
                                           --worktrees removes finished lanes' clean worktrees merged or landed (lane
-                                          branches stay), and landed integrations' worktrees and branches
+                                          branches stay), and landed integrations' worktrees and branches;
+                                          --older-than also those of finished lanes and unlanded integrations unused
+                                          that long (branches stay), as the automatic sweep does (worktrees.idleDays)
   integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
                                           merge lane branches into integrate/<name>, in order or by plan waves
   integrate <name> --adopt <ref> [--base <branch>] [--json]
                                           make an integration of an existing branch; the base must be a branch
                                           that config baseBranch contains
   integrate <name> --refresh [--json]     record the integration's head again after a hand commit or a base merge;
-                                          merges and installs nothing
+                                          merges nothing, and installs only to rebuild a missing worktree
   integrate <name> --deps-installed <sha> [--json]
                                           record that you reviewed and installed changed dependencies at the head
                                           <sha> that integrate printed

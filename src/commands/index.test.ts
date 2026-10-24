@@ -21,6 +21,8 @@ describe("dispatch", () => {
     expect(HELP).not.toContain("  hook ");
     expect(HELP).toContain("  -C <dir> ");
     expect(HELP).toContain("arbab <command> --help shows a command's options");
+    expect(HELP).toContain("as the automatic sweep does (worktrees.idleDays)");
+    expect(HELP).toContain("installs only to rebuild a missing worktree");
   });
 
   it("prints a command's usage for <command> --help, -h and help <command>", async () => {

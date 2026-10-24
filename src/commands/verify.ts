@@ -10,7 +10,9 @@
 // stopped waiting (DESIGN.md §21). While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Writes .arbab/integrations/<name>/verify.json (VerifyRecord, with a `reason` when it failed for something other than
 // an exit code: the lane ran on another commit than the head, or its worktree has changes or fails verification after
-// the run).
+// the run). Then the lane's worktree and branch are removed; its run dir and run record stay. On a timeout both stay,
+// and so do they when the worktree had changes or failed verification (`arbab verify: kept <path> for inspection:
+// <reason>` on stderr): the next verify resets it.
 // --ref <branch>: the check after landing (§21). The same lane, <id>-verify, starts on the branch's head with no
 // integration; the record, named ref:<branch>, goes to .arbab/refs/<id>/verify.json. <id> is ref-<slug>-<hash> (refId).
 // Text: one line per command, `exit <n>  <kind>  <command>` or `missing  <kind>  <command>`, then
@@ -33,6 +35,7 @@ import {
   assertRecordedHead,
   attemptEvents,
   branchHead,
+  dropGeneratedWorktrees,
   generatedBase,
   generationOwner,
   openIntegration,
@@ -48,6 +51,8 @@ const DEFAULT_TIMEOUT_MIN = 90;
 
 /** Where `verify --ref` keeps its lanes and records, under the project root. */
 export const REFS_DIR = ".arbab/refs";
+/** The prefix of refId: an integration may not take it (integrate refuses it), so a generator so named is a ref's. */
+export const REF_PREFIX = "ref-";
 const REF_SLUG_MAX = 22;
 const REF_HASH_HEX = 6;
 
@@ -67,7 +72,7 @@ export function refSlug(branch: string): string {
  */
 export function refId(branch: string): string {
   const hash = createHash("sha1").update(branch).digest("hex").slice(0, REF_HASH_HEX);
-  return `ref-${refSlug(branch)}-${hash}`;
+  return `${REF_PREFIX}${refSlug(branch)}-${hash}`;
 }
 
 /** The commit refs/heads/<branch> points at, exactly that branch (no revision syntax); a usage error when none. */
@@ -164,12 +169,13 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
   // Without an attempt nothing ran: a setup that failed before the merge leaves the branch at its base, and every
   // command is missing anyway.
   const reasons: string[] = [];
+  let left: string | null = null;
   if (outcome.attempts.length > 0) {
     // The lane's branch is fast-forwarded to the head and never gets a commit; anything else verified other code.
     const ran = branchHead(ctx.git, project.root, `arbab/${spec.name}`);
     const what = target.label.startsWith("ref:") ? `the head of ${target.label.slice(4)}` : "the integration head";
     if (ran !== head) reasons.push(`${spec.name} ran on ${ran ?? "no commit"}, not on ${what} ${head}; run ${target.again} again`);
-    const left = worktreeChanges(ctx, project, spec.name);
+    left = worktreeChanges(ctx, project, spec.name);
     if (left !== null) reasons.push(left);
   }
 
@@ -185,6 +191,10 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
   });
   writeJsonAtomic(target.recordPath, record);
   settleGeneratedRuns(target.lanesDir, [spec.name]);
+  // The results are recorded; the worktree holds a dependency install the next verify builds again anyway. A tree the
+  // check found wrong is what the record's reason points at, so it stays to be looked at; the next verify resets it.
+  if (left !== null) ctx.stderr(`arbab verify: kept ${join(project.worktreeRoot, spec.name)} for inspection: ${left}\n`);
+  else for (const warning of dropGeneratedWorktrees(ctx, project, [spec.name], target.owner)) ctx.stderr(`arbab verify: ${warning}\n`);
 
   if (json) {
     printJson(ctx, { timedOut: false, endState: outcome.endState, verify: record });

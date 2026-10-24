@@ -20,6 +20,7 @@ function summary(over: Partial<ProjectSummary> = {}): ProjectSummary {
       hold: { hold: false, reason: null, until: null },
       slots: { inUse: [], cap: 4, projectMaxParallel: 4, machineMaxParallel: null },
     },
+    worktrees: { total: 0, idle: 0, idleDays: 3, lastSweep: null },
     errors: [],
     ...over,
   };
@@ -46,8 +47,18 @@ describe("formatCounts", () => {
 describe("formatSummary", () => {
   it("prints only the quota section for an empty project", () => {
     expect(formatSummary(summary(), NOW_SEC)).toBe(
-      ["Quota and slots", "  quota: quota unknown", "  hold: no", "  slots: 0 in use machine-wide of 4 (maxParallel 4)"].join("\n"),
+      [
+        "Quota, slots and worktrees",
+        "  quota: quota unknown",
+        "  hold: no",
+        "  slots: 0 in use machine-wide of 4 (maxParallel 4)",
+        "  worktrees: 0 (0 unused for 3+ days)",
+      ].join("\n"),
     );
+  });
+
+  it("says when the automatic sweep is off", () => {
+    expect(formatSummary(summary({ worktrees: { total: 7, idle: 2, idleDays: 0, lastSweep: null } }), NOW_SEC)).toContain("\n  worktrees: 7 (automatic sweep off)");
   });
 
   it("prints every section", () => {
@@ -87,6 +98,7 @@ describe("formatSummary", () => {
           hold: { hold: true, reason: "five-hour window at 90% (hold above 85%)", until: NOW_SEC + 1800 },
           slots: { inUse: [{ slot: 0, pid: 1, lane: "core", project: "/work/repo" }], cap: 2, projectMaxParallel: 4, machineMaxParallel: 2 },
         },
+        worktrees: { total: 14, idle: 5, idleDays: 3, lastSweep: { startedAt: "2026-10-09T10:00:00.000Z", finishedAt: "2026-10-09T10:00:04.000Z", removed: 9 } },
         errors: ["lane torn: bad"],
       }),
       NOW_SEC,
@@ -114,10 +126,11 @@ describe("formatSummary", () => {
         "  bad: failed (attempt 1): exit 1",
         "    read stderr.log",
         "",
-        "Quota and slots",
+        "Quota, slots and worktrees",
         "  quota: 5h 90% (resets 12:30Z)",
         "  hold: yes, five-hour window at 90% (hold above 85%) (until 2026-10-09T12:30:00Z)",
         "  slots: 1 in use machine-wide of 2 (maxParallel 4, machine cap 2)",
+        "  worktrees: 14 (5 unused for 3+ days); last sweep 2026-10-09T10:00:00Z: removed 9",
         "",
         "Unreadable records",
         "  lane torn: bad",

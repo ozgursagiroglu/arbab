@@ -21,6 +21,7 @@ import { runShepherdProcess } from "./shepherd";
 import { runStatus } from "./status";
 import { runStop } from "./stop";
 import { runSummary } from "./summary";
+import { runSweepProcess } from "./sweep";
 import { runUi } from "./ui";
 import { USAGE } from "./usage";
 import { runVerify } from "./verify";
@@ -56,6 +57,14 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
   __shepherd: runShepherdProcess,
 };
 
+/**
+ * Commands only arbab starts, outside COMMANDS: not in the help or the usage blocks, and never a runner call the
+ * approval hook passes (it approves COMMANDS' names only).
+ */
+export const INTERNAL_COMMANDS: Readonly<Record<string, Command>> = {
+  __sweep: runSweepProcess,
+};
+
 export const HELP = `usage: arbab [-C <dir>] <command> [options]
 
   -C <dir>                                find the project from <dir> instead of the working directory (never a
@@ -86,14 +95,18 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
   cleanup [--worktrees [--older-than <days>]] [--mine] [--json]
                                           reap orphans, release stale pool entries, remove empty lock directories;
                                           --worktrees removes finished lanes' clean worktrees merged or landed (lane
-                                          branches stay), and landed integrations' worktrees and branches
+                                          branches stay), and landed integrations' worktrees and branches;
+                                          --older-than also those of finished lanes and unlanded integrations unused
+                                          that long (branches stay), as the automatic sweep does (worktrees.idleDays),
+                                          but not a lane whose branch changed dependency manifests
   integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
-                                          merge lane branches into integrate/<name>, in order or by plan waves
+                                          merge lane branches into integrate/<name>, in order or by plan waves;
+                                          every mode but --deps-installed holds the worktree's writer lock
   integrate <name> --adopt <ref> [--base <branch>] [--json]
                                           make an integration of an existing branch; the base must be a branch
                                           that config baseBranch contains
   integrate <name> --refresh [--json]     record the integration's head again after a hand commit or a base merge;
-                                          merges and installs nothing
+                                          merges nothing, and installs only to rebuild a missing worktree
   integrate <name> --deps-installed <sha> [--json]
                                           record that you reviewed and installed changed dependencies at the head
                                           <sha> that integrate printed
@@ -159,12 +172,12 @@ export async function dispatch(argv: string[], ctx: CommandContext): Promise<num
     ctx.stdout(`${ctx.version}\n`);
     return 0;
   }
-  const command = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+  const command = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : Object.hasOwn(INTERNAL_COMMANDS, name) ? INTERNAL_COMMANDS[name] : undefined;
   if (command === undefined) {
     ctx.stderr(`arbab: unknown command ${JSON.stringify(name)}\n${HELP}`);
     return 1;
   }
-  if ((rest.includes("--help") || rest.includes("-h")) && name !== "__shepherd") {
+  if ((rest.includes("--help") || rest.includes("-h")) && !name.startsWith("__")) {
     ctx.stdout(helpFor(name));
     return 0;
   }

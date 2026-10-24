@@ -1,11 +1,13 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as plans from "../plan";
+import { acquireWriterLock, releaseWriterLock, writerLockKey } from "../run";
 import type { IntegrationRecord, PlanSpec } from "../types";
+import type { CommandContext } from "./context";
 import { formatIntegration, integrationLanes, runIntegrate, splitList } from "./integrate";
 import { openProject } from "./project";
-import { DEFAULT_CONFIG, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { CLI_PID, DEFAULT_CONFIG, NOW_MS, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -349,5 +351,146 @@ describe("runIntegrate --refresh", () => {
     }
     await expect(runIntegrate(["rel", "--refresh"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/^integration rel does not exist/) });
     expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+  });
+});
+
+describe("runIntegrate and the integration worktree's writer lock", () => {
+  const LIVE = 101;
+  const lockFile = (t: TestProject): string => join(t.home, "locks", writerLockKey(join(realpathSync(t.worktreeRoot), "integrate-rel")), "0.json");
+
+  it("a second integrate waits for the first, then merges on top of it", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    const c = branchWith(p, "arbab/c", "c.txt", "c\n");
+    // Both are live processes; the second polls while the first holds the lock.
+    p.alive.add(CLI_PID);
+    const err: string[] = [];
+    const sleeps: number[] = [];
+    const second: CommandContext = {
+      ...p.ctx,
+      pid: 5252,
+      stderr: (text) => err.push(text),
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        p.now.ms += ms;
+        await new Promise((resolve) => setImmediate(resolve));
+      },
+    };
+    const first = runIntegrate(["rel", "--lanes", "a"], p.ctx);
+    const next = runIntegrate(["rel", "--lanes", "c"], second);
+    expect(await first).toBe(0);
+    expect(await next).toBe(0);
+    expect(err.join("")).toBe(`arbab integrate: waiting for ${join(p.worktreeRoot, "integrate-rel")}: pid ${CLI_PID} holds its writer lock\n`);
+    expect(sleeps.length).toBeGreaterThan(0);
+    expect(sleeps.every((ms) => ms === 250)).toBe(true);
+    const record = recordOf(p, "rel");
+    expect(record.merged.map((m) => m.lane)).toEqual(["a", "c"]);
+    expect(record.merged[1]?.sha).toBe(c);
+    expect(existsSync(lockFile(p))).toBe(false);
+  });
+
+  it("refuses after two minutes, naming the holder's pid, with nothing created", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    p.alive.add(LIVE);
+    mkdirSync(p.worktreeRoot, { recursive: true });
+    const holder = { pid: LIVE, lane: "integrate-rel", project: p.root, createdAt: "2026-10-09T12:00:00.000Z" };
+    expect(acquireWriterLock(p.home, writerLockKey(join(realpathSync(p.worktreeRoot), "integrate-rel")), holder, p.ctx.alive)).toBe(true);
+    for (const args of [["--lanes", "a"], ["--adopt", "arbab/a"]]) {
+      p.now.ms = NOW_MS;
+      await expect(runIntegrate(["rel", ...args], p.ctx)).rejects.toMatchObject({
+        code: "lock",
+        message: expect.stringMatching(new RegExp(`integrate-rel is in use: pid ${LIVE} holds its writer lock, and arbab integrate waited 2 minutes`)) as unknown,
+      });
+      expect(p.now.ms - NOW_MS).toBe(120_000);
+    }
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+    expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
+    expect(JSON.parse(readFileSync(lockFile(p), "utf8"))).toEqual(holder);
+  });
+
+  it("checks the lanes again once it holds the lock: a lane that started during the wait is refused", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    p.alive.add(LIVE);
+    mkdirSync(p.worktreeRoot, { recursive: true });
+    const key = writerLockKey(join(realpathSync(p.worktreeRoot), "integrate-rel"));
+    const holder = { pid: LIVE, lane: "integrate-rel", project: p.root, createdAt: "2026-10-09T12:00:00.000Z" };
+    expect(acquireWriterLock(p.home, key, holder, p.ctx.alive)).toBe(true);
+    // While integrate waits, lane a is launched again and the holder lets go.
+    const waiting: CommandContext = {
+      ...p.ctx,
+      sleep: async (ms) => {
+        p.now.ms += ms;
+        writeLaneRun(p.runsRoot, "a", { state: "running", shepherdPid: 5555 });
+        p.alive.add(5555);
+        releaseWriterLock(p.home, key, holder);
+        await Promise.resolve();
+      },
+    };
+    await expect(runIntegrate(["rel", "--lanes", "a"], waiting)).rejects.toThrow(/lane a is running/);
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel", "integration.json"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+    expect(existsSync(lockFile(p))).toBe(false);
+  });
+
+  it("--refresh waits for it too", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    p.alive.add(LIVE);
+    expect(acquireWriterLock(p.home, writerLockKey(join(realpathSync(p.worktreeRoot), "integrate-rel")), { pid: LIVE, lane: "x", project: p.root, createdAt: "t" }, p.ctx.alive)).toBe(true);
+    await expect(runIntegrate(["rel", "--refresh"], p.ctx)).rejects.toMatchObject({ code: "lock", message: expect.stringContaining(`pid ${LIVE} holds its writer lock`) as unknown });
+  });
+});
+
+describe("runIntegrate on an integration whose worktree was removed", () => {
+  /** A project whose dependency command is faked, recording the commit each install ran on. */
+  const installing = (): { t: TestProject; installs: Array<{ cwd: string; head: string }> } => {
+    const t = makeProject({ config: { ...DEFAULT_CONFIG, dependencies: { strategy: "command", command: ["pnpm", "install"] } } });
+    const installs: Array<{ cwd: string; head: string }> = [];
+    t.ctx.runCommand = (_argv, cwd) => {
+      installs.push({ cwd, head: t.ok(["rev-parse", "HEAD"], cwd).trim() });
+      return { code: 0, output: "" };
+    };
+    return { t, installs };
+  };
+
+  it("rebuilds it on the branch, installing at the base, and merges the new lane", async () => {
+    let installs: Array<{ cwd: string; head: string }>;
+    ({ t: p, installs } = installing());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    const before = recordOf(p, "rel");
+    p.ok(["worktree", "remove", "--force", before.worktree]);
+    installs.length = 0;
+    const c = branchWith(p, "arbab/c", "c.txt", "c\n");
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--lanes", "c"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(installs).toEqual([{ cwd: before.worktree, head: main }]);
+    expect(record.merged.map((m) => m.lane)).toEqual(["a", "c"]);
+    expect(record.merged[1]?.sha).toBe(c);
+    expect(p.ok(["rev-parse", "HEAD^1"], record.worktree).trim()).toBe(before.headSha);
+    expect(p.stdout()).toBe(formatIntegration(record));
+  });
+
+  it("--refresh rebuilds it and records the head", async () => {
+    let installs: Array<{ cwd: string; head: string }>;
+    ({ t: p, installs } = installing());
+    const main = p.ok(["rev-parse", "main"]).trim();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], p.ctx)).toBe(0);
+    const before = recordOf(p, "rel");
+    p.ok(["worktree", "remove", "--force", before.worktree]);
+    installs.length = 0;
+    p.out.length = 0;
+    expect(await runIntegrate(["rel", "--refresh"], p.ctx)).toBe(0);
+    const record = recordOf(p, "rel");
+    expect(installs).toEqual([{ cwd: before.worktree, head: main }]);
+    expect(record).toMatchObject({ headSha: before.headSha, merged: before.merged });
+    expect(p.ok(["rev-parse", "--abbrev-ref", "HEAD"], record.worktree).trim()).toBe("integrate/rel");
+    expect(p.stdout()).toBe(`refreshed rel: recorded integrate/rel at ${before.headSha}\n` + formatIntegration(record));
   });
 });

@@ -155,6 +155,31 @@ export interface ProjectConfig {
    * host with `arbab host-check <name>`; readiness lists them until they passed on the head (DESIGN.md §21).
    */
   hostGates: string[][];
+  /**
+   * `idleDays` (0–365): a launch or resume starts a background sweep that removes what `cleanup --worktrees
+   * --older-than <idleDays>` removes: the clean worktrees of finished lanes merged into the base or landed by record (at
+   * any age), of finished lanes and unlanded integrations unused for idleDays days, and of landed integrations. Branches
+   * stay, except generated lanes' and landed integrations' once merged. 0 turns it off.
+   */
+  worktrees: { idleDays: number };
+}
+
+/** `.arbab/sweep.json`: the latest automatic worktree sweep, relative to the project root. */
+export const SWEEP_FILE = ".arbab/sweep.json";
+/** `.arbab/sweep.lock`: an exclusive file holding the sweeping process's Holder. */
+export const SWEEP_LOCK_FILE = ".arbab/sweep.lock";
+/** `.arbab/sweep.log`: what the detached sweeps printed, appended. */
+export const SWEEP_LOG_FILE = ".arbab/sweep.log";
+
+/** sweep.json; written with `finishedAt: null` when a sweep starts, so one that crashes still throttles the next. */
+export interface SweepRecord {
+  startedAt: string;
+  finishedAt: string | null;
+  idleDays: number;
+  removed: Array<{ path: string; reason: string }>;
+  /** Worktrees it considered and kept. */
+  kept: number;
+  warnings: string[];
 }
 
 /**

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { credentialMatcher } from "../profile";
+import { baseMergeInstruction } from "../readiness";
 import { registerShepherd, registerWaiter } from "../registry";
 import { untrustedTree } from "../run";
 import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord, SessionActivity } from "../types";
@@ -423,6 +424,22 @@ describe("runLand", () => {
     for (const lane of ["a", "rel-verify"]) expect(existsSync(join(p.runsRoot, lane, "state.json"))).toBe(true);
     for (const file of ["integration.json", "verify.json", "readiness.json", "landing.json"]) expect(existsSync(join(dir(p), file))).toBe(true);
     expect(p.ok(["status", "--porcelain"])).toBe("");
+  });
+
+  it("removes a generated lane whose run was never collected: once rel lands, no verify or review of it can adopt the run", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    const verify = laneWorktree(p, "rel-verify", head);
+    markGenerated(p.runsRoot, "rel-verify", { integration: "rel", branch: "integrate/rel", head }, T);
+    mkdirSync(join(dir(p), "lanes"), { recursive: true });
+    writeJsonAtomic(join(dir(p), "lanes", "rel-verify.run.json"), { lane: "rel-verify", shepherdPid: 4242, before: 0, head, fingerprint: "f", settled: false });
+
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as { cleanup: WorktreeCleanup };
+    expect(out.cleanup.worktreesRemoved).toContain(verify);
+    expect(out.cleanup.branchesDeleted).toContain("arbab/rel-verify");
+    expect(out.cleanup.worktreesKept).toEqual([]);
+    expect(out.cleanup.branchesKept).toEqual([]);
   });
 
   it("keeps a dirty lane worktree and one an active lane borrows, with their reasons, and lands", async () => {
@@ -925,5 +942,17 @@ describe("assertBaseInHead", () => {
       expect.objectContaining({ code: "usage", message: expect.stringMatching(/^not landed: main moved since the integration was verified/) }),
     );
     expect(() => assertBaseInHead(p.git, p.root, "main", "f".repeat(40), "rel", "/w/integrate-rel")).toThrow(expect.objectContaining({ code: "git" }));
+  });
+
+  it("asks for the rebuild first when the integration worktree does not exist, and only then", () => {
+    p = makeProject();
+    const head = branchWith(p, "arbab/a", "a.txt", "a\n");
+    p.ok(["commit", "-q", "--allow-empty", "-m", "moves"]);
+    const missing = join(p.dir, "integrate-rel");
+    expect(() => assertBaseInHead(p.git, p.root, "main", head, "rel", missing)).toThrow(
+      `nobody verified. ${baseMergeInstruction("main", "rel", missing, false)}`,
+    );
+    mkdirSync(missing);
+    expect(() => assertBaseInHead(p.git, p.root, "main", head, "rel", missing)).toThrow(`nobody verified. ${baseMergeInstruction("main", "rel", missing, true)}`);
   });
 });

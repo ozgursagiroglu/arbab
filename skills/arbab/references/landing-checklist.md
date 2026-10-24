@@ -24,7 +24,9 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       must be a branch, because `land` merges into it. It installs at the fork point of `<ref>` and the base, so it
       refuses a base that config `baseBranch` does not contain.
 - [ ] After a hand commit or a merge of the base in the integration worktree, `arbab integrate <name> --refresh`
-      records the new head (nothing merged, nothing installed); then verify, review and readiness again.
+      records the new head (nothing merged or installed); then verify, review and readiness again. When the
+      integration worktree is gone (removed while idle), run `--refresh` first: it rebuilds the worktree on the
+      branch, installing at a trusted commit, so the base merge has a tree to run in.
 - [ ] A lane whose change can alter an install (a lockfile, `.npmrc` or another manifest, or a `package.json`'s
       dependency fields or install scripts) is merged but not installed: installing would run worker code on the
       host. An `exports` or `version` edit does not count. The **human** reviews the change and what an install
@@ -103,6 +105,11 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
 - [ ] `land` removes the worktrees of what it landed (unless `--keep-worktrees`) and the generated lanes' and the
       integration's branches; lane branches stay, because later plan phases merge them by name. Lanes that were
       never landed: `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" cleanup --worktrees` removes those that are
-      finished, clean and merged into the base or landed by a `landing.json`; add `--older-than <days>` for clean
-      worktrees of lanes finished longer ago (their branches stay). arbab never removes a worktree with uncommitted
-      changes.
+      finished, clean and merged into the base or landed by a `landing.json`; add `--older-than <days>` for the clean
+      worktrees of lanes finished longer ago and of unlanded integrations unused that long (their branches stay).
+      After a launch or resume, arbab does the same by itself for `worktrees.idleDays` (default 3; 0 turns it off),
+      and rebuilds a removed worktree from its branch when it is needed. The idle rule keeps a lane whose branch
+      changed dependency manifests (it could not be rebuilt); one merged into the base or landed goes as before. Both
+      keep a worktree `integrate` or `host-check` is working in, and, while its integration has not landed, a verify
+      or review lane its command has not collected yet (until it is unused that long). arbab never removes a
+      worktree with uncommitted changes, except a generated lane's scratch worktree, which its next run resets.

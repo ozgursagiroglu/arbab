@@ -13,6 +13,8 @@ export {
   worktreeStatus,
 } from "./git";
 export type { DiscardInput, GitRunner, Worktree, WorktreeGitInput, WorktreeInput } from "./git";
+export { manifestsSince, rebuildWorktree } from "./rebuild";
+export type { RebuildInput, Rebuilt } from "./rebuild";
 export { DEPENDENCY_MANIFESTS, isDependencyManifest, prepareDependencies, runArgv } from "./deps";
 export type { ArgvRunner } from "./deps";
 export {

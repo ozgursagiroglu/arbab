@@ -24,12 +24,14 @@ import {
   ensureIgnored,
   ensureWorkerTmp,
   prepareDependencies,
+  rebuildWorktree,
   releaseLeases,
   releaseSemaphore,
   releaseSlot,
   releaseWriterLock,
   writerLockKey,
   type Holder,
+  type Worktree,
 } from "../run";
 import type {
   EndState,
@@ -232,11 +234,21 @@ export async function runShepherd(
 
     setState("preparing");
     const userHome = deps.hostEnv["HOME"] ?? dirname(deps.home);
-    const prepared = await prepare(root, config, lane, deps, holder, held, userHome, async (why) => {
-      checkStop();
-      setState("preparing", { reason: why });
-      await pause(deps.slotPollMs);
-    });
+    const prepared = await prepare(
+      root,
+      config,
+      lane,
+      deps,
+      holder,
+      held,
+      userHome,
+      async (why) => {
+        checkStop();
+        setState("preparing", { reason: why });
+        await pause(deps.slotPollMs);
+      },
+      (why) => setState("preparing", why === undefined ? {} : { reason: why }),
+    );
 
     let request: AttemptRequest = resumeText === null ? { kind: mode.kind } : { kind: "resume", prompt: resumeText };
     if (seed !== null) request.headStart = seed;
@@ -327,7 +339,9 @@ export async function runShepherd(
  * any file of the tree (package.json scripts and the files they run, .npmrc, .pnpmfile.cjs). A base that is not
  * trusted is merged first. A branch that changes a manifest is refused (mergeBranches), so the merged tree installs the
  * same as the install point. A used worktree (resume, fresh, a verifier borrowing it) is neither merged nor installed
- * again, nor removed.
+ * again, nor removed. A used worktree that is gone (removed while idle) is rebuilt from its branch: installed detached
+ * at the branch head's trusted install point, then checked out on the branch (rebuildWorktree), and counts as used.
+ * `note` sets the preparing state's reason without waiting (undefined clears it).
  */
 async function prepare(
   root: string,
@@ -338,13 +352,27 @@ async function prepare(
   held: Held,
   userHome: string,
   wait: (why: string) => Promise<void>,
+  note: (why: string | undefined) => void,
 ): Promise<{ worktree: string; branch: string; gitCommonDir: string; merged: MergedBranch[]; inputs: string[] | null }> {
   ensureIgnored(root, arbabIgnoreEntries(root, config), deps.git);
   ensureArbabMarkers(root);
 
   const owner = lane.worktree ?? lane.name;
+  const ownerBranch = `arbab/${owner}`;
+  const runsRoot = confine(root, config.runsRoot);
+  // An attempt marks the worktree used before it starts, whichever lane runs it. The owner's attempts also count, for
+  // runs recorded before the marker existed.
+  const ownerRan = (): boolean => existsSync(worktreeUsedFile(runsRoot, owner)) || listAttempts(runsRoot, owner).length > 0;
+  // Only a worktree a worker has run in is rebuilt: one that never ran is the shepherd's to build from its base.
+  const notRebuildable = (): string | null => {
+    if (resolveCommit(root, `refs/heads/${ownerBranch}`, deps.git) === null) return `branch ${ownerBranch} does not exist`;
+    return ownerRan() ? null : `no attempt of ${owner} has run`;
+  };
   if (owner !== lane.name && !existsSync(join(confine(root, config.worktreeRoot), owner))) {
-    throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist`);
+    const why = notRebuildable();
+    if (why !== null) {
+      throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, which does not exist and cannot be rebuilt (${why}); launch ${owner} first`);
+    }
   }
   // The lane's base can be a worker's branch (an integration, another lane), so a new worktree starts on a trusted
   // commit and the base is merged after the install. Resolved only when needed: a reused worktree keeps its base.
@@ -395,16 +423,40 @@ async function prepare(
   const key = writerLockKey(worktree);
   while (!acquireWriterLock(deps.home, key, holder, deps.alive)) await wait("waiting for the writer lock");
   held.lockKey = key;
-  let wt = createWorktree(worktreeInput);
+  let wt: Worktree;
+  // Decided under the writer lock, so no other lane rebuilds or creates the same worktree meanwhile.
+  const rebuilt = !existsSync(worktree) && notRebuildable() === null;
+  if (rebuilt) {
+    const head = resolveCommit(root, `refs/heads/${ownerBranch}`, deps.git);
+    if (head === null) throw new ArbabError("git", `cannot read branch ${ownerBranch}`);
+    const { start } = installPlan(head, trusted());
+    // installPlan's start is trusted by construction; checked again by commit, as a created worktree is below.
+    if (!isTrustedInstallPoint(start, trusted())) {
+      throw new ArbabError("git", `${start} is neither on ${config.baseBranch} nor an integration head a human confirmed, so arbab will not install dependencies there`);
+    }
+    note(`rebuilding the worktree from ${start.slice(0, 12)}`);
+    const r = rebuildWorktree({
+      projectRoot: root,
+      path: worktree,
+      branch: ownerBranch,
+      start,
+      dependencies: config.dependencies,
+      runCommand: deps.runCommand,
+      manifests: "refuse",
+      git: deps.git,
+    });
+    note(undefined);
+    wt = { path: r.path, branch: r.branch, created: false, gitCommonDir: r.gitCommonDir };
+  } else {
+    wt = createWorktree(worktreeInput);
+  }
   if (realpathSync(wt.path) !== worktree) throw new ArbabError("git", `${wt.path} is not the worktree ${worktree}`);
 
   let merged: MergedBranch[] = [];
   // A worktree no worker has run in yet (created now, or left behind by a setup failure before any attempt) holds
   // nothing of the lane's own, so the shepherd prepares it, merges included. Decided under the writer lock, which the
-  // worktree was also created under: an attempt marks the worktree used before it starts, whichever lane runs it. The
-  // owner's attempts also count, for runs recorded before the marker existed. A used worktree is never removed.
-  const runsRoot = confine(root, config.runsRoot);
-  const pristine = wt.created || (!existsSync(worktreeUsedFile(runsRoot, owner)) && listAttempts(runsRoot, owner).length === 0);
+  // worktree was also created under. A used worktree is never removed; a rebuilt one is used, and already installed.
+  const pristine = !rebuilt && (wt.created || !ownerRan());
   if (pristine && owner !== lane.name) {
     // The owner's setup never finished: preparing it here would follow this lane's base and merges, not the owner's.
     throw new ArbabError("usage", `lane ${lane.name} works in lane ${owner}'s worktree, where no attempt has run yet; launch ${owner} first`);

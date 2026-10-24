@@ -161,7 +161,8 @@ export function readMessage(root: string, file: string, credential: (path: strin
 
 /**
  * Refuses unless the base checkout's HEAD is in the verified head: only then does the merge commit hold exactly the
- * tree that was verified. A base that moved on would land a tree nobody verified.
+ * tree that was verified. A base that moved on would land a tree nobody verified. The refusal's merge starts with the
+ * rebuild when the integration worktree is gone.
  */
 export function assertBaseInHead(git: GitRunner, root: string, base: string, head: string, name: string, worktree: string): void {
   const r = git(["merge-base", "--is-ancestor", "HEAD", head], root);
@@ -169,7 +170,7 @@ export function assertBaseInHead(git: GitRunner, root: string, base: string, hea
   if (r.code !== 1) throw new ArbabError("git", `git merge-base --is-ancestor HEAD ${head} failed (${r.code}): ${(r.stderr || r.stdout).trim()}`);
   throw refuse(
     `${base} moved since the integration was verified: its HEAD is not in ${head}, so the merge would hold a tree ` +
-      `nobody verified. ${baseMergeInstruction(base, name, worktree)}`,
+      `nobody verified. ${baseMergeInstruction(base, name, worktree, existsSync(worktree))}`,
   );
 }
 

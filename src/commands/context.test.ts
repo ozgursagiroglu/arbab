@@ -1,4 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import type { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PassThrough, Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +12,11 @@ import {
   makeNotify,
   makeReadStdin,
   makeSpawnShepherd,
+  makeSpawnSweep,
+  rotateLog,
+  SWEEP_LOG_MAX_BYTES,
   shepherdArgv,
+  sweepArgv,
   type NotifyExec,
 } from "./context";
 import { makeProject, type TestProject } from "./testkit";
@@ -58,6 +64,86 @@ describe("makeSpawnShepherd", () => {
     await until(() => existsSync(record) && existsSync(log) && readFileSync(log, "utf8").includes("hi") && !isAlive(pid));
     expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ argv: ["__shepherd", p.root, "demo", '{"kind":"start"}'], cwd: p.root });
     expect(readFileSync(log, "utf8")).toBe("shepherd says hi\n");
+  });
+});
+
+describe("makeSpawnSweep", () => {
+  it("starts the script detached with __sweep <root> and appends its output to .arbab/sweep.log", async () => {
+    p = makeProject();
+    const script = join(p.dir, "fake-arbab.mjs");
+    const record = join(p.dir, "argv.json");
+    writeFileSync(
+      script,
+      [
+        'import { writeFileSync } from "node:fs";',
+        `writeFileSync(${JSON.stringify(record)}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }));`,
+        'console.log("sweep says hi");',
+      ].join("\n"),
+    );
+    const log = join(p.root, ".arbab", "sweep.log");
+    mkdirSync(join(p.root, ".arbab"), { recursive: true });
+    writeFileSync(log, "earlier\n");
+    const pid = makeSpawnSweep(process.execPath, script, process.env)(p.root);
+    expect(pid).toBeGreaterThan(1);
+    await until(() => existsSync(record) && readFileSync(log, "utf8").includes("hi") && !isAlive(pid));
+    expect(JSON.parse(readFileSync(record, "utf8"))).toEqual({ argv: ["__sweep", p.root], cwd: p.root });
+    expect(readFileSync(log, "utf8")).toBe("earlier\nsweep says hi\n");
+    expect(sweepArgv("/s.mjs", "/r")).toEqual(["/s.mjs", "__sweep", "/r"]);
+  });
+
+  it("throws when the process gets no pid", () => {
+    p = makeProject();
+    const child = Object.assign(new EventEmitter(), { pid: undefined, unref: () => undefined });
+    const spawnFn = (() => child) as unknown as typeof spawn;
+    expect(() => makeSpawnSweep("/node", "/s.mjs", {}, spawnFn)(p.root)).toThrow(/cannot start the worktree sweep/);
+    expect(existsSync(join(p.root, ".arbab", "sweep.log"))).toBe(true);
+  });
+
+  it("moves a sweep.log over 1 MiB to sweep.log.1, replacing an older one, before it appends", () => {
+    p = makeProject();
+    const log = join(p.root, ".arbab", "sweep.log");
+    mkdirSync(join(p.root, ".arbab"), { recursive: true });
+    const big = "x".repeat(SWEEP_LOG_MAX_BYTES + 1);
+    writeFileSync(log, big);
+    writeFileSync(`${log}.1`, "older\n");
+    const seen: number[] = [];
+    const child = Object.assign(new EventEmitter(), { pid: 4321, unref: () => undefined });
+    const spawnFn = ((_cmd: string, _args: string[], opts: { stdio: [string, number, number] }) => {
+      // What the sweep would append goes to a fresh log.
+      seen.push(opts.stdio[1]);
+      return child;
+    }) as unknown as typeof spawn;
+    expect(makeSpawnSweep("/node", "/s.mjs", {}, spawnFn)(p.root)).toBe(4321);
+    expect(seen).toHaveLength(1);
+    expect(readFileSync(`${log}.1`, "utf8")).toBe(big);
+    expect(readFileSync(log, "utf8")).toBe("");
+  });
+});
+
+describe("rotateLog", () => {
+  it("rotates only a log over the limit, and leaves a missing one missing", () => {
+    p = makeProject();
+    const log = join(p.dir, "a.log");
+    expect(rotateLog(log, 4)).toBe(false);
+    expect(existsSync(log) || existsSync(`${log}.1`)).toBe(false);
+    writeFileSync(log, "1234");
+    expect(rotateLog(log, 4)).toBe(false);
+    expect(readFileSync(log, "utf8")).toBe("1234");
+    writeFileSync(log, "12345");
+    expect(rotateLog(log, 4)).toBe(true);
+    expect(existsSync(log)).toBe(false);
+    expect(readFileSync(`${log}.1`, "utf8")).toBe("12345");
+    expect(SWEEP_LOG_MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  it("leaves a log it cannot move as it is", () => {
+    p = makeProject();
+    const log = join(p.dir, "b.log");
+    writeFileSync(log, "12345");
+    // sweep.log.1 is a non-empty directory: the rename fails.
+    mkdirSync(join(`${log}.1`, "x"), { recursive: true });
+    expect(rotateLog(log, 4)).toBe(false);
+    expect(readFileSync(log, "utf8")).toBe("12345");
   });
 });
 
@@ -145,6 +231,8 @@ describe("defaultContext", () => {
     expect(ctx.scriptPath).toBe("/x/arbab.mjs");
     expect(typeof ctx.readStdin).toBe("function");
     expect(typeof ctx.notify).toBe("function");
+    expect(typeof ctx.spawnSweep).toBe("function");
+    expect(ctx.freeSpace(process.cwd())).toBeGreaterThanOrEqual(0);
     expect(ctx.pid).toBe(process.pid);
     expect(ctx.alive(process.pid)).toBe(true);
     expect(ctx.runCommand([process.execPath, "-e", "process.stdout.write('ran')"], process.cwd())).toEqual({ code: 0, output: "ran" });

@@ -1,12 +1,13 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { loadConfig } from "../config";
+import { volumeFreeBytes } from "../doctor";
 import { runPaths } from "../registry";
 import { nodeGit, runArgv, type ArgvRunner, type GitRunner } from "../run";
 import { defaultDeps, runShepherd, type ShepherdDeps, type ShepherdMode } from "../shepherd";
-import type { EndState } from "../types";
+import { SWEEP_LOG_FILE, type EndState } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, ensureDir } from "../util/fs";
 import { isAlive, sendSignal, sleep, systemClock, type Clock } from "../util/proc";
@@ -31,6 +32,10 @@ export interface CommandContext {
   signal: (target: number, sig: NodeJS.Signals) => boolean;
   /** Starts a detached shepherd for the lane and returns its pid. */
   spawnShepherd: (projectRoot: string, lane: string, mode: ShepherdMode) => number;
+  /** Starts a detached `__sweep` of the project's idle worktrees and returns its pid. */
+  spawnSweep: (projectRoot: string) => number;
+  /** The bytes free to this user on the volume holding `path` (or its nearest existing ancestor); null when unknown. */
+  freeSpace: (path: string) => number | null;
   shepherdDeps: () => ShepherdDeps;
   runShepherd: (root: string, lane: string, mode: ShepherdMode, deps: ShepherdDeps, stop: AbortSignal) => Promise<EndState>;
   /** Calls `handler` on SIGTERM or SIGINT; returns the function that removes it. */
@@ -178,6 +183,50 @@ export function makeSpawnShepherd(execPath: string, scriptPath: string, env: Nod
   };
 }
 
+/** The `__sweep` argv for a project. */
+export function sweepArgv(scriptPath: string, root: string): string[] {
+  return [scriptPath, "__sweep", root];
+}
+
+/** A sweep.log over this size is moved to sweep.log.1 before the next sweep appends to it. */
+export const SWEEP_LOG_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Moves the log to `<log>.1`, replacing an older one, once it is over `maxBytes`; returns whether it did. A log that
+ * is missing or cannot be moved is left as it is: a sweep is not worth failing a launch for.
+ */
+export function rotateLog(logPath: string, maxBytes = SWEEP_LOG_MAX_BYTES): boolean {
+  try {
+    if (statSync(logPath).size <= maxBytes) return false;
+    renameSync(logPath, `${logPath}.1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Starts `node <script> __sweep <root>` in its own process group, output appended to `<root>/.arbab/sweep.log`
+ * (rotated first, rotateLog), and lets this process exit without waiting for it.
+ */
+export function makeSpawnSweep(execPath: string, scriptPath: string, env: NodeJS.ProcessEnv, spawnFn: typeof spawn = spawn): CommandContext["spawnSweep"] {
+  return (root) => {
+    const logPath = join(root, SWEEP_LOG_FILE);
+    ensureDir(dirname(logPath));
+    rotateLog(logPath);
+    const log = openSync(logPath, "a");
+    try {
+      const child = spawnFn(execPath, sweepArgv(scriptPath, root), { cwd: root, env, detached: true, stdio: ["ignore", log, log] });
+      child.once("error", () => undefined);
+      if (child.pid === undefined) throw new ArbabError("runtime", `cannot start the worktree sweep of ${root}`);
+      child.unref();
+      return child.pid;
+    } finally {
+      closeSync(log);
+    }
+  };
+}
+
 function processCommand(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
@@ -213,6 +262,8 @@ export function defaultContext(opts: { scriptPath: string; version: string }): C
     alive: isAlive,
     signal: sendSignal,
     spawnShepherd: makeSpawnShepherd(process.execPath, opts.scriptPath, process.env),
+    spawnSweep: makeSpawnSweep(process.execPath, opts.scriptPath, process.env),
+    freeSpace: (path) => volumeFreeBytes(path),
     shepherdDeps: defaultDeps,
     runShepherd,
     trapSignals,

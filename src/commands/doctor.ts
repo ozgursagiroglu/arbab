@@ -21,6 +21,7 @@ import {
   type DoctorCheck,
 } from "../doctor";
 import type { ShepherdDeps } from "../shepherd";
+import { worktreeOverview } from "../summary";
 import type { ProjectConfig } from "../types";
 import { confine, createExclusive, ensureDir } from "../util/fs";
 import type { CommandContext } from "./context";
@@ -106,6 +107,21 @@ function guarded(check: string, run: () => DoctorCheck | DoctorCheck[] | null): 
   }
 }
 
+/** The worktree count, how many sit unused (worktreeOverview: records only, no git) and the free space beside them. */
+function diskCheck(ctx: CommandContext, root: string, config: ProjectConfig): DoctorCheck[] {
+  const worktreeRoot = confine(root, config.worktreeRoot);
+  const project = { root, config, runsRoot: confine(root, config.runsRoot), worktreeRoot };
+  const overview = worktreeOverview({ project, alive: ctx.alive, nowMs: ctx.clock.now() });
+  return checkDisk({
+    worktreeDir: worktreeRoot,
+    worktreeLabel: config.worktreeRoot,
+    home: ctx.home,
+    idle: overview.idle,
+    idleDays: overview.idleDays,
+    freeBytes: ctx.freeSpace(worktreeRoot),
+  });
+}
+
 /** The checks of DESIGN.md §21: what made real projects fail after launch, named before it. */
 export function projectChecks(ctx: CommandContext, root: string, config: ProjectConfig): DoctorCheck[] {
   return [
@@ -114,7 +130,7 @@ export function projectChecks(ctx: CommandContext, root: string, config: Project
     ...guarded("tests", () => checkTestConfigs(root)),
     ...guarded("gates", () => checkGates(root, config.gates)),
     ...guarded("env", () => checkEnvTemplates(ctx.git, root, config.fence.readableEnvFiles)),
-    ...guarded("disk", () => checkDisk(confine(root, config.worktreeRoot), config.worktreeRoot, ctx.home)),
+    ...guarded("disk", () => diskCheck(ctx, root, config)),
     ...guarded("machine", () => checkMachineCap(ctx.home, root, config.maxParallel)),
   ];
 }

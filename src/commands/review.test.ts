@@ -33,6 +33,21 @@ const reviewer = (findings: unknown[], paths = ["a.txt"]): (() => LaneRun) => ()
   report: { findings, coverage: "read a.txt in full", paths_checked: paths },
 });
 
+/** simulateShepherds, plus the worktree a real shepherd checks the lane's branch out in; `during` runs as the worker. */
+function simulateWithWorktrees(t: TestProject, runs: Record<string, (pid: number) => LaneRun | null>, during?: (lane: string, worktree: string) => void): void {
+  simulateShepherds(t, runs);
+  const spawn = t.ctx.spawnShepherd;
+  t.ctx.spawnShepherd = (root, lane, mode) => {
+    const pid = spawn(root, lane, mode);
+    const worktree = join(t.worktreeRoot, lane);
+    if (!existsSync(worktree)) t.ok(["worktree", "add", "-q", worktree, `arbab/${lane}`]);
+    during?.(lane, worktree);
+    return pid;
+  };
+}
+
+const hasBranch = (t: TestProject, lane: string): boolean => t.git(["rev-parse", "--verify", "--quiet", `refs/heads/arbab/${lane}`], t.root).code === 0;
+
 async function integrated(config: Record<string, unknown> = {}, manifest = false): Promise<TestProject> {
   const t = makeProject({ config: { ...DEFAULT_CONFIG, ...config } });
   branchWith(t, "arbab/a", manifest ? "package.json" : "a.txt", "a\n");
@@ -508,7 +523,7 @@ describe("runReview", () => {
 
   it("after the reviewers timed out, takes the ones that finished on the same head and relaunches the others", async () => {
     p = await integrated();
-    simulateShepherds(p, { "rel-review-security": () => ({ state: "running" }), "rel-review-contracts": () => ({ state: "running" }) });
+    simulateWithWorktrees(p, { "rel-review-security": () => ({ state: "running" }), "rel-review-contracts": () => ({ state: "running" }) });
     expect(await runReview(["rel", "--lenses", "security,contracts", "--timeout-min", "0.5"], p.ctx)).toBe(3);
     const pid = (lane: string): number => readRecord<{ shepherdPid: number }>(join(p.runsRoot, lane, "state.json")).shepherdPid;
     writeLaneRun(p.runsRoot, "rel-review-security", { ...reviewer([finding("leak", "HIGH", 1)])(), shepherdPid: pid("rel-review-security") });
@@ -525,8 +540,13 @@ describe("runReview", () => {
 
   it("after the skeptics timed out, the next review takes the reviewers and the skeptics as they finished", async () => {
     p = await integrated();
-    simulateShepherds(p, { "rel-review-security": reviewer([finding("leak", "HIGH", 1)]), "rel-skeptic-security": () => ({ state: "running" }) });
+    simulateWithWorktrees(p, { "rel-review-security": reviewer([finding("leak", "HIGH", 1)]), "rel-skeptic-security": () => ({ state: "running" }) });
     expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    // Nothing is dropped: the next review adopts the skeptic and the reviewer its findings came from.
+    for (const lane of ["rel-review-security", "rel-skeptic-security"]) {
+      expect(existsSync(join(p.worktreeRoot, lane))).toBe(true);
+      expect(hasBranch(p, lane)).toBe(true);
+    }
     const pid = readRecord<{ shepherdPid: number }>(join(p.runsRoot, "rel-skeptic-security", "state.json")).shepherdPid;
     writeLaneRun(p.runsRoot, "rel-skeptic-security", {
       state: "finished",
@@ -537,6 +557,76 @@ describe("runReview", () => {
     expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
     expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-security", "rel-skeptic-security"]);
     expect(readRecord<ReviewRecord>(join(dir(p), "review.json"))).toMatchObject({ round: 2, findings: [{ id: "security-1", verdict: "refuted" }] });
+    // Taken into this record: now they go.
+    for (const lane of ["rel-review-security", "rel-skeptic-security"]) expect(existsSync(join(p.worktreeRoot, lane))).toBe(false);
+  });
+
+  it("removes the reviewer and skeptic worktrees and branches once review.json is written, keeping what they measured", async () => {
+    p = await integrated();
+    const runs = {
+      "rel-review-security": reviewer([finding("leak", "HIGH", 1)]),
+      "rel-review-contracts": reviewer([]),
+      "rel-skeptic-security": () => ({ state: "finished" as const, endState: "success" as const, report: { verdicts: [] } }),
+    };
+    simulateWithWorktrees(p, runs);
+    expect(await runReview(["rel", "--lenses", "security,contracts"], p.ctx)).toBe(0);
+    const lanes = ["rel-review-security", "rel-review-contracts", "rel-skeptic-security"];
+    for (const lane of lanes) {
+      expect(existsSync(join(p.worktreeRoot, lane)), lane).toBe(false);
+      expect(hasBranch(p, lane), lane).toBe(false);
+      expect(existsSync(join(p.runsRoot, lane, "attempt-1", "report.json")), lane).toBe(true);
+      expect(existsSync(join(p.runsRoot, lane, "generated.json")), lane).toBe(true);
+      expect(readRecord<{ settled: boolean }>(join(dir(p), "lanes", `${lane}.run.json`)).settled, lane).toBe(true);
+    }
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json")).round).toBe(1);
+    expect(p.stderr()).not.toContain("arbab review:");
+
+    // A second review launches every lane afresh, and it works.
+    simulateWithWorktrees(p, runs);
+    expect(await runReview(["rel", "--lenses", "security,contracts"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual([...lanes, ...lanes]);
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json")).round).toBe(2);
+    for (const lane of lanes) expect(existsSync(join(p.worktreeRoot, lane)), lane).toBe(false);
+  });
+
+  it("warns on stderr for a lane whose worktree cannot go, removes the others, and still exits as the record says", async () => {
+    p = await integrated();
+    // The reviewer committed: its branch has a commit that is not on integrate/rel, which is never deleted.
+    simulateWithWorktrees(p, { "rel-review-security": reviewer([]), "rel-review-contracts": reviewer([]) }, (lane, worktree) => {
+      if (lane !== "rel-review-security") return;
+      writeFileSync(join(worktree, "work.txt"), "work\n");
+      p.ok(["add", "work.txt"], worktree);
+      p.ok(["commit", "-q", "-m", "own work"], worktree);
+    });
+    expect(await runReview(["rel", "--lenses", "security,contracts"], p.ctx)).toBe(0);
+    expect(p.stderr().split("\n").filter((l) => l.startsWith("arbab review:"))).toEqual([
+      "arbab review: could not remove rel-review-security's worktree and branch: arbab/rel-review-security has commits that are not on integrate/rel, so nothing was removed",
+    ]);
+    expect(existsSync(join(p.worktreeRoot, "rel-review-security", "work.txt"))).toBe(true);
+    expect(existsSync(join(p.worktreeRoot, "rel-review-contracts"))).toBe(false);
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json")).lenses.map((l) => l.endState)).toEqual(["success", "success"]);
+  });
+
+  it("keeps the reviewers' worktrees when they do not finish in time", async () => {
+    p = await integrated();
+    simulateWithWorktrees(p, { "rel-review-security": () => ({ state: "running" }) });
+    expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    expect(existsSync(join(p.worktreeRoot, "rel-review-security"))).toBe(true);
+    expect(hasBranch(p, "rel-review-security")).toBe(true);
+  });
+
+  it("relaunches a reviewer that finished on the same head but lost its worktree", async () => {
+    p = await integrated();
+    simulateWithWorktrees(p, { "rel-review-security": () => ({ state: "running" }) });
+    expect(await runReview(["rel", "--lenses", "security", "--timeout-min", "0.5"], p.ctx)).toBe(3);
+    const pid = readRecord<{ shepherdPid: number }>(join(p.runsRoot, "rel-review-security", "state.json")).shepherdPid;
+    writeLaneRun(p.runsRoot, "rel-review-security", { ...reviewer([finding("old", "LOW", 1)])(), shepherdPid: pid });
+    p.alive.delete(pid);
+    p.ok(["worktree", "remove", "--force", join(p.worktreeRoot, "rel-review-security")]);
+    simulateWithWorktrees(p, { "rel-review-security": reviewer([]) });
+    expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-security", "rel-review-security"]);
+    expect(readRecord<ReviewRecord>(join(dir(p), "review.json")).findings).toEqual([]);
   });
 
   it("refuses a lens whose skeptic lane name would be too long before launching any reviewer", async () => {

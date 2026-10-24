@@ -6,7 +6,7 @@ import type { DependencyStrategy } from "../types";
 import { ArbabError } from "../util/errors";
 import type { ArgvRunner } from "./deps";
 import { makeGitRunner, verifyWorktreeGit, type GitRunner } from "./git";
-import { rebuildWorktree, type RebuildInput } from "./rebuild";
+import { manifestsSince, rebuildWorktree, type RebuildInput } from "./rebuild";
 
 let dir: string;
 let repo: string;
@@ -178,13 +178,29 @@ describe("rebuildWorktree", () => {
     const seen: Seen[] = [];
     const err = caught(() => rebuildWorktree(input({ runCommand: recorder(seen) })));
     expect(err.code).toBe("git");
-    expect(err.message).toMatch(/^arbab\/a changes dependency manifests since [0-9a-f]{40} \(package\.json\)/);
-    expect(err.message).toContain('relaunch under a new name with "base": "arbab/a"');
-    expect(err.message).toContain("Land that dependency change on the base");
+    const start = sha("main");
+    // A relaunch on the branch is no recovery: mergeBranches refuses the same manifests.
+    expect(err.message).toBe(
+      `arbab/a changes dependency manifests since ${start} (package.json), so arbab did not rebuild ${path}: the install it ` +
+        `can make is the one at ${start}, which those changes would not match. Integrate the lane (arbab integrate <name> ` +
+        "--lanes a; a human reviews, installs and confirms the dependency change with arbab integrate <name> " +
+        "--deps-installed <head>), then continue in a new lane based on integrate/<name>; or land the dependency change " +
+        "on the base first",
+    );
+    expect(err.message).not.toContain('"base"');
     expect(seen.map((s) => s.a)).toEqual(["base\n"]);
     expect(existsSync(path)).toBe(false);
     expect(registered(path)).toBe(false);
     expect(sha("refs/heads/arbab/a")).toBe(head);
+  });
+
+  it("refuses an integration branch's manifest change in refuse mode with the human's confirmation as the way on", () => {
+    const head = commitOn("integrate/rel", { ".npmrc": "x=1\n" });
+    const err = caught(() => rebuildWorktree(input({ path: join(repo, "wt", "integrate-rel"), branch: "integrate/rel" })));
+    expect(err.message).toMatch(/^integrate\/rel changes dependency manifests since [0-9a-f]{40} \(\.npmrc\)/);
+    expect(err.message).toContain(
+      `A human reviews, installs and confirms the dependency change (arbab integrate rel --deps-installed ${head}); or land the dependency change on the base first`,
+    );
   });
 
   it("ignores a package.json change no install sees, in refuse mode", () => {
@@ -293,5 +309,28 @@ describe("rebuildWorktree", () => {
     // Without the override a checkout in that tree runs the hook.
     ok(["checkout", "-q", "--detach"], r.path);
     expect(existsSync(marker)).toBe(true);
+  });
+});
+
+describe("manifestsSince", () => {
+  const inRepo = (args: string[]): ReturnType<GitRunner> => git(args, repo);
+
+  it("lists the install-relevant manifests between two commits, sorted, and nothing else", () => {
+    const start = sha("main");
+    commitOn("arbab/a", { "a.txt": "worker\n", "package.json": '{"name":"demo","version":"2.0.0","dependencies":{"left-pad":"1.0.0"}}\n' });
+    // A version bump no install sees, then a dependency change and another manifest.
+    expect(manifestsSince(inRepo, start, sha("arbab/a"), "arbab/a")).toEqual([]);
+    const head = commitOn("arbab/a", { "package.json": '{"name":"demo","dependencies":{"left-pad":"9.9.9"}}\n', ".npmrc": "x=1\n" });
+    expect(manifestsSince(inRepo, start, head, "arbab/a")).toEqual([".npmrc", "package.json"]);
+    expect(manifestsSince(inRepo, head, head, "arbab/a")).toEqual([]);
+  });
+
+  it("refuses what are not two commits, and names the branch when git fails", () => {
+    const start = sha("main");
+    expect(caught(() => manifestsSince(inRepo, "--output=x", start, "arbab/a")).code).toBe("usage");
+    expect(caught(() => manifestsSince(inRepo, start, "main", "arbab/a")).code).toBe("usage");
+    const err = caught(() => manifestsSince(inRepo, start, "f".repeat(40), "arbab/a"));
+    expect(err.code).toBe("git");
+    expect(err.message).toMatch(new RegExp(`^cannot list the files arbab/a changed since ${start}`));
   });
 });

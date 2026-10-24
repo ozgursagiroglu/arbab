@@ -176,8 +176,20 @@ describe("runVerify", () => {
     expect(await runVerify(["rel", "--json"], p.ctx)).toBe(1);
     const out = JSON.parse(p.stdout()) as { verify: VerifyRecord };
     expect(out.verify.passed).toBe(false);
-    expect(out.verify.reason).toBe(`the worktree ${join(p.worktreeRoot, "rel-verify")} has changes after the run: M a.txt, ?? new.txt`);
+    const worktree = join(p.worktreeRoot, "rel-verify");
+    expect(out.verify.reason).toBe(`the worktree ${worktree} has changes after the run: M a.txt, ?? new.txt`);
     expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toEqual(out.verify);
+    // The record points at that tree, so it stays to be looked at, its branch too.
+    expect(p.stderr()).toContain(`arbab verify: kept ${worktree} for inspection: ${out.verify.reason ?? ""}\n`);
+    expect(readFileSync(join(worktree, "new.txt"), "utf8")).toBe("new\n");
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/arbab/rel-verify"], p.root).code).toBe(0);
+    expect(readRecord<{ settled: boolean }>(join(dir(p), "lanes", "rel-verify.run.json")).settled).toBe(true);
+
+    // The next verify resets it and runs afresh.
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    p.out.length = 0;
+    expect(await runVerify(["rel"], p.ctx)).toBe(0);
+    expect(existsSync(worktree)).toBe(false);
   });
 
   it("fails on a nested repository the lane staged, without running anything of it", async () => {
@@ -211,6 +223,8 @@ describe("runVerify", () => {
     const record = readRecord<VerifyRecord>(join(dir(p), "verify.json"));
     expect(record.passed).toBe(false);
     expect(record.reason).toMatch(/^the worktree .*rel-verify failed verification: git dir .* is not under /);
+    expect(p.stderr()).toContain(`arbab verify: kept ${join(p.worktreeRoot, "rel-verify")} for inspection: ${record.reason ?? ""}\n`);
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(true);
   });
 
   it("fails on a non-zero gate, a missing call and a smoke failure, and --json reports the record", async () => {

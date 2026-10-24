@@ -26,7 +26,12 @@
 // `head <sha>`, then what the human must do about unconfirmed manifest changes. --deps-installed: `deps confirmed for
 // <name> at <sha>`, or `nothing to confirm for <name>: …` when no manifest changed.
 // --json: IntegrationRecord (src/types.ts).
-// Exit 0; 1 on usage errors; 2 on a conflict (the merge is aborted, earlier lanes stay merged) or a git failure.
+// Every mode but --deps-installed holds the integration worktree's writer lock from before it creates, rebuilds or
+// merges in the worktree until it returns, so no sweep or cleanup removes it meanwhile; while another live process
+// holds it, integrate waits (every 250 ms, up to 2 minutes), then refuses naming that pid.
+// Exit 0; 1 on usage errors; 2 on a conflict (the merge is aborted, earlier lanes stay merged), a git failure or a
+// writer lock still held after the wait.
+import { basename } from "node:path";
 import { adoptIntegration, confirmDeps, integrate, integrationPaths, readIntegration, refreshIntegration } from "../integrate";
 import { integrationLanes as planOrder, loadPlan } from "../plan";
 import { effectiveState, listLanes, readState, runPaths } from "../registry";
@@ -38,6 +43,7 @@ import type { CommandContext } from "./context";
 import { manifestAdvice } from "./integration";
 import { assertInactive, assertNoLiveWorker } from "./launch";
 import { isActive, onePositional, openProject, parse, printJson, type Project } from "./project";
+import { withWorktreeLock } from "./worktree-lock";
 
 const RESERVED_PREFIX = "ref-";
 
@@ -140,6 +146,10 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     throw new ArbabError("usage", `integration name ${name}: the prefix ${RESERVED_PREFIX} is reserved for verify --ref; choose another name`);
   }
   const project = openProject(ctx);
+  // Every mode but --deps-installed creates, rebuilds or merges in the integration worktree: under its writer lock, so
+  // no sweep or cleanup removes it meanwhile.
+  const inWorktree = <T>(fn: () => T): Promise<T> =>
+    withWorktreeLock(ctx, project, basename(integrationPaths(project.root, project.config, name).worktree), "integrate", fn);
 
   let record: IntegrationRecord;
   const confirmed = values["deps-installed"];
@@ -153,14 +163,16 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
       adopt !== undefined && "--adopt",
     ].filter((o) => o !== false);
     if (others.length > 0) throw new ArbabError("usage", `--refresh takes no ${others.join(" or ")}: it records the existing head again and merges nothing`);
-    const { record: refreshed } = refreshIntegration({
-      projectRoot: project.root,
-      config: project.config,
-      name,
-      git: ctx.git,
-      runCommand: ctx.runCommand,
-      clock: ctx.clock,
-    });
+    const { record: refreshed } = await inWorktree(() =>
+      refreshIntegration({
+        projectRoot: project.root,
+        config: project.config,
+        name,
+        git: ctx.git,
+        runCommand: ctx.runCommand,
+        clock: ctx.clock,
+      }),
+    );
     if (values.json === true) printJson(ctx, refreshed);
     else ctx.stdout(`refreshed ${name}: recorded ${refreshed.branch} at ${refreshed.headSha}\n` + formatIntegration(refreshed));
     return 0;
@@ -192,16 +204,18 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     if (values.lanes !== undefined || values.plan !== undefined) {
       throw new ArbabError("usage", "--adopt takes no --lanes or --plan: it makes an integration of an existing branch; merge lanes into it afterwards");
     }
-    const { record: adopted } = adoptIntegration({
-      projectRoot: project.root,
-      config: project.config,
-      name,
-      ref: adopt,
-      ...(values.base !== undefined && { base: values.base }),
-      git: ctx.git,
-      runCommand: ctx.runCommand,
-      clock: ctx.clock,
-    });
+    const { record: adopted } = await inWorktree(() =>
+      adoptIntegration({
+        projectRoot: project.root,
+        config: project.config,
+        name,
+        ref: adopt,
+        ...(values.base !== undefined && { base: values.base }),
+        git: ctx.git,
+        runCommand: ctx.runCommand,
+        clock: ctx.clock,
+      }),
+    );
     if (values.json === true) printJson(ctx, adopted);
     else ctx.stdout(`adopted ${adopt} as ${adopted.branch} (base ${adopted.base} at ${adopted.baseSha})\n` + formatIntegration(adopted));
     return 0;
@@ -215,15 +229,17 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     assertNoLiveWorker(ctx, project, lane);
   }
   assertNoActiveBorrower(ctx, project, lanes);
-  const { record: integrated, alreadyIn } = integrate({
-    projectRoot: project.root,
-    config: project.config,
-    name,
-    lanes,
-    git: ctx.git,
-    runCommand: ctx.runCommand,
-    clock: ctx.clock,
-  });
+  const { record: integrated, alreadyIn } = await inWorktree(() =>
+    integrate({
+      projectRoot: project.root,
+      config: project.config,
+      name,
+      lanes,
+      git: ctx.git,
+      runCommand: ctx.runCommand,
+      clock: ctx.clock,
+    }),
+  );
   record = integrated;
   if (values.json === true) printJson(ctx, record);
   else ctx.stdout(formatIntegration(record, alreadyIn));

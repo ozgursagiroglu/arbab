@@ -99,7 +99,7 @@ and `runsRoot` when config moves them outside `.arbab/`, and verifies each with 
                                   removed, kept, warnings), written with finishedAt null when it starts (§21)
   sweep.lock                      exclusive, holding the sweeping process's {pid, lane: "sweep", project, createdAt};
                                   one sweep per project at a time, reclaimed when its pid is dead
-  sweep.log                       what the detached sweeps printed, appended
+  sweep.log                       what the detached sweeps printed, appended; moved to sweep.log.1 once over 1 MiB
   worktrees/<lane>/               one git worktree per lane, branch arbab/<lane> (§9: dropped, swept, rebuilt)
   worktrees/integrate-<name>/     the integration worktree, branch integrate/<name> (no worker runs there)
 <worktree>/.arbab-tmp/            per-worker homes, ignored: xdg-config/ (XDG_CONFIG_HOME),
@@ -383,17 +383,25 @@ quota holds no slot.
 ## 9. Worktrees and resources
 
 - Worktree: `git worktree add -b arbab/<lane> .arbab/worktrees/<lane> <base>`; reused when it exists (resume,
-  verifier). The root must be ignored (checked); arbab never removes a worktree with uncommitted changes.
+  verifier). The root must be ignored (checked); arbab never removes a worktree with uncommitted changes, with one
+  exception: a generated lane's scratch worktree, which its next run resets (`resetGeneratedWorktree`).
 - **A worktree's life** (0.2.3, §21): each holds a dependency install, and a busy project kept hundreds of them until
   someone ran `cleanup`. A worktree is
   - created at launch by the shepherd, under its writer lock (below);
   - dropped, with its branch, once its record is written, for the lanes `verify` (`--ref` too) and `review` generate:
     after `verify.json` or `review.json` is written and the runs are settled, through `resetGeneratedWorktree`;
-    nothing goes when a wait timed out, and run directories, `generated.json` and run records stay. A re-run adopts an
-    earlier finished run only while its worktree still exists; otherwise it launches again;
-  - swept when idle: the automatic sweep (§21) removes what `cleanup --worktrees --older-than <worktrees.idleDays>`
-    would, so the clean worktrees of finished lanes and unlanded integrations unused that long go with their branches
-    kept;
+    nothing goes when a wait timed out, and run directories, `generated.json` and run records stay. `verify` keeps a
+    worktree its check found changed or unverifiable (`arbab verify: kept <path> for inspection: <reason>`): the record
+    points at it, and the next verify resets it. A re-run adopts an earlier finished run only while its worktree still
+    exists; otherwise it launches again;
+  - swept: the automatic sweep (§21) removes what `cleanup --worktrees --older-than <worktrees.idleDays>` removes: the
+    clean worktrees of finished lanes merged into the base or landed by record (at any age), of finished lanes and
+    unlanded integrations unused for idleDays days, and of landed integrations. Branches stay, except generated lanes'
+    and landed integrations' once merged. The idle rule keeps a lane whose branch changed install-relevant manifests
+    since `installPlan(<branch head>).start` (`kept worktree <path>: its branch changed dependency manifests (<paths>)
+    since <start>, so it could not be rebuilt`; `manifestsSince`, which the rebuild's refusal uses too). A generated
+    lane whose run record is unsettled goes only by the idle rule (`kept worktree <path>: its verify or review has not
+    collected it yet`): removed between its finish and its collection, verify would record a false failure;
   - rebuilt from its branch when it is needed again: by the shepherd for a lane a worker has run in (its
     `worktree-used` marker or an attempt, on resume, `resume --digest`, a fresh relaunch, `plan next --retry`, or a
     lane borrowing it) whose branch `arbab/<owner>` exists, and by `integrate`, `integrate --refresh` and
@@ -404,14 +412,23 @@ quota holds no slot.
   through the verified git dir with hooks off, and verified again. The branch is never moved, reset or deleted, and
   any failure after the add removes the worktree again. A lane's rebuild refuses when an install-relevant manifest
   (§21) changed between that commit and the head: the worker would run with an install that does not match its tree.
-  Such a lane is relaunched under a new name with `"base": "arbab/<lane>"`, whose install point and base merge follow
-  the rule below, or its dependency change lands on the base first. An integration's rebuild only flags the change:
+  A relaunch with `"base": "arbab/<lane>"` would not help (`mergeBranches` refuses the same manifests), so the refusal
+  says: integrate the lane (`arbab integrate <name> --lanes <lane>`; a human reviews, installs and confirms the
+  dependency change with `--deps-installed`), then continue in a new lane based on `integrate/<name>`; or land the
+  dependency change on the base first. The idle rule keeps such a lane's worktree for the same reason. An
+  integration's rebuild only flags the change:
   its record recomputes the manifests, and `verify` and `review` refuse until a human confirms them (§17). The
   shepherd decides and rebuilds under the writer lock, so two lanes never rebuild the same worktree.
 - **Removal takes the writer lock.** `cleanup`, `land` and the sweep judge and remove each worktree while holding its
   writer lock (keyed as the shepherd keys it). A worktree is kept when a live process holds that lock, while its lane's
   `launch.lock` exists (a launch or resume whose shepherd has not written its first state), and when the lane's state
   changed since cleanup first read it; an integration's is kept while a lane it generated is active.
+- **The integration worktree's users hold its writer lock.** `integrate` (`--lanes`/`--plan`, `--refresh`, `--adopt`)
+  and `host-check` take the integration worktree's writer lock (the key cleanup uses: `integrate-<name>` under the
+  real worktree root; `holdWorktree`, src/commands/worktree-lock.ts) from before they create, rebuild or use the
+  worktree until they return, so a sweep started by any launch cannot remove it under gates that run for minutes.
+  While another live process holds it they wait, polling every 250 ms for up to 2 minutes, then refuse naming the
+  holder's pid. `--deps-installed` does not use the worktree and takes no lock.
 - **Install points** (M3 review, round 5): the dependency command runs on the host, so it runs only on a trusted
   commit: one contained in `baseBranch`, or an integration head a human confirmed (`depsConfirmedAt`). A lane whose
   `base` is worker-written (a fix round on `integrate/<name>`, a lane continuing `arbab/<other>`) gets its worktree
@@ -766,7 +783,9 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
     `Exit code N` otherwise; the first call of a command decides), never from the model's report. A gate whose call
     cannot be found counts as `missing` (a failure).
   - once `verify.json` is written and the run settled, the lane's worktree and branch are removed (§9, its run
-    directory and run record stay); after a timeout both stay.
+    directory and run record stay); after a timeout both stay, and so do they when the worktree check gave a reason
+    (changes after the run, or a git dir that fails verification): `arbab verify: kept <path> for inspection:
+    <reason>`, and the next verify resets it.
   - a re-run on the same head waits for a `<name>-verify` still running, or takes the result of one that finished
     after an earlier verify stopped waiting (§21), while that run's worktree still exists; without it the lane is
     launched again.
@@ -823,6 +842,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
 - **`arbab host-check <name>`** (§21) runs config `hostGates` in the integration worktree, on the host, in order and
   all of them, and writes `host-checks.json`. It refuses without a terminal, without `hostGates`, and unless the
   worktree is at the recorded head with no tracked change. A missing worktree is rebuilt on the branch first (§9).
+  It holds the worktree's writer lock from before the rebuild until the record is written (§9), waiting up to 2
+  minutes for another holder.
 - **`arbab land <name> [--squash] [--message <file>]`**:
   - refuses unless verify passed and readiness has no unwaived skipped item;
   - refuses unless the main checkout is on the integration's base and contained in the verified head, with no
@@ -853,8 +874,8 @@ The third review (8 confirmed, 1 MEDIUM, after `land` learned to clean up) added
   continues in the same worktree, verifiers borrow a builder's worktree, and work that is not integrated stays
   inspectable. Only the lanes `verify` and `review` generate drop theirs once their record is written. Lanes that are
   never landed are removed with `arbab cleanup --worktrees` once merged, or landed by a `landing.json` that lists them
-  (§21), and the automatic sweep removes clean worktrees unused for `worktrees.idleDays` days, their branches kept
-  (§9, §21). A removed lane worktree is rebuilt from its branch when the lane is resumed or borrowed, an integration's
+  (§21), and the automatic sweep removes what `cleanup --worktrees --older-than <worktrees.idleDays>` removes (§9,
+  §21). A removed lane worktree is rebuilt from its branch when the lane is resumed or borrowed, an integration's
   when `integrate`, `integrate --refresh` or `host-check` needs it.
 
 **Packaging.** `pnpm build` bundles the runner and assembles `plugin/`: `.claude-plugin/plugin.json`, `skills/**`,
@@ -1237,8 +1258,9 @@ each works on its own base; the orchestrator does, before it builds on a stale o
   head lacks (name, time, owner), or else how many commits that is ("it has new commits" when git cannot count
   them), and asks for the merge `land`'s refusal asks for, in the same words (`baseMergeInstruction`,
   src/readiness/moved.ts): the base merged into `integrate/<name>` in its worktree with hooks off (`untrustedTree()`,
-  `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again. Both
-  name the worktree from `integrationPaths`, and quote it and the base as shell words (`shellWord`: bare when it
+  `--no-verify --no-edit`), then `arbab integrate <name> --refresh`, then verify, review and readiness again. When the
+  integration worktree does not exist (removed while idle), which its callers tell it, it starts with `arbab integrate
+  <name> --refresh`, which rebuilds it. Both name the worktree from `integrationPaths`, and quote it and the base as shell words (`shellWord`: bare when it
   needs no quoting, else POSIX single quotes with each `'` as `'\''`; never double quotes, where bash keeps the
   backslash of `\!`), since the human pastes the command into a shell.
   `integration.json` keeps no start time, so the commits, not a time, say which landings the integration lacks. The
@@ -1290,24 +1312,39 @@ what a lane's work is, and a worktree can be made again from them (§9).
   takes no other key.
 - The lanes `verify` (`--ref` too) and `review` generate drop their worktrees and branches once their record is
   written (`dropGeneratedWorktrees`, src/commands/integration.ts: each lane that cannot go is one warning line on
-  stderr, never a failure); not after a timeout. A finished, unsettled run is adopted only while its worktree exists
-  (§17).
+  stderr, never a failure); not after a timeout, and not when `verify`'s worktree check gave a reason (`arbab verify:
+  kept <path> for inspection: <reason>`; the next verify resets it). A finished, unsettled run is adopted only while
+  its worktree exists (§17).
 - A missing worktree is rebuilt from its branch instead of refused (`rebuildWorktree`, §9): by the shepherd for a lane
   a worker has run in, its install at the trusted commit `installPlan` gives for the branch head and refused when the
-  branch changed an install-relevant manifest since then (relaunch under a new name with `"base": "arbab/<lane>"`);
-  for an integration by `integrate`, `integrate --refresh` and `host-check` (`ensureIntegrationWorktree`), the
-  manifests only flagged, since the record checks them itself.
+  branch changed an install-relevant manifest since then (`manifestsSince`); the refusal says to integrate the lane
+  (`arbab integrate <name> --lanes <lane>`, a human confirming the install with `--deps-installed`) and continue in a
+  new lane based on `integrate/<name>`, or to land the dependency change on the base first. For an integration by
+  `integrate`, `integrate --refresh` and `host-check` (`ensureIntegrationWorktree`), the manifests only flagged, since
+  the record checks them itself.
 - `cleanup --worktrees --older-than <days>` also removes the clean worktree of an integration that has not landed,
   whose records have not changed for that long (the newest file directly in `.arbab/integrations/<name>/`,
   `recordsIdleSince`; none at all is never idle) and no lane of which is active. Its branch and records stay. A
-  finished lane's clean, unborrowed worktree goes when its state is older than that, as before.
-- Every removal by `cleanup`, `land` and the sweep happens under the worktree's writer lock (§9).
+  finished lane's clean, unborrowed worktree goes when its state is older than that, as before, unless its branch
+  changed install-relevant manifests since `installPlan(<branch head>).start`: such a worktree could not be rebuilt,
+  so it is kept (`its branch changed dependency manifests (<paths>) since <start's first 12>, so it could not be
+  rebuilt`). A generated lane is never rebuilt (its next run starts afresh), so this does not apply to it.
+- A generated lane whose run record (`<lanesDir>/<lane>.run.json`, or `.arbab/refs/<id>/lanes/` for a `verify --ref`
+  lane) is unsettled is kept by the merged and landed rules (`its verify or review has not collected it yet`): removed
+  between its finish and its collection, verify would record a false failure. The idle rule still removes it after
+  the days asked, its branch kept.
+- Every removal by `cleanup`, `land` and the sweep happens under the worktree's writer lock (§9). `integrate` (every
+  mode but `--deps-installed`) and `host-check` hold the integration worktree's writer lock while they create, rebuild
+  or use it, waiting up to 2 minutes (every 250 ms) for another live holder before they refuse, naming its pid.
 - **The automatic sweep.** A launch (`launch`, `plan next`, and the lanes `verify`, `review` and `preflight` start)
   or a resume (`resume`, `resume --digest`), once the new shepherd has written its first state (so the sweep sees
   that lane active), calls `maybeStartSweep`: when `idleDays` is above 0, the last sweep started at least an hour ago
   (by `.arbab/sweep.json`'s `startedAt`; also when it has none or it lies in the future) and no live process holds
   `.arbab/sweep.lock`, it starts `node <runner> __sweep <root>` detached, in its own process group, its output
-  appended to `.arbab/sweep.log`. It never throws: a launch does not fail for housekeeping. `__sweep` takes the lock
+  appended to `.arbab/sweep.log` (renamed to `sweep.log.1` first, replacing an older one, once it is over 1 MiB). It
+  removes what `cleanup --worktrees --older-than <idleDays>` removes: the worktrees of finished lanes merged into the
+  base or landed by record (at any age), of finished lanes and unlanded integrations unused for idleDays days, and of
+  landed integrations; branches stay, except generated lanes' and landed integrations' once merged. It never throws: a launch does not fail for housekeeping. `__sweep` takes the lock
   (a dead holder's is reclaimed; one that does not parse is left 5 minutes to its creator), writes `sweep.json` with
   `finishedAt: null` so a sweep that dies still throttles the next, runs `sweepIdleWorktrees`, then writes the
   finished record (`removed` with each path and reason, `kept`, `warnings`). `sweepIdleWorktrees` is the worktree

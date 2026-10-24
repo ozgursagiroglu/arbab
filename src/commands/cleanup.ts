@@ -7,11 +7,14 @@
 // lane, and its branch head is that sha or an ancestor of it), then the worktree and branch of every landed
 // integration. --older-than also removes a finished lane's clean, unborrowed worktree whose state is older than that
 // many days, and the clean worktree of an unlanded integration whose records have not changed for that long and no
-// lane of which is active, keeping their branches. --mine touches only the lanes this session owns (ownerless runs are
-// not its own). Of lane branches only generated lanes' go: a later plan phase merges an earlier one's arbab/<lane> by
-// name. The same rules (removeLaneWorktrees) serve `arbab land`, which cleans up what it landed, and the automatic
-// sweep (sweepIdleWorktrees). Every worktree goes under its writer lock: one a live process holds is kept, as is a
-// lane's while launch.lock exists.
+// lane of which is active, keeping their branches; it keeps a lane whose branch changed dependency manifests since
+// the trusted start the shepherd would rebuild it from (installPlan), as such a worktree could not be rebuilt. A
+// generated lane whose run record is unsettled (its verify or review has not collected it) goes only by that idle rule.
+// --mine touches only the lanes this session owns (ownerless runs are not its own). Of lane branches only generated
+// lanes' go: a later plan phase merges an earlier one's arbab/<lane> by name. The same rules (removeLaneWorktrees) serve
+// `arbab land`, which cleans up what it landed, and the automatic sweep (sweepIdleWorktrees). Every worktree goes
+// under its writer lock: one a live process holds is kept (integrate and host-check hold the integration worktree's),
+// as is a lane's while launch.lock exists.
 // Text: one line per action (`orphaned <lane>`, `reaped <lane> pgid <n>`, `released <file>`,
 // `removed <n> empty lock directories`, `removed <n> session watermarks unused for 30 days`,
 // `removed worktree <path>: <reason>`, `deleted branch <branch>`, `kept worktree <path>: <reason>`,
@@ -20,38 +23,38 @@
 //          "branchesDeleted": string[], "worktreesKept": [{"path", "reason"}], "branchesKept": [{"branch", "reason"}],
 //          "warnings": string[], "worktreeRemovals": [{"path", "reason"}], "lockDirsRemoved": number,
 //          "sessionWatermarksRemoved": number}
-import { existsSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
+import { existsSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { basename, join } from "node:path";
 import { INTEGRATION_WORKTREE_PREFIX } from "../config/lane";
 import { removeStaleWatermarks } from "../hook/catchup";
 import { integrationPaths, listIntegrations, readIntegration, type IntegrationPaths } from "../integrate";
 import { effectiveState, listAttempts, listLanes, ownedBy, readAttempt, readShepherdRecord, readState, runPaths, sessionOf, writeState } from "../registry";
 import {
-  acquireWriterLock,
   listPoolEntries,
+  manifestsSince,
   reap,
   releaseIfStale,
-  releaseWriterLock,
   untrustedTree,
   verifyWorktreeGit,
   WORKER_TMP_DIR,
   worktreeStatus,
-  writerLockKey,
   type GitRunner,
-  type Holder,
 } from "../run";
+import { confirmedHeads, installPlan, type TrustInput } from "../shepherd/trust";
 import { recordsIdleSince } from "../summary";
 import type { LaneSpec, LaneState, LaneStateRecord } from "../types";
 import { ArbabError } from "../util/errors";
-import { readJson } from "../util/fs";
+import { confine, readJson } from "../util/fs";
 import { isValidName } from "../util/names";
 import { isoAt } from "../util/proc";
 import type { CommandContext } from "./context";
-import { lanesGeneratedBy, readGenerated } from "./generated";
-import { branchHead } from "./integration";
+import { generatingIntegration, lanesGeneratedBy, readGenerated } from "./generated";
+import { branchHead, readGeneratedRun } from "./integration";
 import { launchLockPath } from "./launch";
 import { resolveGitCommonDir } from "./lint";
 import { isActive, openProject, parse, printJson, type Project } from "./project";
+import { REF_PREFIX, REFS_DIR } from "./verify";
+import { lockWorktree } from "./worktree-lock";
 
 /** An entry that never parsed is left this long for its creator to finish writing it. */
 export const UNPARSED_GRACE_MS = 5 * 60_000;
@@ -237,8 +240,17 @@ interface Rules {
    * given. The branch stays.
    */
   unused?: string;
+  /** Asked, under the lock, before `stale` removes a worktree: why the lane could not be rebuilt, else null. */
+  unrebuildable?: () => string | null;
+  /**
+   * Asked under the lock for a generated lane: whether its verify or review has yet to collect its run. Until then only
+   * `stale` removes it: without its branch and tree, that command would record a false failure.
+   */
+  uncollected?: () => boolean;
   removals: Array<{ path: string; reason: string }> | undefined;
 }
+
+export const UNCOLLECTED = "its verify or review has not collected it yet";
 
 /** The checks that keep a target besides git's: before its writer lock is taken, and again under it. */
 interface Blockers {
@@ -288,8 +300,9 @@ type Verdict = { keep: string } | { remove: string; deleteBranch: boolean };
 /**
  * Whether the worktree and branch may go by git's account. Kept: changes in the tree (untracked files under
  * .arbab-tmp/ aside), or a branch neither merged into base nor landed by record, unless `rules.stale` lets its clean
- * worktree go. `rules.unused` lets a clean worktree go before the merge is asked, its branch kept. Only a branch merged
- * into base may be deleted: `branch -d` would refuse the others.
+ * worktree go (and `rules.unrebuildable` gives no reason to keep it). `rules.unused` lets a clean worktree go before the
+ * merge is asked, its branch kept. A generated lane whose run is uncollected goes only by `rules.stale`. Only a branch
+ * merged into base may be deleted: `branch -d` would refuse the others.
  */
 function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boolean, hasBranch: boolean, rules: Rules, common: CommonDir): Verdict {
   if (hasWorktree) {
@@ -306,6 +319,12 @@ function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boo
   }
   if (!hasBranch) return { keep: `no branch ${target.branch}` };
   if (rules.unused !== undefined && hasWorktree) return { remove: rules.unused, deleteBranch: false };
+  const idle = (): Verdict | null => {
+    if (rules.stale === null || !hasWorktree) return null;
+    const why = rules.unrebuildable?.() ?? null;
+    return why === null ? { remove: rules.stale, deleteBranch: false } : { keep: why };
+  };
+  if (rules.uncollected?.() === true) return idle() ?? { keep: UNCOLLECTED };
   const ref = `refs/heads/${target.branch}`;
   const merged = git(["merge-base", "--is-ancestor", ref, rules.base], root);
   if (merged.code === 0) return { remove: `merged into ${rules.base}`, deleteBranch: true };
@@ -316,24 +335,10 @@ function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boo
       return { remove: `landed by integration ${landing.integration}`, deleteBranch: false };
     }
   }
-  if (rules.stale !== null && hasWorktree) return { remove: rules.stale, deleteBranch: false };
-  return { keep: `branch ${target.branch} is not merged into ${rules.base}` };
+  return idle() ?? { keep: `branch ${target.branch} is not merged into ${rules.base}` };
 }
 
 export const WRITER_LOCK_HELD = "in use: writer lock held";
-
-/**
- * Takes the writer lock of the worktree `<worktreeRoot>/<name>` for this process, keyed as the shepherd keys it (the
- * root's real path and the directory name). Returns its release, or null when a live holder has it.
- */
-export function lockWorktree(ctx: CommandContext, project: Project, name: string): (() => void) | null {
-  const key = writerLockKey(join(realpathSync(project.worktreeRoot), name));
-  const holder: Holder = { pid: ctx.pid, lane: name, project: project.root, createdAt: isoAt(ctx.clock) };
-  if (!acquireWriterLock(ctx.home, key, holder, ctx.alive)) return null;
-  return () => {
-    releaseWriterLock(ctx.home, key, holder);
-  };
-}
 
 /**
  * Removes the worktree, then deletes its branch when `target.deleteBranch` (a branch checked out in a worktree cannot
@@ -388,6 +393,22 @@ function removeWorktreeAndBranch(
   }
 }
 
+/**
+ * Whether a generated lane's run record (<lanesDir>/<lane>.run.json) is unsettled: its verify or review has not taken
+ * the run into its record yet. The record is in the generating integration's lanesDir, or in .arbab/refs/<id>/lanes
+ * for a `verify --ref` lane (its generator is the ref- id). No record, or one that does not read, leaves nothing to
+ * collect: the next command launches the lane afresh.
+ */
+function uncollected(project: Project, lane: string, by: string | null): boolean {
+  const owner = generatingIntegration(by);
+  if (owner === null) return false;
+  const lanesDir = owner.startsWith(REF_PREFIX)
+    ? confine(project.root, join(REFS_DIR, owner, "lanes"))
+    : integrationPaths(project.root, project.config, owner).lanesDir;
+  const run = readGeneratedRun(lanesDir, lane);
+  return run !== null && !run.settled;
+}
+
 /** The lane whose worktree a run works in: its own unless lane.json names another (`worktree` may name itself). */
 function worktreeOwner(project: Project, lane: string): unknown {
   const spec = runLaneSpec(project, lane);
@@ -436,17 +457,30 @@ export function removeLaneWorktrees(ctx: CommandContext, project: Project, lanes
     if (!(age > opts.olderThanMs)) return null;
     return `unchanged for ${Math.floor(age / DAY_MS)} days; branch ${branch} kept`;
   };
+  let trust: TrustInput | undefined;
+  // The rebuild the shepherd would make: installed at installPlan's start for the branch head, which refuses a manifest
+  // change since then (rebuildWorktree), so the lane would be lost with its worktree.
+  const unrebuildable = (branch: string): string | null => {
+    try {
+      const head = branchHead(ctx.git, project.root, branch);
+      if (head === null) return null;
+      trust ??= { projectRoot: project.root, baseBranch: project.config.baseBranch, confirmed: confirmedHeads(project.root, project.config, ctx.git), git: ctx.git };
+      const { start } = installPlan(head, trust);
+      const manifests = manifestsSince((args) => ctx.git(args, project.root), start, head, branch);
+      if (manifests.length === 0) return null;
+      return `its branch changed dependency manifests (${manifests.join(", ")}) since ${start.slice(0, 12)}, so it could not be rebuilt`;
+    } catch (err) {
+      return `cannot tell whether it could be rebuilt: ${(err as Error).message}`;
+    }
+  };
   for (const lane of new Set(lanes)) {
     if (!isValidName(lane)) {
       out.warnings.push(`${JSON.stringify(lane)} is not a valid lane name`);
       continue;
     }
     try {
-      const target: Removable = {
-        path: join(project.worktreeRoot, lane),
-        branch: `arbab/${lane}`,
-        deleteBranch: readGenerated(project.runsRoot, lane) !== null,
-      };
+      const generated = readGenerated(project.runsRoot, lane);
+      const target: Removable = { path: join(project.worktreeRoot, lane), branch: `arbab/${lane}`, deleteBranch: generated !== null };
       const owner = worktreeOwner(project, lane);
       if (owner !== lane) {
         const where = typeof owner === "string" && isValidName(owner) ? `lane ${owner}'s worktree` : `worktree ${JSON.stringify(owner)}`;
@@ -482,7 +516,14 @@ export function removeLaneWorktrees(ctx: CommandContext, project: Project, lanes
         if (now === null || effectiveState(now, ctx.alive) !== "finished" || now.since !== first.since) return STATE_CHANGED;
         return null;
       };
-      const rules: Rules = { base, landed: landed.get(lane) ?? [], stale: stale(lane, target.branch), removals: opts.removals };
+      const rules: Rules = {
+        base,
+        landed: landed.get(lane) ?? [],
+        stale: stale(lane, target.branch),
+        // A generated lane is never rebuilt: its next run starts it afresh.
+        ...(generated === null ? { unrebuildable: () => unrebuildable(target.branch) } : { uncollected: () => uncollected(project, lane, generated.by) }),
+        removals: opts.removals,
+      };
       removeWorktreeAndBranch(ctx, project, target, rules, out, { before, locked }, common);
     } catch (err) {
       out.warnings.push(`${lane}: ${(err as Error).message}`);

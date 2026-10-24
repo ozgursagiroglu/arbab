@@ -9,11 +9,13 @@
 // `session:<owner>`, never skipped items; when the machine registry cannot be listed, one risk `session:unknown` says so.
 // A base whose head is not in the integration head (land would refuse) is the first risk, `base-moved`, naming the
 // landing records that moved it (name, time, owner session) or else the number of new commits, and the merge land asks
-// for (baseMergeInstruction); it needs no waiver. Once the integration landed (landing.json exists), its own merge is
+// for (baseMergeInstruction, which starts with the rebuild by `integrate --refresh` when the integration worktree is
+// gone); it needs no waiver. Once the integration landed (landing.json exists), its own merge is
 // no move of the base: no such risk.
 // Writes .arbab/integrations/<name>/readiness.json (ReadinessReport) and readiness.md.
 // Text: readiness.md. --json: ReadinessReport (src/types.ts).
 // Exit 0 when ready to land, 1 otherwise.
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { baseMoved, computeReadiness, renderReadiness, reviewCarriesOver, type ReadinessInput, type ReviewRound } from "../readiness";
 import { listLanes, runPaths } from "../registry";
@@ -130,6 +132,7 @@ export async function runReadiness(argv: string[], ctx: CommandContext): Promise
     tier,
     integration: record,
     worktree: paths.worktree,
+    worktreeExists: existsSync(paths.worktree),
     verify: readVerifyRecord(paths.verify, name),
     review,
     laneReports: laneReports(project.runsRoot, [...new Set(record.merged.map((m) => m.lane))]),

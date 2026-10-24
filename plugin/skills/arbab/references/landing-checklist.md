@@ -108,5 +108,7 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       finished, clean and merged into the base or landed by a `landing.json`; add `--older-than <days>` for the clean
       worktrees of lanes finished longer ago and of unlanded integrations unused that long (their branches stay).
       After a launch or resume, arbab does the same by itself for `worktrees.idleDays` (default 3; 0 turns it off),
-      and rebuilds a removed worktree from its branch when it is needed. arbab never removes a worktree with
-      uncommitted changes.
+      and rebuilds a removed worktree from its branch when it is needed. Both keep a lane whose branch changed
+      dependency manifests (it could not be rebuilt), a worktree `integrate` or `host-check` is working in, and a
+      verify or review lane its command has not collected yet (until it is unused that long). arbab never removes a
+      worktree with uncommitted changes, except a generated lane's scratch worktree, which its next run resets.

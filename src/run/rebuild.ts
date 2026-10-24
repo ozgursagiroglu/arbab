@@ -73,6 +73,39 @@ function assertBranch(branch: string): void {
 }
 
 /**
+ * The install-relevant dependency manifests (installRelevantPaths) that differ between the commits `start` and
+ * `head`: what a worktree installed at `start` and then checked out at `head` would not match. `git` runs in the
+ * repository; `branch` only names the change in an error.
+ */
+export function manifestsSince(git: (args: string[]) => ReturnType<GitRunner>, start: string, head: string, branch: string): string[] {
+  if (!SHA.test(start) || !SHA.test(head)) throw new ArbabError("usage", `${JSON.stringify(start)}..${JSON.stringify(head)} are not two commits`);
+  const diff = git(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", start, head, "--"]);
+  if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${branch} changed since ${start} (${diff.code}): ${output(diff)}`);
+  return installRelevantPaths(git, start, head, diff.stdout.split("\0").filter((p) => p !== ""));
+}
+
+/**
+ * What recovers a branch whose manifests changed: the human's confirmation of the install at an integration head is
+ * the one trusted start such a change gets. Relaunching on the branch would not help, as mergeBranches refuses the
+ * same manifests.
+ */
+function recovery(branch: string, head: string): string {
+  if (branch.startsWith("integrate/")) {
+    const name = branch.slice("integrate/".length);
+    return (
+      `A human reviews, installs and confirms the dependency change (arbab integrate ${name} --deps-installed ${head}); ` +
+      `or land the dependency change on the base first`
+    );
+  }
+  const lane = branch.slice("arbab/".length);
+  return (
+    `Integrate the lane (arbab integrate <name> --lanes ${lane}; a human reviews, installs and confirms the dependency ` +
+    `change with arbab integrate <name> --deps-installed <head>), then continue in a new lane based on ` +
+    `integrate/<name>; or land the dependency change on the base first`
+  );
+}
+
+/**
  * Rebuilds a missing worktree on its existing branch (DESIGN.md §9, install points): added detached at `start`, a
  * trusted commit, where the dependency command runs; only then checked out on the branch, through the verified git dir
  * and with hooks off, so the install never sees a worker's tree. The branch is never moved, reset or deleted; any
@@ -110,15 +143,12 @@ export function rebuildWorktree(input: RebuildInput): Rebuilt {
       throw new ArbabError("runtime", `dependencies failed in ${path} (${deps.code}): ${tail}`);
     }
 
-    const diff = wt(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", start, head, "--"]);
-    if (diff.code !== 0) throw new ArbabError("git", `cannot list the files ${branch} changed since ${start} (${diff.code}): ${output(diff)}`);
-    const manifests = installRelevantPaths(wt, start, head, diff.stdout.split("\0").filter((p) => p !== ""));
+    const manifests = manifestsSince(wt, start, head, branch);
     if (input.manifests === "refuse" && manifests.length > 0) {
       throw new ArbabError(
         "git",
         `${branch} changes dependency manifests since ${start} (${manifests.join(", ")}), so arbab did not rebuild ${path}: ` +
-          `the install it can make is the one at ${start}, which those changes would not match. Land that dependency ` +
-          `change on the base, or relaunch under a new name with "base": "${branch}"`,
+          `the install it can make is the one at ${start}, which those changes would not match. ${recovery(branch, head)}`,
       );
     }
 

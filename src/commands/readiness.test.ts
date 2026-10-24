@@ -202,12 +202,21 @@ describe("runReadiness", () => {
     const report = readRecord<ReadinessReport>(join(dir(p), "readiness.json"));
     expect(report.risks[0]).toEqual({
       id: "base-moved",
-      text: `main moved since this integration started: 2 new commits, so land would refuse. ${baseMergeInstruction("main", "rel", worktree(p))}.`,
+      text: `main moved since this integration started: 2 new commits, so land would refuse. ${baseMergeInstruction("main", "rel", worktree(p), true)}.`,
     });
     // A risk, not a skipped item: nothing to waive.
     expect(report.skipped).toEqual([]);
     expect(report.ready).toBe(true);
     expect(p.stdout()).toContain("- main moved since this integration started: 2 new commits, so land would refuse. Merge main into");
+
+    // Removed while idle: the merge needs the worktree rebuilt first.
+    p.ok(["worktree", "remove", worktree(p)]);
+    p.out.length = 0;
+    await runReadiness(["rel", "--tier", "low"], p.ctx);
+    expect(readRecord<ReadinessReport>(join(dir(p), "readiness.json")).risks[0]?.text).toBe(
+      `main moved since this integration started: 2 new commits, so land would refuse. ${baseMergeInstruction("main", "rel", worktree(p), false)}.`,
+    );
+    expect(p.stdout()).toContain("so land would refuse. Run arbab integrate rel --refresh to rebuild the integration worktree; then merge main");
   });
 
   it("names the landings that moved the base, with their time and session, and not those the head holds", async () => {
@@ -247,7 +256,7 @@ describe("runReadiness", () => {
       text:
         "main moved since this integration started: hot at 2026-10-09T12:30:00.000Z (session bbbbbbbb), " +
         "cold at 2026-10-09T12:40:00.000Z (session unknown) landed, so land would refuse. " +
-        `${baseMergeInstruction("main", "rel", worktree(p))}.`,
+        `${baseMergeInstruction("main", "rel", worktree(p), true)}.`,
     });
 
     // Merged in, the base no longer moved.

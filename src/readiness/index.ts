@@ -36,6 +36,8 @@ export interface ReadinessInput {
    * `base-moved` risk asks for is then the one land's refusal asks for, word for word.
    */
   worktree: string;
+  /** Whether that worktree exists (true when not given): a removed one is rebuilt before the merge the risk asks for. */
+  worktreeExists?: boolean;
   verify: VerifyRecord | null;
   review: ReviewRecord | null;
   /**
@@ -78,9 +80,9 @@ export interface BaseMoved {
 
 /**
  * The `base-moved` risk: what moved the base, by landing record or else by count, and the merge that answers it, in
- * the words land refuses with.
+ * the words land refuses with; it starts with the worktree's rebuild when `worktreeExists` is false.
  */
-export function baseMovedRisk(name: string, worktree: string, moved: BaseMoved): ReadinessItem {
+export function baseMovedRisk(name: string, worktree: string, moved: BaseMoved, worktreeExists = true): ReadinessItem {
   const what =
     moved.landings.length > 0
       ? `${moved.landings.map(landingText).join(", ")} landed`
@@ -89,7 +91,7 @@ export function baseMovedRisk(name: string, worktree: string, moved: BaseMoved):
         : `${moved.commits} new ${moved.commits === 1 ? "commit" : "commits"}`;
   return {
     id: "base-moved",
-    text: `${moved.base} moved since this integration started: ${what}, so land would refuse. ${baseMergeInstruction(moved.base, name, worktree)}.`,
+    text: `${moved.base} moved since this integration started: ${what}, so land would refuse. ${baseMergeInstruction(moved.base, name, worktree, worktreeExists)}.`,
   };
 }
 
@@ -385,7 +387,7 @@ export function computeReadiness(input: ReadinessInput): ReadinessReport {
     sessionRisks.unshift({ id: "session:unknown", text: `cannot tell which other sessions are working here: ${input.sessionsUnknown}` });
   }
   // Before the sessions: land refuses until it is answered.
-  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.worktree, input.baseMoved));
+  if (input.baseMoved !== undefined && input.baseMoved !== null) sessionRisks.unshift(baseMovedRisk(input.name, input.worktree, input.baseMoved, input.worktreeExists ?? true));
   const risks = uniqueTexts([
     ...sessionRisks,
     ...confirmed,

@@ -403,7 +403,7 @@ describe("computeReadiness: risks", () => {
       id: "base-moved",
       text:
         `main moved since this integration started: hot at ${NOW} (session cccccccc), cold at ${NOW} (outside Claude Code) landed, ` +
-        `so land would refuse. ${baseMergeInstruction("main", "m3", WORKTREE)}.`,
+        `so land would refuse. ${baseMergeInstruction("main", "m3", WORKTREE, true)}.`,
     });
     // The safe merge land gives too: hooks off, then refresh, verify, review and readiness again.
     expect(report.risks[0]?.text).toContain(
@@ -419,7 +419,7 @@ describe("computeReadiness: risks", () => {
   it("counts the new commits when no landing record explains a moved base, and says nothing of a base that did not move", () => {
     const risk = (commits: number | null) =>
       computeReadiness(input({ baseMoved: { base: "dev", landings: [], commits } })).risks.find((r) => r.id === "base-moved")?.text;
-    const merge = `, so land would refuse. ${baseMergeInstruction("dev", "m3", WORKTREE)}.`;
+    const merge = `, so land would refuse. ${baseMergeInstruction("dev", "m3", WORKTREE, true)}.`;
     expect(risk(1)).toBe(`dev moved since this integration started: 1 new commit${merge}`);
     expect(risk(3)).toBe(`dev moved since this integration started: 3 new commits${merge}`);
     expect(risk(null)).toBe(`dev moved since this integration started: it has new commits${merge}`);
@@ -431,9 +431,17 @@ describe("computeReadiness: risks", () => {
     const report = computeReadiness(
       input({ integration: integration({ worktree: "/elsewhere" }), worktree: "/my repo/wt", baseMoved: { base: "main", landings: [], commits: 1 } }),
     );
-    expect(report.risks[0]?.text).toContain(`${baseMergeInstruction("main", "m3", "/my repo/wt")}.`);
+    expect(report.risks[0]?.text).toContain(`${baseMergeInstruction("main", "m3", "/my repo/wt", true)}.`);
     expect(report.risks[0]?.text).toContain("git -C '/my repo/wt' ");
     expect(report.risks[0]?.text).not.toContain("/elsewhere");
+  });
+
+  it("asks for the worktree's rebuild first when it is told the worktree does not exist", () => {
+    const moved = { base: "main", landings: [], commits: 1 };
+    const missing = computeReadiness(input({ worktreeExists: false, baseMoved: moved })).risks[0]?.text;
+    expect(missing).toBe(`main moved since this integration started: 1 new commit, so land would refuse. ${baseMergeInstruction("main", "m3", WORKTREE, false)}.`);
+    expect(missing).toContain("land would refuse. Run arbab integrate m3 --refresh to rebuild the integration worktree; then merge main");
+    expect(computeReadiness(input({ worktreeExists: true, baseMoved: moved })).risks[0]?.text).toContain(`${baseMergeInstruction("main", "m3", WORKTREE, true)}.`);
   });
 
   it("records an empty otherSessions when given none, and leaves it out of a report computed without", () => {

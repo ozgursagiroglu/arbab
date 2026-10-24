@@ -1,0 +1,612 @@
+/* arbab project page. No web fonts: system stacks only. */
+
+:root {
+  --bg: #1b1d2a;
+  --panel: #242738;
+  --panel-2: #2c3044;
+  --line: #3a3f58;
+  --text: #ece8df;
+  --muted: #bcb7ab;
+  --yellow: #ffd54a;
+  --sand: #e8d7a8;
+  --bronze: #b5853d;
+  --ok: #8fd19e;
+  --no: #f2a08f;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --max: 68rem;
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 4.5rem;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 1.0625rem;
+  line-height: 1.6;
+  overflow-wrap: break-word;
+}
+
+img,
+video,
+svg {
+  max-width: 100%;
+  height: auto;
+}
+
+a {
+  color: var(--yellow);
+  text-underline-offset: 0.15em;
+}
+
+a:hover {
+  color: var(--sand);
+}
+
+:focus-visible {
+  outline: 3px solid var(--yellow);
+  outline-offset: 2px;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+:not(pre) > code {
+  background: var(--panel-2);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+  color: var(--sand);
+}
+
+pre {
+  margin: 0.75rem 0 0;
+  padding: 1rem;
+  background: #14151f;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow-x: auto;
+  line-height: 1.5;
+  font-size: 0.85rem;
+  color: var(--text);
+  tab-size: 2;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.25;
+  margin: 0 0 0.75rem;
+}
+
+h2 {
+  font-size: clamp(1.6rem, 4vw, 2.2rem);
+  color: var(--yellow);
+}
+
+h3 {
+  font-size: 1.2rem;
+  color: var(--sand);
+}
+
+p {
+  margin: 0 0 1rem;
+}
+
+.skip {
+  position: absolute;
+  left: -999px;
+  top: 0;
+  background: var(--yellow);
+  color: var(--bg);
+  padding: 0.5rem 1rem;
+  z-index: 10;
+}
+
+.skip:focus {
+  left: 0.5rem;
+}
+
+/* Header */
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: rgba(27, 29, 42, 0.96);
+  border-bottom: 1px solid var(--line);
+}
+
+/* On phones the wrapped nav would cover a large part of the screen while sticky. */
+@media (max-width: 40rem) {
+  .site-header {
+    position: static;
+  }
+
+  html {
+    scroll-padding-top: 0.5rem;
+  }
+}
+
+.site-header .inner {
+  max-width: var(--max);
+  margin: 0 auto;
+  padding: 0.5rem 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  flex-wrap: wrap;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--yellow);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.brand img {
+  width: 28px;
+  height: 28px;
+  image-rendering: pixelated;
+}
+
+.site-header nav {
+  flex: 1 1 20rem;
+}
+
+.site-header ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  font-size: 0.95rem;
+}
+
+.site-header nav a {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.site-header nav a:hover {
+  color: var(--yellow);
+  text-decoration: underline;
+}
+
+/* Sections */
+
+main > section {
+  padding: 3.5rem 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+main > section:nth-of-type(even) {
+  background: #1f2131;
+}
+
+.wrap {
+  max-width: var(--max);
+  margin: 0 auto;
+}
+
+.lead {
+  font-size: 1.15rem;
+  color: var(--text);
+  max-width: 46rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+/* Grid items default to min-width: auto, so a long code line would widen the page instead of scrolling its pre. */
+.grid-2 > *,
+.examples > *,
+.cards > * {
+  min-width: 0;
+}
+
+.cards {
+  list-style: none;
+  padding: 0;
+  margin: 1.5rem 0 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 1rem;
+}
+
+.cards li {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--bronze);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+}
+
+.cards strong {
+  display: block;
+  color: var(--yellow);
+  margin-bottom: 0.25rem;
+}
+
+/* Hero */
+
+.hero {
+  padding-top: 2.5rem;
+}
+
+.hero .logo {
+  display: block;
+  width: min(100%, 392px);
+  height: auto;
+  image-rendering: pixelated;
+  margin: 0 0 1.5rem;
+}
+
+.hero h1 {
+  font-size: clamp(1.9rem, 5.5vw, 3.1rem);
+  color: var(--text);
+  max-width: 44rem;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1.5rem 0 2rem;
+}
+
+.button {
+  display: inline-block;
+  padding: 0.7rem 1.3rem;
+  border-radius: 8px;
+  font-weight: 700;
+  text-decoration: none;
+  border: 2px solid var(--yellow);
+}
+
+.button.primary {
+  background: var(--yellow);
+  color: var(--bg);
+}
+
+.button.primary:hover {
+  background: var(--sand);
+  border-color: var(--sand);
+  color: var(--bg);
+}
+
+.button.secondary {
+  color: var(--yellow);
+}
+
+.button.secondary:hover {
+  background: var(--panel-2);
+  color: var(--sand);
+}
+
+figure {
+  margin: 0;
+}
+
+figcaption {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin-top: 0.6rem;
+}
+
+.demo video,
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 2px solid var(--bronze);
+  border-radius: 8px;
+  background: #14151f;
+  image-rendering: pixelated;
+}
+
+.demo .still {
+  display: none;
+}
+
+/* No autoplay for people who ask for less motion: the poster with controls instead. */
+@media (prefers-reduced-motion: reduce) {
+  .demo .motion {
+    display: none;
+  }
+
+  .demo .still {
+    display: block;
+  }
+}
+
+/* Tables */
+
+.table-wrap {
+  overflow-x: auto;
+  margin: 1rem 0;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 20rem;
+  background: var(--panel);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+thead th {
+  color: var(--sand);
+  background: var(--panel-2);
+}
+
+tbody th {
+  color: var(--sand);
+  font-weight: 600;
+}
+
+.big {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+.win {
+  color: var(--yellow);
+}
+
+/* Diagrams */
+
+.diagram {
+  display: block;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.diagram text {
+  font-family: var(--sans);
+  fill: var(--text);
+}
+
+.diagram .t-head {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.diagram .t-sub {
+  font-size: 11.5px;
+  fill: var(--muted);
+}
+
+.diagram .t-small {
+  font-size: 11px;
+}
+
+.diagram .t-accent {
+  fill: var(--yellow);
+}
+
+.diagram .box {
+  fill: var(--panel);
+  stroke: var(--bronze);
+  stroke-width: 1.5;
+}
+
+.diagram .box-you {
+  fill: var(--panel-2);
+  stroke: var(--yellow);
+  stroke-width: 2;
+}
+
+.diagram .box-fence {
+  fill: var(--panel);
+  stroke: var(--sand);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 3;
+}
+
+.diagram .flow {
+  stroke: var(--sand);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.diagram .life {
+  stroke: var(--line);
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
+}
+
+.diagram .arrowhead {
+  fill: var(--sand);
+}
+
+.flow-figure {
+  max-width: 34rem;
+  margin: 0 auto;
+}
+
+.legend {
+  text-align: center;
+}
+
+/* The fence */
+
+.fence-cols {
+  margin-top: 1.5rem;
+}
+
+.fence-cols .panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fence-cols ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.fence-cols li {
+  display: grid;
+  grid-template-columns: 1.4rem 1fr;
+  gap: 0.6rem;
+  padding: 0.55rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.fence-cols li:first-child {
+  border-top: 0;
+}
+
+.fence-cols li svg {
+  width: 1.2rem;
+  height: 1.2rem;
+  margin-top: 0.2rem;
+}
+
+.allowed {
+  border-top: 4px solid var(--ok);
+}
+
+.refused {
+  border-top: 4px solid var(--no);
+}
+
+.icon-ok {
+  stroke: var(--ok);
+}
+
+.icon-no {
+  stroke: var(--no);
+}
+
+/* Examples */
+
+.examples {
+  display: grid;
+  gap: 1.75rem;
+  margin-top: 1.5rem;
+}
+
+.example p {
+  margin-bottom: 0.25rem;
+}
+
+/* FAQ */
+
+.faq details {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 0 0 0.75rem;
+  padding: 0 1.1rem;
+}
+
+.faq summary {
+  cursor: pointer;
+  padding: 0.9rem 0;
+  font-weight: 700;
+  color: var(--sand);
+}
+
+.faq summary:hover {
+  color: var(--yellow);
+}
+
+.faq details[open] summary {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 0.75rem;
+}
+
+/* Footer */
+
+.site-footer {
+  padding: 2rem 1rem 3rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.site-footer .wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.site-footer ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+}
+
+/* 404 */
+
+.notfound {
+  min-height: 70vh;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+.notfound img {
+  width: 96px;
+  height: 96px;
+  image-rendering: pixelated;
+}

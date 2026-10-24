@@ -63,7 +63,7 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["cleanup [--worktrees [--older-than <days>]] [--mine] [--json]"],
     [
       ["--worktrees", "also remove finished lanes' clean worktrees merged into the base or landed, and landed integrations'"],
-      ["--older-than <days>", "with --worktrees: also the clean worktrees of finished lanes and unlanded integrations unused for over <days> days, branches kept, but not a lane whose branch changed dependency manifests (it could not be rebuilt); the automatic sweep does this for worktrees.idleDays"],
+      ["--older-than <days>", "with --worktrees: also the clean worktrees of finished lanes and unlanded integrations unused for over <days> days, branches kept; this idle rule keeps a lane whose branch changed dependency manifests (it could not be rebuilt), while one merged into the base or landed goes as above; the automatic sweep does this for worktrees.idleDays"],
       ["--mine", "only runs this session owns (not ownerless ones), and no integration"],
       JSON_OPT,
     ],

@@ -5,7 +5,8 @@
 // human in a terminal may start it; nothing else in arbab runs a host gate. A missing integration worktree is rebuilt
 // on its branch first, its dependencies installed on a trusted commit before the checkout. The worktree's writer lock
 // is held from before the rebuild until the record is written, so no sweep or cleanup removes it meanwhile; while
-// another live process holds it, host-check waits (up to 2 minutes), then refuses naming that pid.
+// another live process holds it, host-check waits (up to 2 minutes), then refuses naming that pid. The recorded head
+// is checked before the wait and again under the lock, which refuses a head that moved meanwhile.
 // Writes .arbab/integrations/<name>/host-checks.json (HostCheckRecord) for the integration head.
 // Text: one line per gate; a failing gate's output goes to stderr. Exit 0 when every gate exited 0, 1 otherwise.
 import { existsSync } from "node:fs";
@@ -85,6 +86,13 @@ export async function runHostCheck(argv: string[], ctx: CommandContext): Promise
   // The gates take minutes and the record is written at the end: the writer lock keeps a sweep or cleanup from
   // removing the worktree, as idle, under them.
   const record = await withWorktreeLock(ctx, project, basename(worktree), "host-check", () => {
+    // Checked again under the lock: an integrate or a hand commit may have moved the head during the wait, and the
+    // human started the gates for the head read before it.
+    const now = openIntegration(project, name);
+    assertRecordedHead(ctx.git, project, now);
+    if (now.record.headSha !== head) {
+      throw new ArbabError("usage", `${now.paths.branch} moved from ${head} to ${now.record.headSha} while host-check waited; review it and run host-check again`);
+    }
     // A worktree removed while idle is rebuilt on the branch, its install at a trusted commit; the branch is at the
     // recorded head (checked above), so the rebuilt tree is too.
     ensureIntegrationWorktree({ projectRoot: project.root, config: project.config, git: ctx.git, runCommand: ctx.runCommand }, integration.paths);

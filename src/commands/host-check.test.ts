@@ -1,8 +1,10 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { acquireWriterLock, releaseWriterLock, writerLockKey } from "../run";
 import type { HostCheckRecord, IntegrationRecord, ReadinessReport } from "../types";
 import { writeJsonAtomic } from "../util/fs";
+import type { CommandContext } from "./context";
 import { readHostCheckRecord, runHostCheck } from "./host-check";
 import { runIntegrate } from "./integrate";
 import { runReadiness } from "./readiness";
@@ -11,6 +13,7 @@ import { DEFAULT_CONFIG, NOW_MS, branchWith, makeProject, passedVerify, type Tes
 let p: TestProject;
 afterEach(() => p?.dispose());
 
+const LIVE = 101;
 const GATES = [["docker", "build", "."], ["pnpm", "e2e", "--grep", "a b"], ["make", "db-test"]];
 const dir = (t: TestProject): string => join(t.root, ".arbab", "integrations", "rel");
 const recordPath = (t: TestProject): string => join(dir(t), "host-checks.json");
@@ -139,6 +142,48 @@ describe("runHostCheck", () => {
     await expect(runHostCheck(["rel"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/run arbab integrate rel again$/) });
     expect(existsSync(worktree)).toBe(false);
     expect(ran).toEqual([]);
+  });
+
+  it("checks the head again once it holds the lock: one that moved during the wait is refused", async () => {
+    let worktree: string;
+    let ran: Array<{ argv: string[]; cwd: string }>;
+    let head: string;
+    ({ t: p, head, worktree, ran } = await integrated());
+    const t = p;
+    t.alive.add(LIVE);
+    const key = writerLockKey(join(realpathSync(t.worktreeRoot), "integrate-rel"));
+    const holder = { pid: LIVE, lane: "integrate-rel", project: t.root, createdAt: "2026-10-09T12:00:00.000Z" };
+    /** host-check's context: while it waits, `move` runs and the holder lets go. */
+    const waitingWhile = (move: () => Promise<void>): CommandContext => ({
+      ...t.ctx,
+      sleep: async (ms) => {
+        t.now.ms += ms;
+        releaseWriterLock(t.home, key, holder);
+        await move();
+      },
+    });
+
+    // A hand commit leaves the branch past the record.
+    expect(acquireWriterLock(t.home, key, holder, t.ctx.alive)).toBe(true);
+    const handCommit = waitingWhile(async () => {
+      t.ok(["commit", "-q", "--allow-empty", "-m", "by hand"], worktree);
+    });
+    await expect(runHostCheck(["rel"], handCommit)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/run arbab integrate rel again$/) });
+
+    // A refresh moves the record with it: still not the head host-check was started for.
+    t.ok(["reset", "-q", "--hard", head], worktree);
+    expect(acquireWriterLock(t.home, key, holder, t.ctx.alive)).toBe(true);
+    const refreshed = waitingWhile(async () => {
+      t.ok(["commit", "-q", "--allow-empty", "-m", "by hand"], worktree);
+      expect(await runIntegrate(["rel", "--refresh"], t.ctx)).toBe(0);
+    });
+    await expect(runHostCheck(["rel"], refreshed)).rejects.toMatchObject({
+      code: "usage",
+      message: expect.stringMatching(new RegExp(`^integrate/rel moved from ${head} to [0-9a-f]+ while host-check waited`)) as unknown,
+    });
+    expect(readRecord<IntegrationRecord>(join(dir(t), "integration.json")).headSha).not.toBe(head);
+    expect(ran).toEqual([]);
+    expect(existsSync(recordPath(t))).toBe(false);
   });
 
   it("feeds readiness: the gates are verified once they passed on the head", async () => {

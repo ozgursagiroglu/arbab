@@ -426,6 +426,22 @@ describe("runLand", () => {
     expect(p.ok(["status", "--porcelain"])).toBe("");
   });
 
+  it("removes a generated lane whose run was never collected: once rel lands, no verify or review of it can adopt the run", async () => {
+    let head: string;
+    ({ t: p, head } = await ready());
+    const verify = laneWorktree(p, "rel-verify", head);
+    markGenerated(p.runsRoot, "rel-verify", { integration: "rel", branch: "integrate/rel", head }, T);
+    mkdirSync(join(dir(p), "lanes"), { recursive: true });
+    writeJsonAtomic(join(dir(p), "lanes", "rel-verify.run.json"), { lane: "rel-verify", shepherdPid: 4242, before: 0, head, fingerprint: "f", settled: false });
+
+    expect(await runLand(["rel", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as { cleanup: WorktreeCleanup };
+    expect(out.cleanup.worktreesRemoved).toContain(verify);
+    expect(out.cleanup.branchesDeleted).toContain("arbab/rel-verify");
+    expect(out.cleanup.worktreesKept).toEqual([]);
+    expect(out.cleanup.branchesKept).toEqual([]);
+  });
+
   it("keeps a dirty lane worktree and one an active lane borrows, with their reasons, and lands", async () => {
     ({ t: p } = await ready());
     branchWith(p, "arbab/b", "b.txt", "b\n");

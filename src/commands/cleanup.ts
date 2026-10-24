@@ -9,7 +9,8 @@
 // many days, and the clean worktree of an unlanded integration whose records have not changed for that long and no
 // lane of which is active, keeping their branches; it keeps a lane whose branch changed dependency manifests since
 // the trusted start the shepherd would rebuild it from (installPlan), as such a worktree could not be rebuilt. A
-// generated lane whose run record is unsettled (its verify or review has not collected it) goes only by that idle rule.
+// generated lane whose run record is unsettled (its verify or review has not collected it) goes only by that idle rule
+// while its worktree exists and its integration has not landed: only then could a later verify or review adopt the run.
 // --mine touches only the lanes this session owns (ownerless runs are not its own). Of lane branches only generated
 // lanes' go: a later plan phase merges an earlier one's arbab/<lane> by name. The same rules (removeLaneWorktrees) serve
 // `arbab land`, which cleans up what it landed, and the automatic sweep (sweepIdleWorktrees). Every worktree goes
@@ -243,8 +244,9 @@ interface Rules {
   /** Asked, under the lock, before `stale` removes a worktree: why the lane could not be rebuilt, else null. */
   unrebuildable?: () => string | null;
   /**
-   * Asked under the lock for a generated lane: whether its verify or review has yet to collect its run. Until then only
-   * `stale` removes it: without its branch and tree, that command would record a false failure.
+   * Asked under the lock for a generated lane: whether a later verify or review may still adopt its uncollected run
+   * (its worktree exists and its integration has not landed). Until then only `stale` removes it: without its branch
+   * and tree, that command would record a false failure.
    */
   uncollected?: () => boolean;
   removals: Array<{ path: string; reason: string }> | undefined;
@@ -301,8 +303,8 @@ type Verdict = { keep: string } | { remove: string; deleteBranch: boolean };
  * Whether the worktree and branch may go by git's account. Kept: changes in the tree (untracked files under
  * .arbab-tmp/ aside), or a branch neither merged into base nor landed by record, unless `rules.stale` lets its clean
  * worktree go (and `rules.unrebuildable` gives no reason to keep it). `rules.unused` lets a clean worktree go before the
- * merge is asked, its branch kept. A generated lane whose run is uncollected goes only by `rules.stale`. Only a branch
- * merged into base may be deleted: `branch -d` would refuse the others.
+ * merge is asked, its branch kept. A generated lane whose run may still be collected goes only by `rules.stale`. Only
+ * a branch merged into base may be deleted: `branch -d` would refuse the others.
  */
 function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boolean, hasBranch: boolean, rules: Rules, common: CommonDir): Verdict {
   if (hasWorktree) {
@@ -394,17 +396,23 @@ function removeWorktreeAndBranch(
 }
 
 /**
- * Whether a generated lane's run record (<lanesDir>/<lane>.run.json) is unsettled: its verify or review has not taken
- * the run into its record yet. The record is in the generating integration's lanesDir, or in .arbab/refs/<id>/lanes
- * for a `verify --ref` lane (its generator is the ref- id). No record, or one that does not read, leaves nothing to
+ * Whether a generated lane's run record (<lanesDir>/<lane>.run.json) is unsettled while a later verify or review could
+ * still adopt it: the lane's worktree exists (reusableRun adopts nothing without it) and the generating integration has
+ * not landed. The record is in the generating integration's lanesDir, or in .arbab/refs/<id>/lanes for a `verify --ref`
+ * lane (its generator is the ref- id, which never lands). No record, or one that does not read, leaves nothing to
  * collect: the next command launches the lane afresh.
  */
 function uncollected(project: Project, lane: string, by: string | null): boolean {
   const owner = generatingIntegration(by);
-  if (owner === null) return false;
-  const lanesDir = owner.startsWith(REF_PREFIX)
-    ? confine(project.root, join(REFS_DIR, owner, "lanes"))
-    : integrationPaths(project.root, project.config, owner).lanesDir;
+  if (owner === null || !existsSync(join(project.worktreeRoot, lane))) return false;
+  let lanesDir: string;
+  if (owner.startsWith(REF_PREFIX)) {
+    lanesDir = confine(project.root, join(REFS_DIR, owner, "lanes"));
+  } else {
+    const paths = integrationPaths(project.root, project.config, owner);
+    if (existsSync(paths.landing)) return false;
+    lanesDir = paths.lanesDir;
+  }
   const run = readGeneratedRun(lanesDir, lane);
   return run !== null && !run.settled;
 }

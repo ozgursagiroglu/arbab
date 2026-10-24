@@ -97,9 +97,11 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
                                           --worktrees removes finished lanes' clean worktrees merged or landed (lane
                                           branches stay), and landed integrations' worktrees and branches;
                                           --older-than also those of finished lanes and unlanded integrations unused
-                                          that long (branches stay), as the automatic sweep does (worktrees.idleDays)
+                                          that long (branches stay), as the automatic sweep does (worktrees.idleDays),
+                                          but not a lane whose branch changed dependency manifests
   integrate <name> (--lanes a,b,… | --plan <plan.json>) [--json]
-                                          merge lane branches into integrate/<name>, in order or by plan waves
+                                          merge lane branches into integrate/<name>, in order or by plan waves;
+                                          every mode but --deps-installed holds the worktree's writer lock
   integrate <name> --adopt <ref> [--base <branch>] [--json]
                                           make an integration of an existing branch; the base must be a branch
                                           that config baseBranch contains

@@ -148,8 +148,11 @@ Then:
      Read tool still may not; every other `.env*` file stays denied); `fence.bashOutputMaxChars` (default 100000):
      longer Bash output is saved where workers cannot read it.
    - `landing.tier` (`low`, `medium` or `high`, default `medium`) and `landing.squash` (one commit per landing).
-   - `worktrees.idleDays` (default 3, 0 turns it off): after a launch, arbab removes the clean worktrees of finished
-     lanes and integrations unused for that many days. Their branches and records stay.
+   - `worktrees.idleDays` (default 3, 0 turns it off): after a launch, arbab removes what `arbab cleanup --worktrees
+     --older-than <idleDays>` removes: the clean worktrees of finished lanes merged into the base or landed (at any
+     age), of finished lanes and unlanded integrations unused for that many days, and of landed integrations. Branches
+     and records stay, except generated lanes' and landed integrations' branches once merged. Its log is
+     `.arbab/sweep.log`, moved to `sweep.log.1` once over 1 MiB.
    - Also: `preflight.steps`, `dependencies`, `env`, `passEnv`, `credentialPaths`, `resources`, `semaphores`,
      `quota.holdAbove`, `review.lenses`, `roles`, `minClaudeVersion`, `worktreeRoot`, `runsRoot`.
 
@@ -323,9 +326,10 @@ What the fence refuses is in [Safe by construction](#safe-by-construction); how 
 Every worker gets:
 
 - **Its own git worktree and branch.** A lane can instead borrow another lane's worktree, as a verifier does after its
-  builder. Your checkout is never its working directory. arbab removes worktrees left unused for
-  `worktrees.idleDays` days by itself, keeping their branches, and rebuilds a removed one from its branch when a
-  resume, an integration or a host check needs it.
+  builder. Your checkout is never its working directory. arbab removes clean worktrees of merged or landed lanes, and
+  those left unused for `worktrees.idleDays` days, by itself, keeping lane branches, and rebuilds a removed one from
+  its branch when a resume, an integration or a host check needs it. It keeps one that could not be rebuilt (its
+  branch changed dependency manifests) and one an integration command is working in.
 - **Claude Code's sandbox.** Writes stay in its worktree and the few shared places Claude Code's sandbox allows, such
   as the per-user temp directory and `~/.npm/_logs`; keep nothing you trust there while lanes run. There is no
   network unless the lane is a researcher. A sandbox that cannot start is fatal, never a silent fallback.
@@ -469,12 +473,12 @@ clink as a finished worker takes its pay.
 | `stop <lane>` | Stops the lane's shepherd and worker. |
 | `preflight <lane.json> [--timeout-min N]` | Probes the lane's fence and model. Exit 1 on any failed check. |
 | `quota [--reset \| --refresh]` | Shows the account snapshot and the hold decision. After you switch accounts, `--refresh` reads the new account's windows with one haiku call; `--reset` only deletes the snapshot. |
-| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories and session watermarks unused for 30 days. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than <days>` adds the clean worktrees of finished lanes and of integrations that have not landed, unused for longer, and keeps their branches: what the automatic sweep does with `worktrees.idleDays`. `--mine`: only this session's runs. |
-| `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
+| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories and session watermarks unused for 30 days. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than <days>` adds the clean worktrees of finished lanes and of integrations that have not landed, unused for longer, and keeps their branches: what the automatic sweep does with `worktrees.idleDays`. It keeps a lane whose branch changed dependency manifests (it could not be rebuilt). A generated verify or review lane its command has not collected yet goes only by `--older-than`. `--mine`: only this session's runs. |
+| `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. Like `--adopt`, `--refresh` and `host-check`, it holds the integration worktree's writer lock while it works there, so no sweep removes it; it waits up to 2 minutes for another holder, then refuses naming its pid. |
 | `integrate <name> --adopt <ref> [--base <branch>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. The base (`--base`, or config `baseBranch`) must be a branch, since `land` merges into it, and contained in your base branch: the install runs at the fork point. |
 | `integrate <name> --refresh` | Records the integration's head again after a hand commit or a merge of the base in its worktree. Merges nothing. A missing worktree is rebuilt from the branch first, its install on a trusted commit, so run it before the base merge `land` prints when the worktree is gone. |
 | `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. Terminal only. |
-| `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
+| `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. A verify worktree left with changes is kept for inspection; the next verify resets it. |
 | `verify --ref <branch>` | The same on a branch head with no integration: the check after landing. |
 | `review <name> [--lenses a,b] [--lens-file <lens>=<file>]… [--since <sha>] [--timeout-min N]` | One reviewer lane per lens, then skeptics for MEDIUM+ findings. `--lens-file` adds or replaces a lens for one run, from a file inside the project that is no credential file by the fence's list and `credentialPaths` (`.env*`, `*.pem`, `*.key`…, in any case); `--since` diffs from an ancestor of the head instead of the base, for a fix round. |
 | `readiness <name> [--tier low\|medium\|high] [--waive id,…]` | Writes the readiness report: verified, skipped, risks. Exit 1 unless ready. `--waive` needs a terminal. |

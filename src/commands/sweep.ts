@@ -1,10 +1,15 @@
 // arbab __sweep <root> (internal; started detached by launch and resume through maybeStartSweep)
 //
-// Removes the project's idle worktrees as `cleanup --worktrees --older-than <worktrees.idleDays>` would
-// (sweepIdleWorktrees): finished lanes' and integrations' clean worktrees, branches kept. One sweep per project at a
-// time (.arbab/sweep.lock, reclaimed when its pid is dead), and one start per hour (.arbab/sweep.json's startedAt).
-// Writes sweep.json (SweepRecord) when it starts and again when it finishes; prints one line per action to its log
-// (.arbab/sweep.log). Exit 0, also when another sweep holds the lock; 1 on bad arguments.
+// Removes what `cleanup --worktrees --older-than <worktrees.idleDays>` removes (sweepIdleWorktrees): the clean
+// worktrees of finished lanes merged into the base or landed by record (at any age), of finished lanes and unlanded
+// integrations unused for idleDays days, and of landed integrations. Branches stay, except generated lanes' and landed
+// integrations' once merged. It keeps what cleanup keeps: a worktree whose writer lock a live process holds (integrate
+// and host-check hold the integration's), a lane whose branch changed dependency manifests since its trusted install
+// point (it could not be rebuilt), and a generated lane its verify or review has not collected yet unless idle. One
+// sweep per project at a time (.arbab/sweep.lock, reclaimed when its pid is dead), and one start per hour
+// (.arbab/sweep.json's startedAt). Writes sweep.json (SweepRecord) when it starts and again when it finishes; prints
+// one line per action to its log (.arbab/sweep.log, moved to sweep.log.1 at the start once over 1 MiB). Exit 0, also
+// when another sweep holds the lock; 1 on bad arguments.
 import { realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { releaseIfStale, type Holder } from "../run";

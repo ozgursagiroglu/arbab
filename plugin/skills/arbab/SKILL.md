@@ -244,7 +244,7 @@ The full table, with what to do for each: [references/end-states.md](references/
     a bounded digest of the latest attempt as a head start; the brief stays as it is;
   - a fresh relaunch with a corrected brief, when the brief was wrong: the same lane file again (`arbab launch
     lanes/<lane>.json`) starts a fresh session in the same worktree, on its checkpoint commits. Choose a new lane
-    name (`"base": "arbab/<lane>"` keeps the checkpoint) only when the scope changes or the worktree cannot be rebuilt.
+    name (`"base": "arbab/<lane>"` keeps the checkpoint) only when the scope changes.
 - `invalid-report`: the work may be fine but the report is missing or fails its schema. Resume with a prompt
   asking for the report only.
 - `unsupported-cli`: the binary cannot run the model. Run `arbab doctor`, fix the binary or the model, relaunch.
@@ -253,10 +253,10 @@ The full table, with what to do for each: [references/end-states.md](references/
   usually a stuck command or an open brief. `killed:stopped` is your own `stop`.
 - `no-result`: the worker exited without a result. Treat as `failed`.
 - A lane shown as `orphaned` lost its shepherd: run `arbab cleanup`, then decide as for `failed`.
-- Worktrees of finished lanes and integrations unused for `worktrees.idleDays` days (default 3; 0 turns it off) are
-  removed automatically after a launch or resume; branches and records stay. `resume`, a relaunch and `integrate`
-  rebuild a missing one from its branch. A lane whose branch changed dependency manifests cannot be rebuilt (its
-  install would not match): relaunch it under a new name with `"base": "arbab/<lane>"`.
+- After a launch or resume arbab removes what `cleanup --worktrees --older-than <worktrees.idleDays>` does (default 3;
+  0: off): clean worktrees of merged or landed lanes, and of lanes and integrations unused that long; lane branches
+  stay. `resume`, a relaunch and `integrate` rebuild a missing one. A lane whose branch changed dependency manifests is
+  kept (no rebuild could match): integrate it, the human confirms the install, then continue on `integrate/<name>`.
 
 ## Quota
 
@@ -334,7 +334,7 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    (the tests), and on the host that code would run with your credentials, network and files. Exit codes are read
    from the stream's tool results for the exact command lines, never from the model's report; a gate that did not
    run counts as failed. Lane-level green is not repo-level green: every lane's tests passed while an integration
-   branch failed boot-smoke. Verify again after every `integrate`.
+   branch failed boot-smoke. Verify again after every `integrate`. A dirty verify worktree stays for inspection.
 3. `arbab review <name>` when the tier asks for it (above).
 4. `arbab readiness <name> [--tier low|medium|high] [--waive id,…]` writes the **readiness report** (FR-21):
    - **verified**: each gate and smoke command with its exit code, the lenses that ran, the findings' verdicts;
@@ -352,7 +352,7 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
 
    Checks the fence cannot run (Docker, a browser, a database) go in config `hostGates`. Readiness lists them
    (`host`) until they passed on the head; the human starts `arbab host-check <name>` in a terminal, because it runs
-   worker code on the host. Never run them on the host yourself.
+   worker code on the host. Never run them on the host yourself. While it runs, no sweep removes that worktree.
 5. **Ask the human**, showing `readiness.md`. On a yes, `arbab land <name>` (one commit: `--squash --message <file>`,
    a file inside the project and no credential file, or config `landing.squash`). The hook never approves `land`.
    - Tell each session readiness names, with SendMessage, what the landing changes and when, then land. Find it in
@@ -368,7 +368,7 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
        the base into the integration worktree with hooks off (the command `land` prints:
        `git -C <integration worktree> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c diff.ignoreSubmodules=all -c submodule.recurse=false merge --no-verify --no-edit <base>`; a plain `git merge` there would run worker-written hooks on the host), then record
        the new head with `arbab integrate <name> --refresh` and run verify, review and readiness again. When that
-       worktree is gone (removed while idle), run `arbab integrate <name> --refresh` before the merge: it rebuilds it.
+       worktree is gone (removed while idle), the instruction starts with `arbab integrate <name> --refresh`: it rebuilds it.
    - Then it merges `--no-ff` (`Land <name>`), or makes one squash commit, with hooks disabled (the branch holds
      worker code), writes `landing.json` and prints the push command.
    - **It never pushes.** Push and deploy are human actions; say that nothing was pushed.

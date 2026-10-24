@@ -703,7 +703,7 @@ describe("runShepherd", () => {
       expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("failed");
       expect(stateOf("m1-a")).toMatchObject({ state: "finished", endState: "failed" });
       expect(stateOf("m1-a")?.reason).toMatch(/^arbab\/m1-a changes dependency manifests since [0-9a-f]{40} \(package\.json\)/);
-      expect(stateOf("m1-a")?.reason).toContain('relaunch under a new name with "base": "arbab/m1-a"');
+      expect(stateOf("m1-a")?.reason).toContain("Integrate the lane (arbab integrate <name> --lanes m1-a;");
       expect(readFileSync(seen, "utf8")).toBe("base,base,");
       expect(existsSync(worktree)).toBe(false);
       expect(mustGit(project.git, ["rev-parse", "refs/heads/arbab/m1-a"], project.root).trim()).toBe(head);

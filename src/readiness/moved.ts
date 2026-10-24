@@ -11,14 +11,15 @@ const SHA = /^[0-9a-f]{40,64}$/;
 /**
  * How to answer a moved base, as readiness and land both say it: the merge the human runs in the integration worktree
  * gets the same git options as arbab's own, or a worker-written hook (a relative core.hooksPath) would run on the host.
- * The worktree and the base are quoted: the human pastes the command into a shell.
+ * The worktree and the base are quoted: the human pastes the command into a shell. A worktree removed while idle
+ * (`worktreeExists` false, as the caller found it) is rebuilt first by `--refresh`, so the merge has a tree to run in.
  */
-export function baseMergeInstruction(base: string, name: string, worktree: string): string {
-  return (
-    `Merge ${base} into integrate/${name} with hooks off: git -C ${shellWord(worktree)} ${untrustedTree().join(" ")} ` +
+export function baseMergeInstruction(base: string, name: string, worktree: string, worktreeExists: boolean): string {
+  const merge =
+    `${base} into integrate/${name} with hooks off: git -C ${shellWord(worktree)} ${untrustedTree().join(" ")} ` +
     `merge --no-verify --no-edit ${shellWord(base)}; then arbab integrate ${name} --refresh to record the new head, and ` +
-    `verify, review and readiness for ${name} again`
-  );
+    `verify, review and readiness for ${name} again`;
+  return worktreeExists ? `Merge ${merge}` : `Run arbab integrate ${name} --refresh to rebuild the integration worktree; then merge ${merge}`;
 }
 
 /** The integration being judged: its own landing is no move of the base. */

@@ -32,16 +32,24 @@ function fakeGit(ancestor: number, listed: string[] | null): { git: GitRunner; c
 
 describe("baseMergeInstruction", () => {
   it("is the merge with hooks off, then refresh, verify, review and readiness again", () => {
-    expect(baseMergeInstruction("main", "rel", "/repo/wt")).toBe(
+    expect(baseMergeInstruction("main", "rel", "/repo/wt", true)).toBe(
       `Merge main into integrate/rel with hooks off: git -C /repo/wt ${untrustedTree().join(" ")} merge --no-verify --no-edit main; ` +
         "then arbab integrate rel --refresh to record the new head, and verify, review and readiness for rel again",
     );
   });
 
+  it("starts with the rebuild by --refresh when the worktree does not exist", () => {
+    expect(baseMergeInstruction("main", "rel", "/repo/wt", false)).toBe(
+      "Run arbab integrate rel --refresh to rebuild the integration worktree; then merge main into integrate/rel with hooks " +
+        `off: git -C /repo/wt ${untrustedTree().join(" ")} merge --no-verify --no-edit main; ` +
+        "then arbab integrate rel --refresh to record the new head, and verify, review and readiness for rel again",
+    );
+  });
+
   it("quotes the worktree and the base as one shell word each", () => {
-    const text = baseMergeInstruction("feat/it's", "rel", "/work/my repo/wt");
+    const text = baseMergeInstruction("feat/it's", "rel", "/work/my repo/wt", true);
     expect(text).toContain(`git -C '/work/my repo/wt' ${untrustedTree().join(" ")} merge --no-verify --no-edit 'feat/it'\\''s'; then`);
-    expect(baseMergeInstruction("main", "rel", "/work/$HOME's!")).toContain(`git -C '/work/$HOME'\\''s!' `);
+    expect(baseMergeInstruction("main", "rel", "/work/$HOME's!", true)).toContain(`git -C '/work/$HOME'\\''s!' `);
   });
 });
 

@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { credentialMatcher } from "../profile";
+import { baseMergeInstruction } from "../readiness";
 import { registerShepherd, registerWaiter } from "../registry";
 import { untrustedTree } from "../run";
 import type { IntegrationRecord, LandingRecord, ReadinessReport, ReviewRecord, SessionActivity } from "../types";
@@ -925,5 +926,17 @@ describe("assertBaseInHead", () => {
       expect.objectContaining({ code: "usage", message: expect.stringMatching(/^not landed: main moved since the integration was verified/) }),
     );
     expect(() => assertBaseInHead(p.git, p.root, "main", "f".repeat(40), "rel", "/w/integrate-rel")).toThrow(expect.objectContaining({ code: "git" }));
+  });
+
+  it("asks for the rebuild first when the integration worktree does not exist, and only then", () => {
+    p = makeProject();
+    const head = branchWith(p, "arbab/a", "a.txt", "a\n");
+    p.ok(["commit", "-q", "--allow-empty", "-m", "moves"]);
+    const missing = join(p.dir, "integrate-rel");
+    expect(() => assertBaseInHead(p.git, p.root, "main", head, "rel", missing)).toThrow(
+      `nobody verified. ${baseMergeInstruction("main", "rel", missing, false)}`,
+    );
+    mkdirSync(missing);
+    expect(() => assertBaseInHead(p.git, p.root, "main", head, "rel", missing)).toThrow(`nobody verified. ${baseMergeInstruction("main", "rel", missing, true)}`);
   });
 });

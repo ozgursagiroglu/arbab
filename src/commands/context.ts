@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, openSync, renameSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "../config";
@@ -188,14 +188,32 @@ export function sweepArgv(scriptPath: string, root: string): string[] {
   return [scriptPath, "__sweep", root];
 }
 
+/** A sweep.log over this size is moved to sweep.log.1 before the next sweep appends to it. */
+export const SWEEP_LOG_MAX_BYTES = 1024 * 1024;
+
 /**
- * Starts `node <script> __sweep <root>` in its own process group, output appended to `<root>/.arbab/sweep.log`, and
- * lets this process exit without waiting for it.
+ * Moves the log to `<log>.1`, replacing an older one, once it is over `maxBytes`; returns whether it did. A log that
+ * is missing or cannot be moved is left as it is: a sweep is not worth failing a launch for.
+ */
+export function rotateLog(logPath: string, maxBytes = SWEEP_LOG_MAX_BYTES): boolean {
+  try {
+    if (statSync(logPath).size <= maxBytes) return false;
+    renameSync(logPath, `${logPath}.1`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Starts `node <script> __sweep <root>` in its own process group, output appended to `<root>/.arbab/sweep.log`
+ * (rotated first, rotateLog), and lets this process exit without waiting for it.
  */
 export function makeSpawnSweep(execPath: string, scriptPath: string, env: NodeJS.ProcessEnv, spawnFn: typeof spawn = spawn): CommandContext["spawnSweep"] {
   return (root) => {
     const logPath = join(root, SWEEP_LOG_FILE);
     ensureDir(dirname(logPath));
+    rotateLog(logPath);
     const log = openSync(logPath, "a");
     try {
       const child = spawnFn(execPath, sweepArgv(scriptPath, root), { cwd: root, env, detached: true, stdio: ["ignore", log, log] });

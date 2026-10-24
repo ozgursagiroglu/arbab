@@ -110,7 +110,7 @@ at a trusted commit before the checkout.
 
 `.arbab/sweep.json` is the latest automatic worktree sweep (`startedAt`, `finishedAt`, null while it runs or when it
 died, `idleDays`, `removed[]` with `{path, reason}`, `kept`, `warnings`); `.arbab/sweep.log` holds what the sweeps
-printed.
+printed, moved to `sweep.log.1` once over 1 MiB.
 
 Machine records in `~/.arbab/`: `quota.json`, `quota-reset.json`, `machine.json`, the pools (`slots/`, `semaphores/`,
 `leases/`, `locks/`), `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while `wait` runs or

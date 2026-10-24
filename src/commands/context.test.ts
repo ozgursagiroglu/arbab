@@ -13,6 +13,8 @@ import {
   makeReadStdin,
   makeSpawnShepherd,
   makeSpawnSweep,
+  rotateLog,
+  SWEEP_LOG_MAX_BYTES,
   shepherdArgv,
   sweepArgv,
   type NotifyExec,
@@ -95,6 +97,53 @@ describe("makeSpawnSweep", () => {
     const spawnFn = (() => child) as unknown as typeof spawn;
     expect(() => makeSpawnSweep("/node", "/s.mjs", {}, spawnFn)(p.root)).toThrow(/cannot start the worktree sweep/);
     expect(existsSync(join(p.root, ".arbab", "sweep.log"))).toBe(true);
+  });
+
+  it("moves a sweep.log over 1 MiB to sweep.log.1, replacing an older one, before it appends", () => {
+    p = makeProject();
+    const log = join(p.root, ".arbab", "sweep.log");
+    mkdirSync(join(p.root, ".arbab"), { recursive: true });
+    const big = "x".repeat(SWEEP_LOG_MAX_BYTES + 1);
+    writeFileSync(log, big);
+    writeFileSync(`${log}.1`, "older\n");
+    const seen: number[] = [];
+    const child = Object.assign(new EventEmitter(), { pid: 4321, unref: () => undefined });
+    const spawnFn = ((_cmd: string, _args: string[], opts: { stdio: [string, number, number] }) => {
+      // What the sweep would append goes to a fresh log.
+      seen.push(opts.stdio[1]);
+      return child;
+    }) as unknown as typeof spawn;
+    expect(makeSpawnSweep("/node", "/s.mjs", {}, spawnFn)(p.root)).toBe(4321);
+    expect(seen).toHaveLength(1);
+    expect(readFileSync(`${log}.1`, "utf8")).toBe(big);
+    expect(readFileSync(log, "utf8")).toBe("");
+  });
+});
+
+describe("rotateLog", () => {
+  it("rotates only a log over the limit, and leaves a missing one missing", () => {
+    p = makeProject();
+    const log = join(p.dir, "a.log");
+    expect(rotateLog(log, 4)).toBe(false);
+    expect(existsSync(log) || existsSync(`${log}.1`)).toBe(false);
+    writeFileSync(log, "1234");
+    expect(rotateLog(log, 4)).toBe(false);
+    expect(readFileSync(log, "utf8")).toBe("1234");
+    writeFileSync(log, "12345");
+    expect(rotateLog(log, 4)).toBe(true);
+    expect(existsSync(log)).toBe(false);
+    expect(readFileSync(`${log}.1`, "utf8")).toBe("12345");
+    expect(SWEEP_LOG_MAX_BYTES).toBe(1024 * 1024);
+  });
+
+  it("leaves a log it cannot move as it is", () => {
+    p = makeProject();
+    const log = join(p.dir, "b.log");
+    writeFileSync(log, "12345");
+    // sweep.log.1 is a non-empty directory: the rename fails.
+    mkdirSync(join(`${log}.1`, "x"), { recursive: true });
+    expect(rotateLog(log, 4)).toBe(false);
+    expect(readFileSync(log, "utf8")).toBe("12345");
   });
 });
 

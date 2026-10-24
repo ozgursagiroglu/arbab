@@ -156,8 +156,10 @@ export interface ProjectConfig {
    */
   hostGates: string[][];
   /**
-   * `idleDays` (0–365): a launch or resume starts a background sweep that removes the clean worktrees of lanes finished
-   * and integrations unused for that many days, branches kept; 0 turns it off.
+   * `idleDays` (0–365): a launch or resume starts a background sweep that removes what `cleanup --worktrees
+   * --older-than <idleDays>` removes: the clean worktrees of finished lanes merged into the base or landed by record (at
+   * any age), of finished lanes and unlanded integrations unused for idleDays days, and of landed integrations. Branches
+   * stay, except generated lanes' and landed integrations' once merged. 0 turns it off.
    */
   worktrees: { idleDays: number };
 }

@@ -4,8 +4,9 @@
 // worktrees of finished lanes merged into the base or landed by record (at any age), of finished lanes and unlanded
 // integrations unused for idleDays days, and of landed integrations. Branches stay, except generated lanes' and landed
 // integrations' once merged. It keeps what cleanup keeps: a worktree whose writer lock a live process holds (integrate
-// and host-check hold the integration's), a lane whose branch changed dependency manifests since its trusted install
-// point (it could not be rebuilt), and a generated lane its verify or review has not collected yet unless idle. One
+// and host-check hold the integration's); under the idle rule, a lane whose branch changed dependency manifests since
+// its trusted install point (it could not be rebuilt); and a generated lane its verify or review has not collected yet,
+// while its worktree exists and its integration has not landed, unless idle. One
 // sweep per project at a time (.arbab/sweep.lock, reclaimed when its pid is dead), and one start per hour
 // (.arbab/sweep.json's startedAt). Writes sweep.json (SweepRecord) when it starts and again when it finishes; prints
 // one line per action to its log (.arbab/sweep.log, moved to sweep.log.1 at the start once over 1 MiB). Exit 0, also

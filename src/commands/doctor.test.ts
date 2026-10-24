@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { defaultConfig } from "../config";
+import { defaultConfig, loadConfig } from "../config";
 import { HOOK_MISSING } from "../doctor";
 import {
   checkClaude,
@@ -15,7 +15,7 @@ import {
   projectChecks,
   runDoctor,
 } from "./doctor";
-import { fakeDeps, makeProject, type TestProject } from "./testkit";
+import { fakeDeps, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -112,6 +112,27 @@ describe("doctorChecks", () => {
       ["home", "ok"],
     ]);
     expect(checks.find((c) => c.check === "machine")?.detail).toBe("maxParallel min(4, 2) = 2");
+  });
+
+  it("gives the disk check the unused worktrees and the free space of their volume, and warns when it runs low", () => {
+    p = makeProject();
+    mkdirSync(join(p.worktreeRoot, "old"), { recursive: true });
+    mkdirSync(join(p.worktreeRoot, "young"), { recursive: true });
+    writeLaneRun(p.runsRoot, "old", { state: "finished", endState: "success", since: "2026-08-30T12:00:00.000Z" });
+    writeLaneRun(p.runsRoot, "young", { state: "finished", endState: "success", since: "2026-10-09T11:00:00.000Z" });
+    const asked: string[] = [];
+    p.ctx.freeSpace = (path) => {
+      asked.push(path);
+      return p.free.bytes;
+    };
+    const disk = (): string[] => projectChecks(p.ctx, p.root, loadConfig(p.root)).filter((c) => c.check === "disk").map((c) => `${c.status} ${c.detail}`);
+    expect(disk()).toEqual(["ok 2 worktree directories (1 unused for 3+ days), 500.0 GB free, 0 empty lock directories"]);
+    expect(asked).toEqual([p.worktreeRoot]);
+    p.free.bytes = 12.5e9;
+    expect(disk()).toEqual([
+      "warn 12.5 GB free on the volume of .arbab/worktrees (less than 20.0 GB; 1 unused for 3+ days): the automatic sweep (worktrees.idleDays 3) " +
+        "removes them after a launch; arbab cleanup --worktrees --older-than <days> removes unused ones now",
+    ]);
   });
 
   it("reports a project check that throws as a warning and goes on", () => {

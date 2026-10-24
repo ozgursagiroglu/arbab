@@ -1,9 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { watermarkPath } from "../hook/catchup";
 import { readState } from "../registry";
-import { untrustedTree } from "../run";
+import { acquireWriterLock, untrustedTree, writerLockKey } from "../run";
 import { plantNestedRepo } from "../run/testkit";
 import type { LandingRecord } from "../types";
 import {
@@ -12,12 +12,17 @@ import {
   formatWorktreeCleanup,
   releaseStalePoolFiles,
   removeEmptyLockDirs,
+  removeLaneWorktrees,
   runCleanup,
+  sweepIdleWorktrees,
   UNPARSED_GRACE_MS,
+  WRITER_LOCK_HELD,
   type CleanupReport,
 } from "./cleanup";
 import { markGenerated } from "./generated";
 import { runIntegrate } from "./integrate";
+import { launchLockPath } from "./launch";
+import { openProject } from "./project";
 import { NOW_MS, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
@@ -498,7 +503,7 @@ describe("runCleanup", () => {
       since: OLD,
       lane: { name: "check", role: "verifier", brief: "lanes/demo.md", worktree: "lent" },
     });
-    // An integration that has not landed keeps its worktree: --older-than looks at lanes only.
+    // An integration that has not landed and was used recently keeps its worktree.
     branchWith(p, "arbab/b", "b.txt", "b\n");
     expect(await runIntegrate(["wip", "--lanes", "b"], p.ctx)).toBe(0);
     const wip = join(p.worktreeRoot, "integrate-wip");
@@ -510,7 +515,8 @@ describe("runCleanup", () => {
         `removed worktree ${gen}: unchanged for 40 days; branch arbab/old-verify kept\n` +
         `kept worktree ${dirty}: uncommitted changes\n` +
         `kept worktree ${lent}: in use by lane check\n` +
-        `kept worktree ${young}: branch arbab/young is not merged into main\n`,
+        `kept worktree ${young}: branch arbab/young is not merged into main\n` +
+        `kept worktree ${wip}: integration wip used within 30 days\n`,
     );
     expect(existsSync(old) || existsSync(gen)).toBe(false);
     for (const path of [dirty, young, lent, wip]) expect(existsSync(path)).toBe(true);
@@ -665,5 +671,192 @@ describe("formatCleanup", () => {
 
   it("gives land's removals without reasons", () => {
     expect(formatWorktreeCleanup({ ...emptyWorktreeCleanup(), worktreesRemoved: ["/w/a"] })).toEqual(["removed worktree /w/a"]);
+  });
+});
+
+/** Sets the mtime of every file directly in the integration's records directory to `iso`. */
+function ageRecords(t: TestProject, name: string, iso: string): void {
+  const dir = join(t.root, ".arbab", "integrations", name);
+  const sec = Date.parse(iso) / 1000;
+  for (const file of readdirSync(dir, { withFileTypes: true })) if (file.isFile()) utimesSync(join(dir, file.name), sec, sec);
+}
+
+/** An integration `wip` of arbab/b, its records last written 40 days ago; returns its worktree. */
+async function idleIntegration(t: TestProject): Promise<string> {
+  branchWith(t, "arbab/b", "b.txt", "b\n");
+  expect(await runIntegrate(["wip", "--lanes", "b"], t.ctx)).toBe(0);
+  ageRecords(t, "wip", OLD);
+  t.out.length = 0;
+  return join(t.worktreeRoot, "integrate-wip");
+}
+
+const lockOf = (t: TestProject, name: string): string => join(t.home, "locks", writerLockKey(join(realpathSync(t.worktreeRoot), name)), "0.json");
+
+describe("cleanup --worktrees --older-than and unlanded integrations", () => {
+  it("removes an idle integration's clean worktree and keeps its branch and records", async () => {
+    p = makeProject();
+    const wip = await idleIntegration(p);
+    expect(await runCleanup(["--worktrees", "--older-than", "30"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`removed worktree ${wip}: integration wip unused for 40 days; branch integrate/wip kept\n`);
+    expect(existsSync(wip)).toBe(false);
+    expect(hasBranch(p, "integrate/wip")).toBe(true);
+    expect(existsSync(join(p.root, ".arbab", "integrations", "wip", "integration.json"))).toBe(true);
+    // The writer lock was released after.
+    expect(existsSync(lockOf(p, "integrate-wip"))).toBe(false);
+  });
+
+  it("leaves unlanded integrations alone without --older-than", async () => {
+    p = makeProject();
+    const wip = await idleIntegration(p);
+    expect(await runCleanup(["--worktrees"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("nothing to clean\n");
+    expect(existsSync(wip)).toBe(true);
+  });
+
+  it("keeps an idle integration's worktree when it has changes", async () => {
+    p = makeProject();
+    const wip = await idleIntegration(p);
+    writeFileSync(join(wip, "notes.txt"), "x");
+    expect(await runCleanup(["--worktrees", "--older-than", "30"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`kept worktree ${wip}: uncommitted changes\n`);
+    expect(existsSync(wip)).toBe(true);
+  });
+
+  it("keeps an idle integration's worktree while a lane it generated is active", async () => {
+    p = makeProject();
+    const wip = await idleIntegration(p);
+    p.alive.add(LIVE);
+    writeLaneRun(p.runsRoot, "wip-verify", { state: "running", shepherdPid: LIVE });
+    markGenerated(p.runsRoot, "wip-verify", { integration: "wip", branch: "integrate/wip", head: "main" }, T);
+    expect(await runCleanup(["--worktrees", "--older-than", "30"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`kept worktree ${wip}: lane wip-verify of integration wip is active\n`);
+    expect(existsSync(wip)).toBe(true);
+  });
+
+  it("keeps an integration whose records changed within the days asked", async () => {
+    p = makeProject();
+    const wip = await idleIntegration(p);
+    ageRecords(p, "wip", RECENT);
+    expect(await runCleanup(["--worktrees", "--older-than", "3"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`kept worktree ${wip}: integration wip used within 3 days\n`);
+    expect(existsSync(wip)).toBe(true);
+  });
+
+  it("keeps an integration worktree whose git dir does not verify", async () => {
+    p = makeProject();
+    const wip = await idleIntegration(p);
+    writeFileSync(join(wip, ".git"), "gitdir: /nonexistent\n");
+    expect(await runCleanup(["--worktrees", "--older-than", "30", "--json"], p.ctx)).toBe(0);
+    const out = JSON.parse(p.stdout()) as CleanupReport;
+    expect(out.worktreesRemoved).toEqual([]);
+    expect(out.worktreesKept).toEqual([{ path: wip, reason: expect.stringMatching(/^cannot verify its git dir: /) as unknown }]);
+  });
+});
+
+describe("worktree removal under the writer lock", () => {
+  const DAY = 86_400_000;
+
+  /** A finished lane `old`, 40 days unchanged, with a committed worktree; returns the worktree. */
+  function oldLane(t: TestProject): string {
+    const old = addWorktree(t, "old");
+    commitIn(t, old, "o.txt");
+    writeLaneRun(t.runsRoot, "old", { state: "finished", endState: "success", since: OLD });
+    return old;
+  }
+
+  it("keeps a worktree whose writer lock a live process holds, and leaves that lock alone", async () => {
+    p = makeProject();
+    const old = oldLane(p);
+    p.alive.add(LIVE);
+    const holder = { pid: LIVE, lane: "other", project: p.root, createdAt: T };
+    expect(acquireWriterLock(p.home, writerLockKey(join(realpathSync(p.worktreeRoot), "old")), holder, p.ctx.alive)).toBe(true);
+    expect(await runCleanup(["--worktrees", "--older-than", "30"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`kept worktree ${old}: ${WRITER_LOCK_HELD}\n`);
+    expect(existsSync(old)).toBe(true);
+    expect(JSON.parse(readFileSync(lockOf(p, "old"), "utf8"))).toEqual(holder);
+  });
+
+  it("takes over a lock its dead holder left, and releases it after the removal", () => {
+    p = makeProject();
+    const old = oldLane(p);
+    entry(lockOf(p, "old"), DEAD);
+    const out = emptyWorktreeCleanup();
+    removeLaneWorktrees(p.ctx, openProject(p.ctx), ["old"], "main", out, { olderThanMs: 30 * DAY });
+    expect(out.worktreesRemoved).toEqual([old]);
+    expect(existsSync(lockOf(p, "old"))).toBe(false);
+  });
+
+  it("keeps a lane's worktree while its launch.lock exists", async () => {
+    p = makeProject();
+    const old = oldLane(p);
+    writeFileSync(launchLockPath(openProject(p.ctx), "old"), JSON.stringify({ pid: LIVE, lane: "old", project: p.root, createdAt: T }));
+    expect(await runCleanup(["--worktrees", "--older-than", "30"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe(`kept worktree ${old}: being launched\n`);
+    expect(existsSync(old)).toBe(true);
+    expect(existsSync(lockOf(p, "old"))).toBe(false);
+  });
+
+  it("keeps a lane whose state changed between the first read and the lock", () => {
+    p = makeProject();
+    const old = oldLane(p);
+    // A dead holder's lock: taking it over asks whether DEAD lives, which is when a relaunch that finished at once
+    // rewrites the state.
+    entry(lockOf(p, "old"), DEAD);
+    p.ctx.alive = (pid) => {
+      if (pid === DEAD) writeLaneRun(p.runsRoot, "old", { state: "finished", endState: "success", since: T });
+      return p.alive.has(pid);
+    };
+    const out = emptyWorktreeCleanup();
+    removeLaneWorktrees(p.ctx, openProject(p.ctx), ["old"], "main", out, { olderThanMs: 30 * DAY });
+    expect(out.worktreesRemoved).toEqual([]);
+    expect(out.worktreesKept).toEqual([{ path: old, reason: "its state changed since cleanup read it" }]);
+    expect(existsSync(old)).toBe(true);
+    expect(existsSync(lockOf(p, "old"))).toBe(false);
+  });
+
+  it("keeps a lane that is running again by the time the lock is taken", () => {
+    p = makeProject();
+    const old = oldLane(p);
+    entry(lockOf(p, "old"), DEAD);
+    p.alive.add(LIVE);
+    p.ctx.alive = (pid) => {
+      if (pid === DEAD) writeLaneRun(p.runsRoot, "old", { state: "running", shepherdPid: LIVE, since: OLD });
+      return p.alive.has(pid);
+    };
+    const out = emptyWorktreeCleanup();
+    removeLaneWorktrees(p.ctx, openProject(p.ctx), ["old"], "main", out, { olderThanMs: 30 * DAY });
+    expect(out.worktreesKept).toEqual([{ path: old, reason: "its state changed since cleanup read it" }]);
+  });
+});
+
+describe("sweepIdleWorktrees", () => {
+  it("removes idle finished lanes and integrations, branches kept, and reaps, releases and marks nothing", async () => {
+    p = makeProject();
+    const old = addWorktree(p, "old");
+    commitIn(p, old, "o.txt");
+    writeLaneRun(p.runsRoot, "old", { state: "finished", endState: "success", since: OLD });
+    const young = addWorktree(p, "young");
+    commitIn(p, young, "y.txt");
+    writeLaneRun(p.runsRoot, "young", { state: "finished", endState: "success", since: RECENT });
+    const wip = await idleIntegration(p);
+    // What cleanup alone does: an orphan to mark, a dead slot to release.
+    writeLaneRun(p.runsRoot, "gone", { state: "running", shepherdPid: DEAD });
+    const slot = entry(join(p.home, "slots", "0.json"), DEAD);
+
+    const result = sweepIdleWorktrees(p.ctx, openProject(p.ctx), 3);
+    expect(result.worktreeRemovals).toEqual([
+      { path: old, reason: "unchanged for 40 days; branch arbab/old kept" },
+      { path: wip, reason: "integration wip unused for 40 days; branch integrate/wip kept" },
+    ]);
+    expect(result.worktreesKept).toEqual([{ path: young, reason: "branch arbab/young is not merged into main" }]);
+    expect(result.warnings).toEqual([]);
+    for (const branch of ["arbab/old", "arbab/young", "integrate/wip"]) expect(hasBranch(p, branch)).toBe(true);
+    expect(readState(p.runsRoot, "gone")?.state).toBe("running");
+    expect(existsSync(slot)).toBe(true);
+  });
+
+  it("refuses a day count below 1", () => {
+    p = makeProject();
+    expect(() => sweepIdleWorktrees(p.ctx, openProject(p.ctx), 0)).toThrow(/positive whole number of days/);
   });
 });

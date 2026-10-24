@@ -18,6 +18,7 @@ import type { CommandContext } from "./context";
 import { assertNotGenerated, ownerTag, readGenerated } from "./generated";
 import { formatIssue, hasErrors, issueSummary, lintLane, resolveGitCommonDir } from "./lint";
 import { isActive, onePositional, openProject, parse, printJson, type Project } from "./project";
+import { maybeStartSweep } from "./sweep";
 
 export interface Launched {
   lane: string;
@@ -76,7 +77,8 @@ export async function awaitFirstState(ctx: CommandContext, project: Project, lan
 
 /**
  * Lints, takes the launch lock, refuses an active lane, records the lane spec in its run directory and starts a
- * shepherd; the lock is released once the shepherd has written state.json. Lint errors throw a lint ArbabError after
+ * shepherd; the lock is released once the shepherd has written state.json, and a background sweep of idle worktrees
+ * may start then (maybeStartSweep). Lint errors throw a lint ArbabError after
  * the issues are written to stderr. `onlyNew` refuses, under the lock, a lane that has run before: plan next launches a
  * phase once, even when two of them race. A lane an integration generated is refused unless `generated` says the
  * caller is that integration's command (which checked the marker itself).
@@ -106,6 +108,8 @@ export async function launchLane(
     const mode = ranBefore ? "fresh" : "start";
     const shepherdPid = ctx.spawnShepherd(project.root, lane.name, { kind: mode });
     await awaitFirstState(ctx, project, lane.name, shepherdPid);
+    // After the first state, so the sweep sees this lane active and leaves its worktree.
+    maybeStartSweep(ctx, project);
     return { lane: lane.name, runDir: paths.laneDir, shepherdPid, mode, warnings: issues };
   } finally {
     release();

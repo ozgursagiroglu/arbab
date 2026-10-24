@@ -5,6 +5,7 @@ import { landingsSince, type LandingSince } from "./landings";
 import { laneOverview, type AttentionItem, type LaneCounts, type LaneLine } from "./lanes";
 import { planOverview, type PlanOverview } from "./plans";
 import { quotaOverview, type QuotaOverview } from "./slots";
+import { worktreeOverview, type WorktreeOverview } from "./worktrees";
 
 export interface ProjectSummary {
   root: string;
@@ -13,6 +14,7 @@ export interface ProjectSummary {
   integrations: IntegrationLine[];
   attention: AttentionItem[];
   quota: QuotaOverview;
+  worktrees: WorktreeOverview;
   /** `summary --since`: the moment asked for, as an ISO time. Absent without it. */
   since?: string;
   /** `summary --since`: the landings after `since`, oldest first. Absent without it. */
@@ -22,7 +24,7 @@ export interface ProjectSummary {
 }
 
 export interface SummaryInput {
-  project: { root: string; config: ProjectConfig; runsRoot: string };
+  project: { root: string; config: ProjectConfig; runsRoot: string; worktreeRoot: string };
   home: string;
   machine: MachineConfig;
   alive: (pid: number) => boolean;
@@ -43,6 +45,7 @@ export function projectSummary(input: SummaryInput): ProjectSummary {
     integrations: integrations.integrations,
     attention: lanes.attention,
     quota: quotaOverview({ home: input.home, config: project.config, machine: input.machine, alive, nowSec: Math.floor(nowMs / 1000) }),
+    worktrees: worktreeOverview({ project, alive, nowMs }),
     ...(sinceMs !== undefined && { since: new Date(sinceMs).toISOString(), landedSince: landingsSince(project.root, sinceMs) }),
     errors: [...lanes.errors, ...plans.errors, ...integrations.errors],
   };

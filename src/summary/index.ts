@@ -14,3 +14,5 @@ export { FILES_SHOWN, formatHeader, formatLaneReport, formatReportBody, formatTo
 export type { LaneReport } from "./report";
 export { effectiveCap, quotaOverview, slotsInUse } from "./slots";
 export type { QuotaOverview, SlotHolder } from "./slots";
+export { formatWorktrees, integrationOfWorktree, readLastSweep, recordsIdleSince, unusedText, worktreeOverview } from "./worktrees";
+export type { WorktreeOverview, WorktreeOverviewInput } from "./worktrees";

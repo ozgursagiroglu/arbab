@@ -26,6 +26,7 @@ describe("projectSummary", () => {
     expect(s.integrations.map((i) => [i.name, i.stage])).toEqual([["rel", "integrated"]]);
     expect(s.attention.map((a) => a.lane)).toEqual(["docs"]);
     expect(s.quota.slots).toMatchObject({ cap: 2, inUse: [{ lane: "core" }] });
+    expect(s.worktrees).toEqual({ total: 0, idle: 0, idleDays: 3, lastSweep: null });
     expect(s.errors).toEqual([]);
   });
 

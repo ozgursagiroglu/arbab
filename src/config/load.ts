@@ -49,6 +49,7 @@ const TOP_LEVEL_KEYS: readonly (keyof ProjectConfig)[] = [
   "landing",
   "fence",
   "hostGates",
+  "worktrees",
 ];
 
 /** Every default; a fresh object per call so callers may mutate the result. */
@@ -76,6 +77,7 @@ export function defaultConfig(): ProjectConfig {
     landing: { tier: "medium", squash: false },
     fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
     hostGates: [],
+    worktrees: { idleDays: 3 },
   };
 }
 
@@ -158,6 +160,11 @@ export function loadConfig(projectRoot: string): ProjectConfig {
   }
   if (obj.fence !== undefined) config.fence = fence(obj.fence, config.fence);
   if (obj.hostGates !== undefined) config.hostGates = argvList(obj.hostGates, "hostGates");
+  if (obj.worktrees !== undefined) {
+    const w = record(obj.worktrees, "worktrees");
+    knownKeys(w, ["idleDays"], "worktrees");
+    if (w.idleDays !== undefined) config.worktrees = { idleDays: integerIn(w.idleDays, 0, 365, "worktrees.idleDays") };
+  }
   return config;
 }
 

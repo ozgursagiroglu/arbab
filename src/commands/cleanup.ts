@@ -6,9 +6,12 @@
 // worktrees of finished lanes that are clean and merged into baseBranch or landed by record (a landing.json lists the
 // lane, and its branch head is that sha or an ancestor of it), then the worktree and branch of every landed
 // integration. --older-than also removes a finished lane's clean, unborrowed worktree whose state is older than that
-// many days, keeping its branch. --mine touches only the lanes this session owns (ownerless runs are not its own).
-// Of lane branches only generated lanes' go: a later plan phase merges an earlier one's arbab/<lane> by name. The
-// same rules (removeLaneWorktrees) serve `arbab land`, which cleans up what it landed.
+// many days, and the clean worktree of an unlanded integration whose records have not changed for that long and no
+// lane of which is active, keeping their branches. --mine touches only the lanes this session owns (ownerless runs are
+// not its own). Of lane branches only generated lanes' go: a later plan phase merges an earlier one's arbab/<lane> by
+// name. The same rules (removeLaneWorktrees) serve `arbab land`, which cleans up what it landed, and the automatic
+// sweep (sweepIdleWorktrees). Every worktree goes under its writer lock: one a live process holds is kept, as is a
+// lane's while launch.lock exists.
 // Text: one line per action (`orphaned <lane>`, `reaped <lane> pgid <n>`, `released <file>`,
 // `removed <n> empty lock directories`, `removed <n> session watermarks unused for 30 days`,
 // `removed worktree <path>: <reason>`, `deleted branch <branch>`, `kept worktree <path>: <reason>`,
@@ -17,27 +20,44 @@
 //          "branchesDeleted": string[], "worktreesKept": [{"path", "reason"}], "branchesKept": [{"branch", "reason"}],
 //          "warnings": string[], "worktreeRemovals": [{"path", "reason"}], "lockDirsRemoved": number,
 //          "sessionWatermarksRemoved": number}
-import { existsSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, realpathSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
+import { basename, join } from "node:path";
 import { INTEGRATION_WORKTREE_PREFIX } from "../config/lane";
 import { removeStaleWatermarks } from "../hook/catchup";
 import { integrationPaths, listIntegrations, readIntegration, type IntegrationPaths } from "../integrate";
 import { effectiveState, listAttempts, listLanes, ownedBy, readAttempt, readShepherdRecord, readState, runPaths, sessionOf, writeState } from "../registry";
-import { listPoolEntries, reap, releaseIfStale, untrustedTree, verifyWorktreeGit, WORKER_TMP_DIR, worktreeStatus, type GitRunner } from "../run";
+import {
+  acquireWriterLock,
+  listPoolEntries,
+  reap,
+  releaseIfStale,
+  releaseWriterLock,
+  untrustedTree,
+  verifyWorktreeGit,
+  WORKER_TMP_DIR,
+  worktreeStatus,
+  writerLockKey,
+  type GitRunner,
+  type Holder,
+} from "../run";
+import { recordsIdleSince } from "../summary";
 import type { LaneSpec, LaneState, LaneStateRecord } from "../types";
 import { ArbabError } from "../util/errors";
 import { readJson } from "../util/fs";
 import { isValidName } from "../util/names";
 import { isoAt } from "../util/proc";
 import type { CommandContext } from "./context";
-import { readGenerated } from "./generated";
+import { lanesGeneratedBy, readGenerated } from "./generated";
 import { branchHead } from "./integration";
+import { launchLockPath } from "./launch";
 import { resolveGitCommonDir } from "./lint";
 import { isActive, openProject, parse, printJson, type Project } from "./project";
 
 /** An entry that never parsed is left this long for its creator to finish writing it. */
 export const UNPARSED_GRACE_MS = 5 * 60_000;
 const REAP_GRACE_MS = 10_000;
+const BEING_LAUNCHED = "being launched";
+const STATE_CHANGED = "its state changed since cleanup read it";
 
 /** What removing worktrees and the branches that may go did. Run dirs and integration records are never removed. */
 export interface WorktreeCleanup {
@@ -174,7 +194,7 @@ export async function reapOrphans(ctx: CommandContext, project: Project, report:
   }
 }
 
-/** A worktree and the branch checked out in it; either may be gone already. */
+/** A worktree (a directory in worktreeRoot) and the branch checked out in it; either may be gone already. */
 interface Removable {
   path: string;
   branch: string;
@@ -212,7 +232,19 @@ interface Rules {
   landed: Landed[];
   /** Set when the clean worktree of an unmerged branch may go anyway (--older-than): the reason given. */
   stale: string | null;
+  /**
+   * Set when the clean worktree goes whatever its branch (an unlanded integration unused long enough): the reason
+   * given. The branch stays.
+   */
+  unused?: string;
   removals: Array<{ path: string; reason: string }> | undefined;
+}
+
+/** The checks that keep a target besides git's: before its writer lock is taken, and again under it. */
+interface Blockers {
+  before: () => string | null;
+  /** Under the lock, so nothing that needs the tree can start between this check and the removal. */
+  locked: () => string | null;
 }
 
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -256,7 +288,8 @@ type Verdict = { keep: string } | { remove: string; deleteBranch: boolean };
 /**
  * Whether the worktree and branch may go by git's account. Kept: changes in the tree (untracked files under
  * .arbab-tmp/ aside), or a branch neither merged into base nor landed by record, unless `rules.stale` lets its clean
- * worktree go. Only a branch merged into base may be deleted: `branch -d` would refuse the others.
+ * worktree go. `rules.unused` lets a clean worktree go before the merge is asked, its branch kept. Only a branch merged
+ * into base may be deleted: `branch -d` would refuse the others.
  */
 function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boolean, hasBranch: boolean, rules: Rules, common: CommonDir): Verdict {
   if (hasWorktree) {
@@ -272,6 +305,7 @@ function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boo
     }
   }
   if (!hasBranch) return { keep: `no branch ${target.branch}` };
+  if (rules.unused !== undefined && hasWorktree) return { remove: rules.unused, deleteBranch: false };
   const ref = `refs/heads/${target.branch}`;
   const merged = git(["merge-base", "--is-ancestor", ref, rules.base], root);
   if (merged.code === 0) return { remove: `merged into ${rules.base}`, deleteBranch: true };
@@ -286,45 +320,72 @@ function judge(git: GitRunner, root: string, target: Removable, hasWorktree: boo
   return { keep: `branch ${target.branch} is not merged into ${rules.base}` };
 }
 
+export const WRITER_LOCK_HELD = "in use: writer lock held";
+
+/**
+ * Takes the writer lock of the worktree `<worktreeRoot>/<name>` for this process, keyed as the shepherd keys it (the
+ * root's real path and the directory name). Returns its release, or null when a live holder has it.
+ */
+export function lockWorktree(ctx: CommandContext, project: Project, name: string): (() => void) | null {
+  const key = writerLockKey(join(realpathSync(project.worktreeRoot), name));
+  const holder: Holder = { pid: ctx.pid, lane: name, project: project.root, createdAt: isoAt(ctx.clock) };
+  if (!acquireWriterLock(ctx.home, key, holder, ctx.alive)) return null;
+  return () => {
+    releaseWriterLock(ctx.home, key, holder);
+  };
+}
+
 /**
  * Removes the worktree, then deletes its branch when `target.deleteBranch` (a branch checked out in a worktree cannot
- * be deleted) and the branch is merged into the base, unless `blocker` gives a reason to keep them or `judge` does.
- * Nothing is forced: what git refuses is kept with git's message. Hooks are off, as the tree holds worker code.
+ * be deleted) and the branch is merged into the base, unless a blocker gives a reason to keep them or `judge` does.
+ * The worktree is judged and removed under its writer lock, so no shepherd can start in it meanwhile; a lock a live
+ * process holds keeps it. Nothing is forced: what git refuses is kept with git's message. Hooks are off, as the tree
+ * holds worker code.
  */
 function removeWorktreeAndBranch(
-  git: GitRunner,
-  root: string,
+  ctx: CommandContext,
+  project: Project,
   target: Removable,
   rules: Rules,
   out: WorktreeCleanup,
-  blocker: () => string | null,
+  blockers: Blockers,
   common: CommonDir,
 ): void {
+  const git = ctx.git;
+  const root = project.root;
   const hasWorktree = existsSync(target.path);
   if (!hasWorktree && !target.deleteBranch) return;
   const hasBranch = branchHead(git, root, target.branch) !== null;
   if (!hasWorktree && !hasBranch) return;
-  const blocked = blocker();
-  const verdict = blocked === null ? judge(git, root, target, hasWorktree, hasBranch, rules, common) : { keep: blocked };
-  if ("keep" in verdict) {
-    if (hasWorktree) out.worktreesKept.push({ path: target.path, reason: verdict.keep });
-    else out.branchesKept.push({ branch: target.branch, reason: verdict.keep });
-    return;
-  }
-  if (hasWorktree) {
-    const removed = git([...untrustedTree(), "worktree", "remove", target.path], root);
-    if (removed.code !== 0) {
-      out.worktreesKept.push({ path: target.path, reason: `git worktree remove failed: ${gitMessage(removed)}` });
-      return;
+  const keep = (reason: string): void => {
+    if (hasWorktree) out.worktreesKept.push({ path: target.path, reason });
+    else out.branchesKept.push({ branch: target.branch, reason });
+  };
+  const blocked = blockers.before();
+  if (blocked !== null) return keep(blocked);
+  const release = hasWorktree ? lockWorktree(ctx, project, basename(target.path)) : () => undefined;
+  if (release === null) return keep(WRITER_LOCK_HELD);
+  try {
+    const locked = blockers.locked();
+    const verdict = locked === null ? judge(git, root, target, hasWorktree, hasBranch, rules, common) : { keep: locked };
+    if ("keep" in verdict) return keep(verdict.keep);
+    if (hasWorktree) {
+      const removed = git([...untrustedTree(), "worktree", "remove", target.path], root);
+      if (removed.code !== 0) {
+        out.worktreesKept.push({ path: target.path, reason: `git worktree remove failed: ${gitMessage(removed)}` });
+        return;
+      }
+      out.worktreesRemoved.push(target.path);
+      rules.removals?.push({ path: target.path, reason: verdict.remove });
     }
-    out.worktreesRemoved.push(target.path);
-    rules.removals?.push({ path: target.path, reason: verdict.remove });
+    if (!target.deleteBranch || !verdict.deleteBranch) return;
+    // -d, not -D: git itself refuses a branch that is not merged into HEAD.
+    const deleted = git([...untrustedTree(), "branch", "-d", target.branch], root);
+    if (deleted.code !== 0) out.branchesKept.push({ branch: target.branch, reason: `git branch -d failed: ${gitMessage(deleted)}` });
+    else out.branchesDeleted.push(target.branch);
+  } finally {
+    release();
   }
-  if (!target.deleteBranch || !verdict.deleteBranch) return;
-  // -d, not -D: git itself refuses a branch that is not merged into HEAD.
-  const deleted = git([...untrustedTree(), "branch", "-d", target.branch], root);
-  if (deleted.code !== 0) out.branchesKept.push({ branch: target.branch, reason: `git branch -d failed: ${gitMessage(deleted)}` });
-  else out.branchesDeleted.push(target.branch);
 }
 
 /** The lane whose worktree a run works in: its own unless lane.json names another (`worktree` may name itself). */
@@ -394,7 +455,7 @@ export function removeLaneWorktrees(ctx: CommandContext, project: Project, lanes
         else if (target.deleteBranch && branchHead(ctx.git, project.root, target.branch) !== null) out.branchesKept.push({ branch: target.branch, reason });
         continue;
       }
-      const blocker = (): string | null => {
+      const before = (): string | null => {
         const state = states.get(lane);
         if (state === undefined) {
           const error = unreadable.get(lane);
@@ -406,8 +467,23 @@ export function removeLaneWorktrees(ctx: CommandContext, project: Project, lanes
         const user = borrowed.get(lane);
         return user === undefined ? null : `in use by lane ${user}`;
       };
+      // A launch or resume holds launch.lock until its shepherd has written state.json; the state read first may be
+      // stale by now. Only a lane still finished since the same moment goes.
+      const locked = (): string | null => {
+        if (existsSync(launchLockPath(project, lane))) return BEING_LAUNCHED;
+        const first = records.get(lane);
+        let now: LaneStateRecord | null;
+        try {
+          now = readState(project.runsRoot, lane);
+        } catch (err) {
+          return (err as Error).message;
+        }
+        if (first === undefined) return now === null ? null : STATE_CHANGED;
+        if (now === null || effectiveState(now, ctx.alive) !== "finished" || now.since !== first.since) return STATE_CHANGED;
+        return null;
+      };
       const rules: Rules = { base, landed: landed.get(lane) ?? [], stale: stale(lane, target.branch), removals: opts.removals };
-      removeWorktreeAndBranch(ctx.git, project.root, target, rules, out, blocker, common);
+      removeWorktreeAndBranch(ctx, project, target, rules, out, { before, locked }, common);
     } catch (err) {
       out.warnings.push(`${lane}: ${(err as Error).message}`);
     }
@@ -429,9 +505,65 @@ export function removeIntegrationWorktree(
   try {
     const target: Removable = { path: paths.worktree, branch: paths.branch, deleteBranch: true };
     const rules: Rules = { base, landed: landedIntegration(paths), stale: null, removals: opts.removals };
-    removeWorktreeAndBranch(ctx.git, project.root, target, rules, out, () => null, commonDirOf(ctx.git, project.root));
+    const none = (): null => null;
+    removeWorktreeAndBranch(ctx, project, target, rules, out, { before: none, locked: none }, commonDirOf(ctx.git, project.root));
   } catch (err) {
     out.warnings.push(`integration ${paths.name}: ${(err as Error).message}`);
+  }
+}
+
+/** The first lane `integration` generated that is still active, else null. */
+function activeGeneratedLane(ctx: CommandContext, project: Project, integration: string): string | null {
+  for (const lane of lanesGeneratedBy(project.runsRoot, integration)) {
+    let record: LaneStateRecord | null;
+    try {
+      record = readState(project.runsRoot, lane);
+    } catch {
+      // Unreadable: it may be starting, so it counts as active.
+      return lane;
+    }
+    if (record !== null && isActive(effectiveState(record, ctx.alive))) return lane;
+  }
+  return null;
+}
+
+/**
+ * The worktree of every integration that has not landed and whose records have not changed for longer than
+ * `olderThanMs` (recordsIdleSince), its branch and records kept. Kept: one a lane it generated is active for, and one
+ * whose tree has changes or cannot be verified (judge). A landed integration is removeLandedIntegrations' to remove.
+ */
+export function removeIdleIntegrations(ctx: CommandContext, project: Project, olderThanMs: number, out: WorktreeCleanup, opts: Pick<LaneCleanupOptions, "removals"> = {}): void {
+  const nowMs = ctx.clock.now();
+  const common = commonDirOf(ctx.git, project.root);
+  for (const name of listIntegrations(project.root)) {
+    try {
+      const paths = integrationPaths(project.root, project.config, name);
+      if (existsSync(paths.landing) || !existsSync(paths.worktree)) continue;
+      const age = (): number => {
+        const since = recordsIdleSince(paths.dir);
+        return since === null ? NaN : nowMs - since;
+      };
+      const check = (): string | null => {
+        const lane = activeGeneratedLane(ctx, project, name);
+        if (lane !== null) return `lane ${lane} of integration ${name} is active`;
+        if (existsSync(paths.landing)) return `integration ${name} has landed`;
+        // No records at all gives NaN, which is never idle.
+        return age() > olderThanMs ? null : `integration ${name} used within ${Math.round(olderThanMs / DAY_MS)} days`;
+      };
+      const days = Math.floor(age() / DAY_MS);
+      const target: Removable = { path: paths.worktree, branch: paths.branch, deleteBranch: false };
+      const rules: Rules = {
+        base: project.config.baseBranch,
+        landed: [],
+        stale: null,
+        unused: `integration ${name} unused for ${days} days; branch ${paths.branch} kept`,
+        removals: opts.removals,
+      };
+      // Checked again under the lock: a verify or review of it may have started meanwhile.
+      removeWorktreeAndBranch(ctx, project, target, rules, out, { before: check, locked: check }, common);
+    } catch (err) {
+      out.warnings.push(`integration ${name}: ${(err as Error).message}`);
+    }
   }
 }
 
@@ -454,14 +586,15 @@ export function removeLandedIntegrations(ctx: CommandContext, project: Project, 
 }
 
 /**
- * The worktrees of finished lanes (and generated lanes' branches), then landed integrations. A run dir without state.json
- * is reported as kept; other unfinished lanes are left alone. With `include` (--mine) only the lanes it accepts are
- * considered, and no integration: an integration has no owner.
+ * The worktrees of finished lanes (and generated lanes' branches), then landed integrations, then with `olderThanMs`
+ * the integrations unused that long (removeIdleIntegrations). A run dir without state.json is reported as kept; other
+ * unfinished lanes are left alone. With `include` (--mine) only the lanes it accepts are considered, and no
+ * integration: an integration has no owner.
  */
 export function removeMergedWorktrees(
   ctx: CommandContext,
   project: Project,
-  report: CleanupReport,
+  report: WorktreeCleanup & Pick<CleanupReport, "worktreeRemovals">,
   opts: { olderThanMs?: number; include?: (lane: string) => boolean } = {},
 ): void {
   const { include } = opts;
@@ -477,7 +610,26 @@ export function removeMergedWorktrees(
   });
   const removals = report.worktreeRemovals;
   removeLaneWorktrees(ctx, project, lanes, project.config.baseBranch, report, { olderThanMs: opts.olderThanMs, removals });
-  if (include === undefined) removeLandedIntegrations(ctx, project, report, { removals });
+  if (include !== undefined) return;
+  removeLandedIntegrations(ctx, project, report, { removals });
+  if (opts.olderThanMs !== undefined) removeIdleIntegrations(ctx, project, opts.olderThanMs, report, { removals });
+}
+
+/** What a sweep did: cleanup's worktree report, each removal with its reason. */
+export interface SweepResult extends WorktreeCleanup {
+  worktreeRemovals: Array<{ path: string; reason: string }>;
+}
+
+/**
+ * The worktree part of `cleanup --worktrees --older-than <idleDays>`: finished lanes' and landed integrations' worktrees
+ * by cleanup's rules, and those unused for longer than `idleDays`, branches kept. It reaps no orphan, releases no pool
+ * entry and touches no watermark: a background sweep must not race the commands that do.
+ */
+export function sweepIdleWorktrees(ctx: CommandContext, project: Project, idleDays: number): SweepResult {
+  if (!Number.isSafeInteger(idleDays) || idleDays < 1) throw new ArbabError("usage", `a sweep needs a positive whole number of days, not ${idleDays}`);
+  const result: SweepResult = { ...emptyWorktreeCleanup(), worktreeRemovals: [] };
+  removeMergedWorktrees(ctx, project, result, { olderThanMs: idleDays * DAY_MS });
+  return result;
 }
 
 export const emptyWorktreeCleanup = (): WorktreeCleanup => ({

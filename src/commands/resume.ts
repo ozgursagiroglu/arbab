@@ -20,6 +20,7 @@ import type { CommandContext } from "./context";
 import { assertNotGenerated } from "./generated";
 import { assertInactive, assertNoLiveWorker, assertNotGeneratedWorktree, awaitFirstState, takeLaunchLock } from "./launch";
 import { onePositional, openProject, parse, printJson, type Project } from "./project";
+import { maybeStartSweep } from "./sweep";
 
 // A resume prompt steers the session; anything longer belongs in a file the worker reads.
 export const MAX_PROMPT_BYTES = 64 * 1024;
@@ -93,6 +94,8 @@ export async function resumeWithDigest(ctx: CommandContext, project: Project, la
     digestHeadStart(project.runsRoot, lane, attempt);
     const shepherdPid = ctx.spawnShepherd(project.root, lane, { kind: "fresh", digestFrom: attempt });
     await awaitFirstState(ctx, project, lane, shepherdPid);
+    // After the first state, so the sweep sees this lane active and leaves its worktree.
+    maybeStartSweep(ctx, project);
     return { attempt, shepherdPid };
   } finally {
     release();
@@ -133,6 +136,7 @@ export async function runResume(argv: string[], ctx: CommandContext): Promise<nu
     const mode = prompt === undefined ? { kind: "resume" as const } : { kind: "resume" as const, promptFile: writeResumePrompt(project, lane, prompt) };
     shepherdPid = ctx.spawnShepherd(project.root, lane, mode);
     await awaitFirstState(ctx, project, lane, shepherdPid);
+    maybeStartSweep(ctx, project);
   } finally {
     release();
   }

@@ -61,6 +61,10 @@ export interface TestProject {
   out: string[];
   err: string[];
   spawned: Array<{ root: string; lane: string; mode: ShepherdMode }>;
+  /** The project roots ctx.spawnSweep was asked to sweep; nothing is started. */
+  sweeps: string[];
+  /** What ctx.freeSpace returns: 500 GB unless a test changes it. */
+  free: { bytes: number | null };
   signals: Array<{ target: number; sig: NodeJS.Signals }>;
   /** The URLs ctx.openUrl was asked to open. */
   opened: string[];
@@ -121,6 +125,8 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
   const out: string[] = [];
   const err: string[] = [];
   const spawned: TestProject["spawned"] = [];
+  const sweeps: string[] = [];
+  const free: TestProject["free"] = { bytes: 500e9 };
   const signals: TestProject["signals"] = [];
   const opened: string[] = [];
   const notified: TestProject["notified"] = [];
@@ -154,6 +160,11 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
       alive.add(pid);
       return pid;
     },
+    spawnSweep: (r) => {
+      sweeps.push(r);
+      return 0;
+    },
+    freeSpace: () => free.bytes,
     shepherdDeps: () => fakeDeps(home, claudeHome),
     runShepherd: async () => "success",
     trapSignals: () => () => undefined,
@@ -192,6 +203,8 @@ export function makeProject(opts: ProjectOptions = {}): TestProject {
     out,
     err,
     spawned,
+    sweeps,
+    free,
     signals,
     opened,
     notified,

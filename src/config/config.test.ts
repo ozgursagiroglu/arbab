@@ -157,7 +157,20 @@ describe("loadConfig", () => {
       landing: { tier: "medium", squash: false },
       fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
       hostGates: [],
+      worktrees: { idleDays: 3 },
     });
+  });
+
+  it("reads worktrees.idleDays from 0 to 365 and refuses anything else", () => {
+    expect(loadWith({ worktrees: { idleDays: 0 } }).worktrees).toEqual({ idleDays: 0 });
+    expect(loadWith({ worktrees: { idleDays: 365 } }).worktrees).toEqual({ idleDays: 365 });
+    expect(loadWith({ worktrees: {} }).worktrees).toEqual({ idleDays: 3 });
+    configError({ worktrees: { idleDays: -1 } }, "worktrees.idleDays");
+    configError({ worktrees: { idleDays: 366 } }, "worktrees.idleDays");
+    configError({ worktrees: { idleDays: 1.5 } }, "worktrees.idleDays");
+    configError({ worktrees: { idleDays: "3" } }, "worktrees.idleDays");
+    configError({ worktrees: { keepDays: 3 } }, "worktrees.keepDays");
+    configError({ worktrees: 3 }, "worktrees");
   });
 
   it("fills defaults for an empty object", () => {

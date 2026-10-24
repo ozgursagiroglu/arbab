@@ -21,6 +21,7 @@ import { runShepherdProcess } from "./shepherd";
 import { runStatus } from "./status";
 import { runStop } from "./stop";
 import { runSummary } from "./summary";
+import { runSweepProcess } from "./sweep";
 import { runUi } from "./ui";
 import { USAGE } from "./usage";
 import { runVerify } from "./verify";
@@ -54,6 +55,14 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
   hook: runHook,
   "host-check": runHostCheck,
   __shepherd: runShepherdProcess,
+};
+
+/**
+ * Commands only arbab starts, outside COMMANDS: not in the help or the usage blocks, and never a runner call the
+ * approval hook passes (it approves COMMANDS' names only).
+ */
+export const INTERNAL_COMMANDS: Readonly<Record<string, Command>> = {
+  __sweep: runSweepProcess,
 };
 
 export const HELP = `usage: arbab [-C <dir>] <command> [options]
@@ -159,12 +168,12 @@ export async function dispatch(argv: string[], ctx: CommandContext): Promise<num
     ctx.stdout(`${ctx.version}\n`);
     return 0;
   }
-  const command = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+  const command = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : Object.hasOwn(INTERNAL_COMMANDS, name) ? INTERNAL_COMMANDS[name] : undefined;
   if (command === undefined) {
     ctx.stderr(`arbab: unknown command ${JSON.stringify(name)}\n${HELP}`);
     return 1;
   }
-  if ((rest.includes("--help") || rest.includes("-h")) && name !== "__shepherd") {
+  if ((rest.includes("--help") || rest.includes("-h")) && !name.startsWith("__")) {
     ctx.stdout(helpFor(name));
     return 0;
   }

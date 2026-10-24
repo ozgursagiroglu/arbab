@@ -243,7 +243,35 @@ describe("site", () => {
   it("pins every action in the Pages workflow to a full commit SHA", () => {
     const workflow = fs.readFileSync(path.join(root, ".github/workflows/pages.yml"), "utf8");
     const uses = [...workflow.matchAll(/^\s*(?:-\s+)?uses:\s*(\S+)/gm)].map((m) => m[1] ?? "");
-    expect(uses.length).toBe(6);
+    expect(uses.length).toBe(7);
     for (const ref of uses) expect(ref, ref).toMatch(/^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@[0-9a-f]{40}$/);
+  });
+
+  it("keeps third-party code away from the Pages token", () => {
+    const workflow = fs.readFileSync(path.join(root, ".github/workflows/pages.yml"), "utf8");
+    const jobsAt = workflow.indexOf("\njobs:");
+    const testAt = workflow.indexOf("\n  test:");
+    const deployAt = workflow.indexOf("\n  deploy:");
+    expect(jobsAt).toBeGreaterThan(-1);
+    expect(testAt).toBeGreaterThan(jobsAt);
+    expect(deployAt).toBeGreaterThan(testAt);
+    const top = workflow.slice(0, jobsAt);
+    const testJob = workflow.slice(testAt, deployAt);
+    const deployJob = workflow.slice(deployAt);
+
+    expect(top).toMatch(/^permissions:\n {2}contents: read\n(?! {2})/m);
+    expect(top).not.toMatch(/pages: write|id-token: write/);
+
+    expect(testJob).toMatch(/permissions:\n {6}contents: read\n(?! {6})/);
+    expect(testJob).not.toMatch(/pages: write|id-token: write/);
+    expect(testJob).toMatch(/^\s*- run: pnpm install --frozen-lockfile$/m);
+
+    expect(deployJob).toMatch(/^ {4}needs: test$/m);
+    expect(deployJob).toMatch(/name: github-pages/);
+    expect(deployJob).toMatch(/pages: write/);
+    expect(deployJob).toMatch(/id-token: write/);
+    expect(deployJob).not.toMatch(/^\s*(?:-\s+)?run:/m);
+    expect(deployJob).not.toMatch(/pnpm\/action-setup|actions\/setup-node/);
+    expect(deployJob).toMatch(/persist-credentials: false/);
   });
 });

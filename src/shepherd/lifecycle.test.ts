@@ -552,7 +552,7 @@ describe("runShepherd", () => {
 
     project.lane({ name: "m1-w", role: "verifier", worktree: "m1-none" });
     expect(await runShepherd(project.root, "m1-w", { kind: "start" }, testDeps(project), never())).toBe("failed");
-    expect(stateOf("m1-w")?.reason).toMatch(/m1-none's worktree, which does not exist/);
+    expect(stateOf("m1-w")?.reason).toMatch(/m1-none's worktree, which does not exist and cannot be rebuilt \(branch arbab\/m1-none does not exist\)/);
   });
 
   it("refuses to borrow a worktree whose owner never ran an attempt there, leaving it as it is", async () => {
@@ -684,26 +684,31 @@ describe("runShepherd", () => {
     }
   });
 
-  it("fails setup, installing nothing, when the worktree is gone and its branch holds worker commits", async () => {
+  it("refuses to rebuild a removed worktree whose branch changed a manifest since its trusted start, leaving none", async () => {
     project.cleanup();
     const dir = mkdtempSync(join(tmpdir(), "arbab-deps-"));
-    const count = join(dir, "count");
+    const seen = join(dir, "seen");
     try {
-      const script = "require('fs').appendFileSync(process.argv[1], 'x')";
-      project = makeProject({ dependencies: { strategy: "command", command: [process.execPath, "-e", script, count] } });
+      // Records what each install saw: the base's tree (no package.json), never the worker's.
+      const script = "const fs = require('fs'); fs.appendFileSync(process.argv[1], fs.existsSync('package.json') ? 'worker,' : 'base,')";
+      project = makeProject({ dependencies: { strategy: "command", command: [process.execPath, "-e", script, seen] } });
       project.scenario({ fixture: fixture("success-report"), touch: "package.json" });
       project.lane({ name: "m1-a" });
       expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
-      expect(readFileSync(count, "utf8")).toBe("x");
+      expect(readFileSync(seen, "utf8")).toBe("base,");
+      const head = mustGit(project.git, ["rev-parse", "refs/heads/arbab/m1-a"], project.root).trim();
 
       const worktree = join(project.root, ".arbab", "worktrees", "m1-a");
       rmSync(worktree, { recursive: true, force: true });
       expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("failed");
       expect(stateOf("m1-a")).toMatchObject({ state: "finished", endState: "failed" });
-      expect(stateOf("m1-a")?.reason).toMatch(/is missing, and its branch arbab\/m1-a holds worker commits that are not on main/);
-      expect(readFileSync(count, "utf8")).toBe("x");
+      expect(stateOf("m1-a")?.reason).toMatch(/^arbab\/m1-a changes dependency manifests since [0-9a-f]{40} \(package\.json\)/);
+      expect(stateOf("m1-a")?.reason).toContain('relaunch under a new name with "base": "arbab/m1-a"');
+      expect(readFileSync(seen, "utf8")).toBe("base,base,");
       expect(existsSync(worktree)).toBe(false);
+      expect(mustGit(project.git, ["rev-parse", "refs/heads/arbab/m1-a"], project.root).trim()).toBe(head);
       expect(attempts("m1-a")).toEqual(["attempt-1"]);
+      expect(lockEntries()).toEqual([]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -912,6 +917,103 @@ describe("runShepherd", () => {
     const started = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-b", 1)).started);
     expect(started.merged?.map((m) => m.branch)).toEqual(["arbab/late"]);
     expect(existsSync(join(started.cwd, "late.txt"))).toBe(true);
+  });
+
+  describe("a used worktree that was removed", () => {
+    let scratch: string;
+    beforeEach(() => {
+      scratch = mkdtempSync(join(tmpdir(), "arbab-deps-"));
+    });
+    afterEach(() => {
+      rmSync(scratch, { recursive: true, force: true });
+    });
+    const branchHead = (branch: string): string => mustGit(project.git, ["rev-parse", `refs/heads/${branch}`], project.root).trim();
+    /** A project whose install appends to `seen` what tree it ran in: the worker's (src/a.ts) or the base's. */
+    const recordingProject = (): string => {
+      const seen = join(scratch, "seen");
+      const script = "const fs = require('fs'); fs.appendFileSync(process.argv[1], fs.existsSync('src/a.ts') ? 'worker,' : 'base,')";
+      project.cleanup();
+      project = makeProject({ dependencies: { strategy: "command", command: [process.execPath, "-e", script, seen] } });
+      return seen;
+    };
+
+    it("is rebuilt for a fresh run: one install at the trusted start, no merge, the worker on the branch at its old head", async () => {
+      const seen = recordingProject();
+      const up = branchWith("arbab/up", "up.txt", "from up\n");
+      project.scenario({ fixture: fixture("success-report"), touch: "src/a.ts" });
+      project.lane({ name: "m1-a", mergeBranches: ["arbab/up"] });
+      expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
+      const first = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 1)).started);
+      expect(first.merged).toEqual([{ branch: "arbab/up", sha: up }]);
+      expect(readFileSync(seen, "utf8")).toBe("base,");
+      const head = branchHead("arbab/m1-a");
+      const main = branchHead("main");
+
+      rmSync(first.cwd, { recursive: true, force: true });
+      expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("success");
+      // Installed once more, on main's tree, and never on the worker's.
+      expect(readFileSync(seen, "utf8")).toBe("base,base,");
+      const second = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 2)).started);
+      expect(second.cwd).toBe(first.cwd);
+      expect(second.merged).toBeUndefined();
+      expect(readFileSync(join(second.cwd, "up.txt"), "utf8")).toBe("from up\n");
+      expect(mustGit(project.git, ["rev-parse", "--abbrev-ref", "HEAD"], second.cwd).trim()).toBe("arbab/m1-a");
+      // The branch only gained the new attempt's checkpoint, on top of its old head.
+      const exit = readJsonFile<AttemptExit>(attemptFiles(attemptDir("m1-a", 2)).exit);
+      expect(exit.checkpoint).toBe(branchHead("arbab/m1-a"));
+      expect(mustGit(project.git, ["rev-list", `${head}..arbab/m1-a`], project.root).trim().split("\n")).toEqual([exit.checkpoint]);
+      const reasons = readLaneEvents(join(project.root, ".arbab", "runs"), "m1-a")
+        .filter((e) => e.state === "preparing")
+        .map((e) => e.reason);
+      expect(reasons).toContain(`rebuilding the worktree from ${main.slice(0, 12)}`);
+      expect(lockEntries()).toEqual([]);
+    });
+
+    it("is rebuilt for a borrower once its owner has run", async () => {
+      const seen = recordingProject();
+      project.scenario({ fixture: fixture("success-report"), touch: "src/a.ts" });
+      project.lane({ name: "m1-a" });
+      expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
+      const a = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 1)).started);
+      const head = branchHead("arbab/m1-a");
+      rmSync(a.cwd, { recursive: true, force: true });
+
+      project.scenario({ fixture: fixture("success-report") });
+      project.lane({ name: "m1-v", role: "verifier", worktree: "m1-a" });
+      expect(await runShepherd(project.root, "m1-v", { kind: "start" }, testDeps(project), never())).toBe("success");
+      const v = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-v", 1)).started);
+      expect(v.cwd).toBe(a.cwd);
+      expect(readFileSync(seen, "utf8")).toBe("base,base,");
+      expect(existsSync(join(v.cwd, "src", "a.ts"))).toBe(true);
+      expect(branchHead("arbab/m1-a")).toBe(head);
+    });
+
+    it("is not rebuilt for a lane that never ran: a branch holding commits is refused as before, for it and its borrowers", async () => {
+      const seen = recordingProject();
+      // A commit on the lane's branch that no attempt of the lane made.
+      const wt = join(scratch, "by-hand");
+      mustGit(project.git, ["worktree", "add", "-q", "-b", "arbab/m1-a", wt, "main"], project.root);
+      mkdirSync(join(wt, "src"));
+      writeFileSync(join(wt, "src", "a.ts"), "by hand\n");
+      mustGit(project.git, ["add", "-A"], wt);
+      mustGit(project.git, ["commit", "-q", "-m", "by hand"], wt);
+      mustGit(project.git, ["worktree", "remove", wt], project.root);
+      const head = branchHead("arbab/m1-a");
+      project.scenario({ fixture: fixture("success-report") });
+
+      project.lane({ name: "m1-v", role: "verifier", worktree: "m1-a" });
+      expect(await runShepherd(project.root, "m1-v", { kind: "start" }, testDeps(project), never())).toBe("failed");
+      expect(stateOf("m1-v")?.reason).toBe(
+        "lane m1-v works in lane m1-a's worktree, which does not exist and cannot be rebuilt (no attempt of m1-a has run); launch m1-a first",
+      );
+      project.lane({ name: "m1-a" });
+      expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
+      expect(stateOf("m1-a")?.reason).toMatch(/is missing, and its branch arbab\/m1-a holds worker commits that are not on main/);
+      expect(existsSync(seen)).toBe(false);
+      expect(existsSync(join(project.root, ".arbab", "worktrees", "m1-a"))).toBe(false);
+      expect(branchHead("arbab/m1-a")).toBe(head);
+      expect(project.calls()).toEqual([]);
+    });
   });
 
   describe("a lane based on a worker's branch", () => {

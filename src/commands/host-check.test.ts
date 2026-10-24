@@ -105,6 +105,42 @@ describe("runHostCheck", () => {
     expect(ran).toEqual([]);
   });
 
+  it("rebuilds a removed worktree on its branch, installing at the base, then runs the gates on the recorded head", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, hostGates: GATES, dependencies: { strategy: "command", command: ["pnpm", "install"] } } });
+    const t = p;
+    const ran: Array<{ argv: string[]; cwd: string; head: string }> = [];
+    t.ctx.runCommand = (argv, cwd) => {
+      ran.push({ argv, cwd, head: t.ok(["rev-parse", "HEAD"], cwd).trim() });
+      return { code: 0, output: "" };
+    };
+    const main = t.ok(["rev-parse", "main"]).trim();
+    branchWith(t, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["rel", "--lanes", "a"], t.ctx)).toBe(0);
+    const record = readRecord<IntegrationRecord>(join(dir(t), "integration.json"));
+    t.ok(["worktree", "remove", "--force", record.worktree]);
+    ran.length = 0;
+    t.out.length = 0;
+
+    expect(await runHostCheck(["rel"], t.ctx)).toBe(0);
+    expect(ran).toEqual([
+      { argv: ["pnpm", "install"], cwd: record.worktree, head: main },
+      ...GATES.map((argv) => ({ argv, cwd: record.worktree, head: record.headSha })),
+    ]);
+    expect(t.ok(["rev-parse", "integrate/rel"]).trim()).toBe(record.headSha);
+    expect(readRecord<HostCheckRecord>(recordPath(t)).headSha).toBe(record.headSha);
+  });
+
+  it("refuses, rebuilding nothing, a removed worktree whose branch moved past the record", async () => {
+    let worktree: string;
+    let ran: Array<{ argv: string[]; cwd: string }>;
+    ({ t: p, worktree, ran } = await integrated());
+    p.ok(["commit", "-q", "--allow-empty", "-m", "by hand"], worktree);
+    p.ok(["worktree", "remove", "--force", worktree]);
+    await expect(runHostCheck(["rel"], p.ctx)).rejects.toMatchObject({ code: "usage", message: expect.stringMatching(/run arbab integrate rel again$/) });
+    expect(existsSync(worktree)).toBe(false);
+    expect(ran).toEqual([]);
+  });
+
   it("feeds readiness: the gates are verified once they passed on the head", async () => {
     let head: string;
     ({ t: p, head } = await integrated(GATES, { make: 1 }));

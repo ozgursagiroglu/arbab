@@ -229,6 +229,23 @@ export function resetGeneratedWorktree(ctx: CommandContext, project: Project, la
   if (head !== null) mustGit(ctx, [...untrustedTree(), "branch", "-D", branch], project.root);
 }
 
+/**
+ * Removes the worktrees and branches of generated lanes whose results a command has just recorded, as the next
+ * run's resetGeneratedWorktree would. Never throws: each lane that could not go comes back as one warning line.
+ */
+export function dropGeneratedWorktrees(ctx: CommandContext, project: Project, lanes: string[], owner: GenerationOwner): string[] {
+  // Run dirs, markers and run records stay: they are the measurements, and the next run reads them.
+  const warnings: string[] = [];
+  for (const lane of lanes) {
+    try {
+      resetGeneratedWorktree(ctx, project, lane, owner);
+    } catch (err) {
+      warnings.push(`could not remove ${lane}'s worktree and branch: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return warnings;
+}
+
 /** What one generated lane's run left: its end state, its attempts and its latest report. */
 export interface LaneOutcome {
   lane: string;
@@ -348,8 +365,8 @@ const hasReport: UsableRun = (o) => o.report !== null;
 /**
  * The earlier run of a generated lane that a re-run takes instead of launching: an unsettled run this command recorded
  * for the same head and the same lane, which is still active (wait for it) or finished with success and a usable report
- * (adopt it). Null when the lane must be launched: the head or the lane changed, the run failed or left nothing usable,
- * or a command already settled it.
+ * and still has its worktree (adopt it). Null when the lane must be launched: the head or the lane changed, the run
+ * failed, left nothing usable or lost its worktree, or a command already settled it.
  */
 function reusableRun(
   ctx: CommandContext,
@@ -373,6 +390,8 @@ function reusableRun(
   if (state === null || state.shepherdPid !== prior.shepherdPid) return null;
   const run: Started = { lane, pid: prior.shepherdPid, before: prior.before };
   if (isActive(effectiveState(state, ctx.alive))) return { kind: "wait", run };
+  // A command reads the adopted lane's tree (verify checks its branch and changes): without it, the run starts afresh.
+  if (!existsSync(join(project.worktreeRoot, lane))) return null;
   const outcome = readOutcome(project.runsRoot, run);
   return outcome.endState === "success" && usable(outcome) ? { kind: "adopt", run } : null;
 }

@@ -11,6 +11,7 @@ import {
   attemptEvents,
   branchHead,
   collectRun,
+  dropGeneratedWorktrees,
   generatedBase,
   generationOwner,
   laneFingerprint,
@@ -347,14 +348,27 @@ describe("collectRun, attemptEvents and latestReport", () => {
   });
 });
 
-describe("runGeneratedLanes", () => {
-  const generated = (names: string[], brief = DEFAULT_BRIEF): GeneratedLane[] => names.map((name) => ({ spec: spec(name), brief }));
-  const setup = (t: TestProject) => {
-    const project = openProject(t.ctx);
-    const paths = integrationPaths(project.root, project.config, "rel");
-    const owner = { integration: "rel", branch: "main", head: t.ok(["rev-parse", "main"]).trim() };
-    return { project, paths, owner };
+const generated = (names: string[], brief = DEFAULT_BRIEF): GeneratedLane[] => names.map((name) => ({ spec: spec(name), brief }));
+const setup = (t: TestProject) => {
+  const project = openProject(t.ctx);
+  const paths = integrationPaths(project.root, project.config, "rel");
+  const owner = { integration: "rel", branch: "main", head: t.ok(["rev-parse", "main"]).trim() };
+  return { project, paths, owner };
+};
+
+/** simulateShepherds, plus the worktree a real shepherd checks the lane's branch out in. */
+function simulateWithWorktrees(t: TestProject, runs: Record<string, (pid: number) => LaneRun | null>): void {
+  simulateShepherds(t, runs);
+  const spawn = t.ctx.spawnShepherd;
+  t.ctx.spawnShepherd = (root, lane, mode) => {
+    const pid = spawn(root, lane, mode);
+    const worktree = join(t.worktreeRoot, lane);
+    if (!existsSync(worktree)) t.ok(["worktree", "add", "-q", worktree, `arbab/${lane}`]);
+    return pid;
   };
+}
+
+describe("runGeneratedLanes", () => {
   const pidOf = (t: TestProject, lane: string): number => (JSON.parse(readFileSync(join(t.runsRoot, lane, "state.json"), "utf8")) as { shepherdPid: number }).shepherdPid;
 
   it("writes, lints and launches every lane, waits for all and collects them; times out without collecting", async () => {
@@ -421,7 +435,7 @@ describe("runGeneratedLanes", () => {
   it("after a timeout, adopts a run that finished on the same head, launching only the others", async () => {
     p = makeProject();
     const { project, paths, owner } = setup(p);
-    simulateShepherds(p, { "rel-a": () => ({ state: "running" }), "rel-b": () => ({ state: "running" }) });
+    simulateWithWorktrees(p, { "rel-a": () => ({ state: "running" }), "rel-b": () => ({ state: "running" }) });
     expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner)).timedOut).toBe(true);
     writeLaneRun(p.runsRoot, "rel-a", { state: "finished", endState: "success", shepherdPid: pidOf(p, "rel-a"), report: { a: 1 } });
     // rel-b's shepherd died: its run never finished, so it is launched again.
@@ -437,6 +451,23 @@ describe("runGeneratedLanes", () => {
     expect(p.stderr()).toBe("adopted rel-a: finished for this head after an earlier run stopped waiting\nlaunched rel-b; waiting\n");
   });
 
+  it("relaunches a finished, unsettled run whose worktree is gone instead of adopting it", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateWithWorktrees(p, { "rel-a": () => ({ state: "running" }) });
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner)).timedOut).toBe(true);
+    writeLaneRun(p.runsRoot, "rel-a", { state: "finished", endState: "success", shepherdPid: pidOf(p, "rel-a"), report: { old: true } });
+    // Removed by hand, or by an idle sweep, before the next command came for it.
+    p.ok(["worktree", "remove", "--force", join(p.worktreeRoot, "rel-a")]);
+    expect(readGeneratedRun(paths.lanesDir, "rel-a")?.settled).toBe(false);
+    simulateWithWorktrees(p, { "rel-a": () => ({ state: "finished", endState: "success", report: { fresh: true } }) });
+    p.err.length = 0;
+    const run = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner);
+    expect(run.outcomes.map((o) => [o.lane, o.endState, o.report])).toEqual([["rel-a", "success", { fresh: true }]]);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a", "rel-a"]);
+    expect(p.stderr()).toBe("launched rel-a; waiting\n");
+  });
+
   it("relaunches a finished run that failed, left no usable report, or ran another lane or head", async () => {
     const cases: Array<{ why: string; run: LaneRun; again?: (t: TestProject) => { brief?: string; head?: string }; usable?: (o: LaneOutcome) => boolean }> = [
       { why: "failed", run: { state: "finished", endState: "failed", report: { a: 1 } } },
@@ -448,7 +479,8 @@ describe("runGeneratedLanes", () => {
     for (const c of cases) {
       p = makeProject();
       const { project, paths, owner } = setup(p);
-      simulateShepherds(p, { "rel-a": () => ({ state: "running" }) });
+      // With its worktree: a run without one is relaunched whatever else it left.
+      simulateWithWorktrees(p, { "rel-a": () => ({ state: "running" }) });
       expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"]), 60_000, owner)).timedOut, c.why).toBe(true);
       writeLaneRun(p.runsRoot, "rel-a", { ...c.run, shepherdPid: pidOf(p, "rel-a") });
       const again = c.again?.(p) ?? {};
@@ -468,6 +500,64 @@ describe("runGeneratedLanes", () => {
     await expect(runGeneratedLanes(p.ctx, project, paths, generated(["rel-a"], "# Other\n"), 60_000, owner)).rejects.toThrow(/lane rel-a is running/);
     expect(readFileSync(join(paths.lanesDir, "rel-a.md"), "utf8")).toBe(DEFAULT_BRIEF);
     expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a"]);
+  });
+});
+
+describe("dropGeneratedWorktrees", () => {
+  it("removes the lanes' worktrees and branches, keeping their run dirs, markers and run records, and a next run launches afresh", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    const ok = () => ({ state: "finished" as const, endState: "success" as const, report: { a: 1 } });
+    simulateWithWorktrees(p, { "rel-a": ok, "rel-b": ok });
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner)).timedOut).toBe(false);
+    settleGeneratedRuns(paths.lanesDir, ["rel-a", "rel-b"]);
+    // A lane that left nothing behind is passed over.
+    expect(dropGeneratedWorktrees(p.ctx, project, ["rel-a", "rel-b", "rel-none"], owner)).toEqual([]);
+    for (const lane of ["rel-a", "rel-b"]) {
+      expect(existsSync(join(p.worktreeRoot, lane))).toBe(false);
+      expect(branchHead(p.git, p.root, `arbab/${lane}`)).toBeNull();
+      expect(existsSync(join(p.runsRoot, lane, "state.json"))).toBe(true);
+      expect(existsSync(join(p.runsRoot, lane, "generated.json"))).toBe(true);
+      expect(readGeneratedRun(paths.lanesDir, lane)?.settled).toBe(true);
+    }
+    expect(p.ok(["worktree", "list", "--porcelain"])).not.toContain("rel-a");
+
+    simulateWithWorktrees(p, { "rel-a": ok, "rel-b": ok });
+    const again = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner);
+    expect(again.outcomes.map((o) => [o.lane, o.endState, o.attempts])).toEqual([
+      ["rel-a", "success", [2]],
+      ["rel-b", "success", [2]],
+    ]);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a", "rel-b", "rel-a", "rel-b"]);
+  });
+
+  it("never throws: each lane it refuses is one warning, kept as it was, and the other lanes still go", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    const ok = () => ({ state: "finished" as const, endState: "success" as const, report: { a: 1 } });
+    simulateWithWorktrees(p, { "rel-a": ok, "rel-b": ok, "rel-c": () => ({ state: "running" }) });
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b"]), 60_000, owner)).timedOut).toBe(false);
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-c"]), 60_000, owner)).timedOut).toBe(true);
+    const commit = join(p.worktreeRoot, "rel-a");
+    writeFileSync(join(commit, "work.txt"), "a commit of its own\n");
+    p.ok(["add", "-A"], commit);
+    p.ok(["commit", "-q", "-m", "own work"], commit);
+    // A lane of the same name that this integration did not generate.
+    const foreign = join(p.worktreeRoot, "rel-x");
+    p.ok(["worktree", "add", "-q", "-b", "arbab/rel-x", foreign, "main"]);
+
+    expect(dropGeneratedWorktrees(p.ctx, project, ["rel-a", "rel-x", "rel-c", "rel-b"], owner)).toEqual([
+      "could not remove rel-a's worktree and branch: arbab/rel-a has commits that are not on main, so nothing was removed",
+      "could not remove rel-x's worktree and branch: lane rel-x already exists and was not generated for integration rel, so nothing was removed; " +
+        "use another integration name, or rename that lane",
+      expect.stringMatching(/^could not remove rel-c's worktree and branch: lane rel-c is running \(shepherd \d+\); stop it or wait for it first$/),
+    ]);
+    expect(existsSync(join(commit, "work.txt"))).toBe(true);
+    expect(existsSync(foreign)).toBe(true);
+    expect(existsSync(join(p.worktreeRoot, "rel-c"))).toBe(true);
+    expect(branchHead(p.git, p.root, "arbab/rel-c")).not.toBeNull();
+    expect(existsSync(join(p.worktreeRoot, "rel-b"))).toBe(false);
+    expect(branchHead(p.git, p.root, "arbab/rel-b")).toBeNull();
   });
 });
 

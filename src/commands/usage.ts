@@ -63,7 +63,7 @@ export const USAGE: Readonly<Record<string, string>> = {
     ["cleanup [--worktrees [--older-than <days>]] [--mine] [--json]"],
     [
       ["--worktrees", "also remove finished lanes' clean worktrees merged into the base or landed, and landed integrations'"],
-      ["--older-than <days>", "with --worktrees: also finished lanes' clean worktrees unchanged for over <days> days (branches stay)"],
+      ["--older-than <days>", "with --worktrees: also the clean worktrees of finished lanes and unlanded integrations unused for over <days> days, branches kept (the automatic sweep does this for worktrees.idleDays)"],
       ["--mine", "only runs this session owns (not ownerless ones), and no integration"],
       JSON_OPT,
     ],
@@ -80,7 +80,7 @@ export const USAGE: Readonly<Record<string, string>> = {
       ["--plan <plan.json>", "merge the plan's lane branches by waves"],
       ["--adopt <ref>", "make a new integration whose branch starts at <ref>'s commit, nothing merged"],
       ["--base <branch>", "with --adopt: the branch it lands into, which config baseBranch must contain (default baseBranch)"],
-      ["--refresh", "record the head again after a hand commit or a base merge; merges and installs nothing"],
+      ["--refresh", "record the head again after a hand commit or a base merge; merges nothing, installs only to rebuild a missing worktree"],
       ["--deps-installed <sha>", "record that you reviewed and installed changed dependencies at <sha>"],
       JSON_OPT,
     ],

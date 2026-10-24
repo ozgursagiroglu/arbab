@@ -29,8 +29,7 @@ path to a project that has launched a lane, never a lane worktree (arbab refuses
 
 Fan out when the work is long or multi-phase and splits into parts that can be built independently. Measured:
 
-- the same 7 lanes finished 0 of 7 in 73 min as Workflow agents, and 7 of 7 in 1.9–6.4 min each as headless
-  workers;
+- the same 7 lanes finished 0 of 7 in 73 min as Workflow agents, 7 of 7 in 1.9–6.4 min each as headless workers;
 - approval waits took 62–70% of the Workflow's wall time; a headless denial costs one turn, not a wait.
 
 Stay in-session for small jobs (one change, one PR: for example `/ship`) and for short fan-outs that finish in
@@ -60,7 +59,7 @@ urgent small fix (a demo is running, a one-line change) stays in-session, even i
      (4000–128000, default 100000): longer Bash output goes to a file workers cannot read.
    - `landing.tier` (default `medium`), `landing.squash` (one commit per landing), `verify.smoke`, `review.lenses`.
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
-     `maxParallel` (default 4), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`.
+     `maxParallel` (default 4), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`, `worktrees.idleDays`.
 3. Machine-wide parallelism goes in `~/.arbab/machine.json` (`{"maxParallel": 6}`): it caps every project's
    `maxParallel`.
 4. arbab excludes `.arbab/` as a whole, and `.arbab-tmp/`, in `info/exclude` and checks it. Lane files, briefs, plans
@@ -199,10 +198,9 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
    `arbab preflight lanes/<name>.json`. A cheap probe attempt checks the toolchain, the fence, the isolation
    flags and the pinned version, and makes one call on the lane's own model. Do not launch a wave until it passes.
 3. Once per session, before launching, start `arbab ui` as a **background** Bash call (`run_in_background: true`).
-   - It serves a read-only scene of the lanes on 127.0.0.1: each lane a worker building a pyramid. It opens the scene
-     in the human's browser, and then its output carries no token.
-   - When no browser opens, it prints the URL with this session's token instead: give that URL to the human.
-   - The scene is for the human. You still react to `wait` and read `arbab report <lane>`.
+   - It serves a read-only scene of the lanes on 127.0.0.1 (each lane a worker building a pyramid) and opens it in the
+     human's browser; its output then carries no token. When no browser opens, it prints the URL with this session's
+     token instead: give that URL to the human. The scene is for the human; you still react to `wait` and read reports.
 4. `arbab launch lanes/<name>.json` for each lane. It returns as soon as the lane's shepherd has started and prints
    the lane, its run dir and the shepherd pid. A lane without a free slot, or launched above the quota threshold,
    waits in state `held`. A lane that is already running (or being launched) is refused.
@@ -223,7 +221,7 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
   out), here or below its folder; `summary --since <when>` (`2h`, `1d`, `YYYY-MM-DD` as midnight UTC, ISO with `Z` or an offset) lists them.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
 - When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
-  what needs attention, quota and slots; `--all` across every repository that launched a lane on this machine) and
+  what needs attention, quota, slots and worktrees; `--all`: every repository that launched a lane on this machine) and
   `arbab report <lane>` (an attempt's metrics and report; `--attempt <n>` for an earlier one), not from JSON read by
   hand. `arbab status [--active] [--mine]` gives one row per lane; use it when you need a picture, not in a loop.
 - **Never poll or tail streams into your context.** `arbab report <lane>` reads the attempt's `summary.json` and
@@ -244,10 +242,9 @@ The full table, with what to do for each: [references/end-states.md](references/
   - `arbab resume <lane> --digest`, for a long attempt that stopped long ago (a plain resume re-pays the whole
     context on a cold cache) or a session that went wrong. It starts a fresh session in the lane's worktree with
     a bounded digest of the latest attempt as a head start; the brief stays as it is;
-  - a fresh relaunch with a corrected brief, when the brief was wrong. Relaunching a
-    finished lane with the same lane file (`arbab launch lanes/<lane>.json` again) starts a fresh session in the
-    same worktree, continuing from its checkpoint commits. Choose a new lane name (with `base` set to
-    `arbab/<lane>` to keep the checkpoint) only when the scope changes.
+  - a fresh relaunch with a corrected brief, when the brief was wrong: the same lane file again (`arbab launch
+    lanes/<lane>.json`) starts a fresh session in the same worktree, on its checkpoint commits. Choose a new lane
+    name (`"base": "arbab/<lane>"` keeps the checkpoint) only when the scope changes or the worktree cannot be rebuilt.
 - `invalid-report`: the work may be fine but the report is missing or fails its schema. Resume with a prompt
   asking for the report only.
 - `unsupported-cli`: the binary cannot run the model. Run `arbab doctor`, fix the binary or the model, relaunch.
@@ -256,6 +253,10 @@ The full table, with what to do for each: [references/end-states.md](references/
   usually a stuck command or an open brief. `killed:stopped` is your own `stop`.
 - `no-result`: the worker exited without a result. Treat as `failed`.
 - A lane shown as `orphaned` lost its shepherd: run `arbab cleanup`, then decide as for `failed`.
+- Worktrees of finished lanes and integrations unused for `worktrees.idleDays` days (default 3; 0 turns it off) are
+  removed automatically after a launch or resume; branches and records stay. `resume`, a relaunch and `integrate`
+  rebuild a missing one from its branch. A lane whose branch changed dependency manifests cannot be rebuilt (its
+  install would not match): relaunch it under a new name with `"base": "arbab/<lane>"`.
 
 ## Quota
 
@@ -310,8 +311,6 @@ Review rounds:
   in `reviews/<round>.json`; readiness shows each round's counts.
 - A re-run of `review` or `verify` on the same head, after a timeout, takes the results of its lanes that finished
   meanwhile and waits for those still running.
-
-A verifier lane that may fix runs after its builder, in the builder's worktree, from the builder's commit.
 
 ## Land
 
@@ -368,7 +367,8 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
      - the base has not moved past the integration: its HEAD is contained in the verified head. If it moved, merge
        the base into the integration worktree with hooks off (the command `land` prints:
        `git -C <integration worktree> -c core.hooksPath=/dev/null -c core.fsmonitor=false -c diff.ignoreSubmodules=all -c submodule.recurse=false merge --no-verify --no-edit <base>`; a plain `git merge` there would run worker-written hooks on the host), then record
-       the new head with `arbab integrate <name> --refresh` and run verify, review and readiness again.
+       the new head with `arbab integrate <name> --refresh` and run verify, review and readiness again. When that
+       worktree is gone (removed while idle), run `arbab integrate <name> --refresh` before the merge: it rebuilds it.
    - Then it merges `--no-ff` (`Land <name>`), or makes one squash commit, with hooks disabled (the branch holds
      worker code), writes `landing.json` and prints the push command.
    - **It never pushes.** Push and deploy are human actions; say that nothing was pushed.

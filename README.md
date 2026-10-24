@@ -148,6 +148,8 @@ Then:
      Read tool still may not; every other `.env*` file stays denied); `fence.bashOutputMaxChars` (default 100000):
      longer Bash output is saved where workers cannot read it.
    - `landing.tier` (`low`, `medium` or `high`, default `medium`) and `landing.squash` (one commit per landing).
+   - `worktrees.idleDays` (default 3, 0 turns it off): after a launch, arbab removes the clean worktrees of finished
+     lanes and integrations unused for that many days. Their branches and records stay.
    - Also: `preflight.steps`, `dependencies`, `env`, `passEnv`, `credentialPaths`, `resources`, `semaphores`,
      `quota.holdAbove`, `review.lenses`, `roles`, `minClaudeVersion`, `worktreeRoot`, `runsRoot`.
 
@@ -321,7 +323,9 @@ What the fence refuses is in [Safe by construction](#safe-by-construction); how 
 Every worker gets:
 
 - **Its own git worktree and branch.** A lane can instead borrow another lane's worktree, as a verifier does after its
-  builder. Your checkout is never its working directory.
+  builder. Your checkout is never its working directory. arbab removes worktrees left unused for
+  `worktrees.idleDays` days by itself, keeping their branches, and rebuilds a removed one from its branch when a
+  resume, an integration or a host check needs it.
 - **Claude Code's sandbox.** Writes stay in its worktree and the few shared places Claude Code's sandbox allows, such
   as the per-user temp directory and `~/.npm/_logs`; keep nothing you trust there while lanes run. There is no
   network unless the lane is a researcher. A sandbox that cannot start is fatal, never a silent fallback.
@@ -458,17 +462,17 @@ clink as a finished worker takes its pay.
 | `plan next <plan.json> [--retry <phase>]` | Launches every phase whose dependencies all succeeded and that never ran. `--retry` first relaunches a phase that failed or was orphaned. |
 | `plan status <plan.json>` | One row per phase: wave, state, end state, dependencies. |
 | `status [lane…] [--active] [--mine]` | One row per lane, then the quota. `--active`: lanes not finished; `--mine`: this session's runs and ownerless ones. |
-| `summary [--all] [--since <when>]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota and slots. `--all`: every project that launched a lane on this machine. `--since`: what landed after `<when>` (`<n>m`, `<n>h`, `<n>d` ago, a date `YYYY-MM-DD` as midnight UTC, or an ISO date-time with `Z` or an offset) and which session landed it. |
+| `summary [--all] [--since <when>]` | One screen: lanes by state, plans, integrations by stage, what needs attention, quota, slots and worktrees (how many, how many unused, the last sweep). `--all`: every project that launched a lane on this machine. `--since`: what landed after `<when>` (`<n>m`, `<n>h`, `<n>d` ago, a date `YYYY-MM-DD` as midnight UTC, or an ISO date-time with `Z` or an offset) and which session landed it. |
 | `report <lane> [--attempt <n>]` | An attempt's metrics and the worker's report, the latest unless `--attempt`. |
 | `wait [lane… \| --any \| --all] [--all-sessions] [--timeout-min N] [--notify]` | Reports finished lanes not yet acknowledged. Without lanes it covers this session's runs and ownerless ones, every session's with `--all-sessions`. `--notify` sends a desktop notification. Exit 3 on timeout. |
 | `resume <lane> [--prompt <file> \| --digest]` | Starts a new attempt in the latest session. `--digest` starts a fresh session seeded with the latest attempt's digest. |
 | `stop <lane>` | Stops the lane's shepherd and worker. |
 | `preflight <lane.json> [--timeout-min N]` | Probes the lane's fence and model. Exit 1 on any failed check. |
 | `quota [--reset \| --refresh]` | Shows the account snapshot and the hold decision. After you switch accounts, `--refresh` reads the new account's windows with one haiku call; `--reset` only deletes the snapshot. |
-| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories and session watermarks unused for 30 days. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than` adds clean worktrees unchanged for longer. `--mine`: only this session's runs. |
+| `cleanup [--worktrees [--older-than <days>]] [--mine]` | Reaps orphans, releases stale pool entries and removes empty lock directories and session watermarks unused for 30 days. `--worktrees` also removes finished lanes' clean worktrees merged into the base or landed (lane branches stay) and landed integrations' worktrees and branches; `--older-than <days>` adds the clean worktrees of finished lanes and of integrations that have not landed, unused for longer, and keeps their branches: what the automatic sweep does with `worktrees.idleDays`. `--mine`: only this session's runs. |
 | `integrate <name> --lanes a,b \| --plan <plan.json>` | Merges lane branches into `integrate/<name>`, in order or by plan waves. |
 | `integrate <name> --adopt <ref> [--base <branch>]` | Makes an integration of an existing branch, so work done outside lanes gets verify and review. The base (`--base`, or config `baseBranch`) must be a branch, since `land` merges into it, and contained in your base branch: the install runs at the fork point. |
-| `integrate <name> --refresh` | Records the integration's head again after a hand commit or a merge of the base in its worktree. Merges and installs nothing. |
+| `integrate <name> --refresh` | Records the integration's head again after a hand commit or a merge of the base in its worktree. Merges nothing. A missing worktree is rebuilt from the branch first, its install on a trusted commit, so run it before the base merge `land` prints when the worktree is gone. |
 | `integrate <name> --deps-installed <sha>` | Records that you reviewed and installed changed dependencies at that head. Terminal only. |
 | `verify <name> [--timeout-min N]` | Runs the gates and smoke inside the fence on the integration head. Exit 1 unless all pass, 3 on timeout. |
 | `verify --ref <branch>` | The same on a branch head with no integration: the check after landing. |

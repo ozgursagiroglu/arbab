@@ -31,6 +31,8 @@ describe("USAGE", () => {
     expect(USAGE.status).toContain("status [<lane>…] [--active] [--mine] [--json]");
     expect(USAGE.wait).toContain("wait [<lane>… | --any | --all] [--all-sessions] [--timeout-min <n>] [--notify] [--json]");
     expect(USAGE.cleanup).toContain("[--worktrees [--older-than <days>]] [--mine]");
+    expect(USAGE.cleanup).toMatch(/^ {2}--older-than <days> .*unlanded integrations.*worktrees\.idleDays/m);
+    expect(USAGE.integrate).toMatch(/^ {2}--refresh .*rebuild a missing worktree/m);
     expect(USAGE.quota).toContain("quota [--reset | --refresh] [--json]");
     expect(USAGE.plan).toContain("plan next <plan.json> [--retry <phase>]");
     expect(USAGE.integrate).toContain("integrate <name> --adopt <ref> [--base <branch>]");

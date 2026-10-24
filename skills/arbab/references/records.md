@@ -105,7 +105,12 @@ attempt: leases, semaphores, the writer lock, worktree, dependencies, merges, in
 of the branch name's sha1. Integration names starting with `ref-` are refused.
 
 `integrate <name> --refresh` rewrites `integration.json` for the current head of `integrate/<name>` (after a hand
-commit or a base merge there) without merging or installing anything.
+commit or a base merge there) without merging anything. It installs only to rebuild a missing worktree on the branch,
+at a trusted commit before the checkout.
+
+`.arbab/sweep.json` is the latest automatic worktree sweep (`startedAt`, `finishedAt`, null while it runs or when it
+died, `idleDays`, `removed[]` with `{path, reason}`, `kept`, `warnings`); `.arbab/sweep.log` holds what the sweeps
+printed.
 
 Machine records in `~/.arbab/`: `quota.json`, `quota-reset.json`, `machine.json`, the pools (`slots/`, `semaphores/`,
 `leases/`, `locks/`), `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while `wait` runs or

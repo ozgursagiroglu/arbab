@@ -121,10 +121,13 @@ describe("runVerify", () => {
     expect(integration).toMatchObject({ manifests: ["package.json"], depsConfirmedAt: confirmed });
     expect(integration.headSha).not.toBe(confirmed);
 
-    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    const ran: string[] = [];
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, undefined, (worktree) => {
+      ran.push(p.ok(["rev-parse", "HEAD"], worktree).trim());
+    });
     expect(await runVerify(["rel"], p.ctx)).toBe(0);
     expect(readRecord<LaneSpec>(join(dir(p), "lanes", "rel-verify.json"))).toMatchObject({ base: confirmed, mergeBranches: [integration.headSha] });
-    expect(p.ok(["rev-parse", "arbab/rel-verify"]).trim()).toBe(integration.headSha);
+    expect(ran).toEqual([integration.headSha]);
   });
 
   it("checks the recorded head even when integrate/rel moves while the lane waits to start", async () => {
@@ -132,14 +135,20 @@ describe("runVerify", () => {
     const integration = readRecord<IntegrationRecord>(join(dir(p), "integration.json"));
     // Another integrate (here a commit in the integration worktree) moves the branch after the lane file is written.
     let moved = false;
-    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, () => {
-      p.ok(["commit", "-q", "--allow-empty", "-m", "moved on"], integration.worktree);
-      moved = true;
-    });
+    const ran: string[] = [];
+    simulateWithMerges(
+      p,
+      { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) },
+      () => {
+        p.ok(["commit", "-q", "--allow-empty", "-m", "moved on"], integration.worktree);
+        moved = true;
+      },
+      (worktree) => ran.push(p.ok(["rev-parse", "HEAD"], worktree).trim()),
+    );
     expect(await runVerify(["rel"], p.ctx)).toBe(0);
     expect(moved).toBe(true);
     expect(p.ok(["rev-parse", "integrate/rel"]).trim()).not.toBe(integration.headSha);
-    expect(p.ok(["rev-parse", "arbab/rel-verify"]).trim()).toBe(integration.headSha);
+    expect(ran).toEqual([integration.headSha]);
     expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ headSha: integration.headSha, passed: true });
     expect(readFileSync(join(dir(p), "lanes", "rel-verify.json"), "utf8")).not.toContain("integrate/");
   });
@@ -174,18 +183,22 @@ describe("runVerify", () => {
   it("fails on a nested repository the lane staged, without running anything of it", async () => {
     p = await integrated();
     let nested: NestedRepo | undefined;
+    let plain = "";
     simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, undefined, (worktree) => {
       nested = plantNestedRepo(p.git, worktree, "sub", p.dir);
       p.ok(["add", "sub"], worktree);
+      // The check it replaced, a plain status, runs the lane's commands on the host.
+      nested.reset();
+      p.ok(["status", "--porcelain"], worktree);
+      plain = nested.ran();
       nested.reset();
     });
     expect(await runVerify(["rel"], p.ctx)).toBe(1);
     const worktree = join(p.worktreeRoot, "rel-verify");
     expect(readRecord<VerifyRecord>(join(dir(p), "verify.json")).reason).toBe(`the worktree ${worktree} has changes after the run: ?? sub/`);
+    // Neither the check nor the worktree's removal ran any of it.
     expect(nested?.ran()).toBe("");
-    // The check it replaced, a plain status, runs the lane's commands on the host.
-    p.ok(["status", "--porcelain"], worktree);
-    expect(nested?.ran()).toMatch(/clean/);
+    expect(plain).toMatch(/clean/);
   });
 
   it("fails when the verify worktree's git dir does not verify", async () => {
@@ -217,16 +230,19 @@ describe("runVerify", () => {
 
   it("starts a second verify from the new head, not the old lane's worktree", async () => {
     p = await integrated();
-    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    const ran: string[] = [];
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, undefined, (worktree) => {
+      ran.push(p.ok(["rev-parse", "HEAD"], worktree).trim());
+    });
     expect(await runVerify(["rel"], p.ctx)).toBe(0);
-    const first = p.ok(["rev-parse", "arbab/rel-verify"]).trim();
 
     branchWith(p, "arbab/b", "b.txt", "b\n");
     expect(await runIntegrate(["rel", "--lanes", "b"], p.ctx)).toBe(0);
     const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
     expect(await runVerify(["rel"], p.ctx)).toBe(0);
-    expect(p.ok(["rev-parse", "arbab/rel-verify"]).trim()).toBe(head);
-    expect(head).not.toBe(first);
+    expect(ran).toHaveLength(2);
+    expect(ran[1]).toBe(head);
+    expect(head).not.toBe(ran[0]);
     expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ headSha: head, attempt: 2 });
   });
 
@@ -256,12 +272,66 @@ describe("runVerify", () => {
     await expect(runVerify(["rel"], p.ctx)).rejects.toThrow(/integration\.json records/);
   });
 
-  it("exits 3 when the lane does not finish in time, writing nothing", async () => {
+  it("exits 3 when the lane does not finish in time, writing nothing and keeping its worktree", async () => {
     p = await integrated();
-    simulateShepherds(p, { "rel-verify": () => ({ state: "running" }) });
+    simulateWithMerges(p, { "rel-verify": () => ({ state: "running" }) });
     expect(await runVerify(["rel", "--timeout-min", "1"], p.ctx)).toBe(3);
     expect(p.stderr()).toContain("rel-verify did not finish in time");
     expect(existsSync(join(dir(p), "verify.json"))).toBe(false);
+    // The next verify adopts it from there.
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(true);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/arbab/rel-verify"], p.root).code).toBe(0);
+  });
+
+  it("removes the verify lane's worktree and branch once verify.json is written, keeping what it measured", async () => {
+    p = await integrated();
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    expect(await runVerify(["rel"], p.ctx)).toBe(0);
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/arbab/rel-verify"], p.root).code).not.toBe(0);
+    expect(p.ok(["worktree", "list", "--porcelain"])).not.toContain("rel-verify");
+    // The run dir, the marker, the run record and the record stay.
+    expect(existsSync(join(p.runsRoot, "rel-verify", "attempt-1", "stream.jsonl"))).toBe(true);
+    expect(existsSync(join(p.runsRoot, "rel-verify", "generated.json"))).toBe(true);
+    expect(readRecord<{ settled: boolean }>(join(dir(p), "lanes", "rel-verify.run.json")).settled).toBe(true);
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ passed: true, attempt: 1 });
+    expect(p.stderr()).not.toContain("arbab verify:");
+
+    // A second verify launches the lane afresh, and it works.
+    expect(await runVerify(["rel"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify", "rel-verify"]);
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ passed: true, attempt: 2 });
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(false);
+  });
+
+  it("warns on stderr when the lane's worktree cannot go, and still exits as its record says", async () => {
+    p = await integrated();
+    // The lane committed: its branch has a commit that is not on integrate/rel, which is never deleted.
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, undefined, (worktree) => {
+      writeFileSync(join(worktree, "work.txt"), "work\n");
+      p.ok(["add", "work.txt"], worktree);
+      p.ok(["commit", "-q", "-m", "own work"], worktree);
+    });
+    expect(await runVerify(["rel"], p.ctx)).toBe(1);
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json")).passed).toBe(false);
+    expect(p.stderr()).toContain(
+      "arbab verify: could not remove rel-verify's worktree and branch: arbab/rel-verify has commits that are not on integrate/rel, so nothing was removed\n",
+    );
+    expect(existsSync(join(p.worktreeRoot, "rel-verify", "work.txt"))).toBe(true);
+  });
+
+  it("warns, and still exits 0 on a passing record, when a lane borrows the verify worktree", async () => {
+    p = await integrated();
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) }, undefined, () => {
+      writeLaneRun(p.runsRoot, "borrower", { state: "running", shepherdPid: 6001, lane: { name: "borrower", role: "implementer", brief: "lanes/demo.md", worktree: "rel-verify" } });
+      p.alive.add(6001);
+    });
+    expect(await runVerify(["rel", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { verify: VerifyRecord }).verify.passed).toBe(true);
+    expect(p.stderr()).toContain(
+      "arbab verify: could not remove rel-verify's worktree and branch: lane borrower works in lane rel-verify's worktree and is running, so nothing was removed",
+    );
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(true);
   });
 
   it("is a waiter of its session while it waits for the lane, and no longer once it returns", async () => {
@@ -297,12 +367,29 @@ describe("runVerify", () => {
     expect(p.stderr()).toContain("adopted rel-verify");
     const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
     expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ headSha: head, attempt: 1, passed: true });
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(false);
 
     // Taken into verify.json: the next verify runs the gates again.
     simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
     expect(await runVerify(["rel"], p.ctx)).toBe(0);
     expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify", "rel-verify"]);
     expect(readRecord<VerifyRecord>(join(dir(p), "verify.json")).attempt).toBe(2);
+  });
+
+  it("after a timeout, relaunches a lane that finished on the same head but lost its worktree", async () => {
+    p = await integrated();
+    simulateWithMerges(p, { "rel-verify": () => ({ state: "running" }) });
+    expect(await runVerify(["rel", "--timeout-min", "1"], p.ctx)).toBe(3);
+    const pid = readRecord<{ shepherdPid: number }>(join(p.runsRoot, "rel-verify", "state.json")).shepherdPid;
+    writeLaneRun(p.runsRoot, "rel-verify", { ...finished(bashStream([["pnpm test", 1], ["pnpm typecheck", 1]]))(), shepherdPid: pid });
+    p.alive.delete(pid);
+    p.ok(["worktree", "remove", "--force", join(p.worktreeRoot, "rel-verify")]);
+
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["pnpm test", 0], ["pnpm typecheck", 0]])) });
+    expect(await runVerify(["rel"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify", "rel-verify"]);
+    expect(p.stderr()).not.toContain("adopted");
+    expect(readRecord<VerifyRecord>(join(dir(p), "verify.json"))).toMatchObject({ attempt: 2, passed: true });
   });
 
   it("after a timeout, waits for the lane still running on the same head", async () => {
@@ -378,6 +465,21 @@ describe("runVerify --ref", () => {
       `exit 0    gate   pnpm test\nexit 0    gate   pnpm typecheck\nverify ref:Release/Next: passed at ${head} (lane ${id}-verify success)\n`,
     );
     expect(existsSync(join(p.root, ".arbab", "integrations"))).toBe(false);
+    // As for an integration: the lane's worktree and branch go, its run dir and run record stay.
+    expect(existsSync(join(p.worktreeRoot, `${id}-verify`))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", `refs/heads/arbab/${id}-verify`], p.root).code).not.toBe(0);
+    expect(existsSync(join(p.runsRoot, `${id}-verify`, "generated.json"))).toBe(true);
+    expect(readRecord<{ settled: boolean }>(join(refDir(p, "Release/Next"), "lanes", `${id}-verify.run.json`)).settled).toBe(true);
+    expect(p.stderr()).not.toContain("arbab verify:");
+  });
+
+  it("keeps the lane's worktree when it does not finish in time", async () => {
+    p = makeProject({ config: { ...DEFAULT_CONFIG, gates: GATES } });
+    const lane = `${refId("main")}-verify`;
+    simulateWithMerges(p, { [lane]: () => ({ state: "running" }) });
+    expect(await runVerify(["--ref", "main", "--timeout-min", "1"], p.ctx)).toBe(3);
+    expect(existsSync(join(p.worktreeRoot, lane))).toBe(true);
+    expect(existsSync(join(refDir(p, "main"), "verify.json"))).toBe(false);
   });
 
   it("gives two branches whose slugs collide their own lane and record", async () => {

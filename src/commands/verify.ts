@@ -10,7 +10,7 @@
 // stopped waiting (DESIGN.md §21). While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Writes .arbab/integrations/<name>/verify.json (VerifyRecord, with a `reason` when it failed for something other than
 // an exit code: the lane ran on another commit than the head, or its worktree has changes or fails verification after
-// the run).
+// the run). Then the lane's worktree and branch are removed; its run dir and run record stay. On a timeout both stay.
 // --ref <branch>: the check after landing (§21). The same lane, <id>-verify, starts on the branch's head with no
 // integration; the record, named ref:<branch>, goes to .arbab/refs/<id>/verify.json. <id> is ref-<slug>-<hash> (refId).
 // Text: one line per command, `exit <n>  <kind>  <command>` or `missing  <kind>  <command>`, then
@@ -33,6 +33,7 @@ import {
   assertRecordedHead,
   attemptEvents,
   branchHead,
+  dropGeneratedWorktrees,
   generatedBase,
   generationOwner,
   openIntegration,
@@ -185,6 +186,8 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
   });
   writeJsonAtomic(target.recordPath, record);
   settleGeneratedRuns(target.lanesDir, [spec.name]);
+  // The results are recorded; the worktree holds a dependency install the next verify builds again anyway.
+  for (const warning of dropGeneratedWorktrees(ctx, project, [spec.name], target.owner)) ctx.stderr(`arbab verify: ${warning}\n`);
 
   if (json) {
     printJson(ctx, { timedOut: false, endState: outcome.endState, verify: record });

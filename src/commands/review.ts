@@ -11,6 +11,7 @@
 // ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
 // Writes .arbab/integrations/<name>/review.json (ReviewRecord) and the same record as reviews/<round>.json. With
 // --lenses, the previous review.json's other lenses (entries, skeptics, findings) are kept when it is of the same head.
+// Then the lanes' worktrees and branches are removed, their run dirs and run records kept; not when a wait timed out.
 // Text: one line per lane, `<lens>  review|skeptic  <lane>  <end state>[  <n> paths]`, then the findings by verdict:
 // a `confirmed (n)` / `refuted (n)` / `unverified (n)` heading and `  <id>  <SEVERITY>  <file>[:<line>]  <title>` lines.
 // --json: {"timedOut": boolean, "review": ReviewRecord | null}
@@ -44,6 +45,7 @@ import type { CommandContext } from "./context";
 import { splitList } from "./integrate";
 import {
   assertRecordedHead,
+  dropGeneratedWorktrees,
   generatedBase,
   generationOwner,
   openIntegration,
@@ -259,7 +261,12 @@ export async function runReview(argv: string[], ctx: CommandContext): Promise<nu
   const record = writeReviewRound(paths.dir, keepOtherLenses(previous, current, lenses));
   writeJsonAtomic(paths.review, record);
   // Skeptics still running: the next review waits for them, or adopts them and the reviewers their findings came from.
-  if (!skepticsTimedOut) settleGeneratedRuns(paths.lanesDir, [...reviewers, ...skeptics].map((x) => x.lane.spec.name));
+  if (!skepticsTimedOut) {
+    const lanes = [...reviewers, ...skeptics].map((x) => x.lane.spec.name);
+    settleGeneratedRuns(paths.lanesDir, lanes);
+    // The results are recorded; each worktree holds a dependency install the next review builds again anyway.
+    for (const warning of dropGeneratedWorktrees(ctx, project, lanes, owner)) ctx.stderr(`arbab review: ${warning}\n`);
+  }
   if (values.json === true) printJson(ctx, { timedOut: skepticsTimedOut, review: record });
   else ctx.stdout(formatReview(record));
   if (skepticsTimedOut) {

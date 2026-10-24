@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as plans from "../plan";
-import { acquireWriterLock, writerLockKey } from "../run";
+import { acquireWriterLock, releaseWriterLock, writerLockKey } from "../run";
 import type { IntegrationRecord, PlanSpec } from "../types";
 import type { CommandContext } from "./context";
 import { formatIntegration, integrationLanes, runIntegrate, splitList } from "./integrate";
@@ -407,6 +407,31 @@ describe("runIntegrate and the integration worktree's writer lock", () => {
     expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
     expect(existsSync(join(p.worktreeRoot, "integrate-rel"))).toBe(false);
     expect(JSON.parse(readFileSync(lockFile(p), "utf8"))).toEqual(holder);
+  });
+
+  it("checks the lanes again once it holds the lock: a lane that started during the wait is refused", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    p.alive.add(LIVE);
+    mkdirSync(p.worktreeRoot, { recursive: true });
+    const key = writerLockKey(join(realpathSync(p.worktreeRoot), "integrate-rel"));
+    const holder = { pid: LIVE, lane: "integrate-rel", project: p.root, createdAt: "2026-10-09T12:00:00.000Z" };
+    expect(acquireWriterLock(p.home, key, holder, p.ctx.alive)).toBe(true);
+    // While integrate waits, lane a is launched again and the holder lets go.
+    const waiting: CommandContext = {
+      ...p.ctx,
+      sleep: async (ms) => {
+        p.now.ms += ms;
+        writeLaneRun(p.runsRoot, "a", { state: "running", shepherdPid: 5555 });
+        p.alive.add(5555);
+        releaseWriterLock(p.home, key, holder);
+        await Promise.resolve();
+      },
+    };
+    await expect(runIntegrate(["rel", "--lanes", "a"], waiting)).rejects.toThrow(/lane a is running/);
+    expect(existsSync(join(p.root, ".arbab", "integrations", "rel", "integration.json"))).toBe(false);
+    expect(p.git(["rev-parse", "--verify", "--quiet", "refs/heads/integrate/rel"], p.root).code).not.toBe(0);
+    expect(existsSync(lockFile(p))).toBe(false);
   });
 
   it("--refresh waits for it too", async () => {

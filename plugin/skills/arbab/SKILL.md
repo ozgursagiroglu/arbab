@@ -255,8 +255,8 @@ The full table, with what to do for each: [references/end-states.md](references/
 - A lane shown as `orphaned` lost its shepherd: run `arbab cleanup`, then decide as for `failed`.
 - After a launch or resume arbab removes what `cleanup --worktrees --older-than <worktrees.idleDays>` does (default 3;
   0: off): clean worktrees of merged or landed lanes, and of lanes and integrations unused that long; lane branches
-  stay. `resume`, a relaunch and `integrate` rebuild a missing one. A lane whose branch changed dependency manifests is
-  kept (no rebuild could match): integrate it, the human confirms the install, then continue on `integrate/<name>`.
+  stay. `resume`, a relaunch and `integrate` rebuild a missing one. The idle rule keeps a lane whose branch changed
+  dependency manifests (no rebuild could match): integrate it, the human confirms the install, go on in `integrate/<name>`.
 
 ## Quota
 

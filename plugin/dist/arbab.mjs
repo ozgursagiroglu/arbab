@@ -8124,8 +8124,15 @@ function removeWorktreeAndBranch(ctx, project, target, rules, out, blockers, com
 }
 function uncollected(project, lane, by) {
   const owner = generatingIntegration(by);
-  if (owner === null) return false;
-  const lanesDir = owner.startsWith(REF_PREFIX) ? confine(project.root, join44(REFS_DIR, owner, "lanes")) : integrationPaths(project.root, project.config, owner).lanesDir;
+  if (owner === null || !existsSync20(join44(project.worktreeRoot, lane))) return false;
+  let lanesDir;
+  if (owner.startsWith(REF_PREFIX)) {
+    lanesDir = confine(project.root, join44(REFS_DIR, owner, "lanes"));
+  } else {
+    const paths = integrationPaths(project.root, project.config, owner);
+    if (existsSync20(paths.landing)) return false;
+    lanesDir = paths.lanesDir;
+  }
   const run = readGeneratedRun(lanesDir, lane);
   return run !== null && !run.settled;
 }
@@ -8638,6 +8645,11 @@ async function runHostCheck(argv2, ctx) {
   const head = integration.record.headSha;
   const worktree = integration.paths.worktree;
   const record2 = await withWorktreeLock(ctx, project, basename7(worktree), "host-check", () => {
+    const now = openIntegration(project, name2);
+    assertRecordedHead(ctx.git, project, now);
+    if (now.record.headSha !== head) {
+      throw new ArbabError("usage", `${now.paths.branch} moved from ${head} to ${now.record.headSha} while host-check waited; review it and run host-check again`);
+    }
     ensureIntegrationWorktree({ projectRoot: project.root, config: project.config, git: ctx.git, runCommand: ctx.runCommand }, integration.paths);
     assertWorktreeAt(ctx, worktree, head);
     const results = [];
@@ -9276,13 +9288,17 @@ async function runIntegrate(argv2, ctx) {
     return 0;
   }
   const lanes = integrationLanes2(project, { ...values.lanes !== void 0 && { lanes: values.lanes }, ...values.plan !== void 0 && { plan: values.plan } });
-  for (const lane of lanes) {
-    assertInactive(ctx, project, lane);
-    assertNoLiveWorker(ctx, project, lane);
-  }
-  assertNoActiveBorrower(ctx, project, lanes);
-  const { record: integrated, alreadyIn } = await inWorktree(
-    () => integrate({
+  const assertLanesIdle = () => {
+    for (const lane of lanes) {
+      assertInactive(ctx, project, lane);
+      assertNoLiveWorker(ctx, project, lane);
+    }
+    assertNoActiveBorrower(ctx, project, lanes);
+  };
+  assertLanesIdle();
+  const { record: integrated, alreadyIn } = await inWorktree(() => {
+    assertLanesIdle();
+    return integrate({
       projectRoot: project.root,
       config: project.config,
       name: name2,
@@ -9290,8 +9306,8 @@ async function runIntegrate(argv2, ctx) {
       git: ctx.git,
       runCommand: ctx.runCommand,
       clock: ctx.clock
-    })
-  );
+    });
+  });
   record2 = integrated;
   if (values.json === true) printJson(ctx, record2);
   else ctx.stdout(formatIntegration(record2, alreadyIn));
@@ -13545,7 +13561,7 @@ var USAGE = {
     ["cleanup [--worktrees [--older-than <days>]] [--mine] [--json]"],
     [
       ["--worktrees", "also remove finished lanes' clean worktrees merged into the base or landed, and landed integrations'"],
-      ["--older-than <days>", "with --worktrees: also the clean worktrees of finished lanes and unlanded integrations unused for over <days> days, branches kept, but not a lane whose branch changed dependency manifests (it could not be rebuilt); the automatic sweep does this for worktrees.idleDays"],
+      ["--older-than <days>", "with --worktrees: also the clean worktrees of finished lanes and unlanded integrations unused for over <days> days, branches kept; this idle rule keeps a lane whose branch changed dependency manifests (it could not be rebuilt), while one merged into the base or landed goes as above; the automatic sweep does this for worktrees.idleDays"],
       ["--mine", "only runs this session owns (not ownerless ones), and no integration"],
       JSON_OPT
     ]

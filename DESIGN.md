@@ -401,7 +401,8 @@ quota holds no slot.
     since `installPlan(<branch head>).start` (`kept worktree <path>: its branch changed dependency manifests (<paths>)
     since <start>, so it could not be rebuilt`; `manifestsSince`, which the rebuild's refusal uses too). A generated
     lane whose run record is unsettled goes only by the idle rule (`kept worktree <path>: its verify or review has not
-    collected it yet`): removed between its finish and its collection, verify would record a false failure;
+    collected it yet`) while its worktree exists and its integration has not landed: removed between its finish and
+    its collection, verify would record a false failure;
   - rebuilt from its branch when it is needed again: by the shepherd for a lane a worker has run in (its
     `worktree-used` marker or an attempt, on resume, `resume --digest`, a fresh relaunch, `plan next --retry`, or a
     lane borrowing it) whose branch `arbab/<owner>` exists, and by `integrate`, `integrate --refresh` and
@@ -1333,10 +1334,17 @@ what a lane's work is, and a worktree can be made again from them (§9).
 - A generated lane whose run record (`<lanesDir>/<lane>.run.json`, or `.arbab/refs/<id>/lanes/` for a `verify --ref`
   lane) is unsettled is kept by the merged and landed rules (`its verify or review has not collected it yet`): removed
   between its finish and its collection, verify would record a false failure. The idle rule still removes it after
-  the days asked, its branch kept.
+  the days asked, its branch kept. This applies only while a later verify or review could adopt the run: the lane's
+  worktree exists (`reusableRun` adopts nothing without it) and the generating integration has no `landing.json` (a
+  `ref-` generator never lands). Otherwise the merged, landed and idle rules decide as for any lane, so `land`, which
+  has no idle rule, still removes such a lane and its branch.
 - Every removal by `cleanup`, `land` and the sweep happens under the worktree's writer lock (§9). `integrate` (every
   mode but `--deps-installed`) and `host-check` hold the integration worktree's writer lock while they create, rebuild
-  or use it, waiting up to 2 minutes (every 250 ms) for another live holder before they refuse, naming its pid.
+  or use it, waiting up to 2 minutes (every 250 ms) for another live holder before they refuse, naming its pid. What
+  they check first is checked again once the lock is held, since the wait can be long: `integrate`'s lane activity
+  (`assertInactive`, `assertNoLiveWorker`, `assertNoActiveBorrower`) and `host-check`'s recorded head
+  (`assertRecordedHead`, and a refusal when the head is not the one read before the wait). The early checks stay, so
+  a refusal does not wait.
 - **The automatic sweep.** A launch (`launch`, `plan next`, and the lanes `verify`, `review` and `preflight` start)
   or a resume (`resume`, `resume --digest`), once the new shepherd has written its first state (so the sweep sees
   that lane active), calls `maybeStartSweep`: when `idleDays` is above 0, the last sweep started at least an hour ago
@@ -1453,7 +1461,7 @@ what a lane's work is, and a worktree can be made again from them (§9).
   must name a branch (`refs/heads/<base>`), not a commit or an expression such as `main~0`: `land` merges into it.
   Integration names starting with `ref-` are refused (`verify --ref`'s prefix).
 - `integrate <name> --refresh` records an integration's head again after a hand commit or a merge of the base in its
-  worktree, merging nothing and installing nothing, unless it rebuilds a missing worktree (§17, 0.2.3 below).
+  worktree, merging nothing and installing nothing, unless it rebuilds a missing worktree (§17, Worktrees on disk (0.2.3) above).
 - `land --squash` (config `landing.squash`) makes one commit; `--message <file>` sets the commit message, from a file
   inside the project that the credential matcher does not hit (Fence, above), by its path or its real path, in any
   case. `landing.json` lists the lanes it carried, so `cleanup` recognises

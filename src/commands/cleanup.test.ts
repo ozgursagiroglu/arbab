@@ -976,12 +976,32 @@ describe("generated lanes whose run is not collected yet", () => {
     expect(p.stdout()).toBe(`removed worktree ${open}: merged into main\ndeleted branch arbab/rel-verify\n`);
   });
 
-  it("keeps the branch of an unsettled one whose worktree is gone", async () => {
+  it("lets the merged rule delete the branch of an unsettled one whose worktree is gone: no run can adopt it", async () => {
     p = makeProject();
     const open = generatedLane(p, "rel-verify", "rel", lanesOf(p, "rel"), false);
     p.ok(["worktree", "remove", open]);
     expect(await runCleanup(["--worktrees"], p.ctx)).toBe(0);
-    expect(p.stdout()).toBe("kept branch arbab/rel-verify: its verify or review has not collected it yet\n");
+    expect(p.stdout()).toBe("deleted branch arbab/rel-verify\n");
+    expect(hasBranch(p, "arbab/rel-verify")).toBe(false);
+  });
+
+  it("lets the merged rule remove an unsettled one whose integration has landed", async () => {
+    p = makeProject();
+    const open = generatedLane(p, "rel-verify", "rel", lanesOf(p, "rel"), false);
+    writeFileSync(join(p.root, ".arbab", "integrations", "rel", "landing.json"), "{}\n");
+    expect(await runCleanup(["--worktrees"], p.ctx)).toBe(0);
+    // The bare landing.json also draws a warning from the landed integrations' pass.
+    expect(p.stdout().split("\n").slice(0, 2)).toEqual([`removed worktree ${open}: merged into main`, "deleted branch arbab/rel-verify"]);
+  });
+
+  it("keeps an unsettled verify --ref lane whatever landing.json a same-named integration has: a ref- id never lands", async () => {
+    p = makeProject();
+    const id = refId("main");
+    const open = generatedLane(p, `${id}-verify`, id, join(p.root, REFS_DIR, id, "lanes"), false);
+    mkdirSync(join(p.root, ".arbab", "integrations", id), { recursive: true });
+    writeFileSync(join(p.root, ".arbab", "integrations", id, "landing.json"), "{}\n");
+    expect(await runCleanup(["--worktrees", "--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as CleanupReport).worktreesKept).toEqual([{ path: open, reason: "its verify or review has not collected it yet" }]);
   });
 
   it("finds a verify --ref lane's run record under .arbab/refs", async () => {

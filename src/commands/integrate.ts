@@ -28,7 +28,8 @@
 // --json: IntegrationRecord (src/types.ts).
 // Every mode but --deps-installed holds the integration worktree's writer lock from before it creates, rebuilds or
 // merges in the worktree until it returns, so no sweep or cleanup removes it meanwhile; while another live process
-// holds it, integrate waits (every 250 ms, up to 2 minutes), then refuses naming that pid.
+// holds it, integrate waits (every 250 ms, up to 2 minutes), then refuses naming that pid. The lane checks run before
+// the wait and again once the lock is held.
 // Exit 0; 1 on usage errors; 2 on a conflict (the merge is aborted, earlier lanes stay merged), a git failure or a
 // writer lock still held after the wait.
 import { basename } from "node:path";
@@ -224,13 +225,18 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
   const lanes = integrationLanes(project, { ...(values.lanes !== undefined && { lanes: values.lanes }), ...(values.plan !== undefined && { plan: values.plan }) });
   // A running lane's branch still moves: what is merged now would not be what it finishes with. So does the branch
   // of an orphaned lane whose worker outlived its shepherd, and of a lane whose worktree another running lane borrows.
-  for (const lane of lanes) {
-    assertInactive(ctx, project, lane);
-    assertNoLiveWorker(ctx, project, lane);
-  }
-  assertNoActiveBorrower(ctx, project, lanes);
-  const { record: integrated, alreadyIn } = await inWorktree(() =>
-    integrate({
+  const assertLanesIdle = (): void => {
+    for (const lane of lanes) {
+      assertInactive(ctx, project, lane);
+      assertNoLiveWorker(ctx, project, lane);
+    }
+    assertNoActiveBorrower(ctx, project, lanes);
+  };
+  // Before the lock wait, so a refusal does not wait; again under the lock, as a lane may have started meanwhile.
+  assertLanesIdle();
+  const { record: integrated, alreadyIn } = await inWorktree(() => {
+    assertLanesIdle();
+    return integrate({
       projectRoot: project.root,
       config: project.config,
       name,
@@ -238,8 +244,8 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
       git: ctx.git,
       runCommand: ctx.runCommand,
       clock: ctx.clock,
-    }),
-  );
+    });
+  });
   record = integrated;
   if (values.json === true) printJson(ctx, record);
   else ctx.stdout(formatIntegration(record, alreadyIn));

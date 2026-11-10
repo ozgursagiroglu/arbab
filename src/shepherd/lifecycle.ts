@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { effectiveRole, loadConfig, loadLane, loadMachineConfig } from "../config";
+import { effectiveRole, loadConfig, loadLane, loadMachineConfigLenient } from "../config";
 import { holdDecision, lastQuotaReset, readQuota, resumeAt } from "../quota";
 import {
   appendLaneEvent,
@@ -40,7 +40,6 @@ import type {
   LaneState,
   LaneStateRecord,
   Lease,
-  MachineConfig,
   MemoryPressureHold,
   ProjectConfig,
   RateLimitSnapshot,
@@ -94,29 +93,20 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 
 /**
  * The slot cap for one poll: the project's maxParallel, lowered by ~/.arbab/machine.json, which every project's
- * shepherds share. Read on each poll so a held shepherd sees an edit; an unreadable file keeps the project's value.
+ * shepherds share. Read on each poll so a held shepherd sees an edit. Read leniently: an invalid other field keeps the
+ * machine's cap; an unreadable file, or an invalid maxParallel, keeps the project's value until the next poll.
  */
 export function slotCap(home: string, projectMax: number): number {
-  let machine: number | null = null;
-  try {
-    machine = loadMachineConfig(home).maxParallel;
-  } catch {
-    // Half-written or invalid: this poll goes by the project, the next one reads it again.
-  }
+  const machine = loadMachineConfigLenient(home).config.maxParallel;
   return Math.min(projectMax, machine ?? projectMax);
 }
 
 /**
  * The admission limits for one poll, from ~/.arbab/machine.json (DESIGN.md §22). Read on each poll so a held shepherd
- * sees an edit; an unreadable file gives the defaults.
+ * sees an edit; an unreadable file, or an invalid admission, gives the defaults.
  */
 export function admissionLimits(home: string): { loadPerCpu: number; memoryPressure: MemoryPressureHold } {
-  let admission: MachineConfig["admission"] = { loadPerCpu: null, memoryPressure: null };
-  try {
-    admission = loadMachineConfig(home).admission;
-  } catch {
-    // Half-written or invalid: this poll goes by the defaults, the next one reads it again.
-  }
+  const admission = loadMachineConfigLenient(home).config.admission;
   return {
     loadPerCpu: admission.loadPerCpu ?? DEFAULT_LOAD_PER_CPU,
     memoryPressure: admission.memoryPressure ?? DEFAULT_MEMORY_PRESSURE_HOLD,
@@ -477,7 +467,8 @@ async function prepare(
       path: worktree,
       branch: ownerBranch,
       start,
-      dependencies: config.dependencies,
+      // A lane that never installs (install: false) is not installed on a rebuild either.
+      dependencies: lane.install === false ? { strategy: "none" } : config.dependencies,
       runCommand: deps.runCommand,
       manifests: "refuse",
       git: deps.git,

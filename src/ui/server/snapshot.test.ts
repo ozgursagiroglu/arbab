@@ -217,6 +217,19 @@ describe("createSnapshotBuilder: lane fields", () => {
     expect(lane(s, "busy")).toMatchObject({ hold: null, reason: "leftover", until: null });
   });
 
+  it("says a lane held by the machine's load or memory pressure waits for the machine, not the quota", () => {
+    p = makeProject();
+    p.alive.add(SHEPHERD_PID);
+    run("load", { state: "held", reason: "machine load 34.2 on 8 CPUs", until: 1_900_000_000 });
+    run("memory", { state: "held", reason: "memory pressure critical", until: 1_900_000_000 });
+    // Only the prefix counts: a quota reason that mentions the machine elsewhere stays a quota hold.
+    run("other", { state: "held", reason: "seven-day window at 97% (machine load fine)", until: 1_900_000_000 });
+    const s = build();
+    expect(lane(s, "load")).toMatchObject({ hold: "machine", reason: "machine load 34.2 on 8 CPUs" });
+    expect(lane(s, "memory")?.hold).toBe("machine");
+    expect(lane(s, "other")?.hold).toBe("quota");
+  });
+
   it("tells generated lanes, probes and the project's own lanes apart, and names the generating integration", () => {
     p = makeProject();
     const owner = { integration: "rel", branch: "integrate/rel", head: SHA("a") };

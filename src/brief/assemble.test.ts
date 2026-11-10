@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { compileProfile } from "../profile/compile";
 import type { BriefContext, BriefSource, JsonSchema } from "../types";
 import { assembleBrief, nestInstruction, roleAndIsolation } from "./assemble";
 import { scanLines } from "./markdown";
-import { REVIEWER, RESEARCHER, STRICT } from "./test-profiles";
+import { REVIEWER, RESEARCHER, STRICT, STRICT_INPUT } from "./test-profiles";
 
 const SCHEMA: JsonSchema = { type: "object", required: ["summary"], properties: { summary: { type: "string" } } };
 
@@ -78,7 +79,8 @@ describe("assembleBrief", () => {
   });
   it("passes the heavy checks and gates to the tool belt", () => {
     const work = { role: "implementer" as const, gates: [["pnpm", "test"]], checks: { script: "/r/bin/arbab-check.mjs", names: ["lint"] } };
-    const text = assembleBrief(SOURCE, ctx(), work);
+    const profile = compileProfile({ ...STRICT_INPUT, checkScript: work.checks.script, checkNames: work.checks.names });
+    const text = assembleBrief(SOURCE, ctx({ profile }), work);
     expect(text).toContain("- Heavy checks: run each one once, before you report, with `node /r/bin/arbab-check.mjs <name>` (names: `lint`).");
     expect(text).toContain("- The integration's verify runs the repository gates for every lane together: `pnpm test`.");
     expect(assembleBrief(SOURCE, ctx())).not.toMatch(/Heavy checks|The integration's verify/);

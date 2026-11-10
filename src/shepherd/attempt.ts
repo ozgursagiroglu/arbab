@@ -3,7 +3,7 @@ import { copyFileSync, existsSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolveBinary } from "../binary";
 import { checkScriptPath, checksEnv, defaultCheckConcurrency } from "../check/command";
-import { defaultMachineConfig, loadMachineConfig } from "../config";
+import { loadMachineConfigLenient } from "../config";
 import { buildClaudeArgs, compileProfile, envFileAllowReads, lintProfile, workerEnv } from "../profile";
 import { updateQuota } from "../quota";
 import { attemptFiles, createAttempt, listAttempts, readAttempt, runPaths } from "../registry";
@@ -42,10 +42,10 @@ import type {
   KillReason,
   LaneSpec,
   Lease,
-  MachineConfig,
   ProfileInput,
   ProjectConfig,
   RateLimitSnapshot,
+  Role,
   RoleDefaults,
   ValidationError,
 } from "../types";
@@ -217,18 +217,17 @@ export function installCheckScript(runner: string, runsRoot: string, lane: strin
   return target;
 }
 
-/** The machine's check policy; an unreadable machine.json means every default. */
-export function checkPolicy(home: string, cpus: number): CheckPolicy {
-  let machine: MachineConfig;
-  try {
-    machine = loadMachineConfig(home);
-  } catch {
-    machine = defaultMachineConfig();
-  }
+/**
+ * The machine's check policy for a lane of this role; machine.json is read leniently, so an invalid checks field, or an
+ * unreadable file, means its defaults. A probe never waits for a place (verify's gates): its Bash call has one timeout
+ * for the wait and the run, and a gate that times out fails for nothing the branch did. It still takes a fair share.
+ */
+export function checkPolicy(home: string, cpus: number, role: Role): CheckPolicy {
+  const machine = loadMachineConfigLenient(home).config;
   return {
     cpus,
     concurrent: machine.checks.concurrent ?? defaultCheckConcurrency(cpus),
-    waitSec: machine.checks.waitSec ?? DEFAULT_CHECK_WAIT_SEC,
+    waitSec: role === "probe" ? 0 : (machine.checks.waitSec ?? DEFAULT_CHECK_WAIT_SEC),
   };
 }
 
@@ -249,7 +248,7 @@ export function prepareChecks(
   const checks = laneChecks(ctx.lane, ctx.config);
   if (Object.keys(checks).length === 0 || ctx.deps.runner === undefined) return null;
   const script = installCheckScript(ctx.deps.runner, ctx.runsRoot, ctx.lane.name);
-  return { script, checks, policy: checkPolicy(ctx.deps.home, ctx.deps.cpus()) };
+  return { script, checks, policy: checkPolicy(ctx.deps.home, ctx.deps.cpus(), ctx.lane.role) };
 }
 
 /** The fence's input for an attempt: the lane's role and config, the worktree, the env-file options and its checks. */

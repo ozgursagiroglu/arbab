@@ -62,7 +62,7 @@ export type Pose =
   | "slump"
   | "cheer";
 
-/** Above the head: held for the quota, held for a slot, asleep (usage limit), lost its shepherd. */
+/** Above the head: held for the quota, held for a slot or the machine, asleep (usage limit), lost its shepherd. */
 export type Icon = "hourglass" | "dots" | "zzz" | "question";
 
 /** A speech bubble of meaningless glyphs: arbab and a worker "talking". */

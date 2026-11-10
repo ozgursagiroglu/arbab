@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { integrationPaths } from "../integrate";
-import { isAcked } from "../registry";
+import { isAcked, listWaiters } from "../registry";
 import type { IntegrationRecord, LaneSpec } from "../types";
 import { runIntegrate } from "./integrate";
 import {
@@ -30,7 +30,7 @@ import {
   type LaneOutcome,
 } from "./integration";
 import { openProject } from "./project";
-import { branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+import { CLI_PID, branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -492,6 +492,127 @@ describe("runGeneratedLanes", () => {
     }
   });
 
+  /**
+   * Lanes that run until a window sleep finishes the oldest of them; records how many were running at each launch and
+   * whether this process was a registered waiter then.
+   */
+  function finishOneAtEachSleep(t: TestProject, lanes: string[]): { running: string[]; atLaunch: number[]; waiterAtLaunch: boolean[] } {
+    const seen = { running: [] as string[], atLaunch: [] as number[], waiterAtLaunch: [] as boolean[] };
+    simulateShepherds(t, Object.fromEntries(lanes.map((l) => [l, () => ({ state: "running" as const })])));
+    const spawn = t.ctx.spawnShepherd;
+    t.ctx.spawnShepherd = (root, lane, mode) => {
+      seen.atLaunch.push(seen.running.length);
+      seen.waiterAtLaunch.push(listWaiters(t.home, () => true).some((w) => w.pid === CLI_PID));
+      seen.running.push(lane);
+      return spawn(root, lane, mode);
+    };
+    const sleep = t.ctx.sleep;
+    t.ctx.sleep = async (ms) => {
+      const oldest = seen.running.shift();
+      if (oldest !== undefined) {
+        const pid = pidOf(t, oldest);
+        writeLaneRun(t.runsRoot, oldest, { state: "finished", endState: "success", shepherdPid: pid, report: { lane: oldest } });
+        t.alive.delete(pid);
+      }
+      await sleep(ms);
+    };
+    return seen;
+  }
+
+  it("with a window of 2, keeps at most two runs in flight and launches five lanes in order as places free up", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    const names = ["rel-a", "rel-b", "rel-c", "rel-d", "rel-e"];
+    const seen = finishOneAtEachSleep(p, names);
+    const run = await runGeneratedLanes(p.ctx, project, paths, generated(names), 600_000, owner, undefined, { maxParallel: 2 });
+    expect(run.timedOut).toBe(false);
+    expect(p.spawned.map((s) => s.lane)).toEqual(names);
+    expect(Math.max(...seen.atLaunch)).toBeLessThanOrEqual(1);
+    expect(seen.atLaunch).toEqual([0, 1, 1, 1, 1]);
+    // Every launch happens while this process is a registered waiter, so the Stop hook lets the turn wait.
+    expect(seen.waiterAtLaunch).toEqual([true, true, true, true, true]);
+    expect(run.outcomes.map((o) => [o.lane, o.endState, o.report])).toEqual(names.map((n) => [n, "success", { lane: n }]));
+    for (const n of names) expect(readGeneratedRun(paths.lanesDir, n)?.shepherdPid).toBe(pidOf(p, n));
+    expect(p.stderr()).toBe(
+      "launched rel-a, rel-b; 3 more start as places free up (at most 2 at once)\n" +
+        "launched rel-c; 2 more start as places free up (at most 2 at once)\n" +
+        "launched rel-d; 1 more start as places free up (at most 2 at once)\n" +
+        "launched rel-e; waiting\n",
+    );
+  });
+
+  it("counts a waited-for run against the window; an adopted one, already finished, holds no place", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateWithWorktrees(p, { "rel-a": () => ({ state: "running" }), "rel-w": () => ({ state: "running" }) });
+    expect((await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-w"]), 60_000, owner)).timedOut).toBe(true);
+    // rel-a finished on this head (adopted); rel-w still runs (waited for).
+    writeLaneRun(p.runsRoot, "rel-a", { state: "finished", endState: "success", shepherdPid: pidOf(p, "rel-a"), report: { a: 1 } });
+    p.spawned.length = 0;
+    p.err.length = 0;
+
+    const seen = finishOneAtEachSleep(p, ["rel-b", "rel-c"]);
+    // rel-w runs first in the window, so it is the first a sleep finishes.
+    seen.running.push("rel-w");
+    const lanes = generated(["rel-a", "rel-w", "rel-b", "rel-c"]);
+    const run = await runGeneratedLanes(p.ctx, project, paths, lanes, 600_000, owner, undefined, { maxParallel: 2 });
+    expect(run.timedOut).toBe(false);
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-b", "rel-c"]);
+    // rel-b launched beside rel-w at once; rel-c only after rel-w finished.
+    expect(seen.atLaunch).toEqual([1, 1]);
+    expect(run.outcomes.map((o) => [o.lane, o.report])).toEqual([
+      ["rel-a", { a: 1 }],
+      ["rel-w", { lane: "rel-w" }],
+      ["rel-b", { lane: "rel-b" }],
+      ["rel-c", { lane: "rel-c" }],
+    ]);
+    expect(p.stderr()).toBe(
+      "adopted rel-a: finished for this head after an earlier run stopped waiting\n" +
+        "rel-w still running for this head from an earlier run; waiting\n" +
+        "launched rel-b; 1 more start as places free up (at most 2 at once)\n" +
+        "launched rel-c; waiting\n",
+    );
+  });
+
+  it("on timeout, leaves the launched lanes running and the others unlaunched, without run records", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    simulateShepherds(p, { "rel-a": () => ({ state: "running" }), "rel-b": () => ({ state: "running" }), "rel-c": () => ({ state: "running" }) });
+    const run = await runGeneratedLanes(p.ctx, project, paths, generated(["rel-a", "rel-b", "rel-c"]), 60_000, owner, undefined, { maxParallel: 1 });
+    expect(run).toEqual({ timedOut: true, outcomes: [] });
+    expect(p.spawned.map((s) => s.lane)).toEqual(["rel-a"]);
+    expect(p.alive.has(pidOf(p, "rel-a"))).toBe(true);
+    expect(readGeneratedRun(paths.lanesDir, "rel-a")?.shepherdPid).toBe(pidOf(p, "rel-a"));
+    expect(readGeneratedRun(paths.lanesDir, "rel-b")).toBeNull();
+    expect(readGeneratedRun(paths.lanesDir, "rel-c")).toBeNull();
+    // Written and linted with the others before the first launch, but never launched.
+    expect(existsSync(join(paths.lanesDir, "rel-c.json"))).toBe(true);
+    expect(existsSync(join(p.runsRoot, "rel-c", "state.json"))).toBe(false);
+    expect(p.stderr()).toBe("launched rel-a; 2 more start as places free up (at most 1 at once)\nnot launched before the timeout: rel-b, rel-c\n");
+  });
+
+  it("without a window launches every lane before it waits, as before; refuses a window that is not a positive integer", async () => {
+    p = makeProject();
+    const { project, paths, owner } = setup(p);
+    const names = ["rel-a", "rel-b", "rel-c", "rel-d", "rel-e"];
+    simulateShepherds(p, Object.fromEntries(names.map((n) => [n, () => ({ state: "running" as const })])));
+    let launchedAtFirstSleep = -1;
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      if (launchedAtFirstSleep === -1) launchedAtFirstSleep = p.spawned.length;
+      await sleep(ms);
+    };
+    expect(await runGeneratedLanes(p.ctx, project, paths, generated(names), 60_000, owner)).toEqual({ timedOut: true, outcomes: [] });
+    expect(launchedAtFirstSleep).toBe(5);
+    expect(p.stderr()).toBe("launched rel-a, rel-b, rel-c, rel-d, rel-e; waiting\n");
+    expect(await runGeneratedLanes(p.ctx, project, paths, [], 60_000, owner, undefined, {})).toEqual({ timedOut: false, outcomes: [] });
+
+    for (const maxParallel of [0, -1, 1.5, Number.NaN]) {
+      await expect(runGeneratedLanes(p.ctx, project, paths, generated(["rel-x"]), 60_000, owner, undefined, { maxParallel })).rejects.toMatchObject({ code: "usage" });
+    }
+    expect(p.spawned).toHaveLength(5);
+  });
+
   it("refuses, writing nothing, a lane still running for another brief", async () => {
     p = makeProject();
     const { project, paths, owner } = setup(p);
@@ -585,5 +706,12 @@ describe("laneFingerprint", () => {
     const prints = variants.map(laneFingerprint);
     expect(new Set(prints).size).toBe(4);
     expect(laneFingerprint({ ...lane })).toBe(prints[0]);
+  });
+
+  it("changes with install, so a run made with the other setting is not adopted", () => {
+    const lane: GeneratedLane = { spec: spec("rel-a"), brief: DEFAULT_BRIEF };
+    const without = laneFingerprint({ ...lane, spec: spec("rel-a", { install: false }) });
+    expect(without).not.toBe(laneFingerprint(lane));
+    expect(without).not.toBe(laneFingerprint({ ...lane, spec: spec("rel-a", { install: true }) }));
   });
 });

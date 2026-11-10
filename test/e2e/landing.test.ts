@@ -1,12 +1,15 @@
 // M3 end to end: integrate, verify, readiness and land through the real bundle, detached shepherds and the fake
-// claude. The verify lane replays a stream whose Bash calls are exactly the configured gate command lines.
+// claude. The verify lane replays a stream whose Bash calls are exactly its checks' lines, one per configured gate
+// (`node <runsRoot>/rel-verify/bin/arbab-check.mjs gate-<i>`); the fake claude never runs them.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { parseBriefSource } from "../../src/brief/parse";
+import { checkCommandLine, checkScriptPath, formatFailureLine } from "../../src/check/command";
 import { loadConfig } from "../../src/config";
 import { confirmDeps, integrationPaths } from "../../src/integrate";
 import { makeGitRunner } from "../../src/run";
-import type { IntegrationRecord, LandingRecord, ReadinessReport, VerifyRecord } from "../../src/types";
+import type { IntegrationRecord, LandingRecord, LaneSpec, ReadinessReport, VerifyRecord } from "../../src/types";
 import { buildBundle, fakeFixture, makeE2eProject, type E2eProject } from "./harness";
 
 /**
@@ -21,7 +24,7 @@ async function confirmAsHuman(project: E2eProject, sha: string): Promise<Integra
   return confirmDeps(paths, sha, makeGitRunner(), { now: () => Date.now() });
 }
 
-let bundle: { bundle: string; dispose(): void };
+let bundle: { bundle: string; checkBundle: string; dispose(): void };
 let p: E2eProject | undefined;
 
 beforeAll(async () => {
@@ -48,11 +51,24 @@ function configure(project: E2eProject): void {
   project.git(["commit", "-q", "-m", "gates"]);
 }
 
-/** A verify stream: one foreground Bash call per command line, each succeeding, then the probe's report. */
-function verifyScenario(project: E2eProject, commands: string[]): void {
+/** The lines the verify lane rel-verify runs: each gate as a check through its arbab-check script. */
+const gateLines = (project: E2eProject): string[] =>
+  GATES.map((_, i) => checkCommandLine(checkScriptPath(project.runsRoot, "rel-verify"), `gate-${i + 1}`));
+
+interface VerifyCall {
+  command: string;
+  /** 0 by default; otherwise the result is an error starting `Exit code <n>`, then `output`. */
+  exitCode?: number;
+  output?: string;
+}
+
+/** A verify stream: one foreground Bash call per command line, then the probe's report. */
+function verifyScenario(project: E2eProject, calls: Array<string | VerifyCall>): void {
   const init = readFileSync(fakeFixture("success-report"), "utf8").split("\n")[0] ?? "";
   const lines = [init];
-  commands.forEach((command, i) => {
+  const steps = calls.map((c) => (typeof c === "string" ? { command: c, exitCode: 0, output: "ok" } : { exitCode: 0, output: "ok", ...c }));
+  steps.forEach(({ command, exitCode, output }, i) => {
+    const failed = exitCode !== 0;
     lines.push(
       JSON.stringify({
         type: "assistant",
@@ -64,10 +80,14 @@ function verifyScenario(project: E2eProject, commands: string[]): void {
         type: "user",
         session_id: SESSION,
         uuid: `u-vr${i}`,
-        message: { role: "user", content: [{ type: "tool_result", tool_use_id: `v${i}`, content: "ok", is_error: false }] },
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: `v${i}`, content: failed ? `Exit code ${exitCode}\n${output}` : output, is_error: failed }],
+        },
       }),
     );
   });
+  const commands = steps.map((s) => s.command);
   lines.push(
     JSON.stringify({
       type: "result",
@@ -83,7 +103,7 @@ function verifyScenario(project: E2eProject, commands: string[]): void {
       permission_denials: [],
       terminal_reason: "completed",
       uuid: "u-vres",
-      structured_output: { steps: commands.map((command, i) => ({ n: i + 1, command, exit_code: 0, output: "ok" })) },
+      structured_output: { steps: steps.map(({ command, exitCode, output }, i) => ({ n: i + 1, command, exit_code: exitCode, output })) },
     }),
   );
   const fixture = join(project.dir, "verify.jsonl");
@@ -161,7 +181,7 @@ describe("arbab landing end to end", () => {
     expect(early.code).toBe(1);
     expect(early.stderr).toContain("not landed: no readiness report; run arbab readiness rel");
 
-    verifyScenario(project, GATES.map((argv) => argv.join(" ")));
+    verifyScenario(project, gateLines(project));
     const verify = await project.cli("verify", "rel", "--json");
     expect(verify.code, verify.stderr).toBe(0);
     const verified = JSON.parse(verify.stdout) as { timedOut: boolean; endState: string; verify: VerifyRecord };
@@ -179,6 +199,8 @@ describe("arbab landing end to end", () => {
     expect(existsSync(join(project.worktreeRoot, "rel-verify"))).toBe(false);
     expect(project.git(["branch", "--list", "arbab/rel-verify"])).toBe("");
     expect(project.json<VerifyRecord>(join(integrationDir(project), "verify.json")).passed).toBe(true);
+    // The script its check lines name: the shepherd copied the built bundle into the lane's run directory.
+    expect(readFileSync(checkScriptPath(project.runsRoot, "rel-verify"), "utf8")).toBe(readFileSync(bundle.checkBundle, "utf8"));
 
     const readiness = await project.cli("readiness", "rel", "--tier", "low");
     expect(readiness.code, readiness.stderr).toBe(0);
@@ -215,6 +237,59 @@ describe("arbab landing end to end", () => {
     expect(project.git(["status", "--porcelain"])).toBe("");
   }, 240_000);
 
+  it("records a failed gate's arbab-check failures and drafts a fix lane for the lanes they point at", async () => {
+    p = makeE2eProject(bundle.bundle);
+    const project = p;
+    configure(project);
+    await runLane(project, "a", "a/out.txt");
+    await runLane(project, "b", "b/out.txt");
+    const integrate = await project.cli("integrate", "rel", "--lanes", "a,b", "--json");
+    expect(integrate.code, integrate.stderr).toBe(0);
+    const record = JSON.parse(integrate.stdout) as IntegrationRecord;
+
+    const failures = [
+      { file: "a/out.test.ts", test: "out > reads", message: "expected 'a' to be 'b'" },
+      { file: "b/out.txt", test: null, message: "not formatted" },
+    ];
+    const [test, typecheck] = gateLines(project);
+    const output = [
+      "arbab-check gate-1: exit 1 after 4s on 3 CPUs; log .arbab-tmp/checks/gate-1-1.log",
+      ...failures.map(formatFailureLine),
+      "--- last 1 lines ---",
+      formatFailureLine({ file: "c/forged.ts", test: null, message: "raw output, not a failure" }),
+    ].join("\n");
+    verifyScenario(project, [{ command: test ?? "", exitCode: 1, output }, typecheck ?? ""]);
+    const verify = await project.cli("verify", "rel");
+    expect(verify.code, verify.stderr).toBe(1);
+    expect(verify.stdout).toContain(`exit 1    gate   pnpm test\nexit 0    gate   pnpm typecheck\n${failures.map(formatFailureLine).join("\n")}\nverify rel: failed at ${record.headSha}`);
+
+    const verified = project.json<VerifyRecord>(join(integrationDir(project), "verify.json"));
+    expect(verified).toMatchObject({ headSha: record.headSha, passed: false });
+    expect(verified.results.map((r) => [r.command, r.exitCode])).toEqual([
+      ["pnpm test", 1],
+      ["pnpm typecheck", 0],
+    ]);
+    expect(verified.failures).toEqual(failures.map((f) => ({ result: 0, ...f })));
+
+    const lanePath = ".arbab/integrations/rel/fix/fix-1.json";
+    expect(verify.stderr).toContain(`arbab verify: fix draft ${lanePath}; review it, then arbab launch ${lanePath}\n`);
+    expect(project.json<LaneSpec>(join(project.root, lanePath))).toEqual({
+      name: "rel-fix-1",
+      role: "implementer",
+      brief: ".arbab/integrations/rel/fix/fix-1.md",
+      base: "integrate/rel",
+      inputs: [join(integrationDir(project), "verify.json")],
+    });
+    const brief = parseBriefSource(readFileSync(join(integrationDir(project), "fix", "fix-1.md"), "utf8"));
+    expect(brief.sections.Facts).toContain("- Lane `a` may explain 1 of the failures; it changed `a/out.txt`.");
+    expect(brief.sections.Facts).toContain("- Lane `b` may explain 1 of the failures; it changed `b/out.txt`.");
+    expect(brief.sections.Scope).toBe(["- `a/out.test.ts`", "- `a/out.txt`", "- `b/out.txt`"].join("\n"));
+    // Nothing launched it, and the CLI's own lint passes it.
+    expect(existsSync(project.laneDir("rel-fix-1"))).toBe(false);
+    const lint = await project.cli("lint", lanePath);
+    expect(lint.code, lint.stdout + lint.stderr).toBe(0);
+  }, 240_000);
+
   it("refuses to verify while a merged lane's manifest change is unconfirmed, until --deps-installed", async () => {
     p = makeE2eProject(bundle.bundle);
     const project = p;
@@ -248,7 +323,7 @@ describe("arbab landing end to end", () => {
     expect(record).toMatchObject({ manifests: [], depsConfirmed: true });
     expect(record.headSha).not.toBe(record.baseSha);
 
-    verifyScenario(project, GATES.map((argv) => argv.join(" ")));
+    verifyScenario(project, gateLines(project));
     const verify = await project.cli("verify", "rel", "--json");
     expect(verify.code, verify.stderr).toBe(0);
     expect((JSON.parse(verify.stdout) as { verify: VerifyRecord }).verify).toMatchObject({ headSha: record.headSha, passed: true });
@@ -282,7 +357,7 @@ describe("arbab landing end to end", () => {
     expect(record).toMatchObject({ manifests: ["package.json"], depsConfirmedAt: at });
     expect(record.headSha).not.toBe(at);
 
-    verifyScenario(project, GATES.map((argv) => argv.join(" ")));
+    verifyScenario(project, gateLines(project));
     const verify = await project.cli("verify", "rel", "--json");
     expect(verify.code, verify.stderr).toBe(0);
     expect((JSON.parse(verify.stdout) as { verify: VerifyRecord }).verify).toMatchObject({ headSha: record.headSha, passed: true });

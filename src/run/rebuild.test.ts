@@ -164,6 +164,32 @@ describe("rebuildWorktree", () => {
     expect(seen).toEqual([]);
   });
 
+  it("gives the clone strategy its install context: the main checkout and start, not the head", () => {
+    // The head changes a dependency; the main checkout still matches start, so the clone runs.
+    const head = commitOn("arbab/a", { "package.json": '{"name":"demo","dependencies":{"left-pad":"9.9.9"}}\n' });
+    writeFileSync(join(repo, ".git", "info", "exclude"), "node_modules/\nwt/\n");
+    mkdirSync(join(repo, "node_modules", "left-pad"), { recursive: true });
+    const calls: string[][] = [];
+    const runCommand: ArgvRunner = (argv) => {
+      calls.push(argv);
+      if (argv[0] === "python3" || argv[0] === "cp") mkdirSync(argv.at(-1) ?? "", { recursive: true });
+      return { code: 0, output: "" };
+    };
+    const clone: DependencyStrategy = { strategy: "clone", paths: ["node_modules"], fallback: ["fake-install"] };
+    const path = join(repo, "wt", "a");
+    const r = rebuildWorktree(input({ dependencies: clone, runCommand, manifests: "flag" }));
+    expect(r.head).toBe(head);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.slice(-2)).toEqual([join(repo, "node_modules"), join(path, "node_modules")]);
+
+    // Once the main checkout drifts from start, the fallback installs instead.
+    rmSync(path, { recursive: true, force: true });
+    writeFileSync(join(repo, "package.json"), '{"name":"demo","dependencies":{"left-pad":"2.0.0"}}\n');
+    calls.length = 0;
+    rebuildWorktree(input({ dependencies: clone, runCommand, manifests: "flag" }));
+    expect(calls).toEqual([["fake-install"]]);
+  });
+
   it("works on an integration branch", () => {
     const head = commitOn("integrate/rel", { "a.txt": "merged\n" });
     const path = join(repo, "wt", "integrate-rel");

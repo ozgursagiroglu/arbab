@@ -4,3 +4,4 @@ export declare function packageVersion(root: string): string;
 export declare const UI_BUNDLE_FILTER: RegExp;
 export declare function uiScriptPlugin(): Plugin;
 export declare function bundleOptions(input: { version: string; outfile: string }): BuildOptions & { plugins: Plugin[] };
+export declare function checkBundleOptions(input: { outfile: string }): BuildOptions;

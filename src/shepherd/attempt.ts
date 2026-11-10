@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { copyFileSync, existsSync, renameSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { resolveBinary } from "../binary";
+import { checkScriptPath, checksEnv, defaultCheckConcurrency } from "../check/command";
+import { loadMachineConfigLenient } from "../config";
 import { buildClaudeArgs, compileProfile, envFileAllowReads, lintProfile, workerEnv } from "../profile";
 import { updateQuota } from "../quota";
 import { attemptFiles, createAttempt, listAttempts, readAttempt, runPaths } from "../registry";
@@ -25,11 +28,13 @@ import {
   parseStream,
   rateLimitFromEvent,
 } from "../stream";
+import { CHECK_SCRIPT_FILE, DEFAULT_CHECK_WAIT_SEC } from "../types";
 import type {
   AttemptExit,
   AttemptStarted,
   AttemptSummary,
   BinaryInfo,
+  CheckPolicy,
   CompiledProfile,
   EndState,
   FenceLevel,
@@ -40,11 +45,12 @@ import type {
   ProfileInput,
   ProjectConfig,
   RateLimitSnapshot,
+  Role,
   RoleDefaults,
   ValidationError,
 } from "../types";
 import { ArbabError } from "../util/errors";
-import { confine, createExclusive, readJson, readText } from "../util/fs";
+import { confine, createExclusive, ensureDir, readJson, readText } from "../util/fs";
 import { isoAt } from "../util/proc";
 import type { ShepherdDeps } from "./index";
 import type { MergedBranch } from "./merge";
@@ -182,11 +188,75 @@ export function previousSession(runsRoot: string, lane: string): PreviousSession
   return { sessionId: latest.sessionId, binary: latest.binary, costUsd: withCost?.summary?.costUsd ?? null };
 }
 
-/** The fence's input for an attempt: the lane's role and config, the worktree, and the env-file options. */
+/** The heavy checks a lane may run (DESIGN.md §22): its own, else config's for implementer and verifier, else none. */
+export function laneChecks(lane: Pick<LaneSpec, "role" | "checks">, config: Pick<ProjectConfig, "checks">): Record<string, string[]> {
+  if (lane.checks !== undefined) return lane.checks;
+  return lane.role === "implementer" || lane.role === "verifier" ? config.checks : {};
+}
+
+/**
+ * Copies arbab-check from next to the runner into the lane's run directory, replacing any earlier copy, so a resumed
+ * lane runs the script of the runner that resumes it. Returns the copy's path.
+ */
+export function installCheckScript(runner: string, runsRoot: string, lane: string): string {
+  const source = join(dirname(runner), CHECK_SCRIPT_FILE);
+  if (!existsSync(source)) {
+    throw new ArbabError("runtime", `arbab-check.mjs is missing next to the runner (${source}): reinstall or rebuild arbab`);
+  }
+  const target = checkScriptPath(runsRoot, lane);
+  ensureDir(dirname(target));
+  // Through a temporary file, so a check starting meanwhile never runs a half-written script.
+  const tmp = join(dirname(target), `.${randomUUID()}.tmp`);
+  try {
+    copyFileSync(source, tmp);
+    renameSync(tmp, target);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw new ArbabError("io", `cannot copy ${source} to ${target}: ${(err as Error).message}`, { cause: err });
+  }
+  return target;
+}
+
+/**
+ * The machine's check policy for a lane of this role; machine.json is read leniently, so an invalid checks field, or an
+ * unreadable file, means its defaults. A probe never waits for a place (verify's gates): its Bash call has one timeout
+ * for the wait and the run, and a gate that times out fails for nothing the branch did. It still takes a fair share.
+ */
+export function checkPolicy(home: string, cpus: number, role: Role): CheckPolicy {
+  const machine = loadMachineConfigLenient(home).config;
+  return {
+    cpus,
+    concurrent: machine.checks.concurrent ?? defaultCheckConcurrency(cpus),
+    waitSec: role === "probe" ? 0 : (machine.checks.waitSec ?? DEFAULT_CHECK_WAIT_SEC),
+  };
+}
+
+/** What an attempt with heavy checks gets: the script's copy, the checks and the machine's policy. */
+export interface AttemptChecks {
+  script: string;
+  checks: Record<string, string[]>;
+  policy: CheckPolicy;
+}
+
+/**
+ * The lane's checks for this attempt, with its script copied in; null when it has none, or when no runner is known
+ * (test deps only), and then the lane gets no copy, env, rules or tool-belt lines.
+ */
+export function prepareChecks(
+  ctx: Pick<AttemptContext, "config" | "lane" | "runsRoot"> & { deps: Pick<ShepherdDeps, "runner" | "home" | "cpus"> },
+): AttemptChecks | null {
+  const checks = laneChecks(ctx.lane, ctx.config);
+  if (Object.keys(checks).length === 0 || ctx.deps.runner === undefined) return null;
+  const script = installCheckScript(ctx.deps.runner, ctx.runsRoot, ctx.lane.name);
+  return { script, checks, policy: checkPolicy(ctx.deps.home, ctx.deps.cpus(), ctx.lane.role) };
+}
+
+/** The fence's input for an attempt: the lane's role and config, the worktree, the env-file options and its checks. */
 export function profileInput(
   ctx: Pick<AttemptContext, "config" | "lane" | "role" | "fence" | "leases" | "worktree" | "branch" | "gitCommonDir" | "projectRoot"> & {
     deps: Pick<AttemptContext["deps"], "git">;
   },
+  checks: AttemptChecks | null = null,
 ): ProfileInput {
   const { config, lane, role } = ctx;
   const readable = config.fence.readableEnvFiles;
@@ -198,7 +268,8 @@ export function profileInput(
     commands: config.commands[lane.role] ?? [],
     laneAllow: lane.allow ?? [],
     credentialPaths: config.credentialPaths,
-    env: { ...config.env, ...leaseEnv(ctx.leases) },
+    // The checks' entries come last, so a config value cannot replace them.
+    env: { ...config.env, ...leaseEnv(ctx.leases), ...(checks === null ? {} : checksEnv(checks.checks, checks.policy)) },
     worktree: ctx.worktree,
     gitCommonDir: ctx.gitCommonDir,
     // Anchors the relative credential denies at the main checkout, whose .env files the sandbox would not cover.
@@ -210,12 +281,13 @@ export function profileInput(
       readable.length === 0
         ? []
         : envFileAllowReads({ worktree: ctx.worktree, branch: ctx.branch, gitCommonDir: ctx.gitCommonDir, readable, git: ctx.deps.git }),
+    ...(checks === null ? {} : { checkScript: checks.script, checkNames: Object.keys(checks.checks).sort() }),
   };
 }
 
 /** The compiled fence, refused when its lint finds errors: config can change between launch and a later attempt. */
-function profileFor(ctx: AttemptContext): CompiledProfile {
-  const input = profileInput(ctx);
+function profileFor(ctx: AttemptContext, checks: AttemptChecks | null): CompiledProfile {
+  const input = profileInput(ctx, checks);
   const profile = compileProfile(input);
   const errors = lintProfile(profile, input).filter((issue) => issue.severity === "error");
   if (errors.length > 0) throw new ArbabError("config", [...new Set(errors.map((issue) => issue.code))].join(", "));
@@ -271,7 +343,9 @@ export async function runAttempt(ctx: AttemptContext, request: AttemptRequest): 
     exists: deps.exists,
     realpath: deps.realpath,
   });
-  const profile = profileFor(ctx);
+  // At every attempt: a resumed lane runs the script of the runner that resumes it.
+  const checks = prepareChecks(ctx);
+  const profile = profileFor(ctx, checks);
   const schema = laneSchema(ctx.projectRoot, lane);
   const sessionId = previous?.sessionId ?? randomUUID();
   const briefInput: BriefInput = {
@@ -284,6 +358,7 @@ export async function runAttempt(ctx: AttemptContext, request: AttemptRequest): 
     profile,
     leases: ctx.leases,
     schema,
+    ...(checks === null ? {} : { checks: { script: checks.script, names: Object.keys(checks.checks).sort() } }),
     ...(request.headStart === undefined ? {} : { headStart: request.headStart }),
     ...(request.inputs === undefined || request.inputs.length === 0 ? {} : { inputs: request.inputs }),
   };

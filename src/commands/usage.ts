@@ -3,10 +3,12 @@
 
 type Option = readonly [flag: string, text: string];
 
-function block(usages: readonly string[], options: readonly Option[] = []): string {
+/** `notes` follow the options, unindented: what the command prints or writes besides its result. */
+function block(usages: readonly string[], options: readonly Option[] = [], notes: readonly string[] = []): string {
   const width = Math.max(0, ...options.map(([flag]) => flag.length));
   const lines = usages.map((u, i) => `${i === 0 ? "usage:" : "      "} arbab ${u}`);
   for (const [flag, text] of options) lines.push(`  ${flag.padEnd(width)}  ${text}`);
+  lines.push(...notes);
   return lines.join("\n") + "\n";
 }
 
@@ -88,6 +90,12 @@ export const USAGE: Readonly<Record<string, string>> = {
   verify: block(
     ["verify <name> [--timeout-min <n>] [--json]", "verify --ref <branch> [--timeout-min <n>] [--json]"],
     [["--ref <branch>", "run the gates on a branch head with no integration (lane ref-<slug>-<hash>-verify)"], timeout("90"), JSON_OPT],
+    [
+      "Each gate runs through arbab-check. After the result lines, up to 10 `arbab-check failure: <file>[ > <test>] ::",
+      "<message>` lines; verify.json `failures` keeps them all. After a failed verify of an integration in which a",
+      "command ran and failed, a fix draft: .arbab/integrations/<name>/fix/fix-<k>.json and fix-<k>.md, named on stderr",
+      "(`arbab verify: fix draft <path>; review it, then arbab launch <path>`). Nothing launches it; none for --ref.",
+    ],
   ),
   review: block(
     ["review <name> [--lenses a,b] [--lens-file <name>=<file>]… [--since <sha>] [--timeout-min <n>] [--json]"],

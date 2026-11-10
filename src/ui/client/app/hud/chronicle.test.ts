@@ -47,6 +47,19 @@ describe("seedChronicle", () => {
     expect(seeded.at(-1)?.at).toBe(at("2026-10-19T08:00:00.000Z"));
   });
 
+  it("says a lane held by the machine waits for it, as a waiting entry, not a quota hold", () => {
+    const s = snapshot({
+      lanes: [
+        lane({ name: "m", state: "held", hold: "machine", since: "2026-10-19T10:03:00.000Z" }),
+        lane({ name: "s", state: "held", hold: "slot", since: "2026-10-19T10:02:00.000Z" }),
+      ],
+    });
+    expect(seedChronicle(s).map((e) => [e.kind, e.text])).toEqual([
+      ["waiting", "m waits for the machine"],
+      ["waiting", "s held for a free slot"],
+    ]);
+  });
+
   it("falls back to the snapshot's time for a bad since", () => {
     const [entry] = seedChronicle(snapshot({ lanes: [lane({ name: "a", since: "garbage" })] }));
     expect(entry?.at).toBe(at(snapshot().now));

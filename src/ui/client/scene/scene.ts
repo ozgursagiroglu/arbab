@@ -538,8 +538,9 @@ export function createScene(options: SceneOptions): Scene {
     switch (lane.state) {
       case "queued":
       case "held": {
-        // A held lane waits for a slot or, by default, for the quota (NO_FREE_SLOT_REASON).
-        const held: { icon?: Icon } = lane.state === "held" ? { icon: lane.hold === "slot" ? "dots" : "hourglass" } : {};
+        // A held lane waits for room (a slot, the machine's load) or, by default, for the quota: the hourglass.
+        const room = lane.hold === "slot" || lane.hold === "machine";
+        const held: { icon?: Icon } = lane.state === "held" ? { icon: room ? "dots" : "hourglass" } : {};
         c.queue.push(go(campSeat(takeSeat(c)), "walk"), hold("sit", Infinity, held));
         break;
       }

@@ -50,8 +50,11 @@ export interface UiLane {
   /** The effective state: a lane whose shepherd died is "orphaned". */
   state: LaneState;
   endState: EndState | null;
-  /** Why a held lane waits: no free machine-wide slot, or the account quota; null unless held. */
-  hold: "slot" | "quota" | null;
+  /**
+   * Why a held lane waits: no free machine-wide slot, the account quota, or the machine's load or memory pressure
+   * (admission, DESIGN.md §22); null unless held.
+   */
+  hold: "slot" | "quota" | "machine" | null;
   /** state.json `reason` (a hold, a setup failure), cut to 200 characters; null when there is none. */
   reason: string | null;
   /** Epoch seconds at which a held or waiting lane checks again; null when none. */

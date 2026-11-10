@@ -190,7 +190,19 @@ export function header(snapshot: UiSnapshot): Header {
   };
 }
 
-/** `running`, `held (quota)`, `finished (success)`. */
+/** Why a held lane waits, in words: the tooltip's line and the chronicle's entry. */
+export function holdWording(hold: NonNullable<UiLane["hold"]>): string {
+  switch (hold) {
+    case "slot":
+      return "held for a free slot";
+    case "quota":
+      return "held for the quota";
+    case "machine":
+      return "waits for the machine";
+  }
+}
+
+/** `running`, `held (quota)`, `held (machine)`, `finished (success)`. */
 export function formatState(lane: Pick<UiLane, "state" | "endState" | "hold">): string {
   if (lane.state === "finished" && lane.endState) return `finished (${lane.endState})`;
   if (lane.state === "held" && lane.hold) return `held (${lane.hold})`;
@@ -225,7 +237,7 @@ export function tooltipLines(lane: UiLane, clientNowMs: number, offsetMs: number
     `cost ${formatUsd(lane.costUsd)}`,
     `${lane.model ?? UNKNOWN} · ${lane.effort ?? UNKNOWN}`,
   ];
-  if (lane.hold) lines.push(`held for ${lane.hold === "quota" ? "the quota" : "a free slot"}`);
+  if (lane.hold) lines.push(holdWording(lane.hold));
   if (lane.reason) lines.push(lane.reason);
   return lines;
 }

@@ -137,7 +137,7 @@ export function rebuildWorktree(input: RebuildInput): Rebuilt {
     const wt = (args: string[]): ReturnType<GitRunner> => git([...explicitGit(gitDir, path), ...untrustedTree(), ...args], path);
 
     // The tree is at `start` here, and nowhere else does the dependency command run.
-    const deps = prepareDependencies(input.dependencies, path, input.runCommand);
+    const deps = prepareDependencies(input.dependencies, path, input.runCommand, { projectRoot, installedAt: start, git });
     if (!deps.ok) {
       const tail = deps.output.trim().split("\n").slice(-5).join("\n");
       throw new ArbabError("runtime", `dependencies failed in ${path} (${deps.code}): ${tail}`);

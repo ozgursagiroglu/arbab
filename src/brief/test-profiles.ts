@@ -17,7 +17,9 @@ const BASE: ProfileInput = {
 
 const compile = (over: Partial<ProfileInput>): CompiledProfile => compileProfile({ ...BASE, ...over });
 
-export const STRICT: CompiledProfile = compile({ commands: ["pnpm test", "pnpm typecheck"] });
+export const STRICT_INPUT: ProfileInput = { ...BASE, commands: ["pnpm test", "pnpm typecheck"] };
+
+export const STRICT: CompiledProfile = compileProfile(STRICT_INPUT);
 
 export const SANDBOX_AUTO: CompiledProfile = compile({ fence: "sandbox-auto", commands: ["pnpm test", "pnpm typecheck"] });
 

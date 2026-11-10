@@ -10,31 +10,24 @@ You are the orchestrator. You plan, write briefs, read reports and land. The run
 headless `claude -p` workers in their own worktrees, fences them, supervises them and records everything on disk.
 Never re-implement the mechanics in prompt text or scripts.
 
-Every command below is the runner. `arbab <cmd>` is shorthand for:
-
-```
-node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <cmd>
-```
+Every command below is the runner: `arbab <cmd>` is shorthand for `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <cmd>`.
 
 **Runner calls are bare.** Type that one form, quotes included, and nothing around it: no `cd`, `&&`, `;`, pipes,
-`2>&1`, `tail` or shell variables. From a parent folder of several repositories, put `-C <repo>` before the command:
+`2>&1`, `tail` or shell variables. From a parent folder of repositories, put `-C <repo>` before the command:
 `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" -C <repo> status`. The plugin's PreToolUse hook approves bare calls (the
 skill's `allowed-tools` grant lasts only for the turn that loaded it); a wrapped call waits for a person's click,
-which is what stalled real runs overnight. It never approves `land`, and approves `-C <repo>` only for an absolute
-path to a project that has launched a lane, never a lane worktree (arbab refuses those as projects) or a temp dir.
-`arbab <command> --help` prints a command's options. Exit codes: 0 ok, 1 usage or lint error, 2 runtime error,
-3 wait timeout.
+which stalled real runs overnight. It never approves `land`, and approves `-C <repo>` only for an absolute path to a
+project that has launched a lane, never a lane worktree or a temp dir. `arbab <command> --help` prints a command's
+options. Exit codes: 0 ok, 1 usage or lint error, 2 runtime error, 3 wait timeout.
 
 ## When to fan out
 
-Fan out when the work is long or multi-phase and splits into parts that can be built independently. Measured:
+Fan out when the work is long or multi-phase and splits into parts that can be built independently. Measured: the
+same 7 lanes finished 0 of 7 in 73 min as Workflow agents, 7 of 7 in 1.9–6.4 min each as headless workers; approval
+waits took 62–70% of the Workflow's wall time, while a headless denial costs one turn, not a wait.
 
-- the same 7 lanes finished 0 of 7 in 73 min as Workflow agents, 7 of 7 in 1.9–6.4 min each as headless workers;
-- approval waits took 62–70% of the Workflow's wall time; a headless denial costs one turn, not a wait.
-
-Stay in-session for small jobs (one change, one PR: for example `/ship`) and for short fan-outs that finish in
-minutes (Workflow). A lane pays for a worktree, a brief and a report; it earns that back only on real work. An
-urgent small fix (a demo is running, a one-line change) stays in-session, even inside an arbab session.
+Stay in-session for small jobs (one change, one PR: `/ship`), short fan-outs that finish in minutes (Workflow) and
+urgent small fixes, even inside an arbab session. A lane pays for a worktree, a brief and a report.
 
 ## Before the first launch
 
@@ -45,26 +38,31 @@ urgent small fix (a demo is running, a one-line change) stays in-session, even i
    no arbab file (the root file wins when both exist). Missing means all defaults, which grant no project commands.
    The fields that matter first:
    - `commands.<role>`: command prefixes each role may run, e.g. `"implementer": ["pnpm test", "pnpm typecheck"]`.
-     Each prefix becomes `Bash(<cmd>)` and `Bash(<cmd> *)`. Never a bare runner (`pnpm`, `node`, `npx`, `python`,
-     …): lint refuses "any code" prefixes.
+     Each becomes `Bash(<cmd>)` and `Bash(<cmd> *)`; lint refuses bare runners (`pnpm`, `node`, `npx`, `python`, …).
    - `gates`: the repository's gates as argv arrays, e.g. `[["pnpm", "typecheck"], ["pnpm", "test"]]`.
    - `preflight.steps`: argv arrays the preflight probe runs in the lane's worktree.
    - `instructions`: files inlined into every brief, e.g. `["CLAUDE.md"]`. Workers do not load CLAUDE.md.
-   - `dependencies`: `{"strategy": "command", "command": [...]}` to install in each new worktree (outside the
-     sandbox), or `none`. Never symlink the main checkout's `node_modules`.
+   - `checks`: heavy checks by name, e.g. `{"typecheck": ["pnpm", "typecheck"]}`. Implementer and verifier lanes run
+     them through arbab-check, which waits for a machine-wide place and gives each run a share of the CPUs; the tool
+     belt tells the worker how, and a check needs no `commands` entry.
+   - `dependencies`: `{"strategy": "command", "command": [...]}` installs in each new worktree (outside the sandbox);
+     `{"strategy": "clone", "paths": ["node_modules"], "fallback": [...]}` clones the main checkout's directories
+     copy-on-write while its manifests match, else runs `fallback` (or fails without one): npm and yarn projects,
+     not pnpm (config refuses it); `none`. Never symlink the main checkout's `node_modules`.
    - `resources` (`{"port": {"range": [4100, 4199]}}`) and `semaphores` (`{"staging-db": 1}`) for shared things.
    - `hostGates`: argv arrays for checks the fence cannot run (Docker, a browser, a database); see [Land](#land).
    - `fence.readableEnvFiles`: tracked env templates (`[".env.example"]`) that workers may read with shell commands
      (not the Read tool; `doctor` warns about untracked ones); `fence.bashOutputMaxChars`
      (4000–128000, default 100000): longer Bash output goes to a file workers cannot read.
-   - `landing.tier` (default `medium`), `landing.squash` (one commit per landing), `verify.smoke`, `review.lenses`.
+   - `landing.tier` (default `medium`), `landing.squash` (one commit per landing), `verify.smoke`, `review.lenses`,
+     `review.maxParallel` (review lanes at once, default 4) and `review.install` (false: reviewers skip the install).
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
      `maxParallel` (default 4), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`, `worktrees.idleDays`.
-3. Machine-wide parallelism goes in `~/.arbab/machine.json` (`{"maxParallel": 6}`): it caps every project's
-   `maxParallel`.
-4. arbab excludes `.arbab/` as a whole, and `.arbab-tmp/`, in `info/exclude` and checks it. Lane files, briefs, plans
-   and helpers you keep under `.arbab/` (say `.arbab/lanes/`) do not dirty a client repository's checkout; arbab
-   itself writes `.arbab/plans/<plan>/`.
+3. Machine-wide limits go in `~/.arbab/machine.json`: `maxParallel` caps every project's; `checks` bounds heavy
+   checks (`concurrent`, default a quarter of the CPUs; `waitSec`, default 60, then a check runs anyway); `admission`
+   holds launches (`loadPerCpu`, default 3, 0 off; `memoryPressure`: `warn`, `critical` (default) or `off`).
+4. arbab excludes `.arbab/` and `.arbab-tmp/` in `info/exclude` and checks it, so lane files, briefs, plans and
+   helpers you keep under `.arbab/` (say `.arbab/lanes/`) never dirty a client checkout; arbab writes `.arbab/plans/`.
 
 ## Plan
 
@@ -102,7 +100,8 @@ Rules:
   `||`, `;`, `$(…)`, backticks, `sleep`, `echo $?`, `| tail` and `| head`, and any command the lane's profile
   would deny. Inline code elsewhere is descriptive (a parameter name, a command in Facts, a command a test should
   reject); write it freely, but never introduce a command the worker may not run with "Run".
-- **Name the checks** the worker must run and report, e.g. `pnpm typecheck` and `pnpm test`.
+- **Name the checks** the worker must run and report, e.g. `pnpm typecheck` and the tests of the files it changes.
+  **Lanes test what they change; verify tests the batch.** Do not ask a lane to run the whole suite.
 - Point at files rather than pasting them; the brief warns above 40,000 characters.
 
 A complete example: [references/brief-template.md](references/brief-template.md).
@@ -127,6 +126,8 @@ A lane file (`lanes/<name>.json`) names the brief and overrides role defaults. P
 | `resources`, `semaphores` | Leases (`{"port": 2}` → `ARBAB_PORT_0`, `ARBAB_PORT_1`) and semaphore names |
 | `checkpoint`, `autoResume`, `maxAttempts` | Commit WIP on exit; resume after usage limits; attempt cap |
 | `coordination` | Sibling lanes and their scopes, inlined into the brief |
+| `install` | `false`: no dependency install in the worktree, for a lane that only reads (default `true`) |
+| `checks` | The lane's own heavy checks (name → argv), replacing config `checks`. Implementer and verifier lanes get their check commands; other roles only the environment, not the rules to run them |
 | `inputs` | Files or folders outside the repository the worker must read (absolute, `~/` or project-relative; at most 20, 50 MB in all). Copied afresh to `.arbab-tmp/inputs/<name>` on every run and named in the brief; credential paths are refused |
 
 Role defaults:
@@ -178,8 +179,7 @@ Converting a design document into a plan:
 
 Commands:
 
-- `arbab plan check plans/<name>.json`: validates the plan, lints every phase's lane and prints the waves. Fix
-  every error before launching.
+- `arbab plan check plans/<name>.json`: validates the plan, lints every phase's lane, prints the waves. Fix every error.
 - `arbab plan next plans/<name>.json`: launches every phase whose dependencies all finished `success` and that has
   not run yet; lists blocked and failed dependencies. It is idempotent. Run it once to start, then **after each
   `wait` notification**, once you have handled the finished lane. There is no plan daemon.
@@ -197,13 +197,12 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 2. Before the **first wave of a project** (and after a CLI upgrade or a fence change), run
    `arbab preflight lanes/<name>.json`. A cheap probe attempt checks the toolchain, the fence, the isolation
    flags and the pinned version, and makes one call on the lane's own model. Do not launch a wave until it passes.
-3. Once per session, before launching, start `arbab ui` as a **background** Bash call (`run_in_background: true`).
-   - It serves a read-only scene of the lanes on 127.0.0.1 (each lane a worker building a pyramid) and opens it in the
-     human's browser; its output then carries no token. When no browser opens, it prints the URL with this session's
-     token instead: give that URL to the human. The scene is for the human; you still react to `wait` and read reports.
+3. Start `arbab ui` only when the human asks to see the scene, as a **background** Bash call
+   (`run_in_background: true`). It serves a read-only scene of the lanes on 127.0.0.1 and opens the human's browser;
+   when none opens, it prints a URL with this session's token: give it to the human. You still react to `wait`.
 4. `arbab launch lanes/<name>.json` for each lane. It returns as soon as the lane's shepherd has started and prints
-   the lane, its run dir and the shepherd pid. A lane without a free slot, or launched above the quota threshold,
-   waits in state `held`. A lane that is already running (or being launched) is refused.
+   the lane, its run dir and the shepherd pid. A lane without a free slot, above the quota threshold or on a loaded
+   machine waits in state `held`. A lane that is already running (or being launched) is refused.
 
 ## Wait
 
@@ -220,10 +219,11 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 - With its next message, a returning session hears what **other** sessions landed while it was away (its own are left
   out), here or below its folder; `summary --since <when>` (`2h`, `1d`, `YYYY-MM-DD` as midnight UTC, ISO with `Z` or an offset) lists them.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
+- A lane `held` for machine load or memory pressure shows that reason (`machine load 25.3 on 8 CPUs`) and starts by
+  itself once the machine has room. Nothing to do.
 - When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
-  what needs attention, quota, slots and worktrees; `--all`: every repository that launched a lane on this machine) and
-  `arbab report <lane>` (an attempt's metrics and report; `--attempt <n>` for an earlier one), not from JSON read by
-  hand. `arbab status [--active] [--mine]` gives one row per lane; use it when you need a picture, not in a loop.
+  what needs attention, quota, slots, worktrees; `--all`: every repository on this machine) and `arbab report <lane>`
+  (`--attempt <n>`), never from JSON read by hand. `arbab status [--active] [--mine]`: one row per lane, not in a loop.
 - **Never poll or tail streams into your context.** `arbab report <lane>` reads the attempt's `summary.json` and
   `report.json` under `.arbab/runs/<lane>/attempt-<n>/` for you.
 - Use `arbab stop <lane>` to kill a worker that is going the wrong way; it will not auto-resume.
@@ -233,10 +233,8 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 Each attempt's `summary.json` carries one end state, classified from the whole stream, never from the exit code.
 The full table, with what to do for each: [references/end-states.md](references/end-states.md).
 
-- `success`: read the report (`arbab report <lane>`). A `done` with failing checks or a `partial`/`blocked` is still
-  your decision.
-- `usage-limit`: the shepherd sleeps until the reset and resumes by itself (state `waiting-reset`), up to
-  `maxAttempts`. Do nothing.
+- `success`: read the report (`arbab report <lane>`); a `done` with failing checks or a `partial`/`blocked` is your call.
+- `usage-limit`: the shepherd sleeps until the reset and resumes by itself (`waiting-reset`, up to `maxAttempts`). Do nothing.
 - `failed`: read the report (if any), `stderr.log` and the last events of the stream (only those). Then choose:
   - `arbab resume <lane> --prompt <file>` with a correction prompt, for a short, recent stop with a clear cause;
   - `arbab resume <lane> --digest`, for a long attempt that stopped long ago (a plain resume re-pays the whole
@@ -245,8 +243,7 @@ The full table, with what to do for each: [references/end-states.md](references/
   - a fresh relaunch with a corrected brief, when the brief was wrong: the same lane file again (`arbab launch
     lanes/<lane>.json`) starts a fresh session in the same worktree, on its checkpoint commits. Choose a new lane
     name (`"base": "arbab/<lane>"` keeps the checkpoint) only when the scope changes.
-- `invalid-report`: the work may be fine but the report is missing or fails its schema. Resume with a prompt
-  asking for the report only.
+- `invalid-report`: the work may be fine but the report is missing or off-schema: resume asking for the report only.
 - `unsupported-cli`: the binary cannot run the model. Run `arbab doctor`, fix the binary or the model, relaunch.
 - `budget`, `max-turns`: the task was too big or the brief too open. Split it or decide more, then relaunch.
 - `killed:wall`, `killed:idle`, `killed:hang-after-result`, `killed:hang-after-error`: read the last events;
@@ -260,9 +257,8 @@ The full table, with what to do for each: [references/end-states.md](references/
 
 ## Quota
 
-- The limit is per account: your session and every worker spend the same windows. One limit has stopped two fleets
-  and both orchestrators at once.
-- `arbab status` and `arbab quota` show the five-hour and seven-day windows and the hold decision.
+- The limit is per account: your session and every worker spend the same windows; one limit has stopped two fleets
+  and both orchestrators at once. `arbab status` and `arbab quota` show both windows and the hold decision.
 - Launches are held while the account is rejected, five-hour use is at or above `quota.holdAbove.fiveHour`
   (default 0.85) or seven-day use at or above `quota.holdAbove.sevenDay` (default 0.95). Held lanes re-check every
   minute and after each reset.
@@ -273,13 +269,13 @@ The full table, with what to do for each: [references/end-states.md](references/
 - After the human switches to another account because one is full, run `arbab quota --refresh`: one tool-less
   haiku call reads the new account's windows, replaces the snapshot and counts as a reset. `arbab quota --reset`
   only deletes the old snapshot; use it when the refresh call cannot run. Without either, the old account's snapshot
-  holds every lane until its reset. Held lanes re-read the quota every minute; lanes in `waiting-reset` go on only
-  after such a reset (or at the old reset time).
+  holds every lane until its reset, and lanes in `waiting-reset` wait for such a reset (or the old reset time).
 
 ## Review
 
 Shallow review finds little: six lenses of 2–6 turns each found one bug. Review an integration (see [Land](#land))
-with `arbab review <name>`, as a background Bash call; it waits for its lanes (`--timeout-min`, default 120):
+with `arbab review <name>`, after verify (reviewers see its results for the head), as a background Bash call; it
+waits for its lanes (`--timeout-min`, default 120):
 
 - **One reviewer lane per lens**, `<name>-review-<lens>`, read-only, on the integration head, diffing against the
   integration's base. Lenses: the built-ins `correctness`, `security`, `contracts`, plus config `review.lenses`
@@ -288,15 +284,16 @@ with `arbab review <name>`, as a background Bash call; it waits for its lanes (`
 - **Evidence per finding**: `file`, `line`, a `failure_scenario` and `evidence`; `paths_checked` lists what was read.
 - **A coverage section** (`coverage`, required by the reviewer schema). A review without coverage counts as failed.
 - **A skeptic pass**: one skeptic lane per lens with MEDIUM or HIGH findings, `<name>-skeptic-<lens>`, tries to
-  refute them (trace, reachability, provenance). LOW findings get none.
+  refute them (trace, reachability, provenance). LOW findings get none. Skeptics get no dependency install.
+- **A window**: at most `review.maxParallel` (default 4) reviewer lanes run at once, then as many skeptics; the rest
+  start as places free up, within the same timeout.
 
 `review.json` keeps every finding with its verdict: `confirmed`, `refuted` or `unverified`. Exit 1 when a lane did
 not succeed, 3 on timeout. Then:
 
-- **A probe for testable findings.** When a finding can be tested (a write the fence should refuse, an input that
-  should be rejected), settle it with a deterministic probe lane: a small command list the worker runs, reporting
-  each step's command, exit code and output. A measured outcome beats an argued one; M1 settled both of its
-  security findings this way.
+- **A probe for testable findings.** Settle a finding that can be tested (a write the fence should refuse, an input
+  that should be rejected) with a deterministic probe lane: a small command list, each step's command, exit code and
+  output reported. A measured outcome beats an argued one; M1 settled both of its security findings this way.
 - **Independent agreement counts.** Two lenses that find the same defect independently confirm it.
 - Fix each confirmed finding (a new lane, then `integrate` again) or leave it as a risk for the human.
 
@@ -335,7 +332,9 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
    from the stream's tool results for the exact command lines, never from the model's report; a gate that did not
    run counts as failed. Lane-level green is not repo-level green: every lane's tests passed while an integration
    branch failed boot-smoke. Verify again after every `integrate`. A dirty verify worktree stays for inspection.
-3. `arbab review <name>` when the tier asks for it (above).
+   Gates run through arbab-check; verify prints their failures (`verify.json` `failures`) and, after a failure, a **fix
+   draft** (`fix/fix-<k>.json` + `.md`): read both, edit the draft, `arbab launch` it, then integrate and verify again.
+3. `arbab review <name>` when the tier asks for it (above), after verify.
 4. `arbab readiness <name> [--tier low|medium|high] [--waive id,…]` writes the **readiness report** (FR-21):
    - **verified**: each gate and smoke command with its exit code, the lenses that ran, the findings' verdicts;
    - **skipped**: what the tier requires that did not run or did not pass. `low`: verify. `medium` (the default,
@@ -381,7 +380,8 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
 ## Do not
 
 - Name a lane `integrate-…` (the integration worktrees' namespace), or launch a lane under a name that `verify` or
-  `review` generated (`<name>-verify`, `<name>-review-<lens>`, `<name>-skeptic-<lens>`): arbab refuses both.
+  `review` generated (`<name>-verify`, `<name>-review-<lens>`, `<name>-skeptic-<lens>`): arbab refuses both. Nor
+  pick an integration name whose generated names a lane or phase holds (`m4` with a phase `m4-verify`): `integrate` refuses.
 - Expect arbab's own commits and merges to run your repository's git hooks: on the host they would be worker code
   (a hooks path like husky's resolves inside the worker-written tree). The checks those hooks run belong in
   `gates`, which run inside the fence.

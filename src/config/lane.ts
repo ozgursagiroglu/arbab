@@ -4,6 +4,7 @@ import { ArbabError } from "../util/errors";
 import {
   MAX_ATTEMPTS,
   boolean,
+  checkMap,
   effort,
   existingFile,
   fail,
@@ -44,6 +45,8 @@ const LANE_KEYS: readonly (keyof LaneSpec)[] = [
   "upstream",
   "mergeBranches",
   "inputs",
+  "install",
+  "checks",
 ];
 
 /** The lane fields a plan's defaults and phases may set (PhaseLaneFields). */
@@ -188,5 +191,7 @@ export function loadLane(projectRoot: string, lanePath: string, credentialPaths:
     if (!Array.isArray(obj.mergeBranches)) fail("mergeBranches", "must be an array of branch names");
     lane.mergeBranches = obj.mergeBranches.map((b, i) => ref(b, `mergeBranches[${i}]`));
   }
+  if (obj.install !== undefined) lane.install = boolean(obj.install, "install");
+  if (obj.checks !== undefined) lane.checks = checkMap(obj.checks, "checks");
   return lane;
 }

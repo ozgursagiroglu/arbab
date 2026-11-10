@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { checkCommandLine } from "../check/command";
+import { compileProfile } from "../profile/compile";
 import { GIT_WRITE_VERBS } from "../profile/presets";
 import { ArbabError } from "../util/errors";
-import type { Lease } from "../types";
-import { REVIEWER, RESEARCHER, SANDBOX_AUTO, STRICT } from "./test-profiles";
+import type { CompiledProfile, Lease, ProfileInput } from "../types";
+import { REVIEWER, RESEARCHER, SANDBOX_AUTO, STRICT, STRICT_INPUT } from "./test-profiles";
 import { allowedCommands, toolBelt } from "./toolbelt";
 
 const lease = (type: string, value: number): Lease => ({ type, value, lane: "l", project: "/p", pid: 1, createdAt: "2026-01-01T00:00:00.000Z" });
@@ -99,5 +101,100 @@ describe("toolBelt", () => {
   });
   it("throws on a lease type that is not a valid name", () => {
     expect(() => toolBelt(STRICT, [lease("Bad Type", 1)], 15)).toThrow(ArbabError);
+  });
+});
+
+describe("toolBelt, heavy checks and gates", () => {
+  const SCRIPT = "/work/repo/.arbab/runs/lane/bin/arbab-check.mjs";
+  const GATES = [["pnpm", "typecheck"], ["pnpm", "test"]];
+  // Compiled with the lane's checks, as a launch compiles them: implementer and verifier get the check rules.
+  const withChecks = (input: Partial<ProfileInput>, names: string[], script = SCRIPT): CompiledProfile =>
+    compileProfile({ ...STRICT_INPUT, ...input, checkScript: script, checkNames: names });
+  const CHECKS_LINE =
+    `- Heavy checks: run each one once, before you report, with \`node ${SCRIPT} <name>\` (names: \`typecheck\`, ` +
+    "`lint`). Run it with the Bash timeout parameter set to 15 minutes: the wait for a place counts against it. It " +
+    "waits for a machine-wide place, runs on a fair share of the CPUs and prints a short summary: the failures and " +
+    "the path of the full log, which you can read with Read. Do not run these commands any other way, and do not " +
+    "re-run a check to see more of its output: read the log.";
+  const GATES_LINE =
+    "- The integration's verify runs the repository gates for every lane together: `pnpm typecheck`, `pnpm test`. " +
+    "Do not run a whole-repository suite yourself: run the tests of the files you change, one file per call when the " +
+    "output is long.";
+
+  it("names the lane's check command and its names, and the gates, before the leases", () => {
+    const profile = withChecks({}, ["typecheck", "lint"]);
+    const belt = toolBelt(profile, LEASES, 15, { role: "implementer", gates: GATES, checks: { script: SCRIPT, names: ["typecheck", "lint"] } });
+    expect(belt).toContain(`run everything in the foreground.\n${CHECKS_LINE}\n${GATES_LINE}\n- Leased resources`);
+  });
+
+  it("sets the Bash timeout to the maximum, in minutes", () => {
+    const profile = withChecks({ role: "verifier" }, ["lint"]);
+    const work = { role: "verifier" as const, gates: [], checks: { script: SCRIPT, names: ["lint"] } };
+    expect(toolBelt(profile, [], 10, work)).toContain(
+      "(names: `lint`). Run it with the Bash timeout parameter set to 10 minutes: the wait for a place counts against it. It waits",
+    );
+    expect(toolBelt(profile, [], 1, work)).toContain("Bash timeout parameter set to 1 minute: the wait");
+  });
+
+  it("quotes a script path that needs it, as the command line does", () => {
+    const script = "/work/my repo/bin/arbab-check.mjs";
+    const profile = withChecks({ role: "verifier", fence: "sandbox-auto" }, ["lint"], script);
+    const belt = toolBelt(profile, [], 15, { role: "verifier", gates: [], checks: { script, names: ["lint"] } });
+    expect(belt).toContain(`with \`node '${script}' <name>\` (names: \`lint\`).`);
+    expect(belt).not.toContain("The integration's verify");
+  });
+
+  it("quotes a gate argument that needs it", () => {
+    const belt = toolBelt(STRICT, [], 15, { role: "verifier", gates: [["pnpm", "test", "--filter", "a b"]] });
+    expect(belt).toContain("together: `pnpm test --filter 'a b'`. Do not run");
+  });
+
+  it("has no check line without checks, and no gates line without gates", () => {
+    const belt = toolBelt(STRICT, [], 15, { role: "implementer", gates: [] });
+    expect(belt).not.toContain("Heavy checks");
+    expect(belt).not.toContain("The integration's verify");
+    expect(toolBelt(STRICT, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: [] } })).not.toContain("Heavy checks");
+    expect(toolBelt(STRICT, [], 15)).not.toContain("Heavy checks");
+  });
+
+  it("names only the checks the profile's allow rules hold", () => {
+    // Compiled without the checks: the env and the script may be there, the rules are not.
+    expect(toolBelt(STRICT, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["lint"] } })).not.toContain("Heavy checks");
+    const profile = withChecks({}, ["lint"]);
+    const belt = toolBelt(profile, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["lint", "typecheck"] } });
+    expect(belt).toContain("(names: `lint`). Run it");
+  });
+
+  it("gives a reviewer with lane checks neither a checks line nor a gates line", () => {
+    const profile = withChecks({ role: "reviewer", tools: ["Read", "Glob", "Grep", "Bash"], loopback: false }, ["gate-1"]);
+    expect(profile.settings.permissions.allow.some((rule) => rule.includes(SCRIPT))).toBe(false);
+    const belt = toolBelt(profile, [], 15, { role: "reviewer", gates: GATES, checks: { script: SCRIPT, names: ["gate-1"] } });
+    expect(belt).not.toContain("Heavy checks");
+    expect(belt).not.toContain("The integration's verify");
+  });
+
+  it("gives a sandbox-auto lane its checks line without rules: its sandboxed Bash runs without an allowlist", () => {
+    const profile = withChecks({ role: "reviewer", fence: "sandbox-auto", tools: ["Read", "Glob", "Grep", "Bash"], loopback: false }, ["gate-1"]);
+    expect(profile.settings.permissions.allow.some((rule) => rule.startsWith("Bash("))).toBe(false);
+    const belt = toolBelt(profile, [], 15, { role: "reviewer", gates: [], checks: { script: SCRIPT, names: ["gate-1"] } });
+    expect(belt).toContain("(names: `gate-1`)");
+  });
+
+  it("gives a researcher with lane checks no checks line: it has no shell", () => {
+    const belt = toolBelt(RESEARCHER, [], 15, { role: "researcher", gates: GATES, checks: { script: SCRIPT, names: ["gate-1"] } });
+    expect(belt).not.toContain("Heavy checks");
+  });
+
+  it("gives a probe its checks line when its own allow holds the exact rule (verify), and no gates line", () => {
+    const work = { role: "probe" as const, gates: GATES, checks: { script: SCRIPT, names: ["gate-1"] } };
+    const bare = withChecks({ role: "probe", tools: ["Read", "Glob", "Grep", "Bash"], loopback: false }, ["gate-1"]);
+    expect(toolBelt(bare, [], 15, work)).not.toContain("Heavy checks");
+    const verify = withChecks(
+      { role: "probe", tools: ["Read", "Glob", "Grep", "Bash"], loopback: false, laneAllow: [`Bash(${checkCommandLine(SCRIPT, "gate-1")})`] },
+      ["gate-1"],
+    );
+    const belt = toolBelt(verify, [], 15, work);
+    expect(belt).toContain("(names: `gate-1`)");
+    expect(belt).not.toContain("The integration's verify");
   });
 });

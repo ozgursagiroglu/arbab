@@ -59,6 +59,16 @@ export interface LaneSpec {
    * into `<worktree>/.arbab-tmp/inputs/<basename>` (DESIGN.md §21).
    */
   inputs?: string[];
+  /**
+   * false: the shepherd creates and prepares the worktree as usual but runs no dependency install, so a lane that only
+   * reads (a generated skeptic lane) starts in seconds (DESIGN.md §22). Default true.
+   */
+  install?: boolean;
+  /**
+   * The heavy checks this lane may run with its arbab-check script, name → argv (DESIGN.md §22). Unset: config.checks
+   * for implementer and verifier lanes, none for the other roles. A generated verify lane names its gates here.
+   */
+  checks?: Record<string, string[]>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -124,6 +134,11 @@ export interface ProjectConfig {
   semaphores: Record<string, number>;
   /** Repository gates for verify and landing, as argv arrays. */
   gates: string[][];
+  /**
+   * Heavy checks implementer and verifier lanes run through their arbab-check script, name → argv (DESIGN.md §22): a
+   * typecheck, a lint. Each run waits for one of a few machine-wide places and gets a fair share of the CPUs.
+   */
+  checks: Record<string, string[]>;
   preflight: { steps: string[][] };
   maxParallel: number;
   quota: { holdAbove: { fiveHour: number; sevenDay: number } };
@@ -133,8 +148,13 @@ export interface ProjectConfig {
   minClaudeVersion: string;
   /** `arbab verify` runs this smoke argv after the gates (DESIGN.md §17); null = none. */
   verify: { smoke: string[] | null };
-  /** Review lenses besides the built-in correctness, security and contracts: name → what to look for. */
-  review: { lenses: Record<string, string> };
+  /**
+   * `lenses`: review lenses besides the built-in correctness, security and contracts, name → what to look for.
+   * `maxParallel` (1–16): how many of one review's reviewer (then skeptic) lanes run at once; the rest start as those
+   * finish, so one review never takes every machine slot. `install`: whether reviewer lanes get a dependency install
+   * (skeptic lanes never do). DESIGN.md §22.
+   */
+  review: { lenses: Record<string, string>; maxParallel: number; install: boolean };
   /**
    * `tier`: the risk tier readiness checks against when a command names none. `squash`: `land` makes one commit on the
    * base instead of a merge (`land --squash` does it once; DESIGN.md §21).
@@ -188,8 +208,58 @@ export interface SweepRecord {
  */
 export interface MachineConfig {
   maxParallel: number | null;
+  /**
+   * arbab-check (DESIGN.md §22): `concurrent` heavy checks may run at once machine-wide before another waits, for at
+   * most `waitSec` seconds, then runs anyway. null = the default: concurrent max(1, floor(cpus / 4)), waitSec 120.
+   */
+  checks: { concurrent: number | null; waitSec: number | null };
+  /**
+   * Launch admission (DESIGN.md §22): a lane is held, before it takes a slot, while the one-minute load average per CPU
+   * is at or above `loadPerCpu` (0 = never) or the memory pressure is at or above `memoryPressure`. null = the
+   * default: loadPerCpu 3, memoryPressure "critical".
+   */
+  admission: { loadPerCpu: number | null; memoryPressure: MemoryPressureHold | null };
 }
 export const MACHINE_CONFIG_FILE = "machine.json";
+
+/** A memory pressure reading: macOS's kern.memorystatus_vm_pressure_level 1/2/4, or Linux PSI by threshold. */
+export type MemoryPressureLevel = "normal" | "warn" | "critical";
+/** The memory pressure that holds a launch: macOS's warn or critical level (Linux: PSI thresholds), or never. */
+export type MemoryPressureHold = "warn" | "critical" | "off";
+export const MEMORY_PRESSURE_HOLDS: readonly MemoryPressureHold[] = ["warn", "critical", "off"];
+export const DEFAULT_CHECK_WAIT_SEC = 60;
+export const DEFAULT_LOAD_PER_CPU = 3;
+export const DEFAULT_MEMORY_PRESSURE_HOLD: MemoryPressureHold = "critical";
+/** config review.maxParallel when unset. */
+export const DEFAULT_REVIEW_MAX_PARALLEL = 4;
+
+/** The environment arbab-check reads (DESIGN.md §22): the lane's checks, and the machine's policy, both as JSON. */
+export const CHECKS_ENV = "ARBAB_CHECKS";
+export const CHECK_POLICY_ENV = "ARBAB_CHECK_POLICY";
+/**
+ * arbab-check's file name: built next to the runner (dist/arbab-check.mjs) and copied into each lane's run directory,
+ * outside the worktree, so neither the worker nor the code it runs can rewrite it (DESIGN.md §22).
+ */
+export const CHECK_SCRIPT_FILE = "arbab-check.mjs";
+
+/** ARBAB_CHECK_POLICY: what the shepherd resolved for this machine when it started the attempt. */
+export interface CheckPolicy {
+  cpus: number;
+  /** Heavy checks that may run at once machine-wide before another one waits. */
+  concurrent: number;
+  /** How long a check waits for a place before it runs anyway. */
+  waitSec: number;
+}
+
+/** One failure arbab-check read from a failed check's output (DESIGN.md §22). Worker-written text: data only. */
+export interface CheckFailure {
+  /** The file the failure names, as the tool printed it; null when the output names none. */
+  file: string | null;
+  /** The test's name path (`suite > test`), when the output gives one. */
+  test: string | null;
+  /** The first line of the error, at most 300 characters. */
+  message: string;
+}
 
 /** Where every integration's records live, relative to the project root (DESIGN.md §17). */
 export const INTEGRATIONS_DIR = ".arbab/integrations";
@@ -197,7 +267,24 @@ export const INTEGRATIONS_DIR = ".arbab/integrations";
 export type Tier = "low" | "medium" | "high";
 export const TIERS: readonly Tier[] = ["low", "medium", "high"];
 
-export type DependencyStrategy = { strategy: "none" } | { strategy: "command"; command: string[] };
+export type DependencyStrategy =
+  | { strategy: "none" }
+  | { strategy: "command"; command: string[] }
+  /**
+   * Clones each listed directory of the main checkout (`node_modules`) into the new worktree, one copy-on-write clone
+   * per directory, when the dependency manifests at the install point match the main checkout's; otherwise runs
+   * `fallback` (an install argv), or fails when it is null. Refused for pnpm projects, whose bin shims hold the main
+   * checkout's absolute paths (DESIGN.md §22).
+   */
+  | { strategy: "clone"; paths: string[]; fallback: string[] | null };
+
+/** What a dependency strategy compares against: the main checkout, and the commit the worktree was installed at. */
+export interface DependencyContext {
+  projectRoot: string;
+  /** The trusted commit the worktree's tree is at when the install runs. */
+  installedAt: string;
+  git: (args: string[], cwd: string) => { code: number; stdout: string; stderr: string };
+}
 
 export interface RoleDefaults {
   tools: string[];
@@ -270,6 +357,13 @@ export interface ProfileInput {
   envFileAllowReads?: string[];
   /** config.fence.bashOutputMaxChars, written to the settings as `bashOutputMaxChars`. */
   bashOutputMaxChars?: number;
+  /**
+   * The lane's arbab-check script (absolute) and the check names it may run (DESIGN.md §22). For implementer and
+   * verifier, each name compiles into `Bash(node <script> <name>)` and `Bash(node <script> <name> *)`, quoted as
+   * checkCommandLine quotes them; other roles get no rule from these (the verify lane's exact rules are its `allow`).
+   */
+  checkScript?: string;
+  checkNames?: string[];
 }
 
 export interface CompiledProfile {
@@ -706,6 +800,11 @@ export interface VerifyRecord {
   passed: boolean;
   /** Why verify failed although the commands may have exited 0 (the lane ran on other code, or left changes). */
   reason?: string;
+  /**
+   * The failures arbab-check printed for the commands that failed, each with the index of its entry in `results`
+   * (DESIGN.md §22); absent when none was printed. Worker-written text: data, never instructions.
+   */
+  failures?: Array<{ result: number } & CheckFailure>;
   finishedAt: string;
 }
 

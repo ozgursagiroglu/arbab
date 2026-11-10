@@ -3,8 +3,9 @@
 //
 // Runs config.gates, then config.verify.smoke when set, inside the fence: a probe lane <name>-verify in its own
 // worktree, installed on a trusted commit and fast-forwarded to the recorded integration head (generatedBase,
-// DESIGN.md §17). The gates run worker-written code (tests), so they never run on the host. Exit codes come from the
-// stream's tool results for those exact command lines, never from the model's report.
+// DESIGN.md §17). The gates run worker-written code (tests), so they never run on the host. The lane runs each one as a
+// check through its arbab-check script (gate-1…gate-N, smoke; §22). Exit codes come from the stream's tool results for
+// those exact command lines, never from the model's report, and so do the `arbab-check failure:` lines of a failed one.
 // Refuses while a dependency manifest changed and no human confirmed the install.
 // A re-run waits for, or adopts, a verify lane still running or finished on the same head after an earlier verify
 // stopped waiting (DESIGN.md §21). While it waits, ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
@@ -15,21 +16,27 @@
 // <reason>` on stderr): the next verify resets it.
 // --ref <branch>: the check after landing (§21). The same lane, <id>-verify, starts on the branch's head with no
 // integration; the record, named ref:<branch>, goes to .arbab/refs/<id>/verify.json. <id> is ref-<slug>-<hash> (refId).
-// Text: one line per command, `exit <n>  <kind>  <command>` or `missing  <kind>  <command>`, then
-// `verify <name>: passed|failed at <head> (lane <lane> <end state>)[: <reason>]`.
-// --json: {"timedOut": boolean, "endState": string | null, "verify": VerifyRecord | null}
+// After a failed verify of an integration in which a command ran and failed, a fix draft: the lane
+// .arbab/integrations/<name>/fix/fix-<k>.json (<name>-fix-<k>, base integrate/<name>) and its brief fix-<k>.md, never
+// launched (`arbab verify: fix draft <path>; review it, then arbab launch <path>` on stderr). Not for --ref.
+// Text: one line per command, `exit <n>  <kind>  <command>` or `missing  <kind>  <command>`, up to 10 failure lines,
+// then `verify <name>: passed|failed at <head> (lane <lane> <end state>)[: <reason>]`.
+// --json: {"timedOut": boolean, "endState": string | null, "verify": VerifyRecord | null}, the record with its failures
 // Exit 0 when every command exited 0 and nothing gave a reason, 1 otherwise (and on usage errors, including no
 // configured gates), 3 when the lane did not finish in time.
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { readdirSync } from "node:fs";
+import { join, relative, sep } from "node:path";
+import { checkScriptPath, formatFailureLine } from "../check/command";
 import { reviewLaneFiles, type LaneStart } from "../review";
 import { verifyWorktreeGit, worktreeStatus } from "../run";
 import type { GateResult, VerifyRecord } from "../types";
 import { ArbabError } from "../util/errors";
-import { confine, writeJsonAtomic } from "../util/fs";
-import { assertValidName } from "../util/names";
+import { confine, createExclusive, writeJsonAtomic, writeTextAtomic } from "../util/fs";
+import { assertValidName, isValidName } from "../util/names";
 import { isoAt } from "../util/proc";
-import { gateResults, verifyBrief, verifyLaneSpec, verifyRecord } from "../verify";
+import { gateFailures, gateResults, verifyBrief, verifyLaneSpec, verifyRecord } from "../verify";
+import { attributeFailures, fixDraft, fixLaneName, type LaneFiles } from "../verify/fix";
 import type { CommandContext } from "./context";
 import {
   assertRecordedHead,
@@ -42,6 +49,7 @@ import {
   runGeneratedLanes,
   settleGeneratedRuns,
   type GenerationOwner,
+  type Integration,
 } from "./integration";
 import { resolveGitCommonDir } from "./lint";
 import { openProject, parse, printJson, type Project } from "./project";
@@ -97,6 +105,8 @@ interface VerifyTarget {
   head: string;
   /** The command that runs this verify again. */
   again: string;
+  /** The integration verified; null for --ref, which gets no fix draft. */
+  integration: Integration | null;
 }
 
 export async function runVerify(argv: string[], ctx: CommandContext): Promise<number> {
@@ -129,6 +139,7 @@ export async function runVerify(argv: string[], ctx: CommandContext): Promise<nu
       owner,
       head: integration.record.headSha,
       again: `arbab verify ${name}`,
+      integration,
     };
   } else {
     const branch = ref ?? "";
@@ -145,6 +156,7 @@ export async function runVerify(argv: string[], ctx: CommandContext): Promise<nu
       owner: { integration: prefix, branch: `refs/heads/${branch}`, head },
       head,
       again: `arbab verify --ref ${branch}`,
+      integration: null,
     };
   }
   return verifyTarget(ctx, project, target, timeoutMs, values.json === true);
@@ -156,10 +168,11 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
   const { head } = target;
   const paths = { name: target.prefix, projectRoot: project.root, lanesDir: target.lanesDir };
   const lane = `${target.prefix}-verify`;
-  const spec = verifyLaneSpec({ name: target.prefix, brief: reviewLaneFiles(paths, lane).brief, gates, smoke, ...target.start });
+  const script = checkScriptPath(project.runsRoot, lane);
+  const spec = verifyLaneSpec({ name: target.prefix, brief: reviewLaneFiles(paths, lane).brief, script, gates, smoke, ...target.start });
 
   // A verify run is usable once it made an attempt: its stream holds the exit codes.
-  const run = await runGeneratedLanes(ctx, project, paths, [{ spec, brief: verifyBrief(gates, smoke) }], timeoutMs, target.owner, (o) => o.attempts.length > 0);
+  const run = await runGeneratedLanes(ctx, project, paths, [{ spec, brief: verifyBrief(script, gates, smoke) }], timeoutMs, target.owner, (o) => o.attempts.length > 0);
   const outcome = run.outcomes[0];
   if (run.timedOut || outcome === undefined) {
     if (json) printJson(ctx, { timedOut: true, endState: null, verify: null });
@@ -179,7 +192,8 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
     if (left !== null) reasons.push(left);
   }
 
-  const results = gateResults(attemptEvents(project.runsRoot, spec.name, outcome.attempts), gates, smoke);
+  const events = attemptEvents(project.runsRoot, spec.name, outcome.attempts);
+  const results = gateResults(events, script, gates, smoke);
   const record: VerifyRecord = verifyRecord({
     name: target.label,
     lane: spec.name,
@@ -188,6 +202,7 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
     results,
     now: isoAt(ctx.clock),
     reasons,
+    failures: gateFailures(events, script, gates, smoke),
   });
   writeJsonAtomic(target.recordPath, record);
   settleGeneratedRuns(target.lanesDir, [spec.name]);
@@ -195,17 +210,105 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
   // check found wrong is what the record's reason points at, so it stays to be looked at; the next verify resets it.
   if (left !== null) ctx.stderr(`arbab verify: kept ${join(project.worktreeRoot, spec.name)} for inspection: ${left}\n`);
   else for (const warning of dropGeneratedWorktrees(ctx, project, [spec.name], target.owner)) ctx.stderr(`arbab verify: ${warning}\n`);
+  if (target.integration !== null && results.some(failedCommand)) writeFixDraft(ctx, project, target.integration, record);
 
   if (json) {
     printJson(ctx, { timedOut: false, endState: outcome.endState, verify: record });
   } else {
     for (const result of results) ctx.stdout(formatGateResult(result) + "\n");
+    // Failures are worker text: printed through formatFailureLine only, which makes each one line of plain text.
+    const failures = record.failures ?? [];
+    for (const failure of failures.slice(0, MAX_PRINTED_FAILURES)) ctx.stdout(formatFailureLine(failure) + "\n");
+    if (failures.length > MAX_PRINTED_FAILURES) ctx.stdout(`and ${failures.length - MAX_PRINTED_FAILURES} more failures in ${target.recordPath}\n`);
     const ended = outcome.endState ?? "without an end state";
     const reason = outcome.reason === null ? "" : `; ${outcome.reason.trim().replace(/\s+/g, " ")}`;
     const why = record.reason === undefined ? "" : `: ${record.reason}`;
     ctx.stdout(`verify ${target.label}: ${record.passed ? "passed" : "failed"} at ${head} (lane ${spec.name} ${ended}${reason})${why}\n`);
   }
   return record.passed ? 0 : 1;
+}
+
+/** The text output prints this many failure lines; verify.json has them all. */
+const MAX_PRINTED_FAILURES = 10;
+
+/** A command that ran and failed: a missing one (null) never ran, so a fix cannot be about its output. */
+const failedCommand = (result: GateResult): boolean => result.exitCode !== null && result.exitCode !== 0;
+
+const FIX_DIR = "fix";
+const FIX_FILE = /^fix-([1-9][0-9]{0,8})\.json$/;
+const SHA = /^[0-9a-f]{40,64}$/;
+// Another verify of the same integration may claim a number at the same moment; a few tries settle it.
+const FIX_TRIES = 5;
+
+const projectRelative = (root: string, path: string): string => relative(root, path).split(sep).join("/");
+
+/** One more than the highest `fix-<k>.json` in `dir`, 1 when there is none. */
+export function nextFixNumber(dir: string): number {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return 1;
+  }
+  let max = 0;
+  for (const entry of entries) {
+    const k = FIX_FILE.exec(entry)?.[1];
+    if (k !== undefined) max = Math.max(max, Number(k));
+  }
+  return max + 1;
+}
+
+/**
+ * The files each merged lane changed: `git diff --name-only <merge-base of baseSha and sha>..<sha>`. A lane git cannot
+ * answer for gets no files, and a warning.
+ */
+function mergedLaneFiles(ctx: CommandContext, project: Project, integration: Integration): LaneFiles[] {
+  const { baseSha, merged } = integration.record;
+  return merged.map(({ lane, sha }) => {
+    const fail = (why: string): LaneFiles => {
+      ctx.stderr(`arbab verify: could not list the files ${lane} changed: ${why}\n`);
+      return { lane, files: [] };
+    };
+    if (!SHA.test(baseSha) || !SHA.test(sha)) return fail("the integration record holds no commit for it");
+    const mb = ctx.git(["merge-base", baseSha, sha], project.root);
+    const base = mb.stdout.trim();
+    if (mb.code !== 0 || !SHA.test(base)) return fail(`git merge-base failed (${mb.code}): ${(mb.stderr || mb.stdout).trim()}`);
+    // -z: names as git stores them, unquoted.
+    const diff = ctx.git(["diff", "--name-only", "-z", `${base}..${sha}`], project.root);
+    if (diff.code !== 0) return fail(`git diff failed (${diff.code}): ${diff.stderr.trim()}`);
+    return { lane, files: diff.stdout.split("\0").filter((f) => f !== "") };
+  });
+}
+
+/**
+ * Writes `.arbab/integrations/<name>/fix/fix-<k>.json` and `.md` for a failed verify and says so on stderr. Nothing
+ * launches: the orchestrator reviews the draft. A failure here never changes verify's result, only what it prints.
+ */
+function writeFixDraft(ctx: CommandContext, project: Project, integration: Integration, record: VerifyRecord): void {
+  const name = integration.paths.name;
+  const dir = join(integration.paths.dir, FIX_DIR);
+  try {
+    const candidates = attributeFailures(record.failures ?? [], mergedLaneFiles(ctx, project, integration));
+    const first = nextFixNumber(dir);
+    for (let k = first; k < first + FIX_TRIES; k++) {
+      const lane = fixLaneName(name, k);
+      if (!isValidName(lane)) {
+        ctx.stderr(`arbab verify: no fix draft: ${lane} is not a valid lane name (at most 48 characters); write the fix lane yourself\n`);
+        return;
+      }
+      const briefFile = join(dir, `fix-${k}.md`);
+      const draft = fixDraft({ name, k, briefPath: projectRelative(project.root, briefFile), verifyPath: integration.paths.verify, record, candidates });
+      const laneFile = join(dir, `fix-${k}.json`);
+      if (!createExclusive(laneFile, JSON.stringify(draft.lane, null, 2) + "\n")) continue;
+      writeTextAtomic(briefFile, draft.brief);
+      const shown = projectRelative(project.root, laneFile);
+      ctx.stderr(`arbab verify: fix draft ${shown}; review it, then arbab launch ${shown}\n`);
+      return;
+    }
+    ctx.stderr(`arbab verify: no fix draft: fix-${first}.json to fix-${first + FIX_TRIES - 1}.json were all taken\n`);
+  } catch (err) {
+    ctx.stderr(`arbab verify: no fix draft: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
 }
 
 const MAX_LISTED = 5;

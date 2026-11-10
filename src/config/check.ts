@@ -1,5 +1,6 @@
 import { realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, sep } from "node:path";
+import { isCheckName } from "../check/command";
 import type { Effort, Role, RoleDefaults } from "../types";
 import { EFFORTS, ROLES } from "../types";
 // The module itself, not ../profile's index: config needs none of the rest of the profile.
@@ -54,6 +55,23 @@ export function stringArray(v: unknown, field: string): string[] {
 export function argv(v: unknown, field: string): string[] {
   if (!Array.isArray(v) || v.length === 0) fail(field, "must be a non-empty array of strings");
   return stringArray(v, field);
+}
+
+/**
+ * Named checks (config `checks`, a lane's `checks`; DESIGN.md §22): check name → argv. A name is a word of the
+ * worker's command line and of its allow rules; an argument travels through JSON in the environment, so no NUL.
+ */
+export function checkMap(v: unknown, field: string): Record<string, string[]> {
+  const obj = record(v, field);
+  const out: Record<string, string[]> = {};
+  for (const [key, list] of Object.entries(obj)) {
+    if (!isCheckName(key)) fail(`${field}.${key}`, "is not a valid check name (lowercase letters, digits and -, at most 32)");
+    out[key] = argv(list, `${field}.${key}`).map((arg, i) => {
+      if (arg.includes("\0")) fail(`${field}.${key}[${i}]`, "must not contain NUL");
+      return arg;
+    });
+  }
+  return out;
 }
 
 export function boolean(v: unknown, field: string): boolean {

@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { assemblePlugin } from "../scripts/assemble-plugin.mjs";
+import { assemblePlugin, CHECK_SCRIPT_FILE } from "../scripts/assemble-plugin.mjs";
+import { CHECK_SCRIPT_FILE as TYPES_CHECK_SCRIPT_FILE } from "../src/types";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,6 +37,7 @@ describe("assemblePlugin", () => {
     write(join(repo, "hooks", "hooks.json"), '{"hooks":{}}\n');
     write(join(repo, "hooks", "notes.md"), "not shipped\n");
     write(join(repo, "dist", "arbab.mjs"), "#!/usr/bin/env node\n");
+    write(join(repo, "dist", "arbab-check.mjs"), "// check\n");
     write(join(repo, "dist", "other.mjs"), "not shipped\n");
     write(join(repo, "node_modules", "x", "index.js"), "not shipped\n");
     write(join(repo, ".arbab", "runs", "r.json"), "{}\n");
@@ -47,10 +49,11 @@ describe("assemblePlugin", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("copies the manifest, the skills, the hooks and the bundle, and nothing else", () => {
+  it("copies the manifest, the skills, the hooks and the two bundles, and nothing else", () => {
     assemblePlugin(repo, "dist/arbab.mjs", out);
     expect(listFiles(out)).toEqual([
       ".claude-plugin/plugin.json",
+      "dist/arbab-check.mjs",
       "dist/arbab.mjs",
       "hooks/hooks.json",
       "skills/arbab/SKILL.md",
@@ -60,13 +63,26 @@ describe("assemblePlugin", () => {
     expect(readFileSync(join(out, "hooks", "hooks.json"), "utf8")).toBe('{"hooks":{}}\n');
     expect(readFileSync(join(out, "skills", "arbab", "SKILL.md"), "utf8")).toBe("# skill\n");
     expect(readFileSync(join(out, "dist", "arbab.mjs"), "utf8")).toBe("#!/usr/bin/env node\n");
+    expect(readFileSync(join(out, "dist", "arbab-check.mjs"), "utf8")).toBe("// check\n");
   });
 
-  it("takes the bundle from an absolute path anywhere", () => {
+  it("names the check script as src/types.ts does", () => {
+    expect(CHECK_SCRIPT_FILE).toBe(TYPES_CHECK_SCRIPT_FILE);
+  });
+
+  it("takes the bundle from an absolute path anywhere, and the check script from next to it", () => {
     const bundle = join(tmp, "elsewhere", "bundle.mjs");
     write(bundle, "// bundle\n");
+    write(join(tmp, "elsewhere", "arbab-check.mjs"), "// elsewhere check\n");
     assemblePlugin(repo, bundle, out);
     expect(readFileSync(join(out, "dist", "arbab.mjs"), "utf8")).toBe("// bundle\n");
+    expect(readFileSync(join(out, "dist", "arbab-check.mjs"), "utf8")).toBe("// elsewhere check\n");
+  });
+
+  it("fails when the check script is missing next to the bundle", () => {
+    rmSync(join(repo, "dist", "arbab-check.mjs"));
+    expect(() => assemblePlugin(repo, "dist/arbab.mjs", out)).toThrow(/check script not found: .*arbab-check\.mjs/);
+    expect(existsSync(out)).toBe(false);
   });
 
   it("rebuilds from scratch, so stale and deleted files are gone", () => {
@@ -78,7 +94,13 @@ describe("assemblePlugin", () => {
 
     assemblePlugin(repo, "dist/arbab.mjs", out);
     expect(existsSync(join(out, "stale.txt"))).toBe(false);
-    expect(listFiles(out)).toEqual([".claude-plugin/plugin.json", "dist/arbab.mjs", "hooks/hooks.json", "skills/arbab/SKILL.md"]);
+    expect(listFiles(out)).toEqual([
+      ".claude-plugin/plugin.json",
+      "dist/arbab-check.mjs",
+      "dist/arbab.mjs",
+      "hooks/hooks.json",
+      "skills/arbab/SKILL.md",
+    ]);
     expect(readFileSync(join(out, "dist", "arbab.mjs"), "utf8")).toBe("// new bundle\n");
   });
 
@@ -104,11 +126,12 @@ describe("assemblePlugin", () => {
   it("ships the repository's real manifest, hooks and skill files unchanged", () => {
     const bundle = join(tmp, "arbab.mjs");
     write(bundle, "// bundle\n");
+    write(join(tmp, "arbab-check.mjs"), "// check\n");
     assemblePlugin(ROOT, bundle, out);
     const skills = listFiles(join(ROOT, "skills")).filter((f) => !f.endsWith(".DS_Store"));
     expect(skills).toContain("arbab/SKILL.md");
     expect(listFiles(out)).toEqual(
-      [".claude-plugin/plugin.json", "dist/arbab.mjs", "hooks/hooks.json", ...skills.map((f) => `skills/${f}`)].sort(),
+      [".claude-plugin/plugin.json", "dist/arbab-check.mjs", "dist/arbab.mjs", "hooks/hooks.json", ...skills.map((f) => `skills/${f}`)].sort(),
     );
     expect(readFileSync(join(out, ".claude-plugin", "plugin.json"), "utf8")).toBe(
       readFileSync(join(ROOT, ".claude-plugin", "plugin.json"), "utf8"),
@@ -127,7 +150,7 @@ describe("the committed plugin/", () => {
     const plugin = join(ROOT, "plugin");
     const skills = listFiles(join(ROOT, "skills")).filter((f) => !f.endsWith(".DS_Store"));
     expect(listFiles(plugin)).toEqual(
-      [".claude-plugin/plugin.json", "dist/arbab.mjs", "hooks/hooks.json", ...skills.map((f) => `skills/${f}`)].sort(),
+      [".claude-plugin/plugin.json", "dist/arbab-check.mjs", "dist/arbab.mjs", "hooks/hooks.json", ...skills.map((f) => `skills/${f}`)].sort(),
     );
     expect(readFileSync(join(plugin, ".claude-plugin", "plugin.json"), "utf8")).toBe(
       readFileSync(join(ROOT, ".claude-plugin", "plugin.json"), "utf8"),

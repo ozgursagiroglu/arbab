@@ -50,7 +50,7 @@ describe("upstreamSummary", () => {
 });
 
 describe("buildBrief", () => {
-  const profile = (worktree: string): CompiledProfile =>
+  const profile = (worktree: string, checks?: { script: string; names: string[] }): CompiledProfile =>
     compileProfile({
       role: "implementer",
       fence: "strict",
@@ -61,6 +61,7 @@ describe("buildBrief", () => {
       credentialPaths: [],
       env: {},
       worktree,
+      ...(checks === undefined ? {} : { checkScript: checks.script, checkNames: checks.names }),
     });
 
   it("assembles the source, project rules, coordination and upstream reports", () => {
@@ -137,6 +138,33 @@ describe("buildBrief", () => {
     );
     expect(buildBrief({ ...input, inputs: [] })).not.toContain("## Inputs");
     expect(buildBrief(input)).not.toContain("## Inputs");
+  });
+
+  it("gives the tool belt the lane's checks and config gates, with or without a head start", () => {
+    writeFileSync(join(dir, "brief.md"), "# Lane x\n\n## Task\n\nDo it.\n");
+    const worktree = join(dir, "wt");
+    const input = {
+      projectRoot: dir,
+      runsRoot: runs,
+      config: { ...defaultConfig(), gates: [["pnpm", "typecheck"], ["pnpm", "test"]] },
+      lane: { name: "x", role: "implementer" as const, brief: "brief.md" },
+      branch: "arbab/x",
+      worktree,
+      profile: profile(worktree),
+      leases: [],
+      schema: DEFAULT_SCHEMAS.implementer,
+    };
+    const checks = { script: join(runs, "x", "bin", "arbab-check.mjs"), names: ["lint"] };
+    const gates = "- The integration's verify runs the repository gates for every lane together: `pnpm typecheck`, `pnpm test`.";
+    const withChecks = { ...input, profile: profile(worktree, checks), checks };
+    for (const text of [buildBrief(withChecks), buildBrief({ ...withChecks, headStart: "## Head start\n\nh\n" })]) {
+      expect(text).toContain(`with \`node ${checks.script} <name>\` (names: \`lint\`).`);
+      expect(text).toContain(gates);
+    }
+    // Without the check rules in its profile, the lane is not told to run them.
+    expect(buildBrief({ ...input, checks })).not.toContain("Heavy checks");
+    expect(buildBrief(input)).not.toContain("Heavy checks");
+    expect(buildBrief({ ...input, lane: { ...input.lane, role: "reviewer" } })).not.toContain(gates);
   });
 
   it("fails when the brief or an instruction file is missing", () => {

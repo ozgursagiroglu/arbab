@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
-import { assembleBrief, parseBriefSource, toolBelt } from "../brief";
+import { assembleBrief, parseBriefSource, toolBelt, type BeltWork } from "../brief";
 import { headStart, renderDigest } from "../digest";
 import { FIXED_ENV } from "../profile";
 import { attemptFiles, listAttempts, readAttempt, runPaths } from "../registry";
@@ -112,6 +112,8 @@ export interface BriefInput {
   profile: CompiledProfile;
   leases: Lease[];
   schema: JsonSchema;
+  /** The lane's arbab-check script and check names, for the tool belt; absent when it has no checks (DESIGN.md §22). */
+  checks?: { script: string; names: string[] };
   /** A `## Head start` section (digestHeadStart) for a fresh session seeded with a digest. */
   headStart?: string;
   /** Names of the lane inputs copied into `.arbab-tmp/inputs/` (DESIGN.md §21). */
@@ -141,8 +143,9 @@ export function buildBrief(input: BriefInput): string {
     bashMaxTimeoutMin: Number.isFinite(maxMs) ? Math.round(maxMs / 60_000) : 15,
     ...(input.inputs === undefined || input.inputs.length === 0 ? {} : { inputs: [...input.inputs] }),
   };
-  const prompt = assembleBrief(source, ctx);
+  const work: BeltWork = { role: lane.role, gates: config.gates, ...(input.checks === undefined ? {} : { checks: input.checks }) };
+  const prompt = assembleBrief(source, ctx, work);
   if (input.headStart === undefined) return prompt;
-  const belt = `## Tool belt\n\n${toolBelt(ctx.profile, ctx.leases, ctx.bashMaxTimeoutMin)}`;
+  const belt = `## Tool belt\n\n${toolBelt(ctx.profile, ctx.leases, ctx.bashMaxTimeoutMin, work)}`;
   return insertBeforeToolBelt(prompt, belt, input.headStart);
 }

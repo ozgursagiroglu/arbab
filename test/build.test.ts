@@ -1,11 +1,11 @@
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { bundleOptions, packageVersion, UI_BUNDLE_FILTER } from "../scripts/build.mjs";
+import { bundleOptions, checkBundleOptions, packageVersion, UI_BUNDLE_FILTER } from "../scripts/build.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -53,6 +53,48 @@ describe("bundleOptions", () => {
       banner: { js: "#!/usr/bin/env node" },
       define: { __ARBAB_VERSION__: '"0.1.0"' },
     });
+  });
+});
+
+describe("checkBundleOptions", () => {
+  it("bundles src/check/main.ts as one node ESM file", () => {
+    expect(checkBundleOptions({ outfile: "dist/arbab-check.mjs" })).toMatchObject({
+      entryPoints: ["src/check/main.ts"],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+      outfile: "dist/arbab-check.mjs",
+      legalComments: "none",
+    });
+  });
+
+  it("runs alone, with node built-ins only: an unknown name exits 2, a passing check prints its summary", async () => {
+    // Laid out like a lane's run directory: the script alone in bin/, no package.json or node_modules near it.
+    const script = join(tmp, "runs", "lane", "bin", "arbab-check.mjs");
+    const result = await build({ ...checkBundleOptions({ outfile: script }), absWorkingDir: ROOT, metafile: true });
+    const inputs = Object.keys(result.metafile?.inputs ?? {});
+    expect(inputs.some((input) => input.includes("node_modules"))).toBe(false);
+
+    const work = join(tmp, "work");
+    mkdirSync(join(work, ".arbab-tmp"), { recursive: true });
+    const env = {
+      PATH: process.env.PATH,
+      TMPDIR: tmp,
+      ARBAB_CHECKS: JSON.stringify({ hello: [process.execPath, "-e", "console.log('hello from ' + process.env.ARBAB_CHECK_CPUS)"] }),
+      ARBAB_CHECK_POLICY: JSON.stringify({ cpus: 3, concurrent: 1, waitSec: 0 }),
+    };
+    const unknown = spawnSync(process.execPath, [script, "nope"], { cwd: work, env, encoding: "utf8" });
+    expect(unknown.status).toBe(2);
+    expect(unknown.stderr).toContain('unknown check "nope"; configured checks: hello');
+
+    const ok = spawnSync(process.execPath, [script, "hello"], { cwd: work, env, encoding: "utf8" });
+    expect(ok.stderr).toBe("");
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toMatch(/^arbab-check hello: exit 0 after \d+\.\ds on 2 CPUs; log \.arbab-tmp\/checks\/hello-1\.log\n--- last 1 lines ---\nhello from 2\n$/);
+    expect(readFileSync(join(work, ".arbab-tmp", "checks", "hello-1.log"), "utf8")).toBe("hello from 2\n");
+    // The run's registry entry is gone.
+    expect(readdirSync(join(tmp, "arbab-checks"))).toEqual([]);
   });
 });
 

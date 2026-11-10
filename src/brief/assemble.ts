@@ -1,7 +1,7 @@
 import type { BriefContext, BriefSectionName, BriefSource, CompiledProfile, Role } from "../types";
 import { scanLines } from "./markdown";
 import { describeSchema } from "./schema";
-import { toolBelt } from "./toolbelt";
+import { toolBelt, type BeltWork } from "./toolbelt";
 
 const SOURCE_ORDER: readonly BriefSectionName[] = ["Task", "Scope", "Facts", "Unverified", "Acceptance", "Notes"];
 
@@ -42,8 +42,8 @@ function section(heading: string, body: string): string {
   return `## ${heading}\n\n${body}`;
 }
 
-/** The worker's full prompt (DESIGN.md §5). */
-export function assembleBrief(source: BriefSource, ctx: BriefContext): string {
+/** The worker's full prompt (DESIGN.md §5). `work` adds the tool belt's heavy-check and gate lines (§22). */
+export function assembleBrief(source: BriefSource, ctx: BriefContext, work?: BeltWork): string {
   const parts: string[] = [`# ${source.title}`, section("Role and isolation", roleAndIsolation(ctx, ctx.profile))];
 
   if (ctx.instructions.length > 0) {
@@ -57,7 +57,7 @@ export function assembleBrief(source: BriefSource, ctx: BriefContext): string {
     const names = ctx.inputs.map((name) => `\`${name}\``).join(", ");
     parts.push(section("Inputs", `Read-only copies made for this lane, in .arbab-tmp/inputs/: ${names}.`));
   }
-  parts.push(section("Tool belt", toolBelt(ctx.profile, ctx.leases, ctx.bashMaxTimeoutMin)));
+  parts.push(section("Tool belt", toolBelt(ctx.profile, ctx.leases, ctx.bashMaxTimeoutMin, work)));
 
   const coordination = ctx.coordination?.trim();
   if (coordination) parts.push(section("Coordination", coordination));

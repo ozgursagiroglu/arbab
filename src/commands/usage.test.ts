@@ -12,18 +12,39 @@ describe("USAGE", () => {
     }
   });
 
-  it("lists every flag of the usage lines as an option line, and nothing else", () => {
+  it("lists every flag of the usage lines as an option line, then only unindented notes", () => {
     for (const [name, text] of Object.entries(USAGE)) {
       expect(text.endsWith("\n"), name).toBe(true);
       const lines = text.slice(0, -1).split("\n");
       const isUsage = (l: string): boolean => /^(usage:| {6}) arbab /.test(l);
+      const isOption = (l: string): boolean => /^ {2}--[a-z-]+/.test(l);
       const usages = lines.filter(isUsage);
-      const options = lines.filter((l) => !isUsage(l));
+      const options = lines.filter(isOption);
       expect(lines[0], name).toMatch(/^usage: /);
-      for (const o of options) expect(o, name).toMatch(/^ {2}--[a-z-]+/);
+      // Usage lines, then option lines, then notes: a note never starts with a space or sits between options.
+      const notes = lines.slice(usages.length + options.length);
+      expect(lines.slice(0, usages.length).every(isUsage), name).toBe(true);
+      expect(lines.slice(usages.length, usages.length + options.length).every(isOption), name).toBe(true);
+      for (const n of notes) expect(n, name).toMatch(/^\S/);
       const inUsage = new Set(usages.flatMap((l) => l.match(/--[a-z-]+/g) ?? []));
       const listed = new Set(options.map((l) => /^ {2}(--[a-z-]+)/.exec(l)?.[1]));
       expect(listed, name).toEqual(inUsage);
+    }
+  });
+
+  it("says what verify prints after a failure and where its fix draft goes", () => {
+    const notes = (USAGE.verify ?? "").split("\n").filter((l) => /^\S/.test(l) && !l.startsWith("usage:"));
+    const text = notes.join(" ");
+    expect(text).toContain("up to 10 `arbab-check failure: <file>[ > <test>] :: <message>` lines");
+    expect(text).toContain("verify.json `failures` keeps them all");
+    expect(text).toContain(".arbab/integrations/<name>/fix/fix-<k>.json and fix-<k>.md");
+    expect(text).toContain("`arbab verify: fix draft <path>; review it, then arbab launch <path>`");
+    expect(text).toContain("none for --ref");
+    // The other blocks carry no notes.
+    for (const [name, block] of Object.entries(USAGE)) {
+      if (name === "verify") continue;
+      const extra = block.slice(0, -1).split("\n").filter((l) => /^\S/.test(l) && !l.startsWith("usage:"));
+      expect(extra, name).toEqual([]);
     }
   });
 

@@ -1,5 +1,6 @@
 // The fix draft after a failed verify (DESIGN.md §22): which merged lanes may explain each failure, and the lane file
 // and brief of a fix round the orchestrator reviews before launching. Pure: verify gathers the files and writes these.
+import { basename } from "node:path";
 import type { CheckFailure, LaneSpec, VerifyRecord } from "../types";
 import { assertValidName } from "../util/names";
 
@@ -87,7 +88,10 @@ function fileList(files: string[]): string {
   return shown.join(", ");
 }
 
-/** The lane file and brief source of `<name>-fix-<k>`. `verifyPath` is verify.json's absolute path in the main checkout. */
+/**
+ * The lane file and brief source of `<name>-fix-<k>`. `verifyPath` is verify.json's absolute path in the main checkout:
+ * the lane takes it as an input, so the worker reads the copy in its own worktree (DESIGN.md §21).
+ */
 export function fixDraft(input: {
   name: string;
   k: number;
@@ -99,7 +103,14 @@ export function fixDraft(input: {
   const { name, record, candidates } = input;
   assertValidName(name, "integration name");
   const laneName = assertValidName(fixLaneName(name, input.k), "fix lane");
-  const lane: LaneSpec = { name: laneName, role: "implementer", brief: input.briefPath, base: `integrate/${name}` };
+  const lane: LaneSpec = {
+    name: laneName,
+    role: "implementer",
+    brief: input.briefPath,
+    base: `integrate/${name}`,
+    inputs: [input.verifyPath],
+  };
+  const verifyCopy = `.arbab-tmp/inputs/${basename(input.verifyPath)}`;
 
   const failed = record.results.map((r, index) => ({ ...r, index })).filter((r) => r.exitCode !== null && r.exitCode !== 0);
   const label = (r: { kind: string; index: number }): string =>
@@ -135,8 +146,8 @@ export function fixDraft(input: {
     ...(candidates.length === 0
       ? ["- No merged lane changed a failure's file or a file in its directory."]
       : candidates.map((c) => `- Lane ${code(c.lane)} may explain ${c.failures.length} of the failures; it changed ${fileList(c.files)}.`)),
-    // The main checkout's path: a worktree has no .arbab of its own.
-    `- The verify record, with every result and failure: ${code(input.verifyPath)}.`,
+    // The copy the shepherd makes before every run: the worker may not read the main checkout.
+    `- The verify record, with every result and failure: ${code(verifyCopy)}.`,
   ];
 
   const brief = [
@@ -153,9 +164,17 @@ export function fixDraft(input: {
     ...failed.map((r) => `- ${label(r)}, ${code(r.command)}, exited ${r.exitCode}`),
     "",
     failures.length === 0
-      ? "arbab-check printed no failure lines for them: run them yourself to see their output."
+      ? "arbab-check printed no failure lines for them: find the cause from the commands and the verify record in Facts."
       : `The failures arbab-check printed (${failures.length}), as data:`,
     ...(failures.length === 0 ? [] : ["", "```json", JSON.stringify(listed, null, 2), "```"]),
+    "",
+    // The tool belt forbids whole-repository suites, so the draft never asks for the failed gates to be run.
+    "To check the fix, do not run the failed commands themselves:",
+    "",
+    "- Run the failing tests by file, one file per call.",
+    "- For a failed typecheck or lint gate, run the lane's matching check when it has one, or the narrowest command " +
+      "your tool belt allows.",
+    "- The integration's verify runs every gate again after this lane.",
     "",
     "## Scope",
     "",
@@ -168,7 +187,7 @@ export function fixDraft(input: {
     "## Acceptance",
     "",
     "- [ ] The failures in the Task no longer fail.",
-    ...failed.map((r) => `- [ ] ${capitalized(label(r))} exits 0 again${plainCommand(r.command)}.`),
+    ...failed.map((r) => `- [ ] The integration's verify will run ${label(r)} again${plainCommand(r.command)}.`),
     "",
     "## Notes",
     "",
@@ -177,8 +196,6 @@ export function fixDraft(input: {
   ].join("\n");
   return { lane, brief };
 }
-
-const capitalized = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
 // Acceptance holds no inline code (lint reads every span there as a command), so a line with a backtick is left out.
 function plainCommand(command: string): string {

@@ -308,7 +308,14 @@ describe("runVerify", () => {
     const json = ".arbab/integrations/rel/fix/fix-1.json";
     expect(p.stderr()).toContain(`arbab verify: fix draft ${json}; review it, then arbab launch ${json}\n`);
     const lane = loadLane(p.root, json);
-    expect(lane).toEqual({ name: "rel-fix-1", role: "implementer", brief: ".arbab/integrations/rel/fix/fix-1.md", base: "integrate/rel" });
+    // verify.json is an input: the shepherd copies it into the worktree, where the worker may read it.
+    expect(lane).toEqual({
+      name: "rel-fix-1",
+      role: "implementer",
+      brief: ".arbab/integrations/rel/fix/fix-1.md",
+      base: "integrate/rel",
+      inputs: [join(dir(p), "verify.json")],
+    });
     const project = openProject(p.ctx);
     expect(lintLane(project, json, resolveGitCommonDir(p.ctx.git, p.root)).issues.filter((i) => i.severity === "error")).toEqual([]);
     const brief = parseBriefSource(readFileSync(join(p.root, lane.brief), "utf8"));
@@ -318,7 +325,7 @@ describe("runVerify", () => {
     expect(brief.sections.Facts).toContain("- Lane `a` may explain 1 of the failures; it changed `src/a/x.ts`.");
     expect(brief.sections.Facts).toContain("- Lane `b` may explain 1 of the failures; it changed `docs/b.md`, `src/b/y.ts`.");
     expect(brief.sections.Scope).toBe(["- `docs/b.md`", "- `src/a/x.test.ts`", "- `src/a/x.ts`", "- `src/b/y.ts`"].join("\n"));
-    expect(brief.sections.Acceptance).toContain("- [ ] Gate 1 exits 0 again (pnpm test).");
+    expect(brief.sections.Acceptance).toContain("- [ ] The integration's verify will run gate 1 again (pnpm test).");
     expect(p.spawned.map((s) => s.lane)).toEqual(["rel-verify"]);
 
     // The next failed verify drafts the next number, leaving the first as it was.
@@ -331,10 +338,10 @@ describe("runVerify", () => {
     expect(readFileSync(join(p.root, json), "utf8")).toBe(first);
     const second = parseBriefSource(readFileSync(join(dir(p), "fix", "fix-2.md"), "utf8"));
     expect(second.sections.Task).toContain("printed no failure lines");
-    expect(second.sections.Acceptance).toContain("- [ ] Gate 2 exits 0 again (pnpm typecheck).");
+    expect(second.sections.Acceptance).toContain("- [ ] The integration's verify will run gate 2 again (pnpm typecheck).");
   });
 
-  it("prints failures through formatFailureLine only, and drafts a Scope of plain relative paths and the record's absolute path", async () => {
+  it("prints failures through formatFailureLine only, and drafts a Scope of plain relative paths and the record's input copy", async () => {
     p = await twoLanes();
     // Worker-written failure lines, raw: terminal escapes, and files outside the tree or with backticks.
     const raw = [
@@ -364,10 +371,12 @@ describe("runVerify", () => {
       ["- `docs/b.md`", "- `src/a/x.test.ts`", "- `src/a/x.ts`", "- `src/b/y.ts`", "", "3 named files are not plain relative paths and are left out of Scope."].join("\n"),
     );
     expect(brief.sections.Task).toContain('"file": "/etc/passwd"');
-    expect(brief.sections.Facts).toContain(`- The verify record, with every result and failure: \`${join(dir(p), "verify.json")}\`.`);
+    expect(brief.sections.Facts).toContain("- The verify record, with every result and failure: `.arbab-tmp/inputs/verify.json`.");
     // The check log was in the verify worktree, which is gone.
     expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(false);
-    expect(Object.values(brief.sections).join("\n")).not.toMatch(/\blogs?\b|\.arbab-tmp/i);
+    const text = Object.values(brief.sections).join("\n");
+    expect(text).not.toMatch(/\blogs?\b|\.arbab-tmp\/checks/i);
+    expect(text).not.toContain(join(dir(p), "verify.json"));
   });
 
   it("prints at most 10 failure lines, and --json carries them all", async () => {

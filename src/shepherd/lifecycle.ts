@@ -467,8 +467,9 @@ async function prepare(
       path: worktree,
       branch: ownerBranch,
       start,
-      // A lane that never installs (install: false) is not installed on a rebuild either.
-      dependencies: lane.install === false ? { strategy: "none" } : config.dependencies,
+      // A rebuilt worktree is never installed again, so only its owner's install: false may leave it bare; a borrower's
+      // would strip the owner's dependencies.
+      dependencies: owner === lane.name && lane.install === false ? { strategy: "none" } : config.dependencies,
       runCommand: deps.runCommand,
       manifests: "refuse",
       git: deps.git,

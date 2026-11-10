@@ -263,10 +263,12 @@ function createIntegrationWorktree(input: IntegrationWorktreeInput, paths: Integ
     }
     must(git, ["worktree", "add", paths.worktree, paths.branch], projectRoot);
   }
+  // The commit the worktree was just created at: the base, or the existing branch the base contains.
+  const installedAt = existing ?? baseSha;
 
   let deps: ReturnType<typeof prepareDependencies>;
   try {
-    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand, { projectRoot, installedAt, git });
   } catch (err) {
     removeWorktree(git, paths);
     throw err;
@@ -552,7 +554,7 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
   ensureDir(dirname(paths.worktree));
   must(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
   try {
-    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand);
+    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand, { projectRoot, installedAt: start, git });
     if (!deps.ok) {
       const tail = deps.output.trim().split("\n").slice(-5).join("\n");
       throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);

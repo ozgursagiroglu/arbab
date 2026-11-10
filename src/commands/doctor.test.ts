@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultConfig, loadConfig } from "../config";
-import { HOOK_MISSING } from "../doctor";
+import { HOOK_MISSING, type DoctorCheck } from "../doctor";
 import {
   checkClaude,
   checkGit,
@@ -133,6 +133,26 @@ describe("doctorChecks", () => {
       "warn 12.5 GB free on the volume of .arbab/worktrees (less than 20.0 GB; 1 unused for 3+ days): the automatic sweep (worktrees.idleDays 3) " +
         "removes them after a launch; arbab cleanup --worktrees --older-than <days> removes unused ones now",
     ]);
+  });
+
+  it("checks the clone strategy's python3 and paths through the context's platform and runner", () => {
+    p = makeProject({ config: { dependencies: { strategy: "clone", paths: ["node_modules"], fallback: null } } });
+    const asked: string[][] = [];
+    p.ctx.runCommand = (argv) => {
+      asked.push(argv);
+      return { code: 1, output: "" };
+    };
+    const deps = (): DoctorCheck[] => projectChecks(p.ctx, p.root, loadConfig(p.root)).filter((c) => c.check === "dependencies");
+    expect(deps()).toEqual([
+      { status: "warn", check: "dependencies", detail: "clone falls back to cp -cR, much slower, without python3" },
+      { status: "warn", check: "dependencies", detail: "every launch will fall back: node_modules is missing" },
+    ]);
+    expect(asked).toEqual([["python3", "-I", "-c", "import ctypes"]]);
+    mkdirSync(join(p.root, "node_modules"));
+    p.ctx.platform = "linux";
+    expect(deps()).toEqual([{ status: "ok", check: "dependencies", detail: "clone node_modules with cp -a --reflink=auto" }]);
+    // Other strategies add no line.
+    expect(projectChecks(p.ctx, p.root, defaultConfig()).some((c) => c.check === "dependencies")).toBe(false);
   });
 
   it("reports a project check that throws as a warning and goes on", () => {

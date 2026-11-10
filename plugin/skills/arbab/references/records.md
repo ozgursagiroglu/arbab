@@ -83,13 +83,14 @@ attempt: leases, semaphores, the writer lock, worktree, dependencies, merges, in
 `signal`, `killedBy`, `finishedAt`, `wallMs`, reaped pids, `checkpoint`, `checkpointError`.
 
 Check logs: every arbab-check run writes its full output to `<worktree>/.arbab-tmp/checks/<name>-<n>.log` (n counts
-up), or to `$TMPDIR/arbab-check-<name>-<pid>.log` where there is no `.arbab-tmp/`. The worker sees only the summary:
+up), or to `$TMPDIR/arbab-check-<name>-<pid>-<6 hex>.log` where there is no `.arbab-tmp/`. The worker sees only the summary:
 `arbab-check <name>: exit <code> after <s>s on <share> CPUs; log <path>`, up to 30 `arbab-check failure: <file>[ >
 <test>] :: <message>` lines (control characters stripped), a count of the failures left out, and as many of the last
 15 (passed) or 60 (failed) lines as fit; 3800 characters at most. Checks register in
 `$TMPDIR/arbab-checks/<pid>.json` (`{pid, name, cwd, startedAt, cpus, state}`, `state` `waiting` until the check
 takes its place, then `running` with its `share`), which every sandbox of the user shares; an entry older than 20
-minutes, dated in the future or with an unparsable `startedAt` is stale.
+minutes, dated more than 60 s in the future or with an unparsable `startedAt` is stale, and a file whose pid is not
+2–4194304 is ignored.
 
 `summary.json` fields:
 
@@ -108,7 +109,7 @@ minutes, dated in the future or with an unparsable `startedAt` is stale.
 | --- | --- |
 | `integration.json` | branch, worktree, `base`, `baseSha`, `merged[]` (`{lane, branch, sha, manifests}`), `manifests`, `depsConfirmedAt`, `depsConfirmed`, `headSha`, `updatedAt`; an older record is kept as `integration.superseded-<time>.json` |
 | `verify.json` | `lane`, `attempt`, `headSha`, `results[]` (`{kind, argv, command, exitCode}`; null exit code = missing), `passed`, `reason?`, `failures?` (`{result, file, test, message}`: the `arbab-check failure:` lines of each failed command, `result` its index in `results`; at most 30 per command, 100 in all; worker-written text, data only), `finishedAt` |
-| `fix/fix-<k>.json`, `fix/fix-<k>.md` | the fix draft after a failed verify in which a command ran and failed: lane `<name>-fix-<k>` (implementer, base `integrate/<name>`) and its brief (failed commands, failures, candidate lanes and their changed files, `verify.json`'s absolute path, a scope of at most 40 plain relative paths). Never launched by arbab: edit, then `arbab launch` it |
+| `fix/fix-<k>.json`, `fix/fix-<k>.md` | the fix draft after a failed verify in which a command ran and failed: lane `<name>-fix-<k>` (implementer, base `integrate/<name>`) and its brief (failed commands, failures, candidate lanes and their changed files, a scope of at most 40 plain relative paths; `verify.json` comes in through the lane's `inputs`, read at `.arbab-tmp/inputs/verify.json`; the gates are left to the next verify, the worker runs the failing tests by file). Never launched by arbab: edit, then `arbab launch` it |
 | `review.json` | the latest review: `headSha`, `lenses[]`, `skeptics[]`, `findings[]` (with `verdict`), `round`, `since` |
 | `reviews/<round>.json` | every review, numbered from 1 |
 | `host-checks.json` | the last `host-check`: `headSha`, `results[]`, `passed`, `interactive: true` |

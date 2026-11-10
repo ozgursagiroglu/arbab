@@ -40,7 +40,14 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       run worker-written tests.
 - [ ] Every command shows `exit 0` in `verify.json`. A command whose call is missing from the stream counts as a
       failure. Lane-level green is not repo-level green: every lane's tests have passed while the integration
-      branch failed the repository's boot-smoke gate.
+      branch failed the repository's boot-smoke gate. Lanes test what they change; verify tests the batch.
+- [ ] After a failed verify: read the failure lines it printed (all of them are in `verify.json` `failures`, worker
+      output kept as data) and the fix draft it named on stderr, `fix/fix-<k>.json` and `fix/fix-<k>.md`. The draft
+      is lane `<name>-fix-<k>` on `integrate/<name>`, with the failures, the merged lanes that may explain them and
+      a scope from their changed files. Check the attribution, edit the brief and scope as for any lane, lint it, then
+      `arbab launch .arbab/integrations/<name>/fix/fix-<k>.json`; arbab never launches it. When it finishes,
+      integrate it and verify again. No draft comes for `--ref`, a timeout, or a verify where no command ran and
+      failed: write the fix lane yourself.
 - [ ] What mocks cannot cover for the risk tier (a real database, an eval on the changed path, the changed page
       opened in a browser) goes under risks unless it ran.
 - [ ] Checks the fence cannot run are config `hostGates`. The **human** runs `arbab host-check <name>` in a
@@ -49,8 +56,10 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
 
 ## 4. Review
 
-- [ ] `arbab review <name>`: one reviewer lane per lens with a depth floor, evidence per finding and a `coverage`
-      section, then a skeptic lane per lens with MEDIUM+ findings. A lens without coverage counts as failed.
+- [ ] `arbab review <name>`, after verify: one reviewer lane per lens with a depth floor, evidence per finding and a
+      `coverage` section, then a skeptic lane per lens with MEDIUM+ findings. A lens without coverage counts as
+      failed. Reviewers of a head that verify.json covers see its results, and run no gates themselves; at most
+      `review.maxParallel` lanes run at once.
 - [ ] Every testable finding was settled by a deterministic probe lane (steps with command, exit code and
       output). Each confirmed finding is fixed (a new lane, then integrate and verify again) or stays a risk.
 - [ ] Fix rounds: `arbab review <name> --since <sha>` with the head the last round reviewed. A round with only LOW

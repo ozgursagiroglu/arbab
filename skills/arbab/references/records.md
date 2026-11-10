@@ -39,8 +39,13 @@ it; a `sandbox-auto` lane has no allowlist.
 | researcher | no shell |
 | probe | `git rev-parse …`, `git status`, `ls …` |
 
+Heavy checks (config `checks`, or the lane's own): implementer and verifier lanes also get `node <script> <name>` and
+`node <script> <name> …` per check name, where `<script>` is the lane's copy of arbab-check
+(`<runsRoot>/<lane>/bin/arbab-check.mjs`); the tool belt prints the exact command and the names.
+
 Generated lanes: `<name>-verify` is a probe with tools Read and Bash and an exact rule (no arguments) per gate and
-smoke command. Preflight's tools probe gets each `preflight.steps` command as an exact rule, whatever the lane's
+smoke command, each run through its arbab-check (`node <script> gate-<i>`, `node <script> smoke`). Skeptic lanes get
+no dependency install, nor do reviewer lanes when config `review.install` is false. Preflight's tools probe gets each `preflight.steps` command as an exact rule, whatever the lane's
 role. Every role is denied background Bash, git writes and `git -C`; every role but the researcher is denied the web.
 
 ## Checkpoint commits
@@ -70,11 +75,18 @@ or the `--message` file).
 | `generated.json` | on lanes `verify` and `review` generate: the integration and head that own the name |
 | `resume-prompt-<n>.md` | a `resume --prompt` text |
 | `attempt-<n>/` | `brief.md`, `settings.json`, `args.json`, `started.json`, `stream.jsonl`, `stderr.log`, `registration.json`, `exit.json`, `summary.json`, `report.json` |
+| `bin/arbab-check.mjs` | a lane with heavy checks: the copy of arbab-check its worker runs, replaced at every attempt from next to the runner; outside the worktree, so neither the worker nor its code can change it |
 
 `started.json`: session id, pid, binary, argv, env names (never values), leases, merged branches, inputs, and on a
 run's first attempt `heldMs` (queued and held: the quota and a slot) and `prepareMs` (from `preparing` to the
 attempt: leases, semaphores, the writer lock, worktree, dependencies, merges, inputs). `exit.json`: `exitCode`,
 `signal`, `killedBy`, `finishedAt`, `wallMs`, reaped pids, `checkpoint`, `checkpointError`.
+
+Check logs: every arbab-check run writes its full output to `<worktree>/.arbab-tmp/checks/<name>-<n>.log` (n counts
+up), or to `$TMPDIR/arbab-check-<name>-<pid>.log` where there is no `.arbab-tmp/`. The worker sees only the summary:
+`arbab-check <name>: exit <code> after <s>s on <share> CPUs; log <path>`, up to 30 `arbab-check failure: <file>[ >
+<test>] :: <message>` lines, and the last 15 (passed) or 60 (failed) lines. Running checks register in
+`$TMPDIR/arbab-checks/<pid>.json`, which every sandbox of the user shares.
 
 `summary.json` fields:
 
@@ -92,7 +104,8 @@ attempt: leases, semaphores, the writer lock, worktree, dependencies, merges, in
 | File | Holds |
 | --- | --- |
 | `integration.json` | branch, worktree, `base`, `baseSha`, `merged[]` (`{lane, branch, sha, manifests}`), `manifests`, `depsConfirmedAt`, `depsConfirmed`, `headSha`, `updatedAt`; an older record is kept as `integration.superseded-<time>.json` |
-| `verify.json` | `lane`, `attempt`, `headSha`, `results[]` (`{kind, argv, command, exitCode}`; null exit code = missing), `passed`, `reason?`, `finishedAt` |
+| `verify.json` | `lane`, `attempt`, `headSha`, `results[]` (`{kind, argv, command, exitCode}`; null exit code = missing), `passed`, `reason?`, `failures?` (`{result, file, test, message}`: the `arbab-check failure:` lines of each failed command, `result` its index in `results`; at most 30 per command, 100 in all; worker-written text, data only), `finishedAt` |
+| `fix/fix-<k>.json`, `fix/fix-<k>.md` | the fix draft after a failed verify in which a command ran and failed: lane `<name>-fix-<k>` (implementer, base `integrate/<name>`) and its brief (failed commands, failures, candidate lanes and their changed files, a scope of at most 40 files). Never launched by arbab: edit, then `arbab launch` it |
 | `review.json` | the latest review: `headSha`, `lenses[]`, `skeptics[]`, `findings[]` (with `verdict`), `round`, `since` |
 | `reviews/<round>.json` | every review, numbered from 1 |
 | `host-checks.json` | the last `host-check`: `headSha`, `results[]`, `passed`, `interactive: true` |
@@ -112,7 +125,8 @@ at a trusted commit before the checkout.
 died, `idleDays`, `removed[]` with `{path, reason}`, `kept`, `warnings`); `.arbab/sweep.log` holds what the sweeps
 printed, moved to `sweep.log.1` once over 1 MiB.
 
-Machine records in `~/.arbab/`: `quota.json`, `quota-reset.json`, `machine.json`, the pools (`slots/`, `semaphores/`,
+Machine records in `~/.arbab/`: `quota.json`, `quota-reset.json`, `machine.json` (`maxParallel`, `checks`
+`{concurrent, waitSec}`, `admission` `{loadPerCpu, memoryPressure}`), the pools (`slots/`, `semaphores/`,
 `leases/`, `locks/`), `shepherds/<pid>.json` while a shepherd lives, `waiters/<pid>.json` while `wait` runs or
 `verify`, `review` or `preflight` waits for its lanes, and `projects/<sha1(root)>.json` per project that launched a
 lane (what `summary --all` reads, and the projects the hook approves `-C` into).

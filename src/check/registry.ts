@@ -50,13 +50,24 @@ export const ENTRY_MAX_AHEAD_MS = 60_000;
 /** An entry is about 200 bytes; a bigger file is not one, and is not worth reading. */
 export const ENTRY_MAX_BYTES = 16 * 1024;
 
+/** Linux's largest pid_max; macOS stays far below it. */
+export const PID_MAX = 4_194_304;
+
 const ENTRY_FILE = /^([1-9]\d*)\.json$/;
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 const entryPath = (dir: string, pid: number): string => join(dir, `${pid}.json`);
-const isPid = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0;
+const isPositiveInt = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v > 0;
+
+/**
+ * A pid another check can have: 0 and the negatives signal groups, 1 is init (alive in every sandbox, since kill gives
+ * EPERM), and nothing above PID_MAX is ever handed out.
+ */
+export function isEntryPid(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 2 && v <= PID_MAX;
+}
 
 function assertPid(pid: number): void {
-  if (!isPid(pid)) throw new ArbabError("usage", `invalid pid ${pid}`);
+  if (!isPositiveInt(pid)) throw new ArbabError("usage", `invalid pid ${pid}`);
 }
 
 /** startedAt in milliseconds, or NaN when it is not the ISO time a check writes. */
@@ -103,12 +114,12 @@ function parseEntry(text: string, pid: number): CheckEntry | null {
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
-  if (r.pid !== pid || typeof r.name !== "string" || typeof r.cwd !== "string" || typeof r.startedAt !== "string" || !isPid(r.cpus)) {
+  if (r.pid !== pid || typeof r.name !== "string" || typeof r.cwd !== "string" || typeof r.startedAt !== "string" || !isPositiveInt(r.cpus)) {
     return null;
   }
   if (r.state !== undefined && r.state !== "waiting" && r.state !== "running") return null;
   const entry: CheckEntry = { pid, name: r.name, cwd: r.cwd, startedAt: r.startedAt, cpus: r.cpus, state: r.state ?? "running" };
-  if (isPid(r.share)) entry.share = r.share;
+  if (isPositiveInt(r.share)) entry.share = r.share;
   return entry;
 }
 
@@ -124,8 +135,8 @@ function staleByTime(entry: CheckEntry, now: number): string | null {
 /**
  * The other live entries, waiting or running. Only regular files are read, and never through a link. An entry is
  * stale, and its file removed (best effort), when its startedAt does not parse, is older than ENTRY_MAX_AGE_MS or more
- * than ENTRY_MAX_AHEAD_MS ahead of `now`, or when kill(pid, 0) throws ESRCH; EPERM counts as alive. Files that do not
- * parse as a CheckEntry, and anything that is not a regular file, are ignored, never removed.
+ * than ENTRY_MAX_AHEAD_MS ahead of `now`, or when the probe says its pid is gone. Files whose pid is not isEntryPid or
+ * that do not parse as a CheckEntry, and anything that is not a regular file, are ignored, never removed.
  */
 export function liveEntries(dir: string, self: number, fs: RegistryFs, probe: (pid: number) => "alive" | "gone", now: number): CheckEntry[] {
   const live: CheckEntry[] = [];
@@ -133,7 +144,7 @@ export function liveEntries(dir: string, self: number, fs: RegistryFs, probe: (p
     const match = ENTRY_FILE.exec(file);
     if (match === null) continue;
     const pid = Number(match[1]);
-    if (pid === self || !Number.isSafeInteger(pid)) continue;
+    if (pid === self || !isEntryPid(pid)) continue;
     let text: string | null;
     try {
       text = fs.readEntry(join(dir, file));
@@ -157,14 +168,18 @@ export function liveEntries(dir: string, self: number, fs: RegistryFs, probe: (p
   return live;
 }
 
-/** kill(pid, 0) as a probe: ESRCH is gone; success, EPERM (someone else's process) or anything else is alive. */
+/**
+ * kill(pid, 0) as a probe: alive on success or EPERM (someone else's process), gone on any other error. A pid that is
+ * not isEntryPid is gone without a signal: kill(0) and kill(-1) would reach whole groups.
+ */
 export function killProbe(kill: (pid: number, signal: 0) => unknown): (pid: number) => "alive" | "gone" {
   return (pid) => {
+    if (!isEntryPid(pid)) return "gone";
     try {
       kill(pid, 0);
       return "alive";
     } catch (err) {
-      return (err as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "alive";
+      return (err as NodeJS.ErrnoException).code === "EPERM" ? "alive" : "gone";
     }
   };
 }

@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { CHECKS_ENV, CHECK_POLICY_ENV } from "../types";
 import {
+  FAILURE_FIELD_MAX,
   FAILURE_PREFIX,
   assertCheckName,
   checkCommandLine,
   checkScriptPath,
   checksEnv,
   defaultCheckConcurrency,
+  failureFieldText,
   formatFailureLine,
   isCheckName,
   parseFailureLine,
@@ -65,6 +67,19 @@ describe("checksEnv and readChecksEnv", () => {
   });
   it("refuses an invalid name on the writing side too", () => {
     expect(() => checksEnv({ "a b": ["x"] }, policy)).toThrow(/must match/);
+  });
+});
+
+describe("failureFieldText", () => {
+  it("cleans a field as formatFailureLine does, without cutting it", () => {
+    expect(failureFieldText("  \u001b[31msrc/a.ts\u001b[39m\t\n")).toBe("src/a.ts");
+    expect(failureFieldText("a\u0007b\r\nc")).toBe("ab c");
+    const long = "f".repeat(FAILURE_FIELD_MAX + 50);
+    expect(failureFieldText(long)).toBe(long);
+    expect(FAILURE_FIELD_MAX).toBe(200);
+    // What it keeps of a field up to the cap is what the line prints.
+    const file = ` src/${"d".repeat(150)}.ts `;
+    expect(parseFailureLine(formatFailureLine({ file, test: null, message: "m" }))?.file).toBe(failureFieldText(file));
   });
 });
 

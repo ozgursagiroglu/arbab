@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { checkCommandLine, checkScriptPath } from "../../src/check/command";
+import { checkCommandLine, checkScriptPath, parseFailureLine } from "../../src/check/command";
 import type { LaneStateRecord } from "../../src/types";
 import { commandLine } from "../../src/util/shell";
 import { buildBundle, fakeFixture, MACHINE_ADMISSION_OFF, makeE2eProject, until, type CliResult, type E2eProject } from "./harness";
@@ -119,9 +119,10 @@ describe("arbab-check by itself", () => {
       const failures = lines.filter((l) => l.startsWith("arbab-check failure: "));
       expect(failures.length).toBeGreaterThan(0);
       expect(lines.slice(1, 1 + failures.length)).toEqual(failures);
+      // Each file is 314 characters, over the 200 a file may have: printed as `-`, the path starting the message.
       for (const line of failures) {
-        expect(line.length).toBeLessThanOrEqual(200);
-        expect(line).toMatch(/^arbab-check failure: src\/d+ > s+ :: Error: m+$/);
+        expect(line.length).toBeLessThanOrEqual(400);
+        expect(line).toMatch(/^arbab-check failure: - > s{200} :: src\/d+$/);
       }
       expect(failures.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(2000);
       expect(lines[1 + failures.length]).toBe(`arbab-check: ${50 - failures.length} more failures in the log`);
@@ -137,6 +138,25 @@ describe("arbab-check by itself", () => {
       expect(log.split("\n").filter((l) => l.startsWith(" FAIL  "))).toHaveLength(50);
       expect(log.endsWith(`${"x".repeat(5000)}\n`.repeat(100))).toBe(true);
       expect(readdirSync(join(d.registry, "arbab-checks"))).toEqual([]);
+    } finally {
+      d.dispose();
+    }
+  }, 60_000);
+
+  it("keeps a long failure file whole in the printed line, so verify reads back the path that exists", async () => {
+    const d = checkDir();
+    try {
+      const file = `src/${"n".repeat(170)}/a.test.ts`;
+      expect(file).toHaveLength(184);
+      const script = `process.stdout.write(${JSON.stringify(` FAIL  ${file} > ${"t".repeat(300)}\nError: ${"m".repeat(300)}\n`)});\nprocess.exitCode = 1;\n`;
+      writeFileSync(join(d.scripts, "long.cjs"), script);
+      const env = checkEnv(d, { unit: [process.execPath, join(d.scripts, "long.cjs")] }, { cpus: 2, concurrent: 1, waitSec: 2 });
+      const r = await runCheckBundle(d.work, env, "unit");
+      expect(r.code, r.stderr).toBe(1);
+      const line = r.stdout.split("\n")[1] ?? "";
+      expect(line.length).toBeLessThanOrEqual(400);
+      expect(parseFailureLine(line)?.file).toBe(file);
+      expect(parseFailureLine(line)?.message).toMatch(/^Error: m{33,}$/);
     } finally {
       d.dispose();
     }

@@ -1,11 +1,11 @@
 // One arbab-check run, DESIGN.md §22 steps 1–8: read the env, register, wait while the machine is full, take a share
 // of the CPUs, run the check, log it, and print a summary short enough that a worker never re-runs a suite to read it.
 import { spawn as nodeSpawn } from "node:child_process";
-import { appendFileSync, statSync } from "node:fs";
+import { closeSync, constants as fsConstants, openSync, statSync, writeSync } from "node:fs";
 import { constants } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { CHECKS_ENV, type CheckFailure } from "../types";
-import { formatFailureLine, isCheckName, parseFailureLine, readChecksEnv } from "./command";
+import { FAILURE_FIELD_MAX, failureFieldText, formatFailureLine, isCheckName, parseFailureLine, readChecksEnv } from "./command";
 import { parseFailures, stripAnsi } from "./digest";
 import {
   liveEntries,
@@ -35,12 +35,23 @@ export const STDOUT_MAX = 3800;
 /** The header names the log; a path this long is not one anybody can use, and must not crowd out the rest. */
 const HEADER_MAX = 1000;
 const FAILURES_CHARS = 2000;
-const FAILURE_LINE_MAX = 200;
+const FAILURE_LINE_MAX = 400;
+/** A cut message keeps at least this much, so the line still says what failed. */
+const FAILURE_MESSAGE_MIN = 40;
 const TAIL_LINE_MAX = 240;
+const LOG_TRIES = 20;
+const FALLBACK_LOG_TRIES = 5;
+
+/** A log open for writing. Every chunk goes through its one descriptor: a path reopened may lead elsewhere by then. */
+export interface LogFile {
+  write(data: string): void;
+  close(): void;
+}
 
 export interface CheckFs extends RegistryFs {
   isDir(path: string): boolean;
-  append(path: string, data: string): void;
+  /** Creates the file and opens it, never through a link; null when the name is taken, by a file or by a link. */
+  createLog(path: string, mode: number): LogFile | null;
 }
 
 /** What runCheck needs of a child: a way to signal it. Output and the end come through the handlers. */
@@ -72,6 +83,8 @@ export interface CheckRunDeps {
   sleep: (ms: number) => Promise<void>;
   fs: CheckFs;
   probe: (pid: number) => "alive" | "gone";
+  /** `bytes` random bytes as hex, for a fallback log name nobody can guess ahead. */
+  randomHex: (bytes: number) => string;
   out: (text: string) => void;
   err: (text: string) => void;
   /** Calls the handler on SIGINT and SIGTERM until the returned function is called. */
@@ -99,14 +112,25 @@ export function signalExitCode(signal: NodeJS.Signals): number {
   return 128 + (n ?? 0);
 }
 
-/** `<cwd>/.arbab-tmp/checks/<name>-<n>.log`, n one more than the highest there, or `<tmpdir>/arbab-check-<name>-<pid>.log`. */
-function createLog(name: string, deps: CheckRunDeps): string {
+interface Log {
+  path: string;
+  file: LogFile;
+}
+
+/**
+ * `<cwd>/.arbab-tmp/checks/<name>-<n>.log`, n one more than the highest there, or
+ * `<tmpdir>/arbab-check-<name>-<pid>-<6 hex>.log`, created and opened once. Every sandbox can plant a link in the
+ * shared temporary directory, so a taken name is skipped, never removed or reused.
+ */
+function createLog(name: string, deps: CheckRunDeps): Log {
   const scratch = join(deps.cwd, ".arbab-tmp");
   if (!deps.fs.isDir(scratch)) {
-    const path = join(deps.tmpdir, `arbab-check-${name}-${deps.pid}.log`);
-    deps.fs.remove(path);
-    if (!deps.fs.writeExclusive(path, "")) throw new Error(`${path} exists`);
-    return path;
+    for (let tries = 0; tries < FALLBACK_LOG_TRIES; tries++) {
+      const path = join(deps.tmpdir, `arbab-check-${name}-${deps.pid}-${deps.randomHex(3)}.log`);
+      const file = deps.fs.createLog(path, 0o600);
+      if (file !== null) return { path, file };
+    }
+    throw new Error(`no free log name in ${deps.tmpdir}`);
   }
   const dir = join(scratch, "checks");
   deps.fs.mkdirp(dir);
@@ -116,11 +140,13 @@ function createLog(name: string, deps: CheckRunDeps): string {
     const match = pattern.exec(file);
     if (match !== null) n = Math.max(n, Number(match[1]));
   }
-  // Another run of the same check may take the number first.
-  for (let tries = 0; tries < 100; tries++) {
+  // Another run of the same check may take the number first, or something may sit at it.
+  for (let tries = 0; tries < LOG_TRIES; tries++) {
     n += 1;
     const path = join(dir, `${name}-${n}.log`);
-    if (deps.fs.writeExclusive(path, "")) return path;
+    // The umask decides, as for any file the worker's tools create.
+    const file = deps.fs.createLog(path, 0o666);
+    if (file !== null) return { path, file };
   }
   throw new Error(`no free log number in ${dir}`);
 }
@@ -144,18 +170,27 @@ class Tail {
 }
 
 /**
- * A failure line of at most FAILURE_LINE_MAX characters that still reads back with parseFailureLine: when it is too
- * long, the file and the test give way first, then the message takes what is left.
+ * A failure line of at most FAILURE_LINE_MAX characters that reads back with parseFailureLine. The file stays whole,
+ * since verify attributes the failure by it; when the line is too long the test gives way first, then the message,
+ * down to FAILURE_MESSAGE_MIN characters. A file longer than the field cap would read back as a path that does not
+ * exist, so it goes to the start of the message instead, under file `-`, and is cut with the message.
  */
 export function shortFailureLine(failure: CheckFailure): string {
-  const line = formatFailureLine(failure);
+  let file = failure.file === null ? null : failureFieldText(failure.file);
+  let message = failure.message;
+  if (file !== null && file.length > FAILURE_FIELD_MAX) {
+    message = `${file}: ${message}`;
+    file = null;
+  }
+  const line = formatFailureLine({ file, test: failure.test, message });
   if (line.length <= FAILURE_LINE_MAX) return line;
   const clean = parseFailureLine(line) ?? { file: null, test: null, message: "" };
-  const file = clean.file?.slice(0, 70) ?? null;
-  const test = clean.test?.slice(0, 50) ?? null;
-  const head = formatFailureLine({ file, test, message: "" });
-  const message = clean.message.slice(0, Math.max(0, FAILURE_LINE_MAX - head.length));
-  return formatFailureLine({ file, test, message }).slice(0, FAILURE_LINE_MAX);
+  const room = FAILURE_LINE_MAX - formatFailureLine({ file: clean.file, test: null, message: "" }).length;
+  const testRoom = room - Math.min(clean.message.length, FAILURE_MESSAGE_MIN) - " > ".length;
+  const test = clean.test === null || testRoom <= 0 ? null : clean.test.slice(0, testRoom);
+  const head = formatFailureLine({ file: clean.file, test, message: "" });
+  const cut = clean.message.slice(0, Math.max(0, FAILURE_LINE_MAX - head.length));
+  return formatFailureLine({ file: clean.file, test, message: cut }).slice(0, FAILURE_LINE_MAX);
 }
 
 /**
@@ -293,13 +328,16 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
     const command = [...argv.map((a) => a.split("{cpus}").join(String(share))), ...extra];
 
     // 7. The log, created first so the summary can always name it.
-    let log: string | null = null;
+    let log: Log | null = null;
     try {
       log = createLog(name, deps);
     } catch (err) {
       deps.err(`arbab-check: cannot create a log (${message(err)}); the output is not kept\n`);
     }
     let logBroken = false;
+    let logOpen = log !== null;
+    // What went into the log, for the failures: the file read back by path could be another file by then.
+    const written: string[] = [];
     const tail = new Tail();
 
     // 6. Run.
@@ -313,12 +351,15 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
           {
             output: (text) => {
               tail.push(text);
-              if (log === null || logBroken) return;
+              if (log === null || !logOpen) return;
               try {
-                deps.fs.append(log, text);
+                log.file.write(text);
+                written.push(text);
               } catch (err) {
                 logBroken = true;
-                deps.err(`arbab-check: cannot write ${log} (${message(err)})\n`);
+                logOpen = false;
+                written.length = 0;
+                deps.err(`arbab-check: cannot write ${log.path} (${message(err)})\n`);
               }
             },
             error: (error) => resolve({ error }),
@@ -330,12 +371,20 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
       }
     });
     child = null;
+    if (log !== null) {
+      logOpen = false;
+      try {
+        log.file.close();
+      } catch {
+        // Every chunk is written already; a failed close loses nothing.
+      }
+    }
 
     if ("error" in result) {
       deps.err(`arbab-check: cannot run ${command[0] ?? ""}: ${result.error.message}\n`);
       if (log !== null) {
         try {
-          deps.fs.remove(log);
+          deps.fs.remove(log.path);
         } catch {
           // An empty log left behind is harmless.
         }
@@ -349,21 +398,14 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
     const seconds = ((deps.now() - started) / 1000).toFixed(1);
     let where = "none";
     if (log !== null) {
-      const rel = relative(deps.cwd, log);
-      where = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) ? rel : log;
+      const rel = relative(deps.cwd, log.path);
+      where = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) ? rel : log.path;
     }
     const header = `arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`;
     let failures: CheckFailure[] = [];
     if (code !== 0) {
-      let whole: string | null = null;
-      if (log !== null && !logBroken) {
-        try {
-          whole = deps.fs.readFile(log);
-        } catch {
-          // Parse what the tail holds.
-        }
-      }
-      failures = parseFailures(whole ?? tail.last(TAIL_KEEP).join("\n"), COUNT_FAILURES);
+      const whole = log !== null && !logBroken ? written.join("") : tail.last(TAIL_KEEP).join("\n");
+      failures = parseFailures(whole, COUNT_FAILURES);
     }
     const last = tail.last(code === 0 ? TAIL_PASS : TAIL_FAIL).map(stripAnsi);
     out(summarize(header, failures, last, STDOUT_MAX - printed));
@@ -380,6 +422,31 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
   }
 }
 
+// O_EXCL fails on any name that exists, a dangling link too; O_NOFOLLOW refuses a link wherever O_EXCL might not.
+// O_NOFOLLOW does not exist on Windows, where links need privileges to plant.
+const LOG_OPEN = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+
+/** CheckFs.createLog on the real file system. */
+export function createLogFile(path: string, mode: number): LogFile | null {
+  let fd: number;
+  try {
+    fd = openSync(path, LOG_OPEN, mode);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EEXIST" || code === "ELOOP") return null;
+    throw err;
+  }
+  return {
+    write: (data) => {
+      const bytes = Buffer.from(data, "utf8");
+      for (let at = 0; at < bytes.length; ) at += writeSync(fd, bytes, at, bytes.length - at);
+    },
+    close: () => {
+      closeSync(fd);
+    },
+  };
+}
+
 /** The check's file effects on the real file system. */
 export const nodeCheckFs: CheckFs = {
   ...nodeRegistryFs,
@@ -390,9 +457,7 @@ export const nodeCheckFs: CheckFs = {
       return false;
     }
   },
-  append: (path, data) => {
-    appendFileSync(path, data);
-  },
+  createLog: createLogFile,
 };
 
 /** CheckSpawn on node's spawn: no shell, stdin closed, stdout and stderr piped as UTF-8 text. */

@@ -8,7 +8,9 @@ import {
   ENTRY_MAX_AHEAD_MS,
   ENTRY_MAX_BYTES,
   entryTime,
+  isEntryPid,
   killProbe,
+  PID_MAX,
   liveEntries,
   nodeRegistryFs,
   readEntryFile,
@@ -195,6 +197,21 @@ describe("liveEntries", () => {
     expect(readdirSync(dir).sort()).toEqual(["0.json", "103.json", "104.json", "105.json", "106.json", "107.json", "notes.txt"]);
   });
 
+  it("ignores, never probes and never removes entries whose pid is 0, 1, 2^31, above PID_MAX or a fraction", () => {
+    mkdirSync(dir, { recursive: true });
+    for (const pid of [0, 1, 2 ** 31, PID_MAX + 1, 1.5]) {
+      // Each file holds an entry of its own pid, otherwise valid, so only the pid can make it not one.
+      writeFileSync(join(dir, `${pid}.json`), JSON.stringify(entry(pid)));
+    }
+    register(dir, entry(PID_MAX), nodeRegistryFs);
+    const probed: number[] = [];
+    expect(live(2, (pid) => (probed.push(pid), "alive"))).toEqual([PID_MAX]);
+    expect(probed).toEqual([PID_MAX]);
+    // A probe that calls every pid gone removes only the real entry.
+    expect(live(2, () => "gone")).toEqual([]);
+    expect(readdirSync(dir).sort()).toEqual(["0.json", "1.5.json", "1.json", "2147483648.json", `${PID_MAX + 1}.json`]);
+  });
+
   it.skipIf(process.platform === "win32")("skips a FIFO entry without blocking and leaves it", () => {
     mkdirSync(dir, { recursive: true });
     const fifo = join(dir, "7.json");
@@ -246,21 +263,32 @@ describe("liveEntries", () => {
 });
 
 describe("killProbe", () => {
-  it("is gone on ESRCH and alive on success, EPERM or anything else", () => {
+  it("is alive on success or EPERM, and gone on ESRCH, EINVAL or any other error", () => {
     const signals: Array<[number, number]> = [];
     const probe = killProbe((pid, signal) => {
       signals.push([pid, signal]);
-      if (pid === 1) throw errno("ESRCH");
-      if (pid === 2) throw errno("EPERM");
-      if (pid === 3) throw errno("EINVAL");
+      if (pid === 11) throw errno("ESRCH");
+      if (pid === 12) throw errno("EPERM");
+      if (pid === 13) throw errno("EINVAL");
+      if (pid === 14) throw new Error("no code");
     });
-    expect([probe(1), probe(2), probe(3), probe(4)]).toEqual(["gone", "alive", "alive", "alive"]);
+    expect([probe(11), probe(12), probe(13), probe(14), probe(15)]).toEqual(["gone", "alive", "gone", "gone", "alive"]);
     expect(signals).toEqual([
-      [1, 0],
-      [2, 0],
-      [3, 0],
-      [4, 0],
+      [11, 0],
+      [12, 0],
+      [13, 0],
+      [14, 0],
+      [15, 0],
     ]);
+  });
+
+  it("is gone, without a signal, for a pid no other check can have", () => {
+    const signals: number[] = [];
+    const probe = killProbe((pid) => signals.push(pid));
+    for (const pid of [0, 1, -1, 1.5, 2 ** 31, PID_MAX + 1, Number.NaN, Number.POSITIVE_INFINITY]) expect(probe(pid)).toBe("gone");
+    expect(signals).toEqual([]);
+    expect([probe(2), probe(PID_MAX)]).toEqual(["alive", "alive"]);
+    expect(signals).toEqual([2, PID_MAX]);
   });
 
   it("works with the real process.kill", () => {
@@ -268,6 +296,14 @@ describe("killProbe", () => {
     expect(probe(process.pid)).toBe("alive");
     // Far above any pid a system hands out.
     expect(probe(2 ** 30)).toBe("gone");
+  });
+});
+
+describe("isEntryPid", () => {
+  it("takes the integers from 2 to PID_MAX and nothing else", () => {
+    expect(PID_MAX).toBe(4_194_304);
+    for (const pid of [2, 101, PID_MAX]) expect(isEntryPid(pid)).toBe(true);
+    for (const pid of [0, 1, -5, 1.5, 2 ** 31, PID_MAX + 1, Number.NaN, "101", null]) expect(isEntryPid(pid)).toBe(false);
   });
 });
 

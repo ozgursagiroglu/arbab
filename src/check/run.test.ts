@@ -1,10 +1,24 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseFailureLine } from "./command";
 import { register, registryDir, type CheckState } from "./registry";
 import {
+  createLogFile,
   nodeCheckFs,
   nodeCheckSpawn,
   runCheck,
@@ -71,6 +85,7 @@ function harness(
   let signalHandler: ((s: NodeJS.Signals) => void) | null = null;
   let disposed = false;
   let probes = 0;
+  let randoms = 0;
   const spawned: Spawned[] = [];
   const kills: NodeJS.Signals[] = [];
   const sleeps: number[] = [];
@@ -101,6 +116,7 @@ function harness(
       },
       fs: { ...nodeCheckFs, ...options.fs },
       probe: (pid) => ((options.alive ?? (() => true))(pid, probes++) ? "alive" : "gone"),
+      randomHex: (bytes) => (0xa00000 + randoms++).toString(16).padStart(bytes * 2, "0"),
       out: (text) => (out += text),
       err: (text) => (err += text),
       onSignal: (handler) => {
@@ -228,7 +244,7 @@ describe("runCheck: a run", () => {
     const failures = lines.filter((l) => l.startsWith("arbab-check failure: "));
     expect(failures.length).toBeGreaterThan(0);
     for (const line of failures) {
-      expect(line.length).toBeLessThanOrEqual(200);
+      expect(line.length).toBeLessThanOrEqual(400);
       expect(parseFailureLine(line)).not.toBeNull();
     }
     expect(failures.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(2000);
@@ -521,36 +537,186 @@ describe("runCheck: the log", () => {
     expect(readFileSync(join(checks, "test-5.log"), "utf8")).toBe("one\n");
   });
 
-  it("writes to the temporary directory when .arbab-tmp does not exist, by its absolute path", async () => {
+  it("writes to the temporary directory when .arbab-tmp does not exist: a new random name, mode 0600, by its absolute path", async () => {
     rmSync(join(cwd, ".arbab-tmp"), { recursive: true });
     const h = harness({ script: (handlers) => (handlers.output("x\n"), handlers.exit(0, null)) });
     await runCheck(["test"], h.deps);
-    const log = join(tdir, `arbab-check-test-${PID}.log`);
+    const log = join(tdir, `arbab-check-test-${PID}-a00000.log`);
     expect(h.out()).toContain(`; log ${log}\n`);
     expect(readFileSync(log, "utf8")).toBe("x\n");
-    // A second run of the same pid replaces it.
+    if (process.platform !== "win32") expect(statSync(log).mode & 0o777).toBe(0o600);
+    // A second run of the same pid takes a name of its own.
     await runCheck(["test"], h.deps);
+    expect(h.out()).toContain(`; log ${join(tdir, `arbab-check-test-${PID}-a00001.log`)}\n`);
+  });
+
+  it.skipIf(process.platform === "win32")("never follows a link planted at the fallback name: it takes another, then goes on without a log", async () => {
+    rmSync(join(cwd, ".arbab-tmp"), { recursive: true });
+    const victim = join(cwd, "src.ts");
+    writeFileSync(victim, "original\n");
+    // Links at the first two names, one to the victim and one dangling.
+    symlinkSync(victim, join(tdir, `arbab-check-test-${PID}-a00000.log`));
+    symlinkSync(join(cwd, "created.ts"), join(tdir, `arbab-check-test-${PID}-a00001.log`));
+    const h = harness({ script: (handlers) => (handlers.output("x\n"), handlers.exit(0, null)) });
+    await runCheck(["test"], h.deps);
+    const log = join(tdir, `arbab-check-test-${PID}-a00002.log`);
+    expect(h.out()).toContain(`; log ${log}\n`);
     expect(readFileSync(log, "utf8")).toBe("x\n");
+    expect(readFileSync(victim, "utf8")).toBe("original\n");
+    expect(existsSync(join(cwd, "created.ts"))).toBe(false);
+    expect(lstatSync(join(tdir, `arbab-check-test-${PID}-a00000.log`)).isSymbolicLink()).toBe(true);
+
+    // All five names a run tries taken, by links and by the first run's log: no log, and the run goes on.
+    const taken = harness({ script: (handlers) => (handlers.output("y\n"), handlers.exit(0, null)) });
+    for (const name of ["a00003", "a00004"]) symlinkSync(victim, join(tdir, `arbab-check-test-${PID}-${name}.log`));
+    expect(await runCheck(["test"], taken.deps)).toBe(0);
+    expect(taken.err()).toBe(`arbab-check: cannot create a log (no free log name in ${tdir}); the output is not kept\n`);
+    expect(taken.out()).toMatch(/; log none\n/);
+    expect(readFileSync(victim, "utf8")).toBe("original\n");
+  });
+
+  it.skipIf(process.platform === "win32")("never follows a link planted at the next log number: it writes to the number after", async () => {
+    const victim = join(cwd, "src.ts");
+    writeFileSync(victim, "original\n");
+    const checks = join(cwd, ".arbab-tmp", "checks");
+    let planted = false;
+    const h = harness({
+      fs: {
+        // Planted between the listing and the create, where counting cannot see it.
+        createLog: (path, mode) => {
+          if (!planted) {
+            planted = true;
+            symlinkSync(victim, path);
+          }
+          return nodeCheckFs.createLog(path, mode);
+        },
+      },
+      script: (handlers) => (handlers.output("out\n"), handlers.exit(0, null)),
+    });
+    expect(await runCheck(["test"], h.deps)).toBe(0);
+    expect(h.out()).toContain("log .arbab-tmp/checks/test-2.log\n");
+    expect(readFileSync(join(checks, "test-2.log"), "utf8")).toBe("out\n");
+    expect(readFileSync(victim, "utf8")).toBe("original\n");
+    expect(lstatSync(join(checks, "test-1.log")).isSymbolicLink()).toBe(true);
+  });
+
+  it("gives up after 20 taken numbers and goes on without a log", async () => {
+    const tried: string[] = [];
+    const h = harness({ fs: { createLog: (path) => (tried.push(path), null) } });
+    expect(await runCheck(["test"], h.deps)).toBe(0);
+    expect(tried).toHaveLength(20);
+    expect(tried.at(-1)).toBe(join(cwd, ".arbab-tmp", "checks", "test-20.log"));
+    expect(h.err()).toContain("cannot create a log (no free log number in");
+    expect(h.out()).toMatch(/; log none\n/);
+  });
+
+  it("writes the log only through the one descriptor it opened, closes it once, and parses what it wrote", async () => {
+    const calls: string[] = [];
+    const checks = join(cwd, ".arbab-tmp", "checks");
+    const victim = join(cwd, "src.ts");
+    writeFileSync(victim, "original\n");
+    const h = harness({
+      fs: {
+        createLog: (path, mode) => {
+          calls.push(`create ${path}`);
+          const file = nodeCheckFs.createLog(path, mode);
+          if (file === null) return null;
+          return {
+            write: (data) => (calls.push(`write ${JSON.stringify(data)}`), file.write(data)),
+            close: () => (calls.push("close"), file.close()),
+          };
+        },
+        readFile: (path) => (calls.push(`read ${path}`), nodeCheckFs.readFile(path)),
+        readEntry: (path) => (path.endsWith(".log") && calls.push(`read ${path}`), nodeCheckFs.readEntry(path)),
+      },
+      script: (handlers) => {
+        handlers.output(" FAIL  src/a.test.ts > adds\nError: one\n");
+        // Moved away and replaced by a link: the next chunk still goes to the file first opened.
+        renameSync(join(checks, "test-1.log"), join(checks, "moved.log"));
+        symlinkSync(victim, join(checks, "test-1.log"));
+        handlers.output(" FAIL  src/b.test.ts > subtracts\nError: two\n");
+        handlers.exit(1, null);
+      },
+    });
+    expect(await runCheck(["test"], h.deps)).toBe(1);
+    expect(calls).toEqual([
+      `create ${join(checks, "test-1.log")}`,
+      `write ${JSON.stringify(" FAIL  src/a.test.ts > adds\nError: one\n")}`,
+      `write ${JSON.stringify(" FAIL  src/b.test.ts > subtracts\nError: two\n")}`,
+      "close",
+    ]);
+    expect(readFileSync(join(checks, "moved.log"), "utf8")).toBe(" FAIL  src/a.test.ts > adds\nError: one\n FAIL  src/b.test.ts > subtracts\nError: two\n");
+    expect(readFileSync(victim, "utf8")).toBe("original\n");
+    expect(h.out()).toContain("arbab-check failure: src/a.test.ts > adds :: Error: one\narbab-check failure: src/b.test.ts > subtracts :: Error: two\n");
+  });
+
+  it("parses the failures from what it wrote, not from a file later put at the log's path", async () => {
+    const checks = join(cwd, ".arbab-tmp", "checks");
+    const h = harness({
+      script: (handlers) => {
+        handlers.output(" FAIL  src/real.test.ts > works\nError: real\n");
+        rmSync(join(checks, "test-1.log"));
+        writeFileSync(join(checks, "test-1.log"), " FAIL  src/planted.test.ts > lies\nError: planted\n");
+        handlers.exit(1, null);
+      },
+    });
+    expect(await runCheck(["test"], h.deps)).toBe(1);
+    expect(h.out()).toContain("arbab-check failure: src/real.test.ts > works :: Error: real\n");
+    expect(h.out()).not.toContain("planted");
   });
 
   it("still runs and summarises from the tail when the log cannot be written", async () => {
+    let closed = 0;
     const h = harness({
       fs: {
-        append: () => {
-          throw new Error("ENOSPC");
-        },
+        createLog: () => ({
+          write: () => {
+            throw new Error("ENOSPC");
+          },
+          close: () => {
+            closed += 1;
+          },
+        }),
       },
-      script: (handlers) => (handlers.output("src/a.ts(1,1): error TS1005: ';' expected.\n"), handlers.exit(2, null)),
+      script: (handlers) => (handlers.output("src/a.ts(1,1): error TS1005: ';' expected.\n"), handlers.output("more\n"), handlers.exit(2, null)),
     });
     expect(await runCheck(["typecheck"], h.deps)).toBe(2);
-    expect(h.err()).toContain("cannot write");
+    expect(h.err()).toBe(`arbab-check: cannot write ${join(cwd, ".arbab-tmp", "checks", "typecheck-1.log")} (ENOSPC)\n`);
     expect(h.out()).toContain("arbab-check failure: src/a.ts :: TS1005: ';' expected.");
+    expect(closed).toBe(1);
+  });
+
+  it("survives a failed close", async () => {
+    const h = harness({
+      fs: {
+        createLog: (path, mode) => {
+          const file = nodeCheckFs.createLog(path, mode);
+          if (file === null) return null;
+          return {
+            write: file.write,
+            close: () => {
+              file.close();
+              throw new Error("EIO");
+            },
+          };
+        },
+      },
+      script: (handlers) => (handlers.output("x\n"), handlers.exit(0, null)),
+    });
+    expect(await runCheck(["test"], h.deps)).toBe(0);
+    expect(h.err()).toBe("");
   });
 
   it("says so when no log can be created", async () => {
-    const h = harness({ fs: { writeExclusive: (path, data) => (path.endsWith(".log") ? false : nodeCheckFs.writeExclusive(path, data)) } });
+    const h = harness({
+      fs: {
+        createLog: () => {
+          throw new Error("EACCES");
+        },
+      },
+    });
     expect(await runCheck(["test"], h.deps)).toBe(0);
-    expect(h.err()).toContain("cannot create a log");
+    expect(h.err()).toBe("arbab-check: cannot create a log (EACCES); the output is not kept\n");
     expect(h.out()).toMatch(/; log none\n/);
   });
 });
@@ -560,21 +726,85 @@ describe("shortFailureLine", () => {
     expect(shortFailureLine({ file: "src/a.ts", test: "t", message: "boom" })).toBe("arbab-check failure: src/a.ts > t :: boom");
   });
 
-  it("cuts a long line to 200 characters that still read back, the message keeping what is left", () => {
+  it("keeps a 180-character file whole, and it reads back equal", () => {
+    const file = `src/${"d".repeat(173)}.ts`;
+    expect(file).toHaveLength(180);
     for (const failure of [
-      { file: "f".repeat(300), test: "t".repeat(300), message: "m".repeat(300) },
-      { file: "f".repeat(300), test: null, message: "m".repeat(300) },
-      { file: null, test: null, message: "m".repeat(300) },
-      { file: "src/a.ts", test: "t".repeat(300), message: "short" },
+      { file, test: "t".repeat(300), message: "m".repeat(300) },
+      { file, test: null, message: "m".repeat(300) },
+      { file, test: "adds", message: "boom" },
     ]) {
       const line = shortFailureLine(failure);
-      expect(line.length).toBeLessThanOrEqual(200);
-      const back = parseFailureLine(line);
-      expect(back).not.toBeNull();
-      expect(back?.file).toBe(failure.file === null ? null : failure.file.slice(0, 70));
-      expect(back?.test).toBe(failure.test === null ? null : failure.test.slice(0, 50));
+      expect(line.length).toBeLessThanOrEqual(400);
+      expect(line.startsWith(`arbab-check failure: ${file} `)).toBe(true);
+      expect(parseFailureLine(line)?.file).toBe(file);
     }
-    expect(shortFailureLine({ file: null, test: null, message: "m".repeat(300) })).toBe(`arbab-check failure: - :: ${"m".repeat(174)}`);
+  });
+
+  it("keeps a file of exactly 200 characters, the field cap, whole", () => {
+    const file = `src/${"d".repeat(193)}.ts`;
+    expect(file).toHaveLength(200);
+    expect(parseFailureLine(shortFailureLine({ file, test: "t".repeat(300), message: "m".repeat(300) }))?.file).toBe(file);
+  });
+
+  it("prints a 300-character file as - with the path at the start of the message, cut with it", () => {
+    const file = `src/${"d".repeat(293)}.ts`;
+    expect(file).toHaveLength(300);
+    const line = shortFailureLine({ file, test: "adds", message: "boom" });
+    expect(line.length).toBeLessThanOrEqual(400);
+    const back = parseFailureLine(line);
+    expect(back?.file).toBeNull();
+    expect(back?.test).toBe("adds");
+    // The message is cut to 300, all of it path.
+    expect(back?.message).toBe(file);
+    expect(line).toBe(`arbab-check failure: - > adds :: ${file}`);
+
+    const shorter = `src/${"d".repeat(243)}.ts`;
+    const whole = parseFailureLine(shortFailureLine({ file: shorter, test: null, message: "boom" }));
+    expect(whole).toEqual({ file: null, test: null, message: `${shorter}: boom` });
+
+    // With a long test too, the message keeps the start of the path.
+    const cut = parseFailureLine(shortFailureLine({ file, test: "t".repeat(300), message: "boom" }));
+    expect(cut?.file).toBeNull();
+    expect(file.startsWith(cut?.message ?? "x")).toBe(true);
+    expect(cut?.message.length).toBeGreaterThanOrEqual(40);
+  });
+
+  it("cuts the test first, then the message, never below 40 characters of message", () => {
+    const file = `src/${"d".repeat(193)}.ts`;
+    const line = shortFailureLine({ file, test: "t".repeat(300), message: "m".repeat(300) });
+    expect(line).toHaveLength(400);
+    const back = parseFailureLine(line);
+    expect(back?.file).toBe(file);
+    expect(back?.message).toBe("m".repeat(40));
+    expect(back?.test).toBe("t".repeat(400 - "arbab-check failure: ".length - 200 - " > ".length - " :: ".length - 40));
+
+    // A short file leaves the test whole and the message what is left.
+    const roomy = parseFailureLine(shortFailureLine({ file: "src/a.ts", test: "t".repeat(200), message: "m".repeat(300) }));
+    expect(roomy?.test).toBe("t".repeat(200));
+    expect(roomy?.message).toBe("m".repeat(400 - "arbab-check failure: src/a.ts > ".length - 200 - " :: ".length));
+
+    // A message shorter than 40 is kept whole, and the test gets the rest.
+    const short = shortFailureLine({ file, test: "t".repeat(300), message: "boom" });
+    expect(short).toHaveLength(400);
+    expect(parseFailureLine(short)?.message).toBe("boom");
+
+    expect(shortFailureLine({ file: null, test: null, message: "m".repeat(500) })).toBe(`arbab-check failure: - :: ${"m".repeat(300)}`);
+  });
+
+  it("always gives a line of at most 400 characters that reads back", () => {
+    for (const file of [null, "", "f", "f".repeat(199), "f".repeat(200), "f".repeat(201), "f".repeat(1000)]) {
+      for (const test of [null, "t", "t".repeat(200), "t".repeat(1000)]) {
+        for (const message of ["", "m", "m".repeat(39), "m".repeat(1000)]) {
+          const line = shortFailureLine({ file, test, message });
+          expect(line.length).toBeLessThanOrEqual(400);
+          const back = parseFailureLine(line);
+          expect(back).not.toBeNull();
+          if (file !== null && file !== "" && file.length <= 200) expect(back?.file).toBe(file);
+          else expect(back?.file).toBeNull();
+        }
+      }
+    }
   });
 });
 
@@ -663,13 +893,39 @@ describe("nodeCheckSpawn", () => {
 });
 
 describe("nodeCheckFs", () => {
-  it("tells directories and appends", () => {
+  it("tells directories, and creates a log it writes through one descriptor", () => {
     expect(nodeCheckFs.isDir(cwd)).toBe(true);
     expect(nodeCheckFs.isDir(join(cwd, "missing"))).toBe(false);
-    const file = join(tmp, "f.log");
-    nodeCheckFs.append(file, "a");
-    nodeCheckFs.append(file, "b");
-    expect(nodeCheckFs.isDir(file)).toBe(false);
-    expect(readFileSync(file, "utf8")).toBe("ab");
+    const path = join(tmp, "f.log");
+    const file = nodeCheckFs.createLog(path, 0o600);
+    expect(file).not.toBeNull();
+    file?.write("a");
+    // Renamed while open: writes still reach it, and nothing appears at the old name.
+    renameSync(path, join(tmp, "g.log"));
+    file?.write("é".repeat(10_000));
+    file?.close();
+    expect(nodeCheckFs.isDir(join(tmp, "g.log"))).toBe(false);
+    expect(readFileSync(join(tmp, "g.log"), "utf8")).toBe("a" + "é".repeat(10_000));
+    expect(existsSync(path)).toBe(false);
+    if (process.platform !== "win32") expect(statSync(join(tmp, "g.log")).mode & 0o777).toBe(0o600);
+  });
+
+  it("returns null for a name that exists, and passes on other errors", () => {
+    const path = join(tmp, "f.log");
+    writeFileSync(path, "kept");
+    expect(createLogFile(path, 0o600)).toBeNull();
+    expect(readFileSync(path, "utf8")).toBe("kept");
+    expect(() => createLogFile(join(tmp, "missing", "f.log"), 0o600)).toThrow(/ENOENT/);
+  });
+
+  it.skipIf(process.platform === "win32")("never opens through a link, to a file or dangling, and leaves both alone", () => {
+    const target = join(tmp, "target.ts");
+    writeFileSync(target, "original\n");
+    symlinkSync(target, join(tmp, "a.log"));
+    symlinkSync(join(tmp, "nowhere.ts"), join(tmp, "b.log"));
+    expect(createLogFile(join(tmp, "a.log"), 0o600)).toBeNull();
+    expect(createLogFile(join(tmp, "b.log"), 0o600)).toBeNull();
+    expect(readFileSync(target, "utf8")).toBe("original\n");
+    expect(existsSync(join(tmp, "nowhere.ts"))).toBe(false);
   });
 });

@@ -8,7 +8,9 @@
 // findings, <name>-skeptic-<lens>, tries to refute them; its verdicts apply to its own lens's findings only. Refuses,
 // like verify, while a dependency manifest changed and no human confirmed the install. A re-run waits for, or adopts,
 // lanes still running or finished on the same head after an earlier review stopped waiting. While it waits,
-// ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it).
+// ~/.arbab/waiters/<pid>.json says so (the Stop hook reads it). At most config review.maxParallel reviewers, then
+// skeptics, run at once; skeptics get no dependency install, reviewers one unless review.install is false; a verify.json
+// of the reviewed head goes into the reviewer briefs (DESIGN.md §22).
 // Writes .arbab/integrations/<name>/review.json (ReviewRecord) and the same record as reviews/<round>.json. With
 // --lenses, the previous review.json's other lenses (entries, skeptics, findings) are kept when it is of the same head.
 // Then the lanes' worktrees and branches are removed, their run dirs and run records kept; not when a wait timed out.
@@ -37,7 +39,7 @@ import {
   skepticLane,
   writeReviewRound,
 } from "../review";
-import type { FindingVerdict, ReviewFinding, ReviewRecord } from "../types";
+import type { FindingVerdict, ReviewFinding, ReviewRecord, VerifyRecord } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, readText, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -55,7 +57,7 @@ import {
   type LaneOutcome,
 } from "./integration";
 import { onePositional, openProject, parse, printJson } from "./project";
-import { readReviewRecord } from "./records";
+import { readReviewRecord, readVerifyRecord } from "./records";
 import { WAIT_TIMEOUT_EXIT, parseTimeoutMin } from "./wait";
 
 const DEFAULT_TIMEOUT_MIN = 120;
@@ -189,6 +191,16 @@ function previousReview(ctx: CommandContext, integration: Integration): ReviewRe
   }
 }
 
+/** verify.json for the reviewer briefs; a damaged one adds no block, with a warning, since review does not need it. */
+function verifyForBriefs(ctx: CommandContext, integration: Integration): VerifyRecord | null {
+  try {
+    return readVerifyRecord(integration.paths.verify, integration.paths.name);
+  } catch (err) {
+    ctx.stderr(`arbab review: ${err instanceof Error ? err.message : String(err)}; the reviewers get no verify results\n`);
+    return null;
+  }
+}
+
 export async function runReview(argv: string[], ctx: CommandContext): Promise<number> {
   const { values, positionals } = parse("review", {
     args: argv,
@@ -223,12 +235,15 @@ export async function runReview(argv: string[], ctx: CommandContext): Promise<nu
   const since = values.since === undefined ? null : sinceCommit(ctx.git, project.root, values.since, rec.headSha);
   const diffBase = since ?? rec.baseSha;
   const previous = values.lenses === undefined ? null : previousReview(ctx, integration);
+  const verify = { head: rec.headSha, record: verifyForBriefs(ctx, integration) };
+  const install = project.config.review.install;
+  const window = { maxParallel: project.config.review.maxParallel };
 
   const reviewers = lenses.map((lens) => ({
     lens,
-    lane: reviewLane({ paths, lens, text: lensText(lens, runLenses) ?? "", diffBase, since: since !== null, ...start }),
+    lane: reviewLane({ paths, lens, text: lensText(lens, runLenses) ?? "", diffBase, since: since !== null, install, verify, ...start }),
   }));
-  const reviewed = await runGeneratedLanes(ctx, project, paths, reviewers.map((r) => r.lane), timeoutMs, owner);
+  const reviewed = await runGeneratedLanes(ctx, project, paths, reviewers.map((r) => r.lane), timeoutMs, owner, undefined, window);
   if (reviewed.timedOut) {
     if (values.json === true) printJson(ctx, { timedOut: true, review: null });
     else ctx.stderr(`arbab review: the reviewer lanes did not finish in time; they keep running\n`);
@@ -248,7 +263,7 @@ export async function runReview(argv: string[], ctx: CommandContext): Promise<nu
   let skepticEntries: ReviewRecord["skeptics"] = [];
   let skepticsTimedOut = false;
   if (skeptics.length > 0) {
-    const checked = await runGeneratedLanes(ctx, project, paths, skeptics.map((s) => s.lane), timeoutMs, owner);
+    const checked = await runGeneratedLanes(ctx, project, paths, skeptics.map((s) => s.lane), timeoutMs, owner, undefined, window);
     skepticsTimedOut = checked.timedOut;
     skepticEntries = skeptics.map((s) => ({ lens: s.lens, lane: s.lane.spec.name, endState: outcomeOf(checked.outcomes, s.lane.spec.name)?.endState ?? null }));
     for (const s of skeptics) {

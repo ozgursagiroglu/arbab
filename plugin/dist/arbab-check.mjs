@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 var sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 // src/check/registry.ts
-import { readdirSync, readFileSync as readFileSync2, rmSync as rmSync2 } from "node:fs";
+import { closeSync as closeSync2, constants, fstatSync, openSync as openSync2, readdirSync, readFileSync as readFileSync2, rmSync as rmSync2 } from "node:fs";
 import { join as join2 } from "node:path";
 
 // src/util/errors.ts
@@ -19,8 +19,20 @@ var ArbabError = class extends Error {
 };
 
 // src/util/fs.ts
+import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+function writeTextAtomic(path, text) {
+  ensureDir(dirname(path));
+  const tmp = join(dirname(path), `.${randomBytes(6).toString("hex")}.tmp`);
+  try {
+    writeFileSync(tmp, text, { flag: "wx" });
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw new ArbabError("io", `cannot write ${path}: ${err.message}`, { cause: err });
+  }
+}
 function createExclusive(path, data) {
   ensureDir(dirname(path));
   let fd;
@@ -45,11 +57,23 @@ function ensureDir(path) {
 function registryDir(tmpdir2) {
   return join2(tmpdir2, "arbab-checks");
 }
+var ENTRY_MAX_AGE_MS = 20 * 6e4;
+var ENTRY_MAX_AHEAD_MS = 6e4;
+var ENTRY_MAX_BYTES = 16 * 1024;
 var ENTRY_FILE = /^([1-9]\d*)\.json$/;
+var ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 var entryPath = (dir, pid) => join2(dir, `${pid}.json`);
 var isPid = (v) => typeof v === "number" && Number.isInteger(v) && v > 0;
 function assertPid(pid) {
   if (!isPid(pid)) throw new ArbabError("usage", `invalid pid ${pid}`);
+}
+function entryTime(entry) {
+  return ISO_TIME.test(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
+}
+function registeredBefore(a, b) {
+  const ta = entryTime(a);
+  const tb = entryTime(b);
+  return ta !== tb ? ta < tb : a.pid < b.pid;
 }
 function register(dir, entry, fs) {
   assertPid(entry.pid);
@@ -59,6 +83,10 @@ function register(dir, entry, fs) {
   if (fs.writeExclusive(path, data)) return;
   fs.remove(path);
   if (!fs.writeExclusive(path, data)) throw new ArbabError("io", `cannot register ${path}: it keeps existing`);
+}
+function update(dir, entry, fs) {
+  assertPid(entry.pid);
+  fs.replace(entryPath(dir, entry.pid), JSON.stringify(entry) + "\n");
 }
 function unregister(dir, pid, fs) {
   assertPid(pid);
@@ -76,9 +104,19 @@ function parseEntry(text, pid) {
   if (r.pid !== pid || typeof r.name !== "string" || typeof r.cwd !== "string" || typeof r.startedAt !== "string" || !isPid(r.cpus)) {
     return null;
   }
-  return { pid, name: r.name, cwd: r.cwd, startedAt: r.startedAt, cpus: r.cpus };
+  if (r.state !== void 0 && r.state !== "waiting" && r.state !== "running") return null;
+  const entry = { pid, name: r.name, cwd: r.cwd, startedAt: r.startedAt, cpus: r.cpus, state: r.state ?? "running" };
+  if (isPid(r.share)) entry.share = r.share;
+  return entry;
 }
-function running(dir, self, fs, probe) {
+function staleByTime(entry, now) {
+  const t = entryTime(entry);
+  if (Number.isNaN(t)) return "unparsable startedAt";
+  if (now - t > ENTRY_MAX_AGE_MS) return "too old";
+  if (t - now > ENTRY_MAX_AHEAD_MS) return "in the future";
+  return null;
+}
+function liveEntries(dir, self, fs, probe, now) {
   const live = [];
   for (const file of fs.readDir(dir).sort()) {
     const match = ENTRY_FILE.exec(file);
@@ -87,13 +125,14 @@ function running(dir, self, fs, probe) {
     if (pid === self || !Number.isSafeInteger(pid)) continue;
     let text;
     try {
-      text = fs.readFile(join2(dir, file));
+      text = fs.readEntry(join2(dir, file));
     } catch {
       continue;
     }
+    if (text === null) continue;
     const entry = parseEntry(text, pid);
     if (entry === null) continue;
-    if (probe(pid) === "alive") {
+    if (staleByTime(entry, now) === null && probe(pid) === "alive") {
       live.push(entry);
       continue;
     }
@@ -114,11 +153,24 @@ function killProbe(kill) {
     }
   };
 }
+var ENTRY_OPEN = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0);
+function readEntryFile(path) {
+  const fd = openSync2(path, ENTRY_OPEN);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > ENTRY_MAX_BYTES) return null;
+    return readFileSync2(fd, "utf8");
+  } finally {
+    closeSync2(fd);
+  }
+}
 var nodeRegistryFs = {
   mkdirp: ensureDir,
   writeExclusive: createExclusive,
+  replace: writeTextAtomic,
   readDir: (dir) => readdirSync(dir),
   readFile: (path) => readFileSync2(path, "utf8"),
+  readEntry: readEntryFile,
   remove: (path) => {
     rmSync2(path, { force: true });
   }
@@ -127,7 +179,7 @@ var nodeRegistryFs = {
 // src/check/run.ts
 import { spawn as nodeSpawn } from "node:child_process";
 import { appendFileSync, statSync } from "node:fs";
-import { constants } from "node:os";
+import { constants as constants2 } from "node:os";
 import { isAbsolute as isAbsolute2, join as join3, relative as relative2 } from "node:path";
 
 // src/types.ts
@@ -141,11 +193,26 @@ function isCheckName(name) {
 }
 var FAILURE_PREFIX = "arbab-check failure: ";
 var FAILURE_MESSAGE_MAX = 300;
-var oneLine = (s) => s.replace(/[\r\n\t]+/g, " ").trim();
+var FAILURE_FIELD_MAX = 200;
+var CSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+var CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+var field = (s, max) => s.replace(CSI, "").replace(/[\r\n\t]+/g, " ").replace(CONTROL, "").trim().slice(0, max).trim();
 function formatFailureLine(failure) {
-  const file = failure.file === null || oneLine(failure.file) === "" ? "-" : oneLine(failure.file);
-  const test = failure.test === null || oneLine(failure.test) === "" ? "" : ` > ${oneLine(failure.test)}`;
-  return `${FAILURE_PREFIX}${file}${test} :: ${oneLine(failure.message).slice(0, FAILURE_MESSAGE_MAX)}`;
+  const file = failure.file === null ? "" : field(failure.file, FAILURE_FIELD_MAX);
+  const test = failure.test === null ? "" : field(failure.test, FAILURE_FIELD_MAX);
+  return `${FAILURE_PREFIX}${file === "" ? "-" : file}${test === "" ? "" : ` > ${test}`} :: ${field(failure.message, FAILURE_MESSAGE_MAX)}`;
+}
+function parseFailureLine(line) {
+  if (!line.startsWith(FAILURE_PREFIX)) return null;
+  const body = line.slice(FAILURE_PREFIX.length);
+  const split = body.indexOf(" :: ");
+  if (split < 0) return null;
+  const where = body.slice(0, split).trim();
+  const message2 = field(body.slice(split + 4), FAILURE_MESSAGE_MAX);
+  const gt = where.indexOf(" > ");
+  const file = field(gt < 0 ? where : where.slice(0, gt), FAILURE_FIELD_MAX);
+  const test = gt < 0 ? "" : field(where.slice(gt + 3), FAILURE_FIELD_MAX);
+  return { file: file === "" || file === "-" ? null : file, test: test === "" ? null : test, message: message2 };
 }
 var isRecord = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 var positiveInt = (v, min) => typeof v === "number" && Number.isInteger(v) && v >= min;
@@ -283,6 +350,12 @@ var TAIL_KEEP = 200;
 var TAIL_PASS = 15;
 var TAIL_FAIL = 60;
 var MAX_FAILURES = 30;
+var COUNT_FAILURES = 1e3;
+var STDOUT_MAX = 3800;
+var HEADER_MAX = 1e3;
+var FAILURES_CHARS = 2e3;
+var FAILURE_LINE_MAX = 200;
+var TAIL_LINE_MAX = 240;
 var message = (err) => err instanceof Error ? err.message : String(err);
 function configuredNames(env) {
   try {
@@ -296,7 +369,7 @@ function configuredNames(env) {
   return "none";
 }
 function signalExitCode(signal) {
-  const n = constants.signals[signal];
+  const n = constants2.signals[signal];
   return 128 + (n ?? 0);
 }
 function createLog(name, deps) {
@@ -336,6 +409,47 @@ var Tail = class {
     return all.slice(Math.max(0, all.length - n));
   }
 };
+function shortFailureLine(failure) {
+  const line = formatFailureLine(failure);
+  if (line.length <= FAILURE_LINE_MAX) return line;
+  const clean = parseFailureLine(line) ?? { file: null, test: null, message: "" };
+  const file = clean.file?.slice(0, 70) ?? null;
+  const test = clean.test?.slice(0, 50) ?? null;
+  const head = formatFailureLine({ file, test, message: "" });
+  const message2 = clean.message.slice(0, Math.max(0, FAILURE_LINE_MAX - head.length));
+  return formatFailureLine({ file, test, message: message2 }).slice(0, FAILURE_LINE_MAX);
+}
+function summarize(header, failures, tail, budget) {
+  const lines = [];
+  let used = 0;
+  const add = (line) => {
+    lines.push(line);
+    used += line.length + 1;
+  };
+  add(header.slice(0, HEADER_MAX));
+  let failureChars = 0;
+  let shown = 0;
+  for (const failure of failures.slice(0, MAX_FAILURES)) {
+    const line = shortFailureLine(failure);
+    if (failureChars + line.length + 1 > FAILURES_CHARS) break;
+    failureChars += line.length + 1;
+    add(line);
+    shown += 1;
+  }
+  if (shown < failures.length) add(`arbab-check: ${failures.length - shown} more failures in the log`);
+  const markerRoom = `--- last ${tail.length} lines ---`.length + 1;
+  let room = budget - used - markerRoom;
+  const kept = [];
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const line = (tail[i] ?? "").slice(0, TAIL_LINE_MAX);
+    if (line.length + 1 > room) break;
+    room -= line.length + 1;
+    kept.unshift(line);
+  }
+  add(`--- last ${kept.length} lines ---`);
+  for (const line of kept) add(line);
+  return lines.join("\n") + "\n";
+}
 async function runCheck(args, deps) {
   let checks;
   let policy;
@@ -365,10 +479,15 @@ async function runCheck(args, deps) {
     if (child !== null) child.kill(signal);
     else pendingSignal = signal;
   });
+  let printed = 0;
+  const out = (text) => {
+    printed += text.length;
+    deps.out(text);
+  };
   const dir = registryDir(deps.tmpdir);
+  const entry = { pid: deps.pid, name, cwd: deps.cwd, startedAt: new Date(deps.now()).toISOString(), cpus: policy.cpus, state: "waiting" };
   let registered = false;
   try {
-    const entry = { pid: deps.pid, name, cwd: deps.cwd, startedAt: new Date(deps.now()).toISOString(), cpus: policy.cpus };
     register(dir, entry, deps.fs);
     registered = true;
   } catch (err) {
@@ -378,26 +497,32 @@ async function runCheck(args, deps) {
   try {
     let usable = registered;
     const count = () => {
-      if (!usable) return 0;
+      if (!usable) return { running: 0, ahead: 0 };
       try {
-        return running(dir, deps.pid, deps.fs, deps.probe).length;
+        const others = liveEntries(dir, deps.pid, deps.fs, deps.probe, deps.now());
+        return {
+          running: others.filter((e) => e.state === "running").length,
+          ahead: others.filter((e) => e.state === "waiting" && registeredBefore(e, entry)).length
+        };
       } catch (err) {
         usable = false;
         deps.err(`arbab-check: the registry ${dir} is unusable (${message(err)}); running without waiting
 `);
-        return 0;
+        return { running: 0, ahead: 0 };
       }
     };
-    let others = count();
-    if (others >= policy.concurrent) {
-      deps.out(`arbab-check: waiting for one of ${policy.concurrent} places (${others} checks running)
+    const full = (c) => c.running + c.ahead >= policy.concurrent;
+    let seen = count();
+    if (full(seen)) {
+      const ahead = seen.ahead > 0 ? `, ${seen.ahead} waiting before this one` : "";
+      out(`arbab-check: waiting for one of ${policy.concurrent} places (${seen.running} checks running${ahead})
 `);
       const deadline = deps.now() + policy.waitSec * 1e3;
-      while (others >= policy.concurrent && pendingSignal === null) {
+      while (full(seen) && pendingSignal === null) {
         const left = deadline - deps.now();
         if (left <= 0) break;
         await deps.sleep(Math.min(POLL_MS, left));
-        others = count();
+        seen = count();
       }
     }
     if (pendingSignal !== null) {
@@ -405,7 +530,15 @@ async function runCheck(args, deps) {
 `);
       return signalExitCode(pendingSignal);
     }
-    const share = Math.max(1, Math.floor((policy.cpus - 1) / (others + 1)));
+    const share = Math.max(1, Math.floor((policy.cpus - 1) / (seen.running + 1)));
+    if (usable) {
+      try {
+        update(dir, { ...entry, state: "running", share }, deps.fs);
+      } catch (err) {
+        deps.err(`arbab-check: cannot mark ${name} running in ${dir} (${message(err)})
+`);
+      }
+    }
     const command = [...argv.map((a) => a.split("{cpus}").join(String(share))), ...extra];
     let log = null;
     try {
@@ -462,22 +595,20 @@ async function runCheck(args, deps) {
       const rel = relative2(deps.cwd, log);
       where = rel !== "" && !rel.startsWith("..") && !isAbsolute2(rel) ? rel : log;
     }
-    const lines = [`arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`];
+    const header = `arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`;
+    let failures = [];
     if (code !== 0) {
-      let full = null;
+      let whole = null;
       if (log !== null && !logBroken) {
         try {
-          full = deps.fs.readFile(log);
+          whole = deps.fs.readFile(log);
         } catch {
         }
       }
-      for (const failure of parseFailures(full ?? tail.last(TAIL_KEEP).join("\n"), MAX_FAILURES)) {
-        lines.push(formatFailureLine(failure));
-      }
+      failures = parseFailures(whole ?? tail.last(TAIL_KEEP).join("\n"), COUNT_FAILURES);
     }
     const last = tail.last(code === 0 ? TAIL_PASS : TAIL_FAIL).map(stripAnsi);
-    lines.push(`--- last ${last.length} lines ---`, ...last);
-    deps.out(lines.join("\n") + "\n");
+    out(summarize(header, failures, last, STDOUT_MAX - printed));
     return code;
   } finally {
     stopSignals();

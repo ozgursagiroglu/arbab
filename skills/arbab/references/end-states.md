@@ -27,7 +27,7 @@ Lane states that are not end states:
 | State | Meaning | What to do |
 | --- | --- | --- |
 | `queued`, `preparing` | waiting to start; creating worktree, dependencies, leases | Wait. |
-| `held` | reason `no free slot`, or the quota is above the hold threshold (checked before a slot is taken, so a lane held for quota holds no slot); re-checks every minute and after a reset | Wait; see `arbab quota` and `arbab summary`. Do not raise the thresholds to push it through. After an account switch, `arbab quota --refresh`. |
+| `held` | reason `no free slot`, `machine load <l> on <n> CPUs` or `memory pressure <level>` (`machine.json` `admission`), or the quota is above the hold threshold (checked before a slot is taken, so a lane held for quota or the machine holds no slot); re-checks every minute and after a reset | Wait; see `arbab quota` and `arbab summary`. Do not raise the thresholds to push it through. After an account switch, `arbab quota --refresh`. |
 | `waiting-reset` | usage limit; sleeping until `resetsAt` | Wait. |
 | `orphaned` | the shepherd died before `finished` | `arbab cleanup`, then decide as for `failed`. |
 

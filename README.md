@@ -466,7 +466,7 @@ Several orchestrators on one laptop used to fight over its CPUs: a test suite th
 while three or four other heavy checks ran. Since 0.3.0 arbab shares the machine:
 
 - **Heavy checks wait their turn.** Workers run config `checks` through `arbab-check`, which waits for one of a few
-  machine-wide places (a quarter of the CPUs by default, for at most 120 s), gives each run a fair share of the CPUs,
+  machine-wide places (a quarter of the CPUs by default, for at most 60 s), gives each run a fair share of the CPUs,
   and prints a short summary with the failures and the log's path, so a worker never re-runs a suite to read it.
 - **Lanes test what they change; verify tests the batch.** `verify` runs the gates once for the whole integration,
   through `arbab-check` too. When it fails, it writes a fix draft: a lane file and brief naming the failures and the

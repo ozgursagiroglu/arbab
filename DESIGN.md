@@ -12,7 +12,7 @@ headless `claude -p` workers and records everything on disk.
 | Question | Decision | Why |
 | --- | --- | --- |
 | Q-form | Plugin = skill + bundled runner | REQUIREMENTS §10 |
-| Q-runtime | TypeScript, Node ≥ 20, **zero runtime dependencies**, bundled into one ESM file `dist/arbab.mjs` (and, since 0.3.0, arbab-check's `dist/arbab-check.mjs`, §22) | The plugin cache installs `node_modules` only for npm/bun lockfiles, skips install scripts and may drop the executable bit (w0 research). `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs"` needs none of that. `dist/` is ignored during development (every lane builds it, so a committed bundle would conflict on every merge); release commits add it with `git add -f`. |
+| Q-runtime | TypeScript, Node ≥ 20, **zero runtime dependencies**, bundled into one ESM file `dist/arbab.mjs` (and, since 0.3.0, arbab-check's `dist/arbab-check.mjs`, §22) | The plugin cache installs `node_modules` only for npm/bun lockfiles, skips install scripts and may drop the executable bit (w0 research). `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs"` needs none of that. The root `/dist/` is ignored and never committed (every lane builds it). The bundles ship through the tracked `plugin/dist/`, which `pnpm build` assembles with the manifest, hooks and skill; `test/assemble-plugin.test.ts` fails when the committed `plugin/` lags them. |
 | CLI vs Agent SDK | Spawn the user's own `claude` binary | The SDK ships its own binary; the terms reserve subscription login for the unmodified Claude Code binary (w0 research). |
 | Q-sandbox | Claude Code's sandbox + `--restricted` by default; `srt` whole-process mode is an M4 option | Measured in w0: the built-in sandbox blocks writes outside the worktree, credential reads and the network; `--restricted` confines the file tools. srt adds MCP/hooks coverage, which workers do not use (no MCP, no settings sources). |
 | Q-supervisor | **No daemon.** One detached *shepherd* process per lane supervises its attempts; machine-wide state (quota, slots, leases, locks) lives in `~/.arbab/` | A daemon is one more thing to keep alive. A shepherd survives the orchestrator (own process group), tracks only its own pids, and the registry is rebuilt from disk. |
@@ -714,6 +714,9 @@ Rules the M3 review added (`arbab review m3`, 10 confirmed findings):
     nothing removed, and a branch that moved past its recorded head is never deleted.
   - `launch` and `resume` refuse a generated lane's name. (Before this rule, `verify m3` reset a lane of arbab's own
     build that happened to be named `m3-verify`.)
+  - Since 0.3.0, `integrate <name>` (merging and `--adopt`) refuses before it creates anything when one of the names
+    verify or review would generate for `<name>` is already a lane of the project, a phase of `--plan` or a listed
+    lane, unless its marker says `<name>` generated it (§22).
 - **No unreviewed install.**
   - Generated lanes start from the integration head, and their new worktrees install dependencies on the host.
   - So `verify` and `review` both refuse while a merged lane changed a dependency manifest that the human has not
@@ -1001,7 +1004,7 @@ The cast:
 A worker's day:
 
 1. It comes in from the village path at the left edge. `queued` and `held` sit in the camp (an hourglass above a lane
-   held for the quota, dots above one held for a slot).
+   held for the quota, dots above one held for a slot or, since 0.3.0, for the machine, §22).
 2. `preparing` or `running`: it walks to arbab and they talk (alternating bubbles of glyph gibberish), then a builder
    carries a stone to its block, climbs to it and works; the others go to their place. One worker talks at a time;
    at most six wait in line behind it, and the rest wait where they are until a place frees up.
@@ -1589,25 +1592,44 @@ a sandboxed check can tell a live run from a dead one.
   - Other roles get no rule from their checks; the verify lane (a probe) gets exact rules only, through its `allow`.
   - The attempt's settings env carries `ARBAB_CHECKS` and `ARBAB_CHECK_POLICY` (`checksEnv`), after config `env` and
     the leases, so a config value cannot replace them.
-  - The tool belt names the command and the check names, and says to run each check once before reporting and to
-    read the log rather than re-run a check (Batch tests, below).
+  - The tool belt names the command and the check names, and says to run each check once before reporting, with the
+    Bash `timeout` parameter set to the maximum (`BASH_MAX_TIMEOUT_MS`, in minutes) because the wait for a place
+    counts against it, and to read the log rather than re-run a check (Batch tests, below).
+  - The heavy-checks line lists only the checks the fence lets the lane run: sandboxed Bash auto-allowed, or an allow
+    rule for the check's command line (`Bash(<line>)`, `Bash(<line> *)`, `Bash(<line>:*)`) or for every command. A
+    lane without Bash, or whose fence holds none of these rules (a reviewer with lane `checks`, a probe without them in
+    its `allow`), gets no line, though it still has the env and the script.
   - A lane with no checks gets neither the env, the copy, the rules nor the tool-belt line.
 - **The policy.** `CheckPolicy` holds `cpus` (the host's `os.availableParallelism()`), `concurrent` (`machine.json
   checks.concurrent`, 1–64, default `max(1, floor(cpus / 4))`) and `waitSec` (`machine.json checks.waitSec`, 0–900,
-  default 120). The shepherd resolves it when the attempt starts; an unreadable `machine.json` gives the defaults.
+  default 60). The shepherd resolves it for the lane's role when the attempt starts (`checkPolicy`). A probe, the
+  verify lane, gets `waitSec` 0: its gates never wait for a place, since one Bash timeout covers the wait and the run
+  and a gate that timed out would fail for nothing the branch did; it still counts and takes a fair share.
+  `machine.json` is read with `loadMachineConfigLenient` (Admission, below): an invalid `checks` field or an
+  unreadable file gives the defaults.
 - **One run, step by step** (`src/check/`):
   1. **Read the env.** No name, a missing or malformed variable, or an unknown name exits 2 with
      `configured checks: <names>`.
   2. **Register.** The registry is `<$TMPDIR>/arbab-checks/`: the sandbox's `$TMPDIR` (`/tmp/claude-<uid>`) is shared
-     by every sandbox of the user (§4), so every lane on the machine sees every running check. Each run creates
-     `<pid>.json` (`{pid, name, cwd, startedAt, cpus}`) exclusively, replacing a dead run's file of the same pid. A
-     registry it cannot use is reported on stderr, and the check runs without waiting.
-  3. **Count the others.** An entry is alive while `process.kill(pid, 0)` succeeds or fails with EPERM. ESRCH means
-     stale: the entry is removed, best effort. A file that does not parse is ignored, never removed.
-  4. **Wait if the machine is full.** While `running ≥ concurrent` (the others, not this run), it polls every 2 s for
-     at most `waitSec`, printing `arbab-check: waiting for one of <concurrent> places (<running> checks running)` once,
-     then runs anyway. A SIGINT or SIGTERM during the wait ends it without running the check (128 + the signal).
-  5. **Take a share.** `share = max(1, floor((cpus − 1) / (running + 1)))`. The child gets `ARBAB_CHECK_CPUS` and
+     by every sandbox of the user (§4), so every lane on the machine sees every check. Each run creates `<pid>.json`
+     (`{pid, name, cwd, startedAt, cpus, state}`, `state` `waiting`) exclusively, replacing a dead run's file of the
+     same pid. A registry it cannot use is reported on stderr, and the check runs without waiting.
+  3. **Count the others.** Any sandbox can write the registry, so every file in it is untrusted.
+     - Only regular files of at most 16 KiB are read, opened without following a link and without blocking on a FIFO;
+       anything else is skipped and never removed. A file that does not parse as an entry is ignored, never removed.
+       An entry without `state` (an older script) is running.
+     - An entry is stale, and removed best effort, when its `startedAt` does not parse as the ISO time a check writes,
+       is more than 20 minutes old (a check lives inside one Bash call, at most 15 minutes, plus room for clock steps)
+       or more than 60 s in the future, or when `process.kill(pid, 0)` fails with ESRCH. EPERM counts as alive.
+     - The count is the running entries plus the waiting ones registered before this run (by `startedAt`, then pid),
+       so waiters go in registration order and a later run cannot overtake an earlier one.
+  4. **Wait if the machine is full.** While that count is at least `concurrent`, it polls every 2 s for at most
+     `waitSec`, printing `arbab-check: waiting for one of <concurrent> places (<running> checks running[, <n> waiting
+     before this one])` once, then runs anyway. A SIGINT or SIGTERM during the wait ends it without running the check
+     (128 + the signal).
+  5. **Take a share.** `share = max(1, floor((cpus − 1) / (running + 1)))`, counting running entries only. The entry
+     is rewritten atomically with `state` `running` and the share; when that fails it is reported and the run goes
+     on, still counted as a waiter ahead of later runs. The child gets `ARBAB_CHECK_CPUS` and
      `VITEST_MAX_WORKERS` set to the share. An argv element that contains `{cpus}` gets the share in its place
      (jest: `--maxWorkers={cpus}`). Extra arguments after the name are appended to the argv.
   6. **Open the log**, before the run, so the summary can always name it: `<cwd>/.arbab-tmp/checks/<name>-<n>.log`
@@ -1616,12 +1638,16 @@ a sandboxed check can tell a live run from a dead one.
   7. **Run.** The child is spawned with an argv (no shell) in the current directory, stdin closed, stdout and stderr
      piped into the log. SIGINT and SIGTERM are passed on to the child, and the entry is removed when the run ends. A
      child that cannot be started exits 127.
-  8. **Print a summary.** What the worker sees:
+  8. **Print a summary** (`summarize`). Everything arbab-check prints on stdout, the waiting line included, is capped
+     at 3800 characters, under the smallest `fence.bashOutputMaxChars` (4000), beyond which the output is saved where
+     the worker cannot read it. What the worker sees:
      - `arbab-check <name>: exit <code> after <s>s on <share> CPUs; log <path>` (relative to the working directory
-       when inside it);
-     - on failure, up to 30 lines `arbab-check failure: <file>[ > <test>] :: <message>` (`-` for no file), read from
-       the whole log;
-     - then `--- last <n> lines ---` (15 on success, 60 on failure), ANSI codes stripped.
+       when inside it; the line cut to 1000 characters);
+     - on failure, lines `arbab-check failure: <file>[ > <test>] :: <message>` (`-` for no file), read from the whole
+       log: at most 30, each at most 200 characters (file and test give way first, then the message) and 2000 in all;
+     - `arbab-check: <n> more failures in the log` when some were left out;
+     - then `--- last <n> lines ---` and the newest of the last 15 lines on success, 60 on failure, that fit in what
+       is left, ANSI codes stripped and each cut to 240 characters.
 
      The exit code is the child's, 128 + the signal number when a signal killed it. A worker therefore never runs a
      suite twice to read it: the summary fits in a tool result, and the log is readable with the Read tool.
@@ -1633,6 +1659,10 @@ a sandboxed check can tell a live run from a dead one.
   - prettier `[warn] <file>` lines.
 
   Each failure is a `CheckFailure`, with the message cut to 300 characters. This is worker-written text: data only.
+  `formatFailureLine` and `parseFailureLine` both clean every field the same way, since a line verify reads back may
+  not come from arbab-check: ANSI colour sequences, then every other C0 and C1 control character (ESC, BEL, backspace,
+  DEL…) are stripped, line breaks and tabs become spaces, and the file and the test are cut to 200 characters. So a
+  failure line can neither move a cursor nor span two lines.
 
 ### Batch tests: lanes test what they change, verify tests the batch
 
@@ -1650,7 +1680,8 @@ a sandboxed check can tell a live run from a dead one.
     result: only lines before the `--- last ` marker (what follows is the child's raw output, which could imitate
     them), at most 30 per command and 100 in all; absent when there are none.
   - The text output prints up to 10 failure lines after the result lines (`and <n> more failures in <verify.json>`
-    beyond that); `--json` prints the record with its failures.
+    beyond that), only through `formatFailureLine`, so each is one line of plain text; `--json` prints the record with
+    its failures.
 - **A fix draft after a failed verify.** When verify of an integration fails and at least one command ran and exited
   non-zero, verify writes `.arbab/integrations/<name>/fix/fix-<k>.json` and `fix-<k>.md` (k one more than the highest
   there, the lane file created exclusively) and prints on stderr
@@ -1662,12 +1693,17 @@ a sandboxed check can tell a live run from a dead one.
   - The lane is `<name>-fix-<k>`, role implementer, with base `integrate/<name>`. A worker-written base installs at
     its trusted ancestor and is merged after, as for every fix round (§9).
   - Its brief lists the failed commands with their exit codes, the failures in one JSON fence (data), the candidate
-    lanes and their changed files, and the path of `verify.json`; its Acceptance asks for each failed command to exit
-    0 again.
+    lanes and their changed files, and the absolute path of `verify.json` in the main checkout (a worktree has no
+    `.arbab` of its own); when arbab-check printed no failure lines, it says to run the failed commands to see their
+    output. Its Acceptance asks for each failed command to exit 0 again.
   - **Candidates.** For each merged lane, its changed files are `git diff --name-only <merge-base of baseSha and
     sha>..<sha>`. A failure is attributed to the lanes whose files include its file; when none does, to those sharing
     its longest directory prefix (at least one directory).
   - **Scope.** The failures' files plus the candidates' changed files, sorted; at most 40 are listed, the rest counted.
+    Failure files are worker text, so only plain relative paths go into `## Scope` (`isPlainScopePath`): at most 200
+    characters, no control or line-separator character, no backtick, no leading `/` or `~`, no `..` segment. Any other
+    file stays only in the JSON fence, where it cannot widen what the fix lane may write, and Scope says how many were
+    left out.
 
 ### Review
 
@@ -1685,11 +1721,21 @@ a sandboxed check can tell a live run from a dead one.
   line, then up to 20 failures in one JSON fence (data, not instructions). A `verify.json` that does not read adds no
   block, with a warning. Every reviewer brief says not to run the gates or a whole suite, because verify runs them;
   one test file to support a finding is fine. So run review after verify.
+- **Known limit.** Since the reviewer brief embeds the head's `verify.json`, a verify run between two reviews of the
+  same head changes the brief: the second review relaunches reviewers that had finished instead of adopting them.
+  Running review after verify, as the skill says, avoids it; no code guards it.
+- **Names that cannot collide.** verify and review generate `<name>-verify`, `<name>-review-<lens>` and
+  `<name>-skeptic-<lens>`, and refuse a foreign lane of that name only after the merge. So `integrate <name>`, merging
+  or `--adopt`, refuses before it creates anything when one of those names is already a lane of the project, a phase
+  of `--plan` (merged or not) or a listed lane, unless its marker says `<name>` generated it: `integration name <name>
+  would generate lane <lane>, which is already a lane of this project; choose another integration name` (§17,
+  Reserved names).
 
 ### Worktree preparation
 
 - **`install: false`.** The shepherd creates the worktree at its trusted install point and merges as usual, but skips
-  `prepareDependencies`.
+  `prepareDependencies`. A swept worktree rebuilt for such a lane (§21, Worktrees on disk) skips it too: the rebuild
+  gets dependency strategy `none`.
 - **`dependencies.strategy: "clone"`** takes `paths` (1–20 plain project-relative directories, nothing under `.git`,
   `.arbab` or `.arbab-tmp`) and `fallback` (an argv or null).
   - Every caller passes a `DependencyContext` (`projectRoot`, `installedAt`, `git`): the shepherd, the rebuild, and
@@ -1722,7 +1768,13 @@ a sandboxed check can tell a live run from a dead one.
 - **When it holds.** The lane is held while the one-minute load average per CPU is at or above `machine.json
   admission.loadPerCpu` (a number 0–64, default 3; 0 never holds), or the memory pressure is at or above
   `admission.memoryPressure` (`warn`, `critical` or `off`; default `critical`; `off` never holds). `machine.json` is
-  read on every check, so a held lane sees an edit; an unreadable one gives the defaults.
+  read on every check, so a held lane sees an edit.
+- **A typo keeps the cap.** The shepherd's reads of `machine.json` (the slot cap, the admission limits and the check
+  policy) go through `loadMachineConfigLenient`, which parses `maxParallel`, `checks` and `admission` one at a time:
+  a field that is invalid keeps its default and adds an error naming it, an unknown key adds an error, and the valid
+  fields stay, so a bad `admission` no longer drops the machine's `maxParallel`. A missing file is every default; an
+  unreadable, unparsable or non-object file is every default and one error. `doctor` and `summary` keep the strict
+  `loadMachineConfig`, which refuses the whole file, so the error is reported there.
 - **Reading the pressure.**
   - macOS: `sysctl -n kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical).
   - Linux: `/proc/pressure/memory`, where `some avg10` of 10 or more is warn and 30 or more is critical.
@@ -1730,6 +1782,10 @@ a sandboxed check can tell a live run from a dead one.
 - **What it shows.** The state is `held` with reason `machine load <l> on <n> CPUs` (one decimal; it wins when both
   hold) or `memory pressure <level>`, checked again every `slotPollMs` (15 s). A held lane holds no slot. The e2e
   harness turns admission off (`loadPerCpu` 0, `memoryPressure` `off`), since its shepherds read the test machine's real load.
+- **In the UI.** The snapshot's `hold` is `machine` for a held lane whose reason starts with `machine load ` or
+  `memory pressure ` (next to `slot` and `quota`). The page shows `held (machine)`, the tooltip and the chronicle say
+  `waits for the machine` (a waiting entry, as for a slot, not a held one), and the scene draws the dots a slot hold
+  gets rather than the quota's hourglass.
 
 ### arbab ui
 

@@ -101,3 +101,48 @@ describe("toolBelt", () => {
     expect(() => toolBelt(STRICT, [lease("Bad Type", 1)], 15)).toThrow(ArbabError);
   });
 });
+
+describe("toolBelt, heavy checks and gates", () => {
+  const SCRIPT = "/work/repo/.arbab/runs/lane/bin/arbab-check.mjs";
+  const GATES = [["pnpm", "typecheck"], ["pnpm", "test"]];
+  const CHECKS_LINE =
+    `- Heavy checks: run each one once, before you report, with \`node ${SCRIPT} <name>\` (names: \`typecheck\`, ` +
+    "`lint`). It waits for a machine-wide place, runs on a fair share of the CPUs and prints a short summary: the " +
+    "failures and the path of the full log, which you can read with Read. Do not run these commands any other way, " +
+    "and do not re-run a check to see more of its output: read the log.";
+  const GATES_LINE =
+    "- The integration's verify runs the repository gates for every lane together: `pnpm typecheck`, `pnpm test`. " +
+    "Do not run a whole-repository suite yourself: run the tests of the files you change, one file per call when the " +
+    "output is long.";
+
+  it("names the lane's check command and its names, and the gates, before the leases", () => {
+    const belt = toolBelt(STRICT, LEASES, 15, { role: "implementer", gates: GATES, checks: { script: SCRIPT, names: ["typecheck", "lint"] } });
+    expect(belt).toContain(`run everything in the foreground.\n${CHECKS_LINE}\n${GATES_LINE}\n- Leased resources`);
+  });
+
+  it("quotes a script path that needs it, as the command line does", () => {
+    const script = "/work/my repo/bin/arbab-check.mjs";
+    const belt = toolBelt(SANDBOX_AUTO, [], 15, { role: "verifier", gates: [], checks: { script, names: ["lint"] } });
+    expect(belt).toContain(`with \`node '${script}' <name>\` (names: \`lint\`).`);
+    expect(belt).not.toContain("The integration's verify");
+  });
+
+  it("quotes a gate argument that needs it", () => {
+    const belt = toolBelt(STRICT, [], 15, { role: "verifier", gates: [["pnpm", "test", "--filter", "a b"]] });
+    expect(belt).toContain("together: `pnpm test --filter 'a b'`. Do not run");
+  });
+
+  it("has no check line without checks, and no gates line without gates", () => {
+    const belt = toolBelt(STRICT, [], 15, { role: "implementer", gates: [] });
+    expect(belt).not.toContain("Heavy checks");
+    expect(belt).not.toContain("The integration's verify");
+    expect(toolBelt(STRICT, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: [] } })).not.toContain("Heavy checks");
+    expect(toolBelt(STRICT, [], 15)).not.toContain("Heavy checks");
+  });
+
+  it.each(["reviewer", "researcher", "probe"] as const)("gives a %s no gates line, but its checks line", (role) => {
+    const belt = toolBelt(REVIEWER, [], 15, { role, gates: GATES, checks: { script: SCRIPT, names: ["gate-1"] } });
+    expect(belt).not.toContain("The integration's verify");
+    expect(belt).toContain("(names: `gate-1`)");
+  });
+});

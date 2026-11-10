@@ -71,6 +71,10 @@ const PASSING =
   'process.stdout.write(`VITEST_MAX_WORKERS=${process.env.VITEST_MAX_WORKERS}\\nARBAB_CHECK_CPUS=${process.env.ARBAB_CHECK_CPUS}\\nargv=${process.argv.slice(2).join(" ")}\\n`);\n';
 // Writes the file its first argument names once it runs, then takes a second and a half.
 const SLOW = 'require("node:fs").writeFileSync(process.argv[2], "");\nsetTimeout(() => process.stdout.write("slow done\\n"), 1500);\n';
+// 50 vitest failures with long names and messages, then 100 lines of 5000 characters; one write, exit 1.
+const HUGE =
+  'const f = Array.from({ length: 50 }, (_, i) => ` FAIL  src/${"d".repeat(300)}${i}.test.ts > ${"s".repeat(300)}\\nError: ${"m".repeat(3000)}\\n`).join("");\n' +
+  'process.stdout.write(f + `${"x".repeat(5000)}\\n`.repeat(100));\nprocess.exitCode = 1;\n';
 
 describe("arbab-check by itself", () => {
   it("summarises a failing check: the failures, the tail and the full log, exit 1", async () => {
@@ -86,14 +90,52 @@ describe("arbab-check by itself", () => {
         "arbab-check failure: src/a.test.ts > greets > says hello :: AssertionError: expected 'hi' to be 'hello'",
         "arbab-check failure: src/b.test.ts > counts :: Error: expected 2 to be 3",
       ]);
-      // The child's 8 stdout lines and its stderr line, all of them under the 60 a failure shows. The two pipes may
-      // arrive in either order.
+      // The child's 8 stdout lines and its stderr line, all of them under the 60 a failure shows and well within the
+      // 3800 characters of stdout. The two pipes may arrive in either order.
       expect(lines[3]).toBe("--- last 9 lines ---");
       expect(lines.slice(4, 13).sort()).toEqual([...FAILING_OUTPUT, "Error: 2 tests failed"].sort());
       expect(lines.slice(13)).toEqual([""]);
+      expect(r.stdout).not.toContain("more failures");
+      expect(r.stdout.length).toBeLessThanOrEqual(3800);
       const log = readFileSync(join(d.work, ".arbab-tmp", "checks", "unit-1.log"), "utf8");
       for (const line of [...FAILING_OUTPUT, "Error: 2 tests failed"]) expect(log).toContain(`${line}\n`);
       expect(log.length).toBe(FAILING_OUTPUT.join("\n").length + 1 + "Error: 2 tests failed\n".length);
+      expect(readdirSync(join(d.registry, "arbab-checks"))).toEqual([]);
+    } finally {
+      d.dispose();
+    }
+  }, 60_000);
+
+  it("keeps a huge failing run's stdout within 3800 characters, counting the failures left out, and logs it all", async () => {
+    const d = checkDir();
+    try {
+      writeFileSync(join(d.scripts, "huge.cjs"), HUGE);
+      const env = checkEnv(d, { unit: [process.execPath, join(d.scripts, "huge.cjs")] }, { cpus: 5, concurrent: 2, waitSec: 120 });
+      const r = await runCheckBundle(d.work, env, "unit");
+      expect(r.code, r.stderr).toBe(1);
+      expect(r.stdout.length).toBeLessThanOrEqual(3800);
+      const lines = r.stdout.split("\n");
+      expect(lines[0]).toMatch(/^arbab-check unit: exit 1 after \d+\.\ds on 4 CPUs; log \.arbab-tmp\/checks\/unit-1\.log$/);
+      const failures = lines.filter((l) => l.startsWith("arbab-check failure: "));
+      expect(failures.length).toBeGreaterThan(0);
+      expect(lines.slice(1, 1 + failures.length)).toEqual(failures);
+      for (const line of failures) {
+        expect(line.length).toBeLessThanOrEqual(200);
+        expect(line).toMatch(/^arbab-check failure: src\/d+ > s+ :: Error: m+$/);
+      }
+      expect(failures.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(2000);
+      expect(lines[1 + failures.length]).toBe(`arbab-check: ${50 - failures.length} more failures in the log`);
+      // The marker counts the tail lines actually printed: the newest, each cut to 240 characters.
+      const marker = lines[2 + failures.length] ?? "";
+      const tail = lines.slice(3 + failures.length, -1);
+      expect(marker).toBe(`--- last ${tail.length} lines ---`);
+      expect(tail.length).toBeGreaterThan(0);
+      expect(tail.length).toBeLessThan(60);
+      for (const line of tail) expect(line).toBe("x".repeat(240));
+      expect(lines.at(-1)).toBe("");
+      const log = readFileSync(join(d.work, ".arbab-tmp", "checks", "unit-1.log"), "utf8");
+      expect(log.split("\n").filter((l) => l.startsWith(" FAIL  "))).toHaveLength(50);
+      expect(log.endsWith(`${"x".repeat(5000)}\n`.repeat(100))).toBe(true);
       expect(readdirSync(join(d.registry, "arbab-checks"))).toEqual([]);
     } finally {
       d.dispose();

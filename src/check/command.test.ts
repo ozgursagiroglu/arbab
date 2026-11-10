@@ -88,6 +88,33 @@ describe("formatFailureLine and parseFailureLine", () => {
     expect(back?.test).toBe("t u");
     expect(back?.message.length).toBe(300);
   });
+  it("strips C0 and C1 controls, ESC included, from every field when formatting", () => {
+    const line = formatFailureLine({
+      file: "src/\u001b[31ma\u0007.ts\u0000",
+      test: "t\u001b]0;title\u0007\u009b2Jx\u0008",
+      message: "\u001b[2Kboom\u007f\u0085 here\u001b",
+    });
+    expect(line).toBe(`${FAILURE_PREFIX}src/a.ts > t]0;title2Jx :: boom here`);
+    expect(line).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
+    expect(parseFailureLine(line)).toEqual({ file: "src/a.ts", test: "t]0;title2Jx", message: "boom here" });
+  });
+  it("strips controls when parsing a line it did not write", () => {
+    const back = parseFailureLine(`${FAILURE_PREFIX}\u001b[1msrc/a.ts\u001b[0m > \u0007suite\u009d :: \u001b[31mfail\u0000ed\u001b[39m`);
+    expect(back).toEqual({ file: "src/a.ts", test: "suite", message: "failed" });
+    // A field that is only controls is no field.
+    expect(parseFailureLine(`${FAILURE_PREFIX}\u001b > \u0007 :: x`)).toEqual({ file: null, test: null, message: "x" });
+    expect(formatFailureLine({ file: "\u001b", test: "\u0000", message: "x" })).toBe(`${FAILURE_PREFIX}- :: x`);
+  });
+  it("cuts the file and the test to 200 characters each, the message to 300, on both sides", () => {
+    const line = formatFailureLine({ file: "f".repeat(500), test: "t".repeat(500), message: "m".repeat(500) });
+    expect(line).toBe(`${FAILURE_PREFIX}${"f".repeat(200)} > ${"t".repeat(200)} :: ${"m".repeat(300)}`);
+    expect(parseFailureLine(line)).toEqual({ file: "f".repeat(200), test: "t".repeat(200), message: "m".repeat(300) });
+    const raw = `${FAILURE_PREFIX}${"f".repeat(500)} > ${"t".repeat(500)} :: ${"m".repeat(500)}`;
+    expect(parseFailureLine(raw)).toEqual({ file: "f".repeat(200), test: "t".repeat(200), message: "m".repeat(300) });
+    // A cut that ends on a space is trimmed, so the line reads back as it was written.
+    const spaced = { file: `${"a".repeat(199)} b`, test: null, message: "x" };
+    expect(parseFailureLine(formatFailureLine(spaced))).toEqual({ file: "a".repeat(199), test: null, message: "x" });
+  });
   it("is null for any other line", () => {
     expect(parseFailureLine("FAIL src/a.test.ts")).toBeNull();
     expect(parseFailureLine(`${FAILURE_PREFIX}no separator`)).toBeNull();

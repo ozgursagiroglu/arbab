@@ -34,31 +34,44 @@ export function checkCommandLine(script: string, name: string): string {
 export const FAILURE_PREFIX = "arbab-check failure: ";
 /** A failure's message is cut to this many characters. */
 export const FAILURE_MESSAGE_MAX = 300;
+/** A failure's file and test are each cut to this many characters. */
+const FAILURE_FIELD_MAX = 200;
 
-const oneLine = (s: string): string => s.replace(/[\r\n\t]+/g, " ").trim();
+// Worker-written text reaches a terminal and a model: colour sequences go whole, then every other C0 and C1 control
+// (ESC, BEL, backspace, DEL…) so nothing can move a cursor, retitle a window or hide text.
+const CSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/** One line without controls, trimmed, cut to `max` characters. Applying it twice changes nothing. */
+const field = (s: string, max: number): string =>
+  s.replace(CSI, "").replace(/[\r\n\t]+/g, " ").replace(CONTROL, "").trim().slice(0, max).trim();
 
 /**
- * `arbab-check failure: <file>[ > <test>] :: <message>`, `-` for a missing file; one line, the message cut to
- * FAILURE_MESSAGE_MAX. arbab-check prints it, verify reads it back (parseFailureLine).
+ * `arbab-check failure: <file>[ > <test>] :: <message>`, `-` for a missing file; one line without control characters,
+ * the file and the test cut to 200 characters, the message to FAILURE_MESSAGE_MAX. arbab-check prints it, verify reads
+ * it back (parseFailureLine).
  */
 export function formatFailureLine(failure: CheckFailure): string {
-  const file = failure.file === null || oneLine(failure.file) === "" ? "-" : oneLine(failure.file);
-  const test = failure.test === null || oneLine(failure.test) === "" ? "" : ` > ${oneLine(failure.test)}`;
-  return `${FAILURE_PREFIX}${file}${test} :: ${oneLine(failure.message).slice(0, FAILURE_MESSAGE_MAX)}`;
+  const file = failure.file === null ? "" : field(failure.file, FAILURE_FIELD_MAX);
+  const test = failure.test === null ? "" : field(failure.test, FAILURE_FIELD_MAX);
+  return `${FAILURE_PREFIX}${file === "" ? "-" : file}${test === "" ? "" : ` > ${test}`} :: ${field(failure.message, FAILURE_MESSAGE_MAX)}`;
 }
 
-/** The failure a formatFailureLine line holds, or null for any other line. The file ends at the first ` > `. */
+/**
+ * The failure a formatFailureLine line holds, or null for any other line. The file ends at the first ` > `. The fields
+ * are cleaned and cut as formatFailureLine does, since the line may not come from it.
+ */
 export function parseFailureLine(line: string): CheckFailure | null {
   if (!line.startsWith(FAILURE_PREFIX)) return null;
   const body = line.slice(FAILURE_PREFIX.length);
   const split = body.indexOf(" :: ");
   if (split < 0) return null;
   const where = body.slice(0, split).trim();
-  const message = body.slice(split + 4).trim().slice(0, FAILURE_MESSAGE_MAX);
+  const message = field(body.slice(split + 4), FAILURE_MESSAGE_MAX);
   const gt = where.indexOf(" > ");
-  const file = gt < 0 ? where : where.slice(0, gt).trim();
-  const test = gt < 0 ? null : where.slice(gt + 3).trim() || null;
-  return { file: file === "" || file === "-" ? null : file, test, message };
+  const file = field(gt < 0 ? where : where.slice(0, gt), FAILURE_FIELD_MAX);
+  const test = gt < 0 ? "" : field(where.slice(gt + 3), FAILURE_FIELD_MAX);
+  return { file: file === "" || file === "-" ? null : file, test: test === "" ? null : test, message };
 }
 
 /** The default number of heavy checks that may run at once on a machine with `cpus` CPUs. */

@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
+import { checkCommandLine } from "../check/command";
 import { workerTmpPaths } from "../run/workertmp";
 import type { ClaudeSettings, CompiledProfile, ProfileInput, Role } from "../types";
 import { ArbabError } from "../util/errors";
@@ -22,6 +23,7 @@ export function compileProfile(input: ProfileInput): CompiledProfile {
     ...input.tools.filter((t) => FILE_TOOLS.has(t) && (!WRITE_TOOLS.has(t) || WRITERS.includes(input.role))),
     ...roleAllow(input.role),
     ...input.commands.flatMap(commandRules),
+    ...checkRules(input),
     ...input.laneAllow,
   ]);
   // Sandboxed Bash is auto-allowed in sandbox-auto; a Bash allow rule there could only approve an unsandboxed retry.
@@ -92,6 +94,24 @@ function envAllowReads(worktree: string, paths: string[]): string[] {
     }
     return normal;
   }));
+}
+
+/**
+ * `Bash(<line>)` and `Bash(<line> *)` per check name, for implementer and verifier only: the generated verify lane is a
+ * probe, and its exact rules come in its `allow` (DESIGN.md §22).
+ */
+function checkRules(input: ProfileInput): string[] {
+  const { checkScript: script, checkNames: names } = input;
+  if ((input.role !== "implementer" && input.role !== "verifier") || script === undefined || names === undefined) return [];
+  if (!isAbsolute(script)) throw new ArbabError("usage", `check script ${JSON.stringify(script)} must be an absolute path`);
+  // A `*` in a rule may match as a wildcard, quoted or not, and so let the rule run other scripts.
+  if (/[*\n\r]/.test(script)) {
+    throw new ArbabError("usage", `check script ${JSON.stringify(script)} must not contain "*" or a line break`);
+  }
+  return names.flatMap((name) => {
+    const line = checkCommandLine(script, name);
+    return [`Bash(${line})`, `Bash(${line} *)`];
+  });
 }
 
 function readAllow(): string[] {

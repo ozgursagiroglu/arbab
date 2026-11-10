@@ -33,16 +33,19 @@ import {
   type Holder,
   type Worktree,
 } from "../run";
+import { admissionDecision } from "../run/pressure";
 import type {
   EndState,
   LaneSpec,
   LaneState,
   LaneStateRecord,
   Lease,
+  MachineConfig,
+  MemoryPressureHold,
   ProjectConfig,
   RateLimitSnapshot,
 } from "../types";
-import { NO_FREE_SLOT_REASON } from "../types";
+import { DEFAULT_LOAD_PER_CPU, DEFAULT_MEMORY_PRESSURE_HOLD, NO_FREE_SLOT_REASON } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -101,6 +104,23 @@ export function slotCap(home: string, projectMax: number): number {
     // Half-written or invalid: this poll goes by the project, the next one reads it again.
   }
   return Math.min(projectMax, machine ?? projectMax);
+}
+
+/**
+ * The admission limits for one poll, from ~/.arbab/machine.json (DESIGN.md §22). Read on each poll so a held shepherd
+ * sees an edit; an unreadable file gives the defaults.
+ */
+export function admissionLimits(home: string): { loadPerCpu: number; memoryPressure: MemoryPressureHold } {
+  let admission: MachineConfig["admission"] = { loadPerCpu: null, memoryPressure: null };
+  try {
+    admission = loadMachineConfig(home).admission;
+  } catch {
+    // Half-written or invalid: this poll goes by the defaults, the next one reads it again.
+  }
+  return {
+    loadPerCpu: admission.loadPerCpu ?? DEFAULT_LOAD_PER_CPU,
+    memoryPressure: admission.memoryPressure ?? DEFAULT_MEMORY_PRESSURE_HOLD,
+  };
 }
 
 /** What a lane holds machine-wide, released together when the lane finishes. */
@@ -200,11 +220,28 @@ export async function runShepherd(
     held.slot = null;
     releaseSlot(deps.home, slot, holder);
   };
-  // The quota first, then a slot, then the quota again (it may have filled while the lane waited for the slot): a
-  // lane held for quota never holds a slot, so "no free slot" means what it says (DESIGN.md §21).
+  // The machine is read on every poll, as slotCap reads it: a held shepherd sees an edit to machine.json.
+  const awaitMachine = async (): Promise<void> => {
+    for (;;) {
+      checkStop();
+      const decision = admissionDecision({
+        cpus: deps.cpus(),
+        loadAvg: deps.loadAvg(),
+        pressure: deps.memoryPressure(),
+        ...admissionLimits(deps.home),
+      });
+      if (!decision.hold) return;
+      setState("held", { reason: decision.reason ?? "machine load" });
+      await pause(deps.slotPollMs);
+    }
+  };
+  // The quota first, then the machine, then a slot, then the quota again (it may have filled while the lane waited for
+  // the slot): a lane held for quota or for the machine never holds a slot, so "no free slot" means what it says
+  // (DESIGN.md §21, §22).
   const awaitSlot = async (): Promise<void> => {
     for (;;) {
       await awaitQuota();
+      await awaitMachine();
       for (;;) {
         checkStop();
         held.slot = acquireSlot(deps.home, slotCap(deps.home, config.maxParallel), holder, deps.alive);
@@ -490,10 +527,13 @@ async function prepare(
           `then launch ${lane.name} again`,
       );
     }
-    const dependencies = prepareDependencies(config.dependencies, worktree, deps.runCommand);
-    if (!dependencies.ok) {
-      const tail = dependencies.output.trim().split("\n").slice(-5).join("\n");
-      throw new ArbabError("runtime", `dependencies failed (${dependencies.code}): ${tail}`);
+    // A lane that only reads (install: false) starts without the install; the tree is checked and merged all the same.
+    if (lane.install !== false) {
+      const dependencies = prepareDependencies(config.dependencies, worktree, deps.runCommand, { projectRoot: root, installedAt, git: deps.git });
+      if (!dependencies.ok) {
+        const tail = dependencies.output.trim().split("\n").slice(-5).join("\n");
+        throw new ArbabError("runtime", `dependencies failed (${dependencies.code}): ${tail}`);
+      }
     }
     // The base first: the lane's own branches were written on top of it.
     const branches = [...(merge === null ? [] : [{ branch: base, sha: merge }]), ...(lane.mergeBranches ?? [])];

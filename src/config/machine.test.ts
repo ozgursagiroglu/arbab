@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ArbabError } from "../util/errors";
-import { defaultMachineConfig, loadMachineConfig } from "./index";
+import { defaultMachineConfig, loadMachineConfig, loadMachineConfigLenient } from "./index";
 
 let home: string;
 beforeEach(() => {
@@ -114,5 +114,65 @@ describe("loadMachineConfig: checks and admission (DESIGN.md §22)", () => {
       expect(err.code).toBe("config");
       expect(err.message).toContain(field);
     }
+  });
+});
+
+describe("loadMachineConfigLenient", () => {
+  const full = { maxParallel: 3, checks: { concurrent: 2, waitSec: 30 }, admission: { loadPerCpu: 1.5, memoryPressure: "warn" } };
+
+  it("gives every default and no error when the file is missing", () => {
+    expect(loadMachineConfigLenient(home)).toEqual({ config: defaultMachineConfig(), errors: [] });
+  });
+
+  it("reads a valid file as loadMachineConfig does, with no error", () => {
+    write(JSON.stringify(full));
+    expect(loadMachineConfigLenient(home)).toEqual({ config: loadMachineConfig(home), errors: [] });
+  });
+
+  it("gives every default and one error for invalid JSON or a non-object", () => {
+    for (const text of ["{", "[]", "3", '"x"']) {
+      write(text);
+      const r = loadMachineConfigLenient(home);
+      expect(r.config).toEqual(defaultMachineConfig());
+      expect(r.errors).toHaveLength(1);
+    }
+  });
+
+  it("keeps an invalid maxParallel's default and the other fields", () => {
+    write(JSON.stringify({ ...full, maxParallel: 0 }));
+    const r = loadMachineConfigLenient(home);
+    expect(r.config).toEqual({ ...full, maxParallel: null });
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toContain("maxParallel");
+  });
+
+  it("keeps an invalid checks' default and the other fields", () => {
+    write(JSON.stringify({ ...full, checks: { concurrent: 2, waitSec: 901 } }));
+    const r = loadMachineConfigLenient(home);
+    expect(r.config).toEqual({ ...full, checks: { concurrent: null, waitSec: null } });
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toContain("checks.waitSec");
+  });
+
+  it("keeps an invalid admission's default and maxParallel with it", () => {
+    write(JSON.stringify({ ...full, admission: { loadPerCpu: 1, memoryPresure: "warn" } }));
+    const r = loadMachineConfigLenient(home);
+    expect(r.config).toEqual({ ...full, admission: { loadPerCpu: null, memoryPressure: null } });
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toContain("admission.memoryPresure");
+  });
+
+  it("names an unknown top-level key and still reads the known ones", () => {
+    write(JSON.stringify({ maxParallel: 2, maxparallel: 3 }));
+    const r = loadMachineConfigLenient(home);
+    expect(r.config.maxParallel).toBe(2);
+    expect(r.errors).toEqual(["machine.json.maxparallel: unknown key"]);
+  });
+
+  it("collects one error per invalid field", () => {
+    write(JSON.stringify({ maxParallel: "4", checks: [], admission: { loadPerCpu: -1 } }));
+    const r = loadMachineConfigLenient(home);
+    expect(r.config).toEqual(defaultMachineConfig());
+    expect(r.errors).toHaveLength(3);
   });
 });

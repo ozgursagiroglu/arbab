@@ -91,6 +91,16 @@ function laneKind(name: string, generatedBy: string | null, preflightBrief: bool
   return "lane";
 }
 
+// The admission reasons (src/run/pressure.ts admissionDecision); every other held reason is the quota's.
+const MACHINE_HOLD_PREFIXES = ["machine load ", "memory pressure "];
+
+/** Why a held lane waits, from its state record's reason. */
+function holdKind(reason: unknown): NonNullable<UiLane["hold"]> {
+  if (reason === NO_FREE_SLOT_REASON) return "slot";
+  if (typeof reason === "string" && MACHINE_HOLD_PREFIXES.some((p) => reason.startsWith(p))) return "machine";
+  return "quota";
+}
+
 function readSummary(runsRoot: string, lane: string, attempt: number): AttemptSummary | null {
   const value = readJson<unknown>(attemptFiles(runPaths(runsRoot, lane).attemptDir(attempt)).summary);
   if (value === null) return null;
@@ -167,7 +177,7 @@ function readLane(source: SnapshotSource, name: string, record: LaneStateRecord,
     worktreeOf: isValidName(worktree) && worktree !== name ? worktree : null,
     state,
     endState: row.endState,
-    hold: state === "held" ? (record.reason === NO_FREE_SLOT_REASON ? "slot" : "quota") : null,
+    hold: state === "held" ? holdKind(record.reason) : null,
     reason,
     until,
     attempt: record.attempt,

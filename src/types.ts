@@ -227,7 +227,7 @@ export type MemoryPressureLevel = "normal" | "warn" | "critical";
 /** The memory pressure that holds a launch: macOS's warn or critical level (Linux: PSI thresholds), or never. */
 export type MemoryPressureHold = "warn" | "critical" | "off";
 export const MEMORY_PRESSURE_HOLDS: readonly MemoryPressureHold[] = ["warn", "critical", "off"];
-export const DEFAULT_CHECK_WAIT_SEC = 120;
+export const DEFAULT_CHECK_WAIT_SEC = 60;
 export const DEFAULT_LOAD_PER_CPU = 3;
 export const DEFAULT_MEMORY_PRESSURE_HOLD: MemoryPressureHold = "critical";
 /** config review.maxParallel when unset. */

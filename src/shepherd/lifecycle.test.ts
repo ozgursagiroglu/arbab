@@ -20,7 +20,7 @@ import { writerLockKey } from "../run";
 import type { AttemptExit, AttemptStarted, AttemptSummary, LaneSpec, LaneStateRecord, RateLimitSnapshot } from "../types";
 import { isAlive, sendSignal } from "../util/proc";
 import { CONTINUATION_PROMPT, runShepherd, type ShepherdDeps } from "./index";
-import { ignoreEntries, resetSince, slotCap, usageLimitResetsAt } from "./lifecycle";
+import { admissionLimits, ignoreEntries, resetSince, slotCap, usageLimitResetsAt } from "./lifecycle";
 
 let project: TestProject;
 
@@ -825,6 +825,33 @@ describe("runShepherd", () => {
     expect(merges()).toHaveLength(1);
   });
 
+  it("runs no dependency command for an install: false lane, and merges its branches as usual", async () => {
+    project.cleanup();
+    const dir = mkdtempSync(join(tmpdir(), "arbab-deps-"));
+    const count = join(dir, "count");
+    try {
+      project = makeProject({
+        dependencies: { strategy: "command", command: [process.execPath, "-e", "require('fs').appendFileSync(process.argv[1], 'x')", count] },
+      });
+      const up = branchWith("arbab/up", "up.txt", "from up\n");
+      project.scenario({ fixture: fixture("success-report") });
+      project.lane({ name: "m1-b", install: false, mergeBranches: ["arbab/up"] });
+
+      expect(await runShepherd(project.root, "m1-b", { kind: "start" }, testDeps(project), never())).toBe("success");
+      expect(existsSync(count)).toBe(false);
+      const started = readJsonFile<AttemptStarted & { merged?: unknown }>(attemptFiles(attemptDir("m1-b", 1)).started);
+      expect(started.merged).toEqual([{ branch: "arbab/up", sha: up }]);
+      expect(readFileSync(join(started.cwd, "up.txt"), "utf8")).toBe("from up\n");
+
+      // The same project installs for a lane that does not opt out.
+      project.lane({ name: "m1-c" });
+      expect(await runShepherd(project.root, "m1-c", { kind: "start" }, testDeps(project), never())).toBe("success");
+      expect(readFileSync(count, "utf8")).toBe("x");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fails setup on a conflicting merge, naming the path, and starts no worker", async () => {
     branchWith("arbab/a", "shared.txt", "from a\n");
     branchWith("arbab/c", "shared.txt", "from c\n");
@@ -1557,6 +1584,164 @@ describe("runShepherd: slots, owners, events, timing and inputs (DESIGN.md §21)
     expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("failed");
     expect(stateOf("m1-a")).toMatchObject({ endState: "failed", reason: expect.stringMatching(/brief: lanes\/brief\.md matches the credential path lanes\/brief\.md/) });
     expect(attempts("m1-a")).toHaveLength(0);
+  });
+});
+
+describe("runShepherd: admission by machine load (DESIGN.md §22)", () => {
+  const machine = (value: unknown): void => {
+    mkdirSync(project.home, { recursive: true });
+    writeFileSync(join(project.home, "machine.json"), typeof value === "string" ? value : JSON.stringify(value));
+  };
+  const heldFor = (reason: RegExp): Promise<LaneStateRecord> =>
+    until(() => {
+      const s = stateOf("m1-a");
+      return s?.state === "held" && reason.test(s.reason ?? "") ? s : undefined;
+    });
+  const settle = (): Promise<void> => new Promise((d) => setTimeout(d, 150));
+  const heldReasons = (): Array<string | undefined> =>
+    readLaneEvents(join(project.root, ".arbab", "runs"), "m1-a")
+      .filter((e) => e.state === "held")
+      .map((e) => e.reason);
+  const start = (overrides: Partial<ShepherdDeps>): Promise<string> => {
+    project.scenario({ fixture: fixture("success-report") });
+    project.lane({ name: "m1-a" });
+    return runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project, { slotPollMs: 30, ...overrides }), never());
+  };
+
+  it("holds a lane while the load per CPU is at the default 3 or above, holding no slot, and starts it once it drops", async () => {
+    let load = 34.24;
+    const done = start({ loadAvg: () => load });
+    await heldFor(/^machine load 34\.2 on 8 CPUs$/);
+    await settle();
+    expect(poolEntries("slots")).toEqual([]);
+    expect(project.calls()).toEqual([]);
+    load = 23.9;
+    expect(await done).toBe("success");
+    expect(heldReasons()).toEqual(["machine load 34.2 on 8 CPUs"]);
+  });
+
+  it("holds a lane at critical memory pressure by default, not at warn, holding no slot", async () => {
+    let pressure: "normal" | "warn" | "critical" = "critical";
+    const done = start({ memoryPressure: () => pressure });
+    await heldFor(/^memory pressure critical$/);
+    await settle();
+    expect(poolEntries("slots")).toEqual([]);
+    expect(project.calls()).toEqual([]);
+    pressure = "warn";
+    expect(await done).toBe("success");
+    expect(heldReasons()).toEqual(["memory pressure critical"]);
+  });
+
+  it("reads machine.json's admission on every poll", async () => {
+    machine({ admission: { memoryPressure: "warn" } });
+    const done = start({ memoryPressure: () => "warn" });
+    await heldFor(/^memory pressure warn$/);
+    await settle();
+    expect(project.calls()).toEqual([]);
+    machine({ admission: { memoryPressure: "critical" } });
+    expect(await done).toBe("success");
+  });
+
+  it("never holds with admission off, however loaded the machine", async () => {
+    machine({ admission: { loadPerCpu: 0, memoryPressure: "off" } });
+    expect(await start({ loadAvg: () => 500, memoryPressure: () => "critical" })).toBe("success");
+    expect(heldReasons()).toEqual([]);
+  });
+
+  it("never holds on a pressure it cannot read", async () => {
+    machine({ admission: { memoryPressure: "warn" } });
+    expect(await start({ memoryPressure: () => null })).toBe("success");
+    expect(heldReasons()).toEqual([]);
+  });
+
+  it("goes by the defaults while machine.json is unreadable", async () => {
+    machine("{");
+    const done = start({ loadAvg: () => 24 });
+    await heldFor(/^machine load 24\.0 on 8 CPUs$/);
+    machine({ admission: { loadPerCpu: 4 } });
+    expect(await done).toBe("success");
+  });
+
+  it("checks the quota before the machine", async () => {
+    const nowSec = FIXTURE_RESET_SEC - 3600;
+    const quota = (utilization: number): void => {
+      mkdirSync(project.home, { recursive: true });
+      const snapshot: RateLimitSnapshot = {
+        observedAt: new Date(nowSec * 1000).toISOString(),
+        status: "allowed_warning",
+        type: "five_hour",
+        fiveHour: { utilization, resetsAt: nowSec + 7200 },
+        sevenDay: null,
+      };
+      writeFileSync(join(project.home, "quota.json"), JSON.stringify(snapshot));
+    };
+    quota(0.9);
+    let load = 40;
+    const done = start({ holdPollMs: 30, loadAvg: () => load });
+    await heldFor(/five-hour window at 90%/);
+    quota(0.5);
+    await heldFor(/^machine load 40\.0 on 8 CPUs$/);
+    expect(poolEntries("slots")).toEqual([]);
+    load = 0;
+    expect(await done).toBe("success");
+    expect(heldReasons()).toEqual([expect.stringMatching(/five-hour window/), "machine load 40.0 on 8 CPUs"]);
+  });
+
+  it("holds a lane resuming after a usage limit for the machine, without its slot", async () => {
+    project.scenario({ fixture: "usage-limit", resumeFixture: fixture("resume-success") });
+    project.lane({ name: "m1-a" });
+    let load = 0;
+    let heldPolls = 0;
+    let slotsWhileHeld: string[] | null = null;
+    const deps = testDeps(project, { loadAvg: () => load });
+    const sleep = deps.sleep;
+    deps.sleep = (ms) => {
+      const s = stateOf("m1-a");
+      if (s?.state === "waiting-reset") load = 40;
+      if (s?.state === "held" && s.reason === "machine load 40.0 on 8 CPUs") {
+        slotsWhileHeld ??= poolEntries("slots");
+        heldPolls += 1;
+        if (heldPolls === 2) load = 0;
+      }
+      return sleep(ms);
+    };
+    expect(await runShepherd(project.root, "m1-a", { kind: "start" }, deps, never())).toBe("success");
+    expect(attempts("m1-a")).toEqual(["attempt-1", "attempt-2"]);
+    expect(heldPolls).toBeGreaterThanOrEqual(2);
+    expect(slotsWhileHeld).toEqual([]);
+    const states = readLaneEvents(join(project.root, ".arbab", "runs"), "m1-a").map((e) => e.state);
+    expect(states.indexOf("held")).toBeGreaterThan(states.indexOf("waiting-reset"));
+  });
+});
+
+describe("admissionLimits", () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), "arbab-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+  const machine = (text: string): void => writeFileSync(join(home, "machine.json"), text);
+
+  it("is the defaults without machine.json or with its fields null", () => {
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 3, memoryPressure: "critical" });
+    machine(JSON.stringify({ admission: { loadPerCpu: null, memoryPressure: null } }));
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 3, memoryPressure: "critical" });
+  });
+
+  it("takes machine.json's values, 0 and off included", () => {
+    machine(JSON.stringify({ admission: { loadPerCpu: 1.5, memoryPressure: "warn" } }));
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 1.5, memoryPressure: "warn" });
+    machine(JSON.stringify({ admission: { loadPerCpu: 0, memoryPressure: "off" } }));
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 0, memoryPressure: "off" });
+  });
+
+  it("is the defaults when machine.json does not parse or is invalid", () => {
+    machine("{");
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 3, memoryPressure: "critical" });
+    machine(JSON.stringify({ admission: { memoryPressure: "always" } }));
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 3, memoryPressure: "critical" });
   });
 });
 

@@ -388,4 +388,57 @@ describe("compileProfile, fence sandbox-auto", () => {
     const profile = compileProfile(input("probe", { fence: "sandbox-auto" }));
     expect(profile.settings.permissions.allow).toEqual(["Read", "Write"]);
   });
+
+  it("drops the check rules too", () => {
+    const profile = compileProfile(input("implementer", { fence: "sandbox-auto", checkScript: SCRIPT, checkNames: ["lint"] }));
+    expect(profile.settings.permissions.allow).toEqual(["Read", "Edit", "Write", "Glob", "Grep"]);
+  });
+});
+
+const SCRIPT = "/work/repo/.arbab/runs/lane-a/bin/arbab-check.mjs";
+
+describe("compileProfile, check rules", () => {
+  it.each(["implementer", "verifier"] as const)("gives a %s the exact and the with-arguments rule per name", (role) => {
+    const profile = compileProfile(input(role, { commands: ["pnpm test"], checkScript: SCRIPT, checkNames: ["lint", "typecheck"] }));
+    expect(profile.settings.permissions.allow).toEqual([
+      "Read", "Edit", "Write", "Glob", "Grep", ...READ_BASH, ...FILE_BASH,
+      "Bash(pnpm test)",
+      "Bash(pnpm test *)",
+      `Bash(node ${SCRIPT} lint)`,
+      `Bash(node ${SCRIPT} lint *)`,
+      `Bash(node ${SCRIPT} typecheck)`,
+      `Bash(node ${SCRIPT} typecheck *)`,
+    ]);
+  });
+
+  it.each(["reviewer", "researcher", "probe"] as const)("gives a %s no rule from the check fields", (role) => {
+    const allow = compileProfile(input(role, { checkScript: SCRIPT, checkNames: ["lint"] })).settings.permissions.allow;
+    expect(allow.some((rule) => rule.includes("arbab-check"))).toBe(false);
+  });
+
+  it("adds nothing unless both the script and the names are set", () => {
+    const plain = compileProfile(input("implementer")).settings.permissions.allow;
+    expect(compileProfile(input("implementer", { checkScript: SCRIPT })).settings.permissions.allow).toEqual(plain);
+    expect(compileProfile(input("implementer", { checkNames: ["lint"] })).settings.permissions.allow).toEqual(plain);
+    expect(compileProfile(input("implementer", { checkScript: SCRIPT, checkNames: [] })).settings.permissions.allow).toEqual(plain);
+  });
+
+  it("quotes a script path that needs it, as checkCommandLine does", () => {
+    const script = "/work/my repo/.arbab/runs/lane-a/bin/arbab-check.mjs";
+    const allow = compileProfile(input("implementer", { checkScript: script, checkNames: ["lint"] })).settings.permissions.allow;
+    expect(allow).toContain(`Bash(node '${script}' lint)`);
+    expect(allow).toContain(`Bash(node '${script}' lint *)`);
+  });
+
+  it.each([
+    ["a relative script", { checkScript: "bin/arbab-check.mjs", checkNames: ["lint"] }],
+    ["a script with a wildcard", { checkScript: "/work/*/arbab-check.mjs", checkNames: ["lint"] }],
+    ["a script with a line break", { checkScript: "/work/a\nb/arbab-check.mjs", checkNames: ["lint"] }],
+  ])("refuses %s", (_, over) => {
+    expect(() => compileProfile(input("implementer", over))).toThrow(ArbabError);
+  });
+
+  it("refuses a check name that is not one", () => {
+    expect(() => compileProfile(input("verifier", { checkScript: SCRIPT, checkNames: ["Lint; rm"] }))).toThrow(/check name/);
+  });
 });

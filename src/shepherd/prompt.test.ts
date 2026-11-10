@@ -139,6 +139,30 @@ describe("buildBrief", () => {
     expect(buildBrief(input)).not.toContain("## Inputs");
   });
 
+  it("gives the tool belt the lane's checks and config gates, with or without a head start", () => {
+    writeFileSync(join(dir, "brief.md"), "# Lane x\n\n## Task\n\nDo it.\n");
+    const worktree = join(dir, "wt");
+    const input = {
+      projectRoot: dir,
+      runsRoot: runs,
+      config: { ...defaultConfig(), gates: [["pnpm", "typecheck"], ["pnpm", "test"]] },
+      lane: { name: "x", role: "implementer" as const, brief: "brief.md" },
+      branch: "arbab/x",
+      worktree,
+      profile: profile(worktree),
+      leases: [],
+      schema: DEFAULT_SCHEMAS.implementer,
+    };
+    const checks = { script: join(runs, "x", "bin", "arbab-check.mjs"), names: ["lint"] };
+    const gates = "- The integration's verify runs the repository gates for every lane together: `pnpm typecheck`, `pnpm test`.";
+    for (const text of [buildBrief({ ...input, checks }), buildBrief({ ...input, checks, headStart: "## Head start\n\nh\n" })]) {
+      expect(text).toContain(`with \`node ${checks.script} <name>\` (names: \`lint\`).`);
+      expect(text).toContain(gates);
+    }
+    expect(buildBrief(input)).not.toContain("Heavy checks");
+    expect(buildBrief({ ...input, lane: { ...input.lane, role: "reviewer" } })).not.toContain(gates);
+  });
+
   it("fails when the brief or an instruction file is missing", () => {
     const worktree = join(dir, "wt");
     const input = {

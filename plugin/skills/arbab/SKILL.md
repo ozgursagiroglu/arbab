@@ -59,7 +59,7 @@ urgent small fixes, even inside an arbab session. A lane pays for a worktree, a 
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
      `maxParallel` (default 4), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`, `worktrees.idleDays`.
 3. Machine-wide limits go in `~/.arbab/machine.json`: `maxParallel` caps every project's; `checks` bounds heavy
-   checks (`concurrent`, default a quarter of the CPUs; `waitSec`, default 120, then a check runs anyway); `admission`
+   checks (`concurrent`, default a quarter of the CPUs; `waitSec`, default 60, then a check runs anyway); `admission`
    holds launches (`loadPerCpu`, default 3, 0 off; `memoryPressure`: `warn`, `critical` (default) or `off`).
 4. arbab excludes `.arbab/` and `.arbab-tmp/` in `info/exclude` and checks it, so lane files, briefs, plans and
    helpers you keep under `.arbab/` (say `.arbab/lanes/`) never dirty a client checkout; arbab writes `.arbab/plans/`.
@@ -127,7 +127,7 @@ A lane file (`lanes/<name>.json`) names the brief and overrides role defaults. P
 | `checkpoint`, `autoResume`, `maxAttempts` | Commit WIP on exit; resume after usage limits; attempt cap |
 | `coordination` | Sibling lanes and their scopes, inlined into the brief |
 | `install` | `false`: no dependency install in the worktree, for a lane that only reads (default `true`) |
-| `checks` | The lane's own heavy checks (name → argv), replacing config `checks` |
+| `checks` | The lane's own heavy checks (name → argv), replacing config `checks`. Implementer and verifier lanes get their check commands; other roles only the environment, not the rules to run them |
 | `inputs` | Files or folders outside the repository the worker must read (absolute, `~/` or project-relative; at most 20, 50 MB in all). Copied afresh to `.arbab-tmp/inputs/<name>` on every run and named in the brief; credential paths are refused |
 
 Role defaults:
@@ -380,7 +380,8 @@ Landing works on a named integration; its records live in `.arbab/integrations/<
 ## Do not
 
 - Name a lane `integrate-…` (the integration worktrees' namespace), or launch a lane under a name that `verify` or
-  `review` generated (`<name>-verify`, `<name>-review-<lens>`, `<name>-skeptic-<lens>`): arbab refuses both.
+  `review` generated (`<name>-verify`, `<name>-review-<lens>`, `<name>-skeptic-<lens>`): arbab refuses both. Nor
+  pick an integration name whose generated names a lane or phase holds (`m4` with a phase `m4-verify`): `integrate` refuses.
 - Expect arbab's own commits and merges to run your repository's git hooks: on the host they would be worker code
   (a hooks path like husky's resolves inside the worker-written tree). The checks those hooks run belong in
   `gates`, which run inside the fence.

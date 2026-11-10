@@ -1,12 +1,14 @@
 // The shepherd supervises one lane from launch to finish (DESIGN.md §2): slot, quota, worktree, dependencies,
 // leases, the worker's attempts, auto-resume after a usage limit, and the release of everything it held.
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { availableParallelism, homedir, loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { findOnPath, pathExists, realpath, runVersion } from "../binary";
 import { runnerPath } from "../registry";
 import { isPortFree, nodeGit, readPs, runArgv } from "../run";
 import type { ArgvRunner, GitRunner, PortProbe, SpawnImpl } from "../run";
+import { readMemoryPressure } from "../run/pressure";
 import { isAlive, sendSignal, sleep, systemClock } from "../util/proc";
 import type { Clock } from "../util/proc";
 import type { MemoryPressureLevel } from "../types";
@@ -68,6 +70,24 @@ export interface ShepherdDeps {
   reapGraceMs: number;
 }
 
+/** A command's stdout, or null on any failure: a reading that fails never holds a launch (DESIGN.md §22). */
+export function execQuietly(file: string, args: string[]): string | null {
+  try {
+    return execFileSync(file, args, { encoding: "utf8", timeout: 2_000, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return null;
+  }
+}
+
+/** A file's text, or null when it cannot be read. */
+export function readQuietly(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
 /** The real effects. This is the only place the shepherd reads the process environment and the home directory. */
 export function defaultDeps(): ShepherdDeps {
   const home = homedir();
@@ -98,8 +118,7 @@ export function defaultDeps(): ShepherdDeps {
     runner: runnerPath(process.argv[1] ?? ""),
     cpus: () => availableParallelism(),
     loadAvg: () => loadavg()[0] ?? 0,
-    // The reader comes with the ld-shepherd lane (src/run/pressure.ts, DESIGN.md §22); null never holds a launch.
-    memoryPressure: () => null,
+    memoryPressure: () => readMemoryPressure(process.platform, execQuietly, readQuietly),
     tickMs: 10_000,
     holdPollMs: 60_000,
     slotPollMs: 15_000,

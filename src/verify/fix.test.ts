@@ -1,5 +1,9 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { lintBrief } from "../brief/lint";
+import { loadLane } from "../config/lane";
 import { parseBriefSource } from "../brief/parse";
 import { STRICT } from "../brief/test-profiles";
 import { inlineCodeSpans } from "../brief/markdown";
@@ -91,13 +95,32 @@ describe("fixDraft", () => {
   const VERIFY_PATH = "/work/project/.arbab/integrations/rel/verify.json";
   const input = { name: "rel", k: 2, briefPath: ".arbab/integrations/rel/fix/fix-2.md", verifyPath: VERIFY_PATH, record, candidates };
 
-  it("drafts an implementer lane on integrate/<name>", () => {
+  it("drafts an implementer lane on integrate/<name>, with verify.json as an input", () => {
     expect(fixDraft(input).lane).toEqual({
       name: "rel-fix-2",
       role: "implementer",
       brief: ".arbab/integrations/rel/fix/fix-2.md",
       base: "integrate/rel",
+      inputs: [VERIFY_PATH],
     });
+  });
+
+  it("writes a lane file that loads with its input", () => {
+    const root = mkdtempSync(join(tmpdir(), "arbab-"));
+    try {
+      const dir = join(root, ".arbab", "integrations", "rel");
+      mkdirSync(join(dir, "fix"), { recursive: true });
+      const verifyPath = join(dir, "verify.json");
+      writeFileSync(verifyPath, "{}\n");
+      const draft = fixDraft({ ...input, verifyPath });
+      writeFileSync(join(dir, "fix", "fix-2.md"), draft.brief);
+      writeFileSync(join(dir, "fix", "fix-2.json"), JSON.stringify(draft.lane, null, 2) + "\n");
+      const lane = loadLane(root, ".arbab/integrations/rel/fix/fix-2.json");
+      expect(lane.inputs).toEqual([verifyPath]);
+      expect(lane.base).toBe("integrate/rel");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("refuses a lane name too long, and an invalid integration name", () => {
@@ -142,22 +165,45 @@ describe("fixDraft", () => {
     expect(scope).toContain(`and ${50 + 2 - FIX_SCOPE_MAX} more files`);
   });
 
-  it("states the candidates' changed files and the record's absolute path as facts", () => {
-    const facts = parseBriefSource(fixDraft(input).brief).sections.Facts ?? "";
+  it("states the candidates' changed files and the record's copy in the worktree as facts", () => {
+    const { brief } = fixDraft(input);
+    const facts = parseBriefSource(brief).sections.Facts ?? "";
     expect(facts).toContain("- Lane `a` may explain 1 of the failures; it changed `src/a/x.ts`, `src/a/y.ts`.");
     expect(facts).toContain("- Lane `b` may explain 1 of the failures; it changed `src/b/z.ts`.");
-    // A worktree has no .arbab: the fix worker reads the record in the main checkout.
-    expect(facts).toContain(`- The verify record, with every result and failure: \`${VERIFY_PATH}\`.`);
+    // The worker may not open the main checkout: it reads the input copy the shepherd makes before every run.
+    expect(facts).toContain("- The verify record, with every result and failure: `.arbab-tmp/inputs/verify.json`.");
+    expect(brief).not.toContain(VERIFY_PATH);
     const none = parseBriefSource(fixDraft({ ...input, candidates: [] }).brief).sections.Facts ?? "";
     expect(none).toContain("No merged lane changed");
   });
 
-  it("asks in plain text, without inline code, for the failures and each failed command", () => {
+  it("asks in plain text, without inline code, for the failures, and leaves each failed command to verify", () => {
     const acceptance = parseBriefSource(fixDraft(input).brief).sections.Acceptance ?? "";
     expect(acceptance).toBe(
-      ["- [ ] The failures in the Task no longer fail.", "- [ ] Gate 2 exits 0 again (pnpm test).", "- [ ] The smoke command exits 0 again (node smoke.mjs)."].join("\n"),
+      [
+        "- [ ] The failures in the Task no longer fail.",
+        "- [ ] The integration's verify will run gate 2 again (pnpm test).",
+        "- [ ] The integration's verify will run the smoke command again (node smoke.mjs).",
+      ].join("\n"),
     );
     expect(inlineCodeSpans(acceptance)).toEqual([]);
+  });
+
+  it("checks the fix by file and the lane's checks, never by running the failed gates", () => {
+    const { failures: _dropped, ...bare } = record;
+    for (const r of [record, bare]) {
+      const task = parseBriefSource(fixDraft({ ...input, record: r }).brief).sections.Task ?? "";
+      expect(task).toContain(
+        [
+          "To check the fix, do not run the failed commands themselves:",
+          "",
+          "- Run the failing tests by file, one file per call.",
+          "- For a failed typecheck or lint gate, run the lane's matching check when it has one, or the narrowest command your tool belt allows.",
+          "- The integration's verify runs every gate again after this lane.",
+        ].join("\n"),
+      );
+      expect(task).not.toMatch(/run them yourself|exits 0 again/);
+    }
   });
 
   it("keeps backticks and newlines in a command or file from breaking the brief", () => {
@@ -175,7 +221,7 @@ describe("fixDraft", () => {
         "1 named file is not a plain relative path and is left out of Scope.",
     );
     expect(source.sections.Task).toContain('"file": "src/``odd``.ts"');
-    expect(source.sections.Acceptance).toContain("- [ ] Gate 1 exits 0 again.");
+    expect(source.sections.Acceptance).toContain("- [ ] The integration's verify will run gate 1 again.");
     expect(inlineCodeSpans(source.sections.Acceptance ?? "")).toEqual([]);
     expect(lintBrief(brief, source, STRICT)).toEqual([]);
   });
@@ -195,7 +241,8 @@ describe("fixDraft", () => {
     for (const r of [record, bare]) {
       const { brief } = fixDraft({ ...input, record: r });
       expect(brief).not.toMatch(/\blogs?\b/i);
-      expect(brief).not.toContain(".arbab-tmp");
+      // The only .arbab-tmp path is the verify record's input copy.
+      expect(brief.match(/\.arbab-tmp\/[^`\s]*/g)).toEqual([".arbab-tmp/inputs/verify.json"]);
     }
   });
 

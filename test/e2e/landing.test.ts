@@ -278,6 +278,7 @@ describe("arbab landing end to end", () => {
       role: "implementer",
       brief: ".arbab/integrations/rel/fix/fix-1.md",
       base: "integrate/rel",
+      inputs: [join(integrationDir(project), "verify.json")],
     });
     const brief = parseBriefSource(readFileSync(join(integrationDir(project), "fix", "fix-1.md"), "utf8"));
     expect(brief.sections.Facts).toContain("- Lane `a` may explain 1 of the failures; it changed `a/out.txt`.");

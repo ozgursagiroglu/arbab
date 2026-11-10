@@ -1036,6 +1036,24 @@ describe("runShepherd", () => {
       expect(branchHead("arbab/m1-a")).toBe(head);
     });
 
+    it("is rebuilt with the install for a borrower with install: false: the owner's worktree keeps its dependencies", async () => {
+      const seen = recordingProject();
+      project.scenario({ fixture: fixture("success-report"), touch: "src/a.ts" });
+      project.lane({ name: "m1-a" });
+      expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
+      const a = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 1)).started);
+      expect(readFileSync(seen, "utf8")).toBe("base,");
+      rmSync(a.cwd, { recursive: true, force: true });
+
+      project.scenario({ fixture: fixture("success-report") });
+      project.lane({ name: "m1-v", role: "verifier", worktree: "m1-a", install: false });
+      expect(await runShepherd(project.root, "m1-v", { kind: "start" }, testDeps(project), never())).toBe("success");
+      const v = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-v", 1)).started);
+      expect(v.cwd).toBe(a.cwd);
+      // A rebuilt worktree is used and never installed again, so the owner's next run finds the install in place.
+      expect(readFileSync(seen, "utf8")).toBe("base,base,");
+    });
+
     it("is not rebuilt for a lane that never ran: a branch holding commits is refused as before, for it and its borrowers", async () => {
       const seen = recordingProject();
       // A commit on the lane's branch that no attempt of the lane made.

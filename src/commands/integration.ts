@@ -402,12 +402,26 @@ export function attemptEvents(runsRoot: string, lane: string, attempts: number[]
   return attempts.flatMap((n) => parseStream(readText(attemptFiles(paths.attemptDir(n)).stream) ?? "").events);
 }
 
+/** How often a window looks for a finished run to give its place to the next lane. */
+const WINDOW_POLL_MS = 5000;
+
+/** Whether a run's own shepherd (by pid) has finished it, as waitForProbes decides. */
+function runFinished(ctx: CommandContext, runsRoot: string, run: Started): boolean {
+  const record = readState(runsRoot, run.lane);
+  if (record !== null && record.shepherdPid === run.pid) return !isActive(effectiveState(record, ctx.alive));
+  return !ctx.alive(run.pid);
+}
+
 /**
  * Runs each lane and waits until every one has finished or `timeoutMs` has passed; outcomes come in the lanes' order.
  * A lane whose earlier run is reusable (reusableRun) is waited for or adopted as it is. Every other lane is written
  * and linted (all before any launch), started from the integration head (resetGeneratedWorktree) and launched, and its
  * run recorded in paths.lanesDir. While it waits, this process is a registered waiter (whileWaiting). On timeout the
  * lanes keep running and nothing is collected.
+ *
+ * With `maxParallel` (DESIGN.md §22), at most that many runs are in flight, the reused ones first; the fresh lanes are
+ * launched in order as places free up, and the timeout covers launching too. A lane not launched by then stays
+ * unlaunched, with no run record.
  */
 export async function runGeneratedLanes(
   ctx: CommandContext,
@@ -417,7 +431,12 @@ export async function runGeneratedLanes(
   timeoutMs: number,
   owner: GenerationOwner,
   usable: UsableRun = hasReport,
+  options: { maxParallel?: number } = {},
 ): Promise<{ timedOut: boolean; outcomes: LaneOutcome[] }> {
+  const { maxParallel } = options;
+  if (maxParallel !== undefined && (!Number.isInteger(maxParallel) || maxParallel < 1)) {
+    throw new ArbabError("usage", `maxParallel must be a positive integer, not ${maxParallel}`);
+  }
   const plans = lanes.map((lane) => {
     const name = assertValidName(lane.spec.name, "lane");
     const fingerprint = laneFingerprint(lane);
@@ -434,23 +453,64 @@ export async function runGeneratedLanes(
   }
   const runs = new Map<string, Started>();
   for (const p of plans) if (p.prior !== null) runs.set(p.name, p.prior.run);
-  for (const p of written) {
+  const launch = async (p: (typeof written)[number]): Promise<Started> => {
     const before = listAttempts(project.runsRoot, p.name).at(-1) ?? 0;
     const launched = await launchLane(ctx, project, p.file, { generated: true });
     const run: Started = { lane: p.name, pid: launched.shepherdPid, before };
     const record: GeneratedRun = { lane: p.name, shepherdPid: run.pid, before, head: owner.head, fingerprint: p.fingerprint, settled: false };
     writeJsonAtomic(runRecordPath(paths.lanesDir, p.name), record);
     runs.set(p.name, run);
+    return run;
+  };
+  const named = (kind: "wait" | "adopt"): string => plans.filter((p) => p.prior?.kind === kind).map((p) => p.name).join(", ");
+  const reportReused = (): void => {
+    if (named("adopt") !== "") ctx.stderr(`adopted ${named("adopt")}: finished for this head after an earlier run stopped waiting\n`);
+    if (named("wait") !== "") ctx.stderr(`${named("wait")} still running for this head from an earlier run; waiting\n`);
+  };
+  const collected = (): { timedOut: boolean; outcomes: LaneOutcome[] } => ({
+    timedOut: false,
+    outcomes: plans.flatMap((p) => runs.get(p.name) ?? []).map((run) => collectRun(project.runsRoot, run)),
+  });
+
+  if (maxParallel === undefined) {
+    for (const p of written) await launch(p);
+    reportReused();
+    if (fresh.length > 0) ctx.stderr(`launched ${fresh.map((p) => p.name).join(", ")}; waiting\n`);
+    const started = plans.flatMap((p) => runs.get(p.name) ?? []);
+    if (!(await whileWaiting(ctx, project.root, () => waitForProbes(ctx, project.runsRoot, started, timeoutMs)))) return { timedOut: true, outcomes: [] };
+    return collected();
   }
 
-  const named = (kind: "wait" | "adopt"): string => plans.filter((p) => p.prior?.kind === kind).map((p) => p.name).join(", ");
-  if (named("adopt") !== "") ctx.stderr(`adopted ${named("adopt")}: finished for this head after an earlier run stopped waiting\n`);
-  if (named("wait") !== "") ctx.stderr(`${named("wait")} still running for this head from an earlier run; waiting\n`);
-  if (fresh.length > 0) ctx.stderr(`launched ${fresh.map((p) => p.name).join(", ")}; waiting\n`);
-
-  const started = plans.flatMap((p) => runs.get(p.name) ?? []);
-  if (!(await whileWaiting(ctx, project.root, () => waitForProbes(ctx, project.runsRoot, started, timeoutMs)))) return { timedOut: true, outcomes: [] };
-  return { timedOut: false, outcomes: started.map((run) => collectRun(project.runsRoot, run)) };
+  reportReused();
+  const queue = [...written];
+  const done = await whileWaiting(ctx, project.root, async () => {
+    const start = ctx.clock.now();
+    const timeLeft = (): number => timeoutMs - (ctx.clock.now() - start);
+    // Adopted runs have finished already, so only the waited-for ones hold a place at first.
+    let inFlight = plans.flatMap((p) => (p.prior === null ? [] : [p.prior.run]));
+    for (;;) {
+      inFlight = inFlight.filter((run) => !runFinished(ctx, project.runsRoot, run));
+      const launchedNow: string[] = [];
+      while (queue.length > 0 && inFlight.length < maxParallel && timeLeft() > 0) {
+        const next = queue.shift() as (typeof written)[number];
+        inFlight.push(await launch(next));
+        launchedNow.push(next.name);
+      }
+      if (launchedNow.length > 0) {
+        const rest = queue.length === 0 ? "waiting" : `${queue.length} more start as places free up (at most ${maxParallel} at once)`;
+        ctx.stderr(`launched ${launchedNow.join(", ")}; ${rest}\n`);
+      }
+      if (queue.length === 0 && inFlight.length === 0) return true;
+      const remaining = timeLeft();
+      if (remaining <= 0) return false;
+      await ctx.sleep(Math.min(WINDOW_POLL_MS, remaining));
+    }
+  });
+  if (!done) {
+    if (queue.length > 0) ctx.stderr(`not launched before the timeout: ${queue.map((p) => p.name).join(", ")}\n`);
+    return { timedOut: true, outcomes: [] };
+  }
+  return collected();
 }
 
 /**

@@ -76,6 +76,13 @@ describe("assembleBrief", () => {
   it("includes the tool belt", () => {
     expect(assembleBrief(SOURCE, ctx())).toContain("## Tool belt\n\n- Shell commands you may run: `git status …`");
   });
+  it("passes the heavy checks and gates to the tool belt", () => {
+    const work = { role: "implementer" as const, gates: [["pnpm", "test"]], checks: { script: "/r/bin/arbab-check.mjs", names: ["lint"] } };
+    const text = assembleBrief(SOURCE, ctx(), work);
+    expect(text).toContain("- Heavy checks: run each one once, before you report, with `node /r/bin/arbab-check.mjs <name>` (names: `lint`).");
+    expect(text).toContain("- The integration's verify runs the repository gates for every lane together: `pnpm test`.");
+    expect(assembleBrief(SOURCE, ctx())).not.toMatch(/Heavy checks|The integration's verify/);
+  });
 });
 
 describe("roleAndIsolation", () => {

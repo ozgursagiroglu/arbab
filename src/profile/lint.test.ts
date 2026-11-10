@@ -76,6 +76,25 @@ describe("lintProfile", () => {
     );
   });
 
+  describe("check rules", () => {
+    it.each([
+      ["a plain path", "/work/repo/.arbab/runs/lane/bin/arbab-check.mjs"],
+      ["a path that needs quotes", "/work/my repo (copy)/.arbab/runs/lane/bin/arbab-check.mjs"],
+    ])("accepts the compiled rules of %s: node then an absolute script is anchored", (_, checkScript) => {
+      for (const role of ["implementer", "verifier"] as const) {
+        const inp = input({ role, checkScript, checkNames: ["lint", "typecheck"] });
+        const profile = compileProfile(inp);
+        expect(profile.settings.permissions.allow.filter((rule) => rule.includes("arbab-check"))).toHaveLength(4);
+        expect(lintProfile(profile, inp)).toEqual([]);
+      }
+    });
+    it("still flags node followed by a bare wildcard", () => {
+      expect(codes(lint({ checkScript: "/s/arbab-check.mjs", checkNames: ["lint"], laneAllow: ["Bash(node *)"] }))).toEqual([
+        "any-code-allow",
+      ]);
+    });
+  });
+
   describe("param-rule", () => {
     it("flags parameter rules in allow and deny", () => {
       const issues = lint({ laneAllow: ["Bash(run_in_background:true)"] }, (p) => {

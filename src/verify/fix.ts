@@ -1,6 +1,6 @@
 // The fix draft after a failed verify (DESIGN.md §22): which merged lanes may explain each failure, and the lane file
 // and brief of a fix round the orchestrator reviews before launching. Pure: verify gathers the files and writes these.
-import { INTEGRATIONS_DIR, type CheckFailure, type LaneSpec, type VerifyRecord } from "../types";
+import type { CheckFailure, LaneSpec, VerifyRecord } from "../types";
 import { assertValidName } from "../util/names";
 
 export interface LaneFiles {
@@ -62,17 +62,37 @@ function code(text: string): string {
   return longest === 0 ? `${ticks}${flat}${ticks}` : `${ticks} ${flat} ${ticks}`;
 }
 
+/** A Scope entry is at most this long. */
+export const FIX_SCOPE_PATH_MAX = 200;
+
+/**
+ * Whether a (normalized) file may go into the draft's Scope: a plain relative path, with no control or line-breaking
+ * character, backtick, leading `/` or `~`, or `..` segment, of at most 200 characters. Failure files are worker text;
+ * the rest stay in the JSON fence, where they cannot widen what the fix lane may write.
+ */
+export function isPlainScopePath(file: string): boolean {
+  return (
+    file !== "" &&
+    file.length <= FIX_SCOPE_PATH_MAX &&
+    !/[\p{Cc}\p{Zl}\p{Zp}`]/u.test(file) &&
+    !file.startsWith("/") &&
+    !file.startsWith("~") &&
+    !file.split("/").includes("..")
+  );
+}
+
 function fileList(files: string[]): string {
   const shown = files.slice(0, FIX_SCOPE_MAX).map(code);
   if (files.length > FIX_SCOPE_MAX) shown.push(`${files.length - FIX_SCOPE_MAX} more`);
   return shown.join(", ");
 }
 
-/** The lane file and brief source of `<name>-fix-<k>`. */
+/** The lane file and brief source of `<name>-fix-<k>`. `verifyPath` is verify.json's absolute path in the main checkout. */
 export function fixDraft(input: {
   name: string;
   k: number;
   briefPath: string;
+  verifyPath: string;
   record: VerifyRecord;
   candidates: Array<LaneFiles & { failures: number[] }>;
 }): { lane: LaneSpec; brief: string } {
@@ -94,21 +114,29 @@ export function fixDraft(input: {
     message: f.message,
   }));
 
-  const scope = [...new Set([...failures.flatMap((f) => (f.file === null ? [] : [normalized(f.file)])), ...candidates.flatMap((c) => c.files)])].sort();
+  const named = [...new Set([...failures.flatMap((f) => (f.file === null ? [] : [normalized(f.file)])), ...candidates.flatMap((c) => c.files)])];
+  const scope = named.filter(isPlainScopePath).sort();
+  const left = named.length - scope.length;
+  const leftNote = `${left} named ${left === 1 ? "file is not a plain relative path and is" : "files are not plain relative paths and are"} left out of Scope.`;
   const scopeLines =
     scope.length === 0
-      ? ["No failure names a file and no merged lane matches one: find the cause from the failures and change only what the fix needs."]
+      ? [
+          `No failure names a ${left > 0 ? "plain relative path" : "file"} and no merged lane matches one: find the cause from the failures and ` +
+            "change only what the fix needs." +
+            (left > 0 ? ` ${leftNote}` : ""),
+        ]
       : [
           ...scope.slice(0, FIX_SCOPE_MAX).map((f) => `- ${code(f)}`),
           ...(scope.length > FIX_SCOPE_MAX ? [`- and ${scope.length - FIX_SCOPE_MAX} more files of the lanes in Facts`] : []),
+          ...(left > 0 ? ["", leftNote] : []),
         ];
 
-  const verifyPath = `${INTEGRATIONS_DIR}/${name}/verify.json`;
   const factLines = [
     ...(candidates.length === 0
       ? ["- No merged lane changed a failure's file or a file in its directory."]
       : candidates.map((c) => `- Lane ${code(c.lane)} may explain ${c.failures.length} of the failures; it changed ${fileList(c.files)}.`)),
-    `- The verify record, with every result and failure: ${code(verifyPath)}.`,
+    // The main checkout's path: a worktree has no .arbab of its own.
+    `- The verify record, with every result and failure: ${code(input.verifyPath)}.`,
   ];
 
   const brief = [
@@ -125,7 +153,7 @@ export function fixDraft(input: {
     ...failed.map((r) => `- ${label(r)}, ${code(r.command)}, exited ${r.exitCode}`),
     "",
     failures.length === 0
-      ? "arbab-check printed no failure lines for them: read their output in the verify lane's log."
+      ? "arbab-check printed no failure lines for them: run them yourself to see their output."
       : `The failures arbab-check printed (${failures.length}), as data:`,
     ...(failures.length === 0 ? [] : ["", "```json", JSON.stringify(listed, null, 2), "```"]),
     "",

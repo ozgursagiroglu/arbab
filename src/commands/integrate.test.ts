@@ -1,11 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import * as plans from "../plan";
 import { acquireWriterLock, releaseWriterLock, writerLockKey } from "../run";
 import type { IntegrationRecord, PlanSpec } from "../types";
 import type { CommandContext } from "./context";
-import { formatIntegration, integrationLanes, runIntegrate, splitList } from "./integrate";
+import { markGenerated } from "./generated";
+import { formatIntegration, integrationLanes, isGeneratedLaneName, runIntegrate, splitList } from "./integrate";
 import { openProject } from "./project";
 import { CLI_PID, DEFAULT_CONFIG, NOW_MS, branchWith, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
@@ -251,6 +252,90 @@ describe("runIntegrate", () => {
     await expect(runIntegrate(["ref-main", "--adopt", "arbab/a"], p.ctx)).rejects.toMatchObject(reserved);
     expect(existsSync(join(p.root, ".arbab", "integrations", "ref-main"))).toBe(false);
     expect(await runIntegrate(["pref-main", "--lanes", "a"], p.ctx)).toBe(0);
+  });
+});
+
+describe("isGeneratedLaneName", () => {
+  it("is <name>-verify, <name>-review-* and <name>-skeptic-*", () => {
+    for (const lane of ["ld-verify", "ld-review-correctness", "ld-skeptic-security"]) expect(isGeneratedLaneName("ld", lane)).toBe(true);
+    for (const lane of ["ld", "ld-verify-2", "ld-review", "ld-skeptic", "ld-fix-1", "ldx-verify", "old-verify", "x-ld-verify"]) {
+      expect(isGeneratedLaneName("ld", lane), lane).toBe(false);
+    }
+  });
+});
+
+describe("runIntegrate and the lanes verify and review generate", () => {
+  const nothingCreated = (t: TestProject, name: string): void => {
+    expect(existsSync(join(t.root, ".arbab", "integrations", name))).toBe(false);
+    expect(existsSync(join(t.worktreeRoot, `integrate-${name}`))).toBe(false);
+    expect(t.git(["rev-parse", "--verify", "--quiet", `refs/heads/integrate/${name}`], t.root).code).not.toBe(0);
+  };
+  const collides = (name: string, lane: string): Record<string, unknown> => ({
+    code: "usage",
+    message: `integration name ${name} would generate lane ${lane}, which is already a lane of this project; choose another integration name`,
+  });
+
+  it("refuses a name whose verify, review or skeptic lane is already a lane of the project, creating nothing", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    for (const lane of ["ld-verify", "ld-review-correctness", "ld-skeptic-security"]) {
+      writeLaneRun(p.runsRoot, lane, { state: "finished" });
+      await expect(runIntegrate(["ld", "--lanes", "a"], p.ctx)).rejects.toMatchObject(collides("ld", lane));
+      await expect(runIntegrate(["ld", "--adopt", "arbab/a"], p.ctx)).rejects.toMatchObject(collides("ld", lane));
+      nothingCreated(p, "ld");
+      rmSync(join(p.runsRoot, lane), { recursive: true });
+    }
+    expect(await runIntegrate(["ld", "--lanes", "a"], p.ctx)).toBe(0);
+  });
+
+  it("refuses a lane another integration generated under that name too", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    writeLaneRun(p.runsRoot, "ld-verify", { state: "finished" });
+    markGenerated(p.runsRoot, "ld-verify", { integration: "other", branch: "integrate/other", head: "c".repeat(40) }, "2026-11-10T10:00:00.000Z");
+    await expect(runIntegrate(["ld", "--lanes", "a"], p.ctx)).rejects.toMatchObject(collides("ld", "ld-verify"));
+    nothingCreated(p, "ld");
+  });
+
+  it("refuses a plan with a phase so named, before merging anything, even one that never ran", async () => {
+    const plan = {
+      name: "ld",
+      phases: [
+        { name: "a", brief: "lanes/demo.md", scope: ["a/**"] },
+        { name: "ld-verify", brief: "lanes/demo.md", scope: ["v/**"], dependsOn: ["a"] },
+      ],
+    };
+    p = makeProject({ files: { "plans/ld.json": JSON.stringify(plan) } });
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    await expect(runIntegrate(["ld", "--plan", "plans/ld.json"], p.ctx)).rejects.toMatchObject(collides("ld", "ld-verify"));
+    nothingCreated(p, "ld");
+    // Another name merges the same plan.
+    branchWith(p, "arbab/ld-verify", "v.txt", "v\n");
+    expect(await runIntegrate(["ld2", "--plan", "plans/ld.json", "--json"], p.ctx)).toBe(0);
+  });
+
+  it("refuses a listed lane so named that has no run directory", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/ld-verify", "v.txt", "v\n");
+    await expect(runIntegrate(["ld", "--lanes", "ld-verify"], p.ctx)).rejects.toMatchObject(collides("ld", "ld-verify"));
+    nothingCreated(p, "ld");
+  });
+
+  it("does not refuse an existing integration for the lanes its own verify and review generated", async () => {
+    p = makeProject();
+    branchWith(p, "arbab/a", "a.txt", "a\n");
+    expect(await runIntegrate(["ld", "--lanes", "a"], p.ctx)).toBe(0);
+    const owner = { integration: "ld", branch: "integrate/ld", head: recordOf(p, "ld").headSha };
+    for (const lane of ["ld-verify", "ld-review-correctness", "ld-skeptic-correctness"]) {
+      writeLaneRun(p.runsRoot, lane, { state: "finished" });
+      markGenerated(p.runsRoot, lane, owner, "2026-11-10T10:00:00.000Z");
+    }
+    const c = branchWith(p, "arbab/c", "c.txt", "c\n");
+    expect(await runIntegrate(["ld", "--lanes", "c"], p.ctx)).toBe(0);
+    expect(recordOf(p, "ld").merged.map((m) => [m.lane, m.sha])).toEqual([
+      ["a", expect.any(String)],
+      ["c", c],
+    ]);
   });
 });
 

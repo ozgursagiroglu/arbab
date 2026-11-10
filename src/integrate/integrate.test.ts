@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeProject, mustGit, type TestProject } from "../../test/fake-claude/harness";
@@ -113,6 +113,54 @@ function refresh(name = "m3"): Run & { result: () => IntegrateResult } {
   const result = (): IntegrateResult => refreshIntegration({ projectRoot: project.root, config: cfg, name, git: runner, runCommand, clock: later });
   return { calls, deps, result };
 }
+
+const CLONE = config({ dependencies: { strategy: "clone", paths: ["node_modules"], fallback: ["npm", "ci"] } });
+
+/** A runCommand that records each argv and makes every clone's destination (its last argument). */
+function cloneRunner(seen: string[][]): ArgvRunner {
+  return (argv) => {
+    seen.push(argv);
+    if (argv[0] === "python3" || argv[0] === "cp") mkdirSync(argv.at(-1) ?? "", { recursive: true });
+    return { code: 0, output: "" };
+  };
+}
+
+/** The main checkout's node_modules, ignored as a project's is. */
+function ignoreNodeModules(): void {
+  appendFileSync(join(project.root, ".git", "info", "exclude"), "\nnode_modules/\n");
+  mkdirSync(join(project.root, "node_modules", "left-pad"), { recursive: true });
+}
+
+describe("integrate's dependency clone", () => {
+  it("clones the main checkout's directories into a new worktree, compared with the base it was created at", () => {
+    ignoreNodeModules();
+    lane("a", { "a.txt": "a\n", "package.json": '{"dependencies":{"left-pad":"2.0.0"}}\n' });
+    const seen: string[][] = [];
+    const p = integrationPaths(project.root, CLONE, "m3");
+    run(["a"], { cfg: CLONE, deps: cloneRunner(seen) }).record();
+    expect(seen.map((argv) => argv.slice(-2))).toEqual([[realpathSync(join(project.root, "node_modules")), join(p.worktree, "node_modules")]]);
+  });
+
+  it("installs instead when the main checkout's manifests differ from the base", () => {
+    ignoreNodeModules();
+    writeFileSync(join(project.root, "yarn.lock"), "# yarn\n");
+    lane("a", { "a.txt": "a\n" });
+    const seen: string[][] = [];
+    run(["a"], { cfg: CLONE, deps: cloneRunner(seen) }).record();
+    expect(seen).toEqual([["npm", "ci"]]);
+  });
+
+  it("compares a worktree made on an existing branch the base contains with that branch's commit", () => {
+    ignoreNodeModules();
+    const older = git(["rev-parse", "main"]).trim();
+    git(["branch", "integrate/m3", older]);
+    // main moves past the branch with a dependency the main checkout now has.
+    commit(project.root, { "package.json": '{"dependencies":{"left-pad":"1.0.0"}}\n' }, "main adds a dependency");
+    const seen: string[][] = [];
+    run([], { cfg: CLONE, deps: cloneRunner(seen) }).record();
+    expect(seen).toEqual([["npm", "ci"]]);
+  });
+});
 
 describe("integrationPaths", () => {
   it("places the records under .arbab/integrations/<name> and the worktree under the worktree root", () => {
@@ -1001,6 +1049,24 @@ describe("adoptIntegration", () => {
     const next = run(["a"]).record();
     expect(next).toMatchObject({ base: "main", merged: [expect.objectContaining({ lane: "a" })] });
     expect(git(["merge-base", "--is-ancestor", sha, next.headSha]).trim()).toBe("");
+  });
+
+  it("gives the clone strategy the fork point as its install point", () => {
+    ignoreNodeModules();
+    feature({ "f.txt": "f\n" });
+    // main moves on without a manifest change: the main checkout still matches the fork point.
+    commit(project.root, { "m.txt": "m\n" }, "main moves");
+    const seen: string[][] = [];
+    const p = integrationPaths(project.root, config(), "m3");
+    adopt("feature", { cfg: CLONE, deps: cloneRunner(seen) }).result();
+    expect(seen.map((argv) => argv.slice(-2))).toEqual([[realpathSync(join(project.root, "node_modules")), join(p.worktree, "node_modules")]]);
+
+    // A dependency change on main since the fork point: the fallback installs instead.
+    feature({ "g.txt": "g\n" }, "feature2");
+    commit(project.root, { "package.json": '{"dependencies":{"left-pad":"1.0.0"}}\n' }, "main adds a dependency");
+    seen.length = 0;
+    adopt("feature2", { cfg: CLONE, deps: cloneRunner(seen), name: "m4" }).result();
+    expect(seen).toEqual([["npm", "ci"]]);
   });
 
   it("takes --base as the base, with the fork point as baseSha, when main contains it", () => {

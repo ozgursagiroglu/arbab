@@ -1,4 +1,5 @@
 // arbab-check's entry point, bundled alone into dist/arbab-check.mjs (DESIGN.md §22): real effects in, exit code out.
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { sleep } from "../util/proc";
 import { killProbe } from "./registry";
@@ -18,6 +19,7 @@ try {
     sleep,
     fs: nodeCheckFs,
     probe: killProbe((pid, signal) => process.kill(pid, signal)),
+    randomHex: (bytes) => randomBytes(bytes).toString("hex"),
     out: (text) => process.stdout.write(text),
     err: (text) => process.stderr.write(text),
     onSignal: (handler) => {

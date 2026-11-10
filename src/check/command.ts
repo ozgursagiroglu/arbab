@@ -35,7 +35,7 @@ export const FAILURE_PREFIX = "arbab-check failure: ";
 /** A failure's message is cut to this many characters. */
 export const FAILURE_MESSAGE_MAX = 300;
 /** A failure's file and test are each cut to this many characters. */
-const FAILURE_FIELD_MAX = 200;
+export const FAILURE_FIELD_MAX = 200;
 
 // Worker-written text reaches a terminal and a model: colour sequences go whole, then every other C0 and C1 control
 // (ESC, BEL, backspace, DEL…) so nothing can move a cursor, retitle a window or hide text.
@@ -45,6 +45,11 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
 /** One line without controls, trimmed, cut to `max` characters. Applying it twice changes nothing. */
 const field = (s: string, max: number): string =>
   s.replace(CSI, "").replace(/[\r\n\t]+/g, " ").replace(CONTROL, "").trim().slice(0, max).trim();
+
+/** A field as formatFailureLine cleans it, not cut: so a caller can tell a value that would be. */
+export function failureFieldText(s: string): string {
+  return field(s, Number.POSITIVE_INFINITY);
+}
 
 /**
  * `arbab-check failure: <file>[ > <test>] :: <message>`, `-` for a missing file; one line without control characters,

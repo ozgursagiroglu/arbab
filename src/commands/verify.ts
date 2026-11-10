@@ -216,6 +216,7 @@ async function verifyTarget(ctx: CommandContext, project: Project, target: Verif
     printJson(ctx, { timedOut: false, endState: outcome.endState, verify: record });
   } else {
     for (const result of results) ctx.stdout(formatGateResult(result) + "\n");
+    // Failures are worker text: printed through formatFailureLine only, which makes each one line of plain text.
     const failures = record.failures ?? [];
     for (const failure of failures.slice(0, MAX_PRINTED_FAILURES)) ctx.stdout(formatFailureLine(failure) + "\n");
     if (failures.length > MAX_PRINTED_FAILURES) ctx.stdout(`and ${failures.length - MAX_PRINTED_FAILURES} more failures in ${target.recordPath}\n`);
@@ -296,7 +297,7 @@ function writeFixDraft(ctx: CommandContext, project: Project, integration: Integ
         return;
       }
       const briefFile = join(dir, `fix-${k}.md`);
-      const draft = fixDraft({ name, k, briefPath: projectRelative(project.root, briefFile), record, candidates });
+      const draft = fixDraft({ name, k, briefPath: projectRelative(project.root, briefFile), verifyPath: integration.paths.verify, record, candidates });
       const laneFile = join(dir, `fix-${k}.json`);
       if (!createExclusive(laneFile, JSON.stringify(draft.lane, null, 2) + "\n")) continue;
       writeTextAtomic(briefFile, draft.brief);

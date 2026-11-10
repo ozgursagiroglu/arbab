@@ -8,7 +8,9 @@
 // merge: the owner is merged instead, at the borrowing phase's place when it is not a phase). Lanes already in the
 // branch are recorded without a merge. Refused: a landed integration (choose a new name), a running lane, a lane whose
 // worker outlived its shepherd, a running lane that borrows a listed lane's worktree, and a lane whose worktree has
-// uncommitted changes. A branch integrate creates starts a new record; an older one is moved aside. A missing
+// uncommitted changes. Merging and --adopt also refuse, before anything is created, a name whose verify or review lane
+// (<name>-verify, <name>-review-*, <name>-skeptic-*) is already a lane of the project, a phase of --plan or a listed
+// lane, unless its marker says <name> generated it. A branch integrate creates starts a new record; an older one is moved aside. A missing
 // worktree on an existing branch is rebuilt there: its dependencies are installed on a trusted commit (the branch head
 // once a human confirmed it), then the branch is checked out unmoved.
 // --deps-installed <sha> records that a human reviewed and installed the changed dependencies at <sha>, the head
@@ -41,6 +43,7 @@ import { ArbabError } from "../util/errors";
 import { readJson } from "../util/fs";
 import { assertValidName } from "../util/names";
 import type { CommandContext } from "./context";
+import { generatingIntegration, readGenerated } from "./generated";
 import { manifestAdvice } from "./integration";
 import { assertInactive, assertNoLiveWorker } from "./launch";
 import { isActive, onePositional, openProject, parse, printJson, type Project } from "./project";
@@ -112,6 +115,24 @@ export function assertNoActiveBorrower(ctx: CommandContext, project: Project, la
       `lane ${lane} works in lane ${owner}'s worktree and commits onto arbab/${owner}, and it is ${state} (shepherd ` +
         `${record.shepherdPid}); stop it or wait for it before integrating ${owner}`,
     );
+  }
+}
+
+/** Whether `lane` has a name verify or review generates for integration `name`. */
+export function isGeneratedLaneName(name: string, lane: string): boolean {
+  return lane === `${name}-verify` || lane.startsWith(`${name}-review-`) || lane.startsWith(`${name}-skeptic-`);
+}
+
+/**
+ * Refuses an integration name one of whose generated lanes is already a lane of the project or a phase of the plan,
+ * unless its marker says this integration generated it: verify or review would refuse that lane only after the merge.
+ */
+export function assertNoGeneratedCollision(project: Project, name: string, phases: string[] = []): void {
+  for (const lane of new Set([...listLanes(project.runsRoot), ...phases])) {
+    if (!isGeneratedLaneName(name, lane)) continue;
+    if (generatingIntegration(readGenerated(project.runsRoot, lane)?.by ?? null) === name) continue;
+    // The CLI prefixes `arbab integrate: `.
+    throw new ArbabError("usage", `integration name ${name} would generate lane ${lane}, which is already a lane of this project; choose another integration name`);
   }
 }
 
@@ -205,6 +226,7 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     if (values.lanes !== undefined || values.plan !== undefined) {
       throw new ArbabError("usage", "--adopt takes no --lanes or --plan: it makes an integration of an existing branch; merge lanes into it afterwards");
     }
+    assertNoGeneratedCollision(project, name);
     const { record: adopted } = await inWorktree(() =>
       adoptIntegration({
         projectRoot: project.root,
@@ -222,7 +244,18 @@ export async function runIntegrate(argv: string[], ctx: CommandContext): Promise
     return 0;
   }
 
-  const lanes = integrationLanes(project, { ...(values.lanes !== undefined && { lanes: values.lanes }), ...(values.plan !== undefined && { plan: values.plan }) });
+  // Every phase counts, not only those merged: a phase borrowing a worktree still becomes a lane of that name.
+  let phases: string[] = [];
+  const planLanes: PlanLanes = (plan) => {
+    phases = plan.phases.map((phase) => phase.name);
+    return planIntegrationLanes(plan);
+  };
+  const lanes = integrationLanes(
+    project,
+    { ...(values.lanes !== undefined && { lanes: values.lanes }), ...(values.plan !== undefined && { plan: values.plan }) },
+    planLanes,
+  );
+  assertNoGeneratedCollision(project, name, [...phases, ...lanes]);
   // A running lane's branch still moves: what is merged now would not be what it finishes with. So does the branch
   // of an orphaned lane whose worker outlived its shepherd, and of a lane whose worktree another running lane borrows.
   const assertLanesIdle = (): void => {

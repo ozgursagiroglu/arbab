@@ -57,7 +57,7 @@ Read anything else; change nothing else.
 
 - [ ] The three modules and their tests exist, with the signatures above.
 - [ ] `pnpm typecheck` exits 0.
-- [ ] `pnpm test` exits 0, including the new tests.
+- [ ] `pnpm test src/ratelimit src/http` exits 0, including the new tests (the integration's verify runs the whole suite).
 - [ ] `git diff` outside `src/ratelimit/` shows only the pipeline insertion.
 
 ## Notes

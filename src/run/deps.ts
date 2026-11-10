@@ -1,6 +1,10 @@
 import { spawnSync } from "node:child_process";
+import { lstatSync, realpathSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { DependencyContext, DependencyStrategy } from "../types";
 import { ArbabError } from "../util/errors";
+import { readText } from "../util/fs";
+import { cloneDirectory, defaultCloneDeps, type CloneDeps } from "./clone";
 import type { GitRunner } from "./git";
 
 export type ArgvRunner = (argv: string[], cwd: string) => { code: number; output: string };
@@ -180,7 +184,50 @@ export const runArgv: ArgvRunner = (argv, cwd) => {
   return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
 };
 
-function runInstall(argv: unknown, field: string, worktree: string, run: ArgvRunner): { ok: boolean; code: number; output: string } {
+/**
+ * The dependency manifests that differ, in a way an install cares about, between `context.installedAt` and the main
+ * checkout's working tree: tracked changes (staged or not) and untracked files, filtered by isDependencyManifest, a
+ * package.json only through installRelevantChange. Sorted, once each. A git call that fails is drift, never a match.
+ */
+export function manifestDrift(context: DependencyContext): string[] {
+  const { projectRoot, installedAt } = context;
+  if (installedAt === "" || installedAt.startsWith("-")) return [`<git failed: ${JSON.stringify(installedAt)} is not a revision>`];
+  const git = (args: string[]): ReturnType<GitRunner> => context.git(args, projectRoot);
+  const list = (args: string[]): string[] | string => {
+    const r = git(args);
+    if (r.code !== 0) return `<git failed: git ${args.join(" ")} (${r.code}): ${(r.stderr || r.stdout).trim()}>`;
+    return r.stdout.split("\0").filter((p) => p !== "");
+  };
+  // --no-renames: a manifest moved away is a manifest gone.
+  const tracked = list(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", installedAt, "--"]);
+  if (typeof tracked === "string") return [tracked];
+  const untracked = list(["ls-files", "--others", "--exclude-standard", "-z"]);
+  if (typeof untracked === "string") return [untracked];
+  const out = new Set<string>();
+  for (const path of new Set([...tracked, ...untracked])) {
+    if (!isDependencyManifest(path)) continue;
+    if ((path.split("/").at(-1) ?? "").toLowerCase() !== "package.json") {
+      out.add(path);
+      continue;
+    }
+    let after: string | null;
+    try {
+      after = readText(join(projectRoot, path));
+    } catch {
+      // Unreadable is not the same as unchanged.
+      out.add(path);
+      continue;
+    }
+    const before = fileAt(git, installedAt, path);
+    // git listed it, so it differs: absent on both sides means something failed.
+    if ((before === null && after === null) || installRelevantChange(path, before, after)) out.add(path);
+  }
+  return [...out].sort();
+}
+
+type Prepared = { ok: boolean; code: number; output: string };
+
+function runInstall(argv: unknown, field: string, worktree: string, run: ArgvRunner): Prepared {
   if (!Array.isArray(argv) || argv.length === 0 || !argv.every((a) => typeof a === "string") || argv[0] === "") {
     throw new ArbabError("config", `${field} must be a non-empty argv array of strings`);
   }
@@ -188,23 +235,111 @@ function runInstall(argv: unknown, field: string, worktree: string, run: ArgvRun
   return { ok: r.code === 0, code: r.code, output: r.output };
 }
 
+/** Whether `path` lies inside `root` (both real paths), the root itself excluded. */
+function inside(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel !== "" && !rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel);
+}
+
+/** The real path of `path`'s nearest existing ancestor (or of itself), or null when even the root fails. */
+function realAncestor(path: string): string | null {
+  for (let p = path; ; p = dirname(p)) {
+    try {
+      return realpathSync(p);
+    } catch {
+      if (dirname(p) === p) return null;
+    }
+  }
+}
+
+/**
+ * The clone strategy (DESIGN.md §22): the main checkout's directories cloned copy-on-write into a worktree no worker
+ * has run in, only while its manifests match the install point; otherwise the fallback install, or a failure naming
+ * the difference. Every source and destination is checked before the first clone, so nothing falls back after a
+ * partial clone: such a worktree is the shepherd's to discard.
+ */
+function cloneDependencies(
+  strategy: Extract<DependencyStrategy, { strategy: "clone" }>,
+  worktree: string,
+  run: ArgvRunner,
+  context: DependencyContext | undefined,
+  deps: CloneDeps,
+): Prepared {
+  const fallBack = (reason: string): Prepared => {
+    if (strategy.fallback === null) {
+      return { ok: false, code: 1, output: `dependencies.clone: ${reason}; set dependencies.fallback to install instead` };
+    }
+    const r = runInstall(strategy.fallback, "dependencies.fallback", worktree, run);
+    return { ...r, output: `dependencies.clone: ${reason}; running dependencies.fallback\n${r.output}` };
+  };
+  const refuse = (reason: string): Prepared => ({ ok: false, code: 1, output: `dependencies.clone: ${reason}` });
+
+  const drift = context === undefined ? ["no install context"] : manifestDrift(context);
+  if (drift.length > 0 || context === undefined) {
+    return fallBack(`the main checkout's manifests differ from ${context?.installedAt ?? "the install point"}: ${drift.join(", ")}`);
+  }
+
+  let root: string;
+  let worktreeReal: string;
+  try {
+    root = realpathSync(context.projectRoot);
+    worktreeReal = realpathSync(worktree);
+  } catch (err) {
+    return refuse(`cannot resolve the main checkout or the worktree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const pairs: Array<{ path: string; src: string; dst: string }> = [];
+  for (const path of strategy.paths) {
+    let src: string;
+    try {
+      src = realpathSync(join(context.projectRoot, path));
+    } catch {
+      // Missing, or a dangling link: nothing to clone, as when the manifests differ.
+      return fallBack(`${path} does not exist in the main checkout`);
+    }
+    if (!inside(root, src)) return refuse(`${path} in the main checkout leads to ${src}, outside ${root}`);
+    if (!statSync(src).isDirectory()) return fallBack(`${path} is not a directory in the main checkout`);
+    const dst = join(worktree, path);
+    if (present(dst)) return refuse(`${dst} already exists in the worktree`);
+    const at = realAncestor(dirname(dst));
+    if (at === null || (at !== worktreeReal && !inside(worktreeReal, at))) {
+      return refuse(`${path} would be cloned through ${at ?? "an unresolvable path"}, outside the worktree ${worktreeReal}`);
+    }
+    pairs.push({ path, src, dst });
+  }
+
+  const lines: string[] = [];
+  for (const { path, src, dst } of pairs) {
+    const r = cloneDirectory(src, dst, deps);
+    if (!r.ok) return refuse([...lines, `cloning ${path} failed (${r.how}): ${r.output.trim()}`].join("\n"));
+    lines.push(`cloned ${path} (${r.how})`);
+  }
+  return { ok: true, code: 0, output: lines.join("\n") };
+}
+
+/** Whether anything, a dangling link included, is at `path`. */
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Prepares a worktree's dependencies before the worker starts (DESIGN.md §9, §22). `context` is what the clone
- * strategy compares against (the main checkout and the install point); every caller passes it.
+ * strategy compares against (the main checkout and the install point); every caller passes it. `cloneDeps` is the
+ * clone's platform and runner, `run` with the real platform unless a test injects them.
  */
 export function prepareDependencies(
   strategy: DependencyStrategy,
   worktree: string,
   run: ArgvRunner,
   context?: DependencyContext,
-): { ok: boolean; code: number; output: string } {
+  cloneDeps: CloneDeps = defaultCloneDeps(run),
+): Prepared {
   if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
   if (strategy.strategy === "command") return runInstall(strategy.command, "dependencies.command", worktree, run);
-  if (strategy.strategy === "clone") {
-    // The clone itself comes with 0.3.0's ld-clone lane (DESIGN.md §22); until then the fallback install runs.
-    void context;
-    if (strategy.fallback !== null) return runInstall(strategy.fallback, "dependencies.fallback", worktree, run);
-    throw new ArbabError("config", "dependencies.strategy clone is not available in this build and no dependencies.fallback is set");
-  }
+  if (strategy.strategy === "clone") return cloneDependencies(strategy, worktree, run, context, cloneDeps);
   throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify((strategy as { strategy: unknown }).strategy)}`);
 }

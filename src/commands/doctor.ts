@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { compareVersions, findOnPath, parseVersion, resolveBinary } from "../binary";
 import { defaultConfig, loadConfig } from "../config";
 import {
+  checkClone,
   checkConfigFiles,
   checkDisk,
   checkEnvTemplates,
@@ -130,6 +131,7 @@ export function projectChecks(ctx: CommandContext, root: string, config: Project
     ...guarded("tests", () => checkTestConfigs(root)),
     ...guarded("gates", () => checkGates(root, config.gates)),
     ...guarded("env", () => checkEnvTemplates(ctx.git, root, config.fence.readableEnvFiles)),
+    ...guarded("dependencies", () => checkClone(root, config.dependencies, ctx.platform, ctx.runCommand)),
     ...guarded("disk", () => diskCheck(ctx, root, config)),
     ...guarded("machine", () => checkMachineCap(ctx.home, root, config.maxParallel)),
   ];

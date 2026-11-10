@@ -4,16 +4,39 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { appendFileSync, statSync } from "node:fs";
 import { constants } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
-import { CHECKS_ENV } from "../types";
-import { formatFailureLine, isCheckName, readChecksEnv } from "./command";
+import { CHECKS_ENV, type CheckFailure } from "../types";
+import { formatFailureLine, isCheckName, parseFailureLine, readChecksEnv } from "./command";
 import { parseFailures, stripAnsi } from "./digest";
-import { nodeRegistryFs, register, registryDir, running, unregister, type CheckEntry, type RegistryFs } from "./registry";
+import {
+  liveEntries,
+  nodeRegistryFs,
+  register,
+  registeredBefore,
+  registryDir,
+  unregister,
+  update,
+  type CheckEntry,
+  type RegistryFs,
+} from "./registry";
 
 export const POLL_MS = 2000;
 const TAIL_KEEP = 200;
 const TAIL_PASS = 15;
 const TAIL_FAIL = 60;
 const MAX_FAILURES = 30;
+// Parsed beyond what is printed, so the more-failures line can count them.
+const COUNT_FAILURES = 1000;
+
+/**
+ * All arbab-check prints to stdout, under the smallest fence.bashOutputMaxChars (4000): longer output is saved where
+ * the worker cannot read it.
+ */
+export const STDOUT_MAX = 3800;
+/** The header names the log; a path this long is not one anybody can use, and must not crowd out the rest. */
+const HEADER_MAX = 1000;
+const FAILURES_CHARS = 2000;
+const FAILURE_LINE_MAX = 200;
+const TAIL_LINE_MAX = 240;
 
 export interface CheckFs extends RegistryFs {
   isDir(path: string): boolean;
@@ -120,6 +143,60 @@ class Tail {
   }
 }
 
+/**
+ * A failure line of at most FAILURE_LINE_MAX characters that still reads back with parseFailureLine: when it is too
+ * long, the file and the test give way first, then the message takes what is left.
+ */
+export function shortFailureLine(failure: CheckFailure): string {
+  const line = formatFailureLine(failure);
+  if (line.length <= FAILURE_LINE_MAX) return line;
+  const clean = parseFailureLine(line) ?? { file: null, test: null, message: "" };
+  const file = clean.file?.slice(0, 70) ?? null;
+  const test = clean.test?.slice(0, 50) ?? null;
+  const head = formatFailureLine({ file, test, message: "" });
+  const message = clean.message.slice(0, Math.max(0, FAILURE_LINE_MAX - head.length));
+  return formatFailureLine({ file, test, message }).slice(0, FAILURE_LINE_MAX);
+}
+
+/**
+ * The summary, at most `budget` characters with its last newline (DESIGN.md §22): the header; failure lines while they
+ * fit in FAILURES_CHARS; a count of those left out; then the newest tail lines that fit in what is left.
+ */
+export function summarize(header: string, failures: CheckFailure[], tail: string[], budget: number): string {
+  const lines: string[] = [];
+  let used = 0;
+  const add = (line: string): void => {
+    lines.push(line);
+    used += line.length + 1;
+  };
+  add(header.slice(0, HEADER_MAX));
+
+  let failureChars = 0;
+  let shown = 0;
+  for (const failure of failures.slice(0, MAX_FAILURES)) {
+    const line = shortFailureLine(failure);
+    if (failureChars + line.length + 1 > FAILURES_CHARS) break;
+    failureChars += line.length + 1;
+    add(line);
+    shown += 1;
+  }
+  if (shown < failures.length) add(`arbab-check: ${failures.length - shown} more failures in the log`);
+
+  // The marker's count is known only at the end; leave room for its widest form.
+  const markerRoom = `--- last ${tail.length} lines ---`.length + 1;
+  let room = budget - used - markerRoom;
+  const kept: string[] = [];
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const line = (tail[i] ?? "").slice(0, TAIL_LINE_MAX);
+    if (line.length + 1 > room) break;
+    room -= line.length + 1;
+    kept.unshift(line);
+  }
+  add(`--- last ${kept.length} lines ---`);
+  for (const line of kept) add(line);
+  return lines.join("\n") + "\n";
+}
+
 /** Runs `node arbab-check.mjs <name> [args…]`'s logic; resolves to the exit code the script exits with. */
 export async function runCheck(args: string[], deps: CheckRunDeps): Promise<number> {
   // 1. Read the env.
@@ -150,11 +227,18 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
     else pendingSignal = signal;
   });
 
-  // 2. Register.
+  // Every character on stdout counts against STDOUT_MAX, the waiting line too.
+  let printed = 0;
+  const out = (text: string): void => {
+    printed += text.length;
+    deps.out(text);
+  };
+
+  // 2. Register, as waiting.
   const dir = registryDir(deps.tmpdir);
+  const entry: CheckEntry = { pid: deps.pid, name, cwd: deps.cwd, startedAt: new Date(deps.now()).toISOString(), cpus: policy.cpus, state: "waiting" };
   let registered = false;
   try {
-    const entry: CheckEntry = { pid: deps.pid, name, cwd: deps.cwd, startedAt: new Date(deps.now()).toISOString(), cpus: policy.cpus };
     register(dir, entry, deps.fs);
     registered = true;
   } catch (err) {
@@ -162,27 +246,33 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
   }
 
   try {
-    // 3. Count the others; 4. wait while the machine is full.
+    // 3. Count the running checks and the waiters registered before this one; 4. wait while they fill the places.
     let usable = registered;
-    const count = (): number => {
-      if (!usable) return 0;
+    const count = (): { running: number; ahead: number } => {
+      if (!usable) return { running: 0, ahead: 0 };
       try {
-        return running(dir, deps.pid, deps.fs, deps.probe).length;
+        const others = liveEntries(dir, deps.pid, deps.fs, deps.probe, deps.now());
+        return {
+          running: others.filter((e) => e.state === "running").length,
+          ahead: others.filter((e) => e.state === "waiting" && registeredBefore(e, entry)).length,
+        };
       } catch (err) {
         usable = false;
         deps.err(`arbab-check: the registry ${dir} is unusable (${message(err)}); running without waiting\n`);
-        return 0;
+        return { running: 0, ahead: 0 };
       }
     };
-    let others = count();
-    if (others >= policy.concurrent) {
-      deps.out(`arbab-check: waiting for one of ${policy.concurrent} places (${others} checks running)\n`);
+    const full = (c: { running: number; ahead: number }): boolean => c.running + c.ahead >= policy.concurrent;
+    let seen = count();
+    if (full(seen)) {
+      const ahead = seen.ahead > 0 ? `, ${seen.ahead} waiting before this one` : "";
+      out(`arbab-check: waiting for one of ${policy.concurrent} places (${seen.running} checks running${ahead})\n`);
       const deadline = deps.now() + policy.waitSec * 1000;
-      while (others >= policy.concurrent && pendingSignal === null) {
+      while (full(seen) && pendingSignal === null) {
         const left = deadline - deps.now();
         if (left <= 0) break;
         await deps.sleep(Math.min(POLL_MS, left));
-        others = count();
+        seen = count();
       }
     }
     if (pendingSignal !== null) {
@@ -190,8 +280,16 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
       return signalExitCode(pendingSignal);
     }
 
-    // 5. Take a share.
-    const share = Math.max(1, Math.floor((policy.cpus - 1) / (others + 1)));
+    // 5. Take a share, and say so in the entry.
+    const share = Math.max(1, Math.floor((policy.cpus - 1) / (seen.running + 1)));
+    if (usable) {
+      try {
+        update(dir, { ...entry, state: "running", share }, deps.fs);
+      } catch (err) {
+        // Still counted, as a waiter ahead of the later ones: it takes a place either way.
+        deps.err(`arbab-check: cannot mark ${name} running in ${dir} (${message(err)})\n`);
+      }
+    }
     const command = [...argv.map((a) => a.split("{cpus}").join(String(share))), ...extra];
 
     // 7. The log, created first so the summary can always name it.
@@ -254,23 +352,21 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
       const rel = relative(deps.cwd, log);
       where = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel) ? rel : log;
     }
-    const lines = [`arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`];
+    const header = `arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`;
+    let failures: CheckFailure[] = [];
     if (code !== 0) {
-      let full: string | null = null;
+      let whole: string | null = null;
       if (log !== null && !logBroken) {
         try {
-          full = deps.fs.readFile(log);
+          whole = deps.fs.readFile(log);
         } catch {
           // Parse what the tail holds.
         }
       }
-      for (const failure of parseFailures(full ?? tail.last(TAIL_KEEP).join("\n"), MAX_FAILURES)) {
-        lines.push(formatFailureLine(failure));
-      }
+      failures = parseFailures(whole ?? tail.last(TAIL_KEEP).join("\n"), COUNT_FAILURES);
     }
     const last = tail.last(code === 0 ? TAIL_PASS : TAIL_FAIL).map(stripAnsi);
-    lines.push(`--- last ${last.length} lines ---`, ...last);
-    deps.out(lines.join("\n") + "\n");
+    out(summarize(header, failures, last, STDOUT_MAX - printed));
     return code;
   } finally {
     stopSignals();

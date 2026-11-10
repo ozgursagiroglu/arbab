@@ -12,6 +12,7 @@ import type {
   DocumentLike,
   ElementLike,
   EventSourceConstructor,
+  EventSourceLike,
   FetchLike,
   LocationLike,
   MediaQueryListLike,
@@ -50,6 +51,8 @@ export const NO_TOKEN_MESSAGE =
 const EVENT_SOURCE_CLOSED = 2;
 /** How often the relative times ("2m ago") are rewritten. */
 const AGO_MS = 30_000;
+/** The least time between drawn frames: 20 a second (DESIGN.md §22). */
+export const FRAME_MS = 50;
 /** The title card's fade (its CSS transition), after which it is hidden outright. */
 export const TITLE_CARD_MS = 600;
 
@@ -89,6 +92,10 @@ export function startPage(env: PageEnv): PageHandle | null {
   const showNotice = (text: string): void => {
     notice.textContent = text;
     notice.hidden = false;
+  };
+  const hideNotice = (): void => {
+    notice.hidden = true;
+    notice.textContent = "";
   };
 
   // The connection pill.
@@ -380,9 +387,13 @@ export function startPage(env: PageEnv): PageHandle | null {
     setPinned(pinned);
   };
 
-  // A closed stream: ask the snapshot route, with the same token, why.
+  // The stream; null while the page is hidden or stopped.
   let stopped = false;
-  const explainClosed = (): void => {
+  let source: EventSourceLike | null = null;
+
+  // A closed stream: ask the snapshot route, with the same token, why. A stream closed or replaced since says nothing.
+  const explainClosed = (closed: EventSourceLike): void => {
+    const current = (): boolean => !stopped && source === closed;
     const fetcher: FetchLike | null = env.fetch;
     if (!fetcher) {
       showNotice(CLOSED_MESSAGE);
@@ -396,35 +407,63 @@ export function startPage(env: PageEnv): PageHandle | null {
     }
     probe.then(
       (res) => {
-        if (!stopped) showNotice(closedMessage(res));
+        if (current()) showNotice(closedMessage(res));
       },
       () => {
-        if (!stopped) showNotice(closedMessage(null));
+        if (current()) showNotice(closedMessage(null));
       },
     );
   };
 
-  const source = new env.EventSource(`${UI_ROUTES.events}?${UI_TOKEN_PARAM}=${encodeURIComponent(token)}`);
-  source.addEventListener("open", () => setConnection("live"));
-  source.addEventListener(UI_EVENTS.snapshot, (event) => onSnapshot(event.data));
-  source.addEventListener(UI_EVENTS.problem, (event) => showBanner(parseProblem(event.data)));
-  // EventSource retries by itself (the server sends retry: 2000) while it is CONNECTING. CLOSED means it gave up: the
-  // server answered with an error (a new session's token, the client limit, a server gone and another on the port).
-  source.addEventListener("error", () => {
-    if (source.readyState === EVENT_SOURCE_CLOSED) {
-      setConnection("closed");
-      explainClosed();
-    } else {
-      setConnection("lost");
-    }
-  });
+  /** Opens the stream, at the start and each time the page is shown again. */
+  const connect = (): void => {
+    setConnection("connecting");
+    const es = new env.EventSource(`${UI_ROUTES.events}?${UI_TOKEN_PARAM}=${encodeURIComponent(token)}`);
+    source = es;
+    es.addEventListener("open", () => setConnection("live"));
+    es.addEventListener(UI_EVENTS.snapshot, (event) => onSnapshot(event.data));
+    es.addEventListener(UI_EVENTS.problem, (event) => showBanner(parseProblem(event.data)));
+    // EventSource retries by itself (the server sends retry: 2000) while it is CONNECTING. CLOSED means it gave up: the
+    // server answered with an error (a new session's token, the client limit, a server gone and another on the port).
+    es.addEventListener("error", () => {
+      if (es.readyState === EVENT_SOURCE_CLOSED) {
+        setConnection("closed");
+        explainClosed(es);
+      } else {
+        setConnection("lost");
+      }
+    });
+  };
+  const disconnect = (): void => {
+    source?.close();
+    source = null;
+  };
 
-  // The loop: step the scene, draw it, play its events, count the KPIs, and tick the clocks.
+  // The loop: step the scene, draw it, play its events, count the KPIs, and tick the clocks. It draws at most every
+  // FRAME_MS (DESIGN.md §22); a hidden page requests no frames at all.
   let previous: number | null = null;
   let second = 0;
   let ago = 0;
-  const frame = (time: number): void => {
-    if (stopped) return;
+  /** Bumped by every start and stop, so a frame requested by an earlier loop (still pending) ends it. */
+  let generation = 0;
+  const startLoop = (): void => {
+    generation += 1;
+    const mine = generation;
+    // Fresh, so the first frame after a hidden spell does not step the scene by all of it.
+    previous = null;
+    const frame = (time: number): void => {
+      if (stopped || mine !== generation) return;
+      if (previous === null || time - previous >= FRAME_MS) draw(time);
+      tick(time);
+      env.requestAnimationFrame(frame);
+    };
+    env.requestAnimationFrame(frame);
+  };
+  const stopLoop = (): void => {
+    generation += 1;
+  };
+  const draw = (time: number): void => {
+    // The whole time since the last step, so motion keeps its speed at 20 frames a second; the scene clamps it.
     const dt = previous === null ? 16 : Math.max(0, time - previous);
     previous = time;
     scene.step(dt);
@@ -435,6 +474,8 @@ export function startPage(env: PageEnv): PageHandle | null {
     for (const event of events) sound.play(event.kind);
     events.length = 0;
     kpis.tick(env.now());
+  };
+  const tick = (time: number): void => {
     if (time - second >= 1000) {
       second = time;
       const now = serverNow();
@@ -451,16 +492,39 @@ export function startPage(env: PageEnv): PageHandle | null {
         writeCaption(last, now);
       }
     }
-    env.requestAnimationFrame(frame);
   };
-  env.requestAnimationFrame(frame);
+
+  // Hidden, the page neither draws nor streams, so the server, with no client left, stops building snapshots.
+  const show = (): void => {
+    if (source !== null) return;
+    hideNotice();
+    connect();
+    startLoop();
+  };
+  const hide = (): void => {
+    stopLoop();
+    disconnect();
+  };
+  const isHidden = (): boolean => env.visibilityState() === "hidden";
+  const unlisten = env.onVisibilityChange(() => {
+    if (stopped) return;
+    if (isHidden()) hide();
+    else show();
+  });
+  if (!isHidden()) show();
 
   return {
     stop() {
       stopped = true;
-      source.close();
+      unlisten();
+      hide();
     },
   };
+}
+
+interface VisibilityTarget {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
 }
 
 /** The real browser, read from globalThis once; null outside a browser (tests import this file). */
@@ -491,6 +555,16 @@ function browserEnv(): PageEnv | null {
     matchMedia: (query) => (media ? media.call(win, query) : { matches: false }),
     requestAnimationFrame: (callback) => raf.call(win, callback),
     setTimeout: (callback, ms) => (g.setTimeout as (callback: () => void, ms: number) => unknown).call(win, callback, ms),
+    // A browser without the Page Visibility API is always visible.
+    visibilityState: () => {
+      const state = (doc as { visibilityState?: unknown }).visibilityState;
+      return typeof state === "string" ? state : "visible";
+    },
+    onVisibilityChange: (listener) => {
+      const target = doc as VisibilityTarget;
+      target.addEventListener("visibilitychange", listener);
+      return () => target.removeEventListener("visibilitychange", listener);
+    },
     devicePixelRatio: typeof g.devicePixelRatio === "number" ? g.devicePixelRatio : 1,
     now: () => Date.now(),
   };

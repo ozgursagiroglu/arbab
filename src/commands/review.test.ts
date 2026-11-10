@@ -9,7 +9,7 @@ import { runIntegrate } from "./integrate";
 import { LAUNCH_POLL_MS } from "./launch";
 import { readReviewHistory } from "./records";
 import { applyLensVerdicts, formatFindings, formatReview, readLensFiles, reviewLenses, runReview, sinceCommit } from "./review";
-import { CLI_PID, DEFAULT_CONFIG, branchWith, makeProject, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
+import { CLI_PID, DEFAULT_CONFIG, branchWith, makeProject, passedVerify, simulateShepherds, writeLaneRun, type LaneRun, type TestProject } from "./testkit";
 
 const SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
 
@@ -268,6 +268,10 @@ describe("runReview", () => {
     expect(skeptic).toMatchObject({ role: "reviewer", base: integration.baseSha, mergeBranches: [integration.headSha] });
     expect(skeptic.schema).toBe(".arbab/integrations/rel/lanes/rel-skeptic-contracts.schema.json");
     expect(existsSync(join(p.root, skeptic.schema ?? ""))).toBe(true);
+    // review.install defaults to true: the reviewer keeps the default install; a skeptic never installs.
+    expect(lane).not.toHaveProperty("install");
+    expect(skeptic.install).toBe(false);
+    expect(readFileSync(join(p.root, lane.brief), "utf8")).toContain("- Do not run the repository's gates or a whole test suite");
     expect(p.spawned.map((s) => s.lane)).toEqual([
       "rel-review-correctness",
       "rel-review-security",
@@ -275,6 +279,67 @@ describe("runReview", () => {
       "rel-skeptic-correctness",
       "rel-skeptic-contracts",
     ]);
+  });
+
+  it("runs at most review.maxParallel reviewers, then skeptics, at once, and follows review.install for the reviewers", async () => {
+    p = await integrated({ review: { lenses: { perf: "slow paths" }, maxParallel: 2, install: false } });
+    const lenses = ["correctness", "security", "contracts", "perf"];
+    const lanes = [...lenses.map((l) => `rel-review-${l}`), ...lenses.map((l) => `rel-skeptic-${l}`)];
+    simulateShepherds(p, Object.fromEntries(lanes.map((l) => [l, () => ({ state: "running" as const })])));
+    // Each run goes on until a wait's tick finishes the oldest one: a reviewer with one HIGH finding, a skeptic with no verdict.
+    const running: string[] = [];
+    const atLaunch: number[] = [];
+    const spawn = p.ctx.spawnShepherd;
+    p.ctx.spawnShepherd = (root, lane, mode) => {
+      atLaunch.push(running.length);
+      running.push(lane);
+      return spawn(root, lane, mode);
+    };
+    const sleep = p.ctx.sleep;
+    p.ctx.sleep = async (ms) => {
+      const lane = ms === LAUNCH_POLL_MS ? undefined : running.shift();
+      if (lane !== undefined) {
+        const pid = (JSON.parse(readFileSync(join(p.runsRoot, lane, "state.json"), "utf8")) as { shepherdPid: number }).shepherdPid;
+        const report = lane.includes("-review-") ? reviewer([finding("leak", "HIGH", 1)])().report : { verdicts: [] };
+        writeLaneRun(p.runsRoot, lane, { state: "finished", endState: "success", shepherdPid: pid, report });
+        p.alive.delete(pid);
+      }
+      await sleep(ms);
+    };
+    expect(await runReview(["rel"], p.ctx)).toBe(0);
+    expect(p.spawned.map((s) => s.lane)).toEqual(lanes);
+    // At most one other run in flight at each launch: never more than two at once.
+    expect(Math.max(...atLaunch)).toBe(1);
+    const spec = (lane: string): LaneSpec => readRecord<LaneSpec>(join(dir(p), "lanes", `${lane}.json`));
+    for (const lane of lanes) expect(spec(lane).install).toBe(false);
+    expect(p.stderr()).toContain("launched rel-review-correctness, rel-review-security; 2 more start as places free up (at most 2 at once)\n");
+    expect(p.stderr()).toContain("launched rel-skeptic-correctness, rel-skeptic-security; 2 more start as places free up (at most 2 at once)\n");
+  });
+
+  it("gives the reviewers the verify results of the reviewed head only", async () => {
+    p = await integrated();
+    const head = readRecord<IntegrationRecord>(join(dir(p), "integration.json")).headSha;
+    const brief = (): string => readFileSync(join(dir(p), "lanes", "rel-review-security.md"), "utf8");
+    const review = async (): Promise<void> => {
+      simulateShepherds(p, { "rel-review-security": reviewer([]) });
+      expect(await runReview(["rel", "--lenses", "security"], p.ctx)).toBe(0);
+    };
+    const failed = { ...passedVerify(head, false), failures: [{ result: 0, file: "src/a.test.ts", test: "a > adds", message: "expected 1 to be 2" }] };
+    writeFileSync(join(dir(p), "verify.json"), JSON.stringify(failed));
+    await review();
+    expect(brief()).toContain("Verify results for this head:\n\n- exit 1: pnpm test\n");
+    expect(brief()).toContain('"message": "expected 1 to be 2"');
+
+    writeFileSync(join(dir(p), "verify.json"), JSON.stringify({ ...failed, headSha: "e".repeat(40) }));
+    await review();
+    expect(brief()).not.toContain("Verify results");
+
+    // A damaged verify.json costs the reviewers the block, not the review.
+    writeFileSync(join(dir(p), "verify.json"), JSON.stringify({ name: "rel" }));
+    p.err.length = 0;
+    await review();
+    expect(brief()).not.toContain("Verify results");
+    expect(p.stderr()).toMatch(/^arbab review: .*verify\.json is not a verify record for rel; the reviewers get no verify results\n/);
   });
 
   it("runs only the named lenses, no skeptic without MEDIUM+ findings, and exits 1 when a reviewer failed", async () => {
@@ -439,11 +504,13 @@ describe("runReview", () => {
   });
 
   it("adds a --lens-file lens for this run only, and lets one replace a built-in's text", async () => {
-    p = await integrated({ review: { lenses: { docs: "Stale docs." } } });
+    // A window as wide as the lenses: the five reviewers launch at once and keep running past the timeout.
+    p = await integrated({ review: { lenses: { docs: "Stale docs." }, maxParallel: 5 } });
     p.write("lenses/perf.md", "\n## Perf\nHot paths and N+1 queries.\n");
     const security = join(p.root, "lenses", "security-lens.md");
     writeFileSync(security, "Only the token handling.");
-    simulateShepherds(p, {});
+    const running = () => ({ state: "running" as const });
+    simulateShepherds(p, Object.fromEntries(["correctness", "security", "contracts", "docs", "perf"].map((l) => [`rel-review-${l}`, running])));
     expect(await runReview(["rel", "--lens-file", "perf=lenses/perf.md", "--lens-file", `security=${security}`, "--timeout-min", "0.5"], p.ctx)).toBe(3);
     expect(p.spawned.map((s) => s.lane)).toEqual(["rel-review-correctness", "rel-review-security", "rel-review-contracts", "rel-review-docs", "rel-review-perf"]);
     const brief = (lens: string): string => readFileSync(join(dir(p), "lanes", `rel-review-${lens}.md`), "utf8");

@@ -1,22 +1,25 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { DependencyStrategy } from "../types";
+import type { DependencyContext, DependencyStrategy } from "../types";
 import { ArbabError } from "../util/errors";
+import type { CloneDeps } from "./clone";
 import {
   DEPENDENCY_MANIFESTS,
   installRelevantChange,
   installRelevantPaths,
   isDependencyManifest,
+  manifestDrift,
   prepareDependencies,
   runArgv,
   type ArgvRunner,
 } from "./deps";
+import { makeGitRunner, type GitRunner } from "./git";
 
 let dir: string;
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "arbab-deps-"));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "arbab-deps-")));
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -52,20 +55,260 @@ describe("prepareDependencies", () => {
   });
 });
 
-describe("prepareDependencies: clone before its lane (DESIGN.md §22)", () => {
-  it("runs the fallback install until the clone exists", () => {
-    const calls: string[][] = [];
-    const run: ArgvRunner = (argv) => {
-      calls.push(argv);
-      return { code: 0, output: "fell back" };
-    };
-    const strategy: DependencyStrategy = { strategy: "clone", paths: ["node_modules"], fallback: ["npm", "ci"] };
-    expect(prepareDependencies(strategy, dir, run)).toEqual({ ok: true, code: 0, output: "fell back" });
-    expect(calls).toEqual([["npm", "ci"]]);
+// Isolated from the user's global and system git config.
+function isolatedGit(home: string): GitRunner {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"]) delete env[key];
+  return makeGitRunner({
+    ...env,
+    HOME: home,
+    XDG_CONFIG_HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: join(home, "gitconfig"),
+    GIT_AUTHOR_NAME: "Test",
+    GIT_AUTHOR_EMAIL: "test@example.com",
+    GIT_COMMITTER_NAME: "Test",
+    GIT_COMMITTER_EMAIL: "test@example.com",
   });
-  it("refuses without a fallback", () => {
-    const strategy: DependencyStrategy = { strategy: "clone", paths: ["node_modules"], fallback: null };
-    expect(() => prepareDependencies(strategy, dir, () => ({ code: 0, output: "" }))).toThrow(/no dependencies.fallback/);
+}
+
+const PKG = JSON.stringify({ name: "demo", scripts: { test: "vitest" }, dependencies: { "left-pad": "1.0.0" } }, null, 2) + "\n";
+
+/** A main checkout with one commit (package.json, package-lock.json, src/a.ts) and node_modules ignored. */
+function mainCheckout(): { root: string; git: GitRunner; head: string } {
+  const root = join(dir, "main");
+  const git = isolatedGit(dir);
+  const ok = (args: string[]): string => {
+    const r = git(args, root);
+    if (r.code !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+    return r.stdout;
+  };
+  mkdirSync(join(root, "src"), { recursive: true });
+  ok(["init", "-q", "-b", "main"]);
+  writeFileSync(join(root, ".gitignore"), "node_modules/\n");
+  writeFileSync(join(root, "package.json"), PKG);
+  writeFileSync(join(root, "package-lock.json"), '{"lockfileVersion":3}\n');
+  writeFileSync(join(root, "src", "a.ts"), "export {};\n");
+  ok(["add", "-A"]);
+  ok(["commit", "-q", "-m", "init"]);
+  return { root, git, head: ok(["rev-parse", "HEAD"]).trim() };
+}
+
+describe("manifestDrift", () => {
+  it("finds nothing when the working tree matches the install point, ignored node_modules and plain sources aside", () => {
+    const m = mainCheckout();
+    mkdirSync(join(m.root, "node_modules", "x"), { recursive: true });
+    writeFileSync(join(m.root, "node_modules", "x", "package.json"), "{}");
+    writeFileSync(join(m.root, "src", "a.ts"), "export const a = 1;\n");
+    writeFileSync(join(m.root, "src", "b.ts"), "export {};\n");
+    expect(manifestDrift({ projectRoot: m.root, installedAt: m.head, git: m.git })).toEqual([]);
+  });
+
+  it("lists a dependency change, staged or not, and not a scripts-only change", () => {
+    const m = mainCheckout();
+    const ctx = { projectRoot: m.root, installedAt: m.head, git: m.git };
+    writeFileSync(join(m.root, "package.json"), PKG.replace('"test": "vitest"', '"test": "vitest run", "build": "tsc"'));
+    expect(manifestDrift(ctx)).toEqual([]);
+    writeFileSync(join(m.root, "package.json"), PKG.replace("1.0.0", "2.0.0"));
+    expect(manifestDrift(ctx)).toEqual(["package.json"]);
+    expect(m.git(["add", "package.json"], m.root).code).toBe(0);
+    expect(manifestDrift(ctx)).toEqual(["package.json"]);
+  });
+
+  it("lists a lockfile change and an untracked lockfile or package.json, sorted and once each", () => {
+    const m = mainCheckout();
+    writeFileSync(join(m.root, "package-lock.json"), '{"lockfileVersion":3,"packages":{}}\n');
+    writeFileSync(join(m.root, "yarn.lock"), "# yarn\n");
+    mkdirSync(join(m.root, "web"));
+    writeFileSync(join(m.root, "web", "package.json"), "{}\n");
+    expect(manifestDrift({ projectRoot: m.root, installedAt: m.head, git: m.git })).toEqual(["package-lock.json", "web/package.json", "yarn.lock"]);
+  });
+
+  it("lists a manifest deleted from the working tree", () => {
+    const m = mainCheckout();
+    rmSync(join(m.root, "package.json"));
+    expect(manifestDrift({ projectRoot: m.root, installedAt: m.head, git: m.git })).toEqual(["package.json"]);
+  });
+
+  it("compares against the install point, not HEAD", () => {
+    const m = mainCheckout();
+    writeFileSync(join(m.root, "package.json"), PKG.replace("1.0.0", "2.0.0"));
+    expect(m.git(["commit", "-q", "-am", "bump"], m.root).code).toBe(0);
+    expect(manifestDrift({ projectRoot: m.root, installedAt: m.head, git: m.git })).toEqual(["package.json"]);
+  });
+
+  it("counts a failed git, or an install point that is no revision, as drift", () => {
+    const m = mainCheckout();
+    const drift = manifestDrift({ projectRoot: m.root, installedAt: "0".repeat(40), git: m.git });
+    expect(drift).toHaveLength(1);
+    expect(drift[0]).toMatch(/^<git failed: git diff --name-only -z --no-renames --no-ext-diff 0{40} -- \(128\): .+>$/);
+    const failing: GitRunner = (args) => (args[0] === "ls-files" ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: "", stderr: "" });
+    expect(manifestDrift({ projectRoot: m.root, installedAt: m.head, git: failing })).toEqual(["<git failed: git ls-files --others --exclude-standard -z (1): boom>"]);
+    expect(manifestDrift({ projectRoot: m.root, installedAt: "--output=x", git: m.git })).toEqual(['<git failed: "--output=x" is not a revision>']);
+  });
+});
+
+describe("prepareDependencies: clone (DESIGN.md §22)", () => {
+  interface Call {
+    argv: string[];
+    cwd: string;
+  }
+  /** A runner that makes every clone's destination (its last argument) and answers installs with "installed". */
+  const runner = (calls: Call[], clone = { code: 0, output: "" }): ArgvRunner => (argv, cwd) => {
+    calls.push({ argv, cwd });
+    if (argv[0] === "python3" || argv[0] === "cp") {
+      if (clone.code === 0) mkdirSync(argv.at(-1) ?? "", { recursive: true });
+      return clone;
+    }
+    return { code: 0, output: "installed" };
+  };
+  const linux = (run: ArgvRunner): CloneDeps => ({ platform: "linux", run });
+  const strategy = (over: Partial<{ paths: string[]; fallback: string[] | null }> = {}): DependencyStrategy => ({
+    strategy: "clone",
+    paths: ["node_modules"],
+    fallback: ["npm", "ci"],
+    ...over,
+  });
+
+  let m: { root: string; git: GitRunner; head: string };
+  let wt: string;
+  let ctx: DependencyContext;
+  beforeEach(() => {
+    m = mainCheckout();
+    mkdirSync(join(m.root, "node_modules", "a"), { recursive: true });
+    mkdirSync(join(m.root, "web", "node_modules"), { recursive: true });
+    wt = join(dir, "wt");
+    mkdirSync(join(wt, "web"), { recursive: true });
+    ctx = { projectRoot: m.root, installedAt: m.head, git: m.git };
+  });
+
+  it("clones every path in order and says how", () => {
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy({ paths: ["node_modules", "web/node_modules"] }), wt, run, ctx, linux(run));
+    expect(r).toEqual({ ok: true, code: 0, output: "cloned node_modules (cp)\ncloned web/node_modules (cp)" });
+    expect(calls.map((c) => c.argv)).toEqual([
+      ["cp", "-a", "--reflink=auto", join(m.root, "node_modules"), join(wt, "node_modules")],
+      ["cp", "-a", "--reflink=auto", join(m.root, "web", "node_modules"), join(wt, "web", "node_modules")],
+    ]);
+  });
+
+  it("clones with clonefile on macOS", () => {
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy(), wt, run, ctx, { platform: "darwin", run });
+    expect(r).toEqual({ ok: true, code: 0, output: "cloned node_modules (clonefile)" });
+    expect(calls.map((c) => c.argv[0])).toEqual(["python3"]);
+  });
+
+  it("treats a missing context as drift", () => {
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy(), wt, run, undefined, linux(run));
+    expect(r).toEqual({
+      ok: true,
+      code: 0,
+      output: "dependencies.clone: the main checkout's manifests differ from the install point: no install context; running dependencies.fallback\ninstalled",
+    });
+    expect(calls).toEqual([{ argv: ["npm", "ci"], cwd: wt }]);
+    expect(prepareDependencies(strategy({ fallback: null }), wt, run, undefined, linux(run))).toMatchObject({ ok: false, code: 1 });
+  });
+
+  it("runs the fallback on drift, and fails naming the difference without one", () => {
+    writeFileSync(join(m.root, "yarn.lock"), "# yarn\n");
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy(), wt, run, ctx, linux(run));
+    expect(r).toMatchObject({ ok: true, code: 0, output: expect.stringMatching(/differ from [0-9a-f]{40}: yarn\.lock; running dependencies\.fallback\ninstalled$/) });
+    expect(calls.map((c) => c.argv)).toEqual([["npm", "ci"]]);
+    expect(prepareDependencies(strategy({ fallback: null }), wt, run, ctx, linux(run))).toEqual({
+      ok: false,
+      code: 1,
+      output: `dependencies.clone: the main checkout's manifests differ from ${m.head}: yarn.lock; set dependencies.fallback to install instead`,
+    });
+    expect(existsSync(join(wt, "node_modules"))).toBe(false);
+  });
+
+  it("passes on a failed fallback", () => {
+    const r = prepareDependencies(strategy(), wt, () => ({ code: 5, output: "no network" }), undefined, linux(runner([])));
+    expect(r).toMatchObject({ ok: false, code: 5, output: expect.stringMatching(/no network$/) });
+  });
+
+  it("falls back, before any clone, when a source is missing or not a directory", () => {
+    writeFileSync(join(m.root, "vendor"), "a file\n");
+    for (const [missing, reason] of [
+      ["gone", "gone does not exist in the main checkout"],
+      ["vendor", "vendor is not a directory in the main checkout"],
+    ]) {
+      const calls: Call[] = [];
+      const run = runner(calls);
+      const r = prepareDependencies(strategy({ paths: ["node_modules", missing ?? ""] }), wt, run, ctx, linux(run));
+      expect(r.output).toBe(`dependencies.clone: ${reason}; running dependencies.fallback\ninstalled`);
+      expect(calls.map((c) => c.argv)).toEqual([["npm", "ci"]]);
+      const none = prepareDependencies(strategy({ paths: [missing ?? ""], fallback: null }), wt, run, ctx, linux(run));
+      expect(none).toEqual({ ok: false, code: 1, output: `dependencies.clone: ${reason}; set dependencies.fallback to install instead` });
+    }
+  });
+
+  it("refuses a source link that leads out of the main checkout, without the fallback", () => {
+    const outside = join(dir, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(m.root, "linked"));
+    symlinkSync(join(m.root, "node_modules"), join(m.root, "inner"));
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy({ paths: ["node_modules", "linked"] }), wt, run, ctx, linux(run));
+    expect(r).toEqual({ ok: false, code: 1, output: `dependencies.clone: linked in the main checkout leads to ${outside}, outside ${m.root}` });
+    expect(calls).toEqual([]);
+    // A link that stays inside clones its target.
+    const inner = prepareDependencies(strategy({ paths: ["inner"] }), wt, run, ctx, linux(run));
+    expect(inner.ok).toBe(true);
+    expect(calls.map((c) => c.argv.slice(-2))).toEqual([[join(m.root, "node_modules"), join(wt, "inner")]]);
+  });
+
+  it("refuses a destination that exists, a dangling link included, without the fallback", () => {
+    symlinkSync(join(dir, "nowhere"), join(wt, "node_modules"));
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy(), wt, run, ctx, linux(run));
+    expect(r).toEqual({ ok: false, code: 1, output: `dependencies.clone: ${join(wt, "node_modules")} already exists in the worktree` });
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a destination whose parent leads out of the worktree", () => {
+    rmSync(join(wt, "web"), { recursive: true });
+    mkdirSync(join(dir, "elsewhere"));
+    symlinkSync(join(dir, "elsewhere"), join(wt, "web"));
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies(strategy({ paths: ["web/node_modules"] }), wt, run, ctx, linux(run));
+    expect(r).toMatchObject({ ok: false, code: 1, output: expect.stringMatching(/web\/node_modules would be cloned through .*elsewhere, outside the worktree/) });
+    expect(calls).toEqual([]);
+  });
+
+  it("fails a clone that fails, keeping what it cloned before and running no fallback", () => {
+    const calls: Call[] = [];
+    let n = 0;
+    const run: ArgvRunner = (argv, cwd) => {
+      calls.push({ argv, cwd });
+      if (++n === 1) {
+        mkdirSync(argv.at(-1) ?? "", { recursive: true });
+        return { code: 0, output: "" };
+      }
+      return { code: 1, output: "cp: No space left on device\n" };
+    };
+    const r = prepareDependencies(strategy({ paths: ["node_modules", "web/node_modules"] }), wt, run, ctx, linux(run));
+    expect(r).toEqual({
+      ok: false,
+      code: 1,
+      output: "dependencies.clone: cloned node_modules (cp)\ncloning web/node_modules failed (cp): cp: No space left on device",
+    });
+    expect(calls.map((c) => c.argv[0])).toEqual(["cp", "cp"]);
+  });
+
+  it("validates the fallback argv when it runs", () => {
+    const bad = { strategy: "clone", paths: ["node_modules"], fallback: [""] } as DependencyStrategy;
+    expect(() => prepareDependencies(bad, wt, runner([]), undefined, linux(runner([])))).toThrow(/dependencies.fallback must be/);
   });
 });
 

@@ -1,3 +1,4 @@
+export { checkClone } from "./deps";
 export { checkEnvTemplates, ENV_TEMPLATES, trackedEnvTemplates } from "./env";
 export { checkGates, coveredScripts, isCheckScript, scriptCalls, scriptOf, workflowRunLines } from "./gates";
 export { checkHook, HOOK_MISSING, hookFile } from "./hook";

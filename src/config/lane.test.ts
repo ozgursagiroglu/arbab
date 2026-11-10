@@ -185,3 +185,29 @@ describe("toolList", () => {
     expect(() => toolList(["Bash", "-x"], "lane.tools")).toThrow(/^lane\.tools\[1\]: "-x" is not a tool name$/);
   });
 });
+
+describe("loadLane: install and checks (DESIGN.md §22)", () => {
+  const writeLane = (lane: Record<string, unknown>): string => {
+    writeFileSync(join(dir, "lanes", "brief.md"), "## Task\n");
+    writeFileSync(join(dir, "lanes", "l.json"), JSON.stringify({ name: "l", role: "implementer", brief: "lanes/brief.md", ...lane }));
+    return "lanes/l.json";
+  };
+
+  it("reads install and checks", () => {
+    const lane = loadLane(dir, writeLane({ install: false, checks: { "gate-1": ["pnpm", "typecheck"] } }));
+    expect(lane.install).toBe(false);
+    expect(lane.checks).toEqual({ "gate-1": ["pnpm", "typecheck"] });
+  });
+
+  it("leaves both unset when absent", () => {
+    const lane = loadLane(dir, writeLane({}));
+    expect(lane.install).toBeUndefined();
+    expect(lane.checks).toBeUndefined();
+  });
+
+  it("refuses a non-boolean install and invalid checks", () => {
+    expect(() => loadLane(dir, writeLane({ install: "no" }))).toThrow(/^install:/);
+    expect(() => loadLane(dir, writeLane({ checks: { "Gate 1": ["x"] } }))).toThrow(/^checks\.Gate 1:/);
+    expect(() => loadLane(dir, writeLane({ checks: { test: [] } }))).toThrow(/^checks\.test:/);
+  });
+});

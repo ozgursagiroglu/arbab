@@ -1,7 +1,7 @@
 // The shepherd supervises one lane from launch to finish (DESIGN.md §2): slot, quota, worktree, dependencies,
 // leases, the worker's attempts, auto-resume after a usage limit, and the release of everything it held.
 import { spawn } from "node:child_process";
-import { homedir } from "node:os";
+import { availableParallelism, homedir, loadavg } from "node:os";
 import { dirname, join } from "node:path";
 import { findOnPath, pathExists, realpath, runVersion } from "../binary";
 import { runnerPath } from "../registry";
@@ -9,6 +9,7 @@ import { isPortFree, nodeGit, readPs, runArgv } from "../run";
 import type { ArgvRunner, GitRunner, PortProbe, SpawnImpl } from "../run";
 import { isAlive, sendSignal, sleep, systemClock } from "../util/proc";
 import type { Clock } from "../util/proc";
+import type { MemoryPressureLevel } from "../types";
 
 export { runShepherd } from "./lifecycle";
 export { CONTINUATION_PROMPT, digestHeadStart } from "./prompt";
@@ -55,6 +56,12 @@ export interface ShepherdDeps {
    * because test/fake-claude/harness.ts builds deps without it; defaultDeps always sets it.
    */
   runner?: string;
+  /** The machine's CPUs (os.availableParallelism): arbab-check's policy and the admission's load per CPU (§22). */
+  cpus: () => number;
+  /** The one-minute load average (os.loadavg()[0]); admission holds a launch while it is too high per CPU (§22). */
+  loadAvg: () => number;
+  /** The machine's memory pressure, or null when it cannot be read (a failed read never holds a launch; §22). */
+  memoryPressure: () => MemoryPressureLevel | null;
   tickMs: number;
   holdPollMs: number;
   slotPollMs: number;
@@ -89,6 +96,10 @@ export function defaultDeps(): ShepherdDeps {
     exists: pathExists,
     realpath,
     runner: runnerPath(process.argv[1] ?? ""),
+    cpus: () => availableParallelism(),
+    loadAvg: () => loadavg()[0] ?? 0,
+    // The reader comes with the ld-shepherd lane (src/run/pressure.ts, DESIGN.md §22); null never holds a launch.
+    memoryPressure: () => null,
     tickMs: 10_000,
     holdPollMs: 60_000,
     slotPollMs: 15_000,

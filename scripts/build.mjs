@@ -72,9 +72,27 @@ export function bundleOptions({ version, outfile }) {
   };
 }
 
+/**
+ * The esbuild options for arbab-check, the second bundle (DESIGN.md §22). Workers run it from their lane's run
+ * directory, where nothing sits next to it, so it carries everything it needs: node built-ins only.
+ */
+export function checkBundleOptions({ outfile }) {
+  return {
+    entryPoints: ["src/check/main.ts"],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    outfile,
+    legalComments: "none",
+    logLevel: "warning",
+  };
+}
+
 // Only when run as the build script; tests import the functions above.
 if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
   await build(bundleOptions({ version: packageVersion("."), outfile: "dist/arbab.mjs" }));
+  await build(checkBundleOptions({ outfile: "dist/arbab-check.mjs" }));
   // The marketplace installs plugin/, so the install carries the plugin and nothing else from the repository.
   assemblePlugin(".", "dist/arbab.mjs", "plugin");
 }

@@ -223,6 +223,10 @@ export function testDeps(project: TestProject, overrides: Partial<ShepherdDeps> 
     run: runVersion,
     exists: pathExists,
     realpath,
+    // An idle machine: admission never holds a test lane unless a test says otherwise.
+    cpus: () => 8,
+    loadAvg: () => 0,
+    memoryPressure: () => "normal",
     tickMs: 20,
     holdPollMs: 60_000,
     slotPollMs: 15_000,

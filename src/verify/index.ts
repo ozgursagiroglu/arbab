@@ -5,21 +5,13 @@ import { isRecord, stringOrNull } from "../stream/json";
 import type { JsonRecord } from "../stream/json";
 import type { GateResult, LaneSpec, VerifyRecord } from "../types";
 import { assertValidName } from "../util/names";
+import { commandLine } from "../util/shell";
+
+// readiness and host-check import it from here.
+export { commandLine };
 
 /** The Bash timeout the brief asks for: the tool's maximum, since gates can be slow. */
 export const VERIFY_TIMEOUT_MS = 900_000;
-
-// Anything outside these characters may mean something to the shell (`;`, `|`, `$`, `*`, …), so it is quoted. The
-// empty argument is quoted too, so that it survives the round trip.
-const NEEDS_QUOTES = /[^A-Za-z0-9_./:@%+=,-]|^$/;
-
-/**
- * The argv as one command line, POSIX-quoted only where needed, so every argument stays one literal word. The same
- * text goes into the brief, the allow rule and the stream lookup, so the three always agree.
- */
-export function commandLine(argv: string[]): string {
-  return argv.map((arg) => (NEEDS_QUOTES.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg)).join(" ");
-}
 
 interface Expected {
   kind: GateResult["kind"];

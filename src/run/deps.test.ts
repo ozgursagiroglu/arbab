@@ -47,8 +47,25 @@ describe("prepareDependencies", () => {
     const run: ArgvRunner = () => ({ code: 0, output: "" });
     expect(() => prepareDependencies({ strategy: "command", command: [] }, dir, run)).toThrow(ArbabError);
     expect(() => prepareDependencies({ strategy: "command", command: [""] }, dir, run)).toThrow(ArbabError);
-    const bad = { strategy: "clone" } as unknown as DependencyStrategy;
+    const bad = { strategy: "copy" } as unknown as DependencyStrategy;
     expect(() => prepareDependencies(bad, dir, run)).toThrow(/unknown dependencies strategy/);
+  });
+});
+
+describe("prepareDependencies: clone before its lane (DESIGN.md §22)", () => {
+  it("runs the fallback install until the clone exists", () => {
+    const calls: string[][] = [];
+    const run: ArgvRunner = (argv) => {
+      calls.push(argv);
+      return { code: 0, output: "fell back" };
+    };
+    const strategy: DependencyStrategy = { strategy: "clone", paths: ["node_modules"], fallback: ["npm", "ci"] };
+    expect(prepareDependencies(strategy, dir, run)).toEqual({ ok: true, code: 0, output: "fell back" });
+    expect(calls).toEqual([["npm", "ci"]]);
+  });
+  it("refuses without a fallback", () => {
+    const strategy: DependencyStrategy = { strategy: "clone", paths: ["node_modules"], fallback: null };
+    expect(() => prepareDependencies(strategy, dir, () => ({ code: 0, output: "" }))).toThrow(/no dependencies.fallback/);
   });
 });
 

@@ -1,4 +1,5 @@
 // src/check/main.ts
+import { randomBytes as randomBytes2 } from "node:crypto";
 import { tmpdir } from "node:os";
 
 // src/util/proc.ts
@@ -60,12 +61,16 @@ function registryDir(tmpdir2) {
 var ENTRY_MAX_AGE_MS = 20 * 6e4;
 var ENTRY_MAX_AHEAD_MS = 6e4;
 var ENTRY_MAX_BYTES = 16 * 1024;
+var PID_MAX = 4194304;
 var ENTRY_FILE = /^([1-9]\d*)\.json$/;
 var ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/;
 var entryPath = (dir, pid) => join2(dir, `${pid}.json`);
-var isPid = (v) => typeof v === "number" && Number.isInteger(v) && v > 0;
+var isPositiveInt = (v) => typeof v === "number" && Number.isInteger(v) && v > 0;
+function isEntryPid(v) {
+  return typeof v === "number" && Number.isInteger(v) && v >= 2 && v <= PID_MAX;
+}
 function assertPid(pid) {
-  if (!isPid(pid)) throw new ArbabError("usage", `invalid pid ${pid}`);
+  if (!isPositiveInt(pid)) throw new ArbabError("usage", `invalid pid ${pid}`);
 }
 function entryTime(entry) {
   return ISO_TIME.test(entry.startedAt) ? Date.parse(entry.startedAt) : Number.NaN;
@@ -101,12 +106,12 @@ function parseEntry(text, pid) {
   }
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
   const r = raw;
-  if (r.pid !== pid || typeof r.name !== "string" || typeof r.cwd !== "string" || typeof r.startedAt !== "string" || !isPid(r.cpus)) {
+  if (r.pid !== pid || typeof r.name !== "string" || typeof r.cwd !== "string" || typeof r.startedAt !== "string" || !isPositiveInt(r.cpus)) {
     return null;
   }
   if (r.state !== void 0 && r.state !== "waiting" && r.state !== "running") return null;
   const entry = { pid, name: r.name, cwd: r.cwd, startedAt: r.startedAt, cpus: r.cpus, state: r.state ?? "running" };
-  if (isPid(r.share)) entry.share = r.share;
+  if (isPositiveInt(r.share)) entry.share = r.share;
   return entry;
 }
 function staleByTime(entry, now) {
@@ -122,7 +127,7 @@ function liveEntries(dir, self, fs, probe, now) {
     const match = ENTRY_FILE.exec(file);
     if (match === null) continue;
     const pid = Number(match[1]);
-    if (pid === self || !Number.isSafeInteger(pid)) continue;
+    if (pid === self || !isEntryPid(pid)) continue;
     let text;
     try {
       text = fs.readEntry(join2(dir, file));
@@ -145,11 +150,12 @@ function liveEntries(dir, self, fs, probe, now) {
 }
 function killProbe(kill) {
   return (pid) => {
+    if (!isEntryPid(pid)) return "gone";
     try {
       kill(pid, 0);
       return "alive";
     } catch (err) {
-      return err.code === "ESRCH" ? "gone" : "alive";
+      return err.code === "EPERM" ? "alive" : "gone";
     }
   };
 }
@@ -178,7 +184,7 @@ var nodeRegistryFs = {
 
 // src/check/run.ts
 import { spawn as nodeSpawn } from "node:child_process";
-import { appendFileSync, statSync } from "node:fs";
+import { closeSync as closeSync3, constants as fsConstants, openSync as openSync3, statSync, writeSync as writeSync2 } from "node:fs";
 import { constants as constants2 } from "node:os";
 import { isAbsolute as isAbsolute2, join as join3, relative as relative2 } from "node:path";
 
@@ -197,6 +203,9 @@ var FAILURE_FIELD_MAX = 200;
 var CSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 var CONTROL = /[\u0000-\u001f\u007f-\u009f]/g;
 var field = (s, max) => s.replace(CSI, "").replace(/[\r\n\t]+/g, " ").replace(CONTROL, "").trim().slice(0, max).trim();
+function failureFieldText(s) {
+  return field(s, Number.POSITIVE_INFINITY);
+}
 function formatFailureLine(failure) {
   const file = failure.file === null ? "" : field(failure.file, FAILURE_FIELD_MAX);
   const test = failure.test === null ? "" : field(failure.test, FAILURE_FIELD_MAX);
@@ -354,8 +363,11 @@ var COUNT_FAILURES = 1e3;
 var STDOUT_MAX = 3800;
 var HEADER_MAX = 1e3;
 var FAILURES_CHARS = 2e3;
-var FAILURE_LINE_MAX = 200;
+var FAILURE_LINE_MAX = 400;
+var FAILURE_MESSAGE_MIN = 40;
 var TAIL_LINE_MAX = 240;
+var LOG_TRIES = 20;
+var FALLBACK_LOG_TRIES = 5;
 var message = (err) => err instanceof Error ? err.message : String(err);
 function configuredNames(env) {
   try {
@@ -375,10 +387,12 @@ function signalExitCode(signal) {
 function createLog(name, deps) {
   const scratch = join3(deps.cwd, ".arbab-tmp");
   if (!deps.fs.isDir(scratch)) {
-    const path = join3(deps.tmpdir, `arbab-check-${name}-${deps.pid}.log`);
-    deps.fs.remove(path);
-    if (!deps.fs.writeExclusive(path, "")) throw new Error(`${path} exists`);
-    return path;
+    for (let tries = 0; tries < FALLBACK_LOG_TRIES; tries++) {
+      const path = join3(deps.tmpdir, `arbab-check-${name}-${deps.pid}-${deps.randomHex(3)}.log`);
+      const file = deps.fs.createLog(path, 384);
+      if (file !== null) return { path, file };
+    }
+    throw new Error(`no free log name in ${deps.tmpdir}`);
   }
   const dir = join3(scratch, "checks");
   deps.fs.mkdirp(dir);
@@ -388,10 +402,11 @@ function createLog(name, deps) {
     const match = pattern.exec(file);
     if (match !== null) n = Math.max(n, Number(match[1]));
   }
-  for (let tries = 0; tries < 100; tries++) {
+  for (let tries = 0; tries < LOG_TRIES; tries++) {
     n += 1;
     const path = join3(dir, `${name}-${n}.log`);
-    if (deps.fs.writeExclusive(path, "")) return path;
+    const file = deps.fs.createLog(path, 438);
+    if (file !== null) return { path, file };
   }
   throw new Error(`no free log number in ${dir}`);
 }
@@ -410,14 +425,21 @@ var Tail = class {
   }
 };
 function shortFailureLine(failure) {
-  const line = formatFailureLine(failure);
+  let file = failure.file === null ? null : failureFieldText(failure.file);
+  let message2 = failure.message;
+  if (file !== null && file.length > FAILURE_FIELD_MAX) {
+    message2 = `${file}: ${message2}`;
+    file = null;
+  }
+  const line = formatFailureLine({ file, test: failure.test, message: message2 });
   if (line.length <= FAILURE_LINE_MAX) return line;
   const clean = parseFailureLine(line) ?? { file: null, test: null, message: "" };
-  const file = clean.file?.slice(0, 70) ?? null;
-  const test = clean.test?.slice(0, 50) ?? null;
-  const head = formatFailureLine({ file, test, message: "" });
-  const message2 = clean.message.slice(0, Math.max(0, FAILURE_LINE_MAX - head.length));
-  return formatFailureLine({ file, test, message: message2 }).slice(0, FAILURE_LINE_MAX);
+  const room = FAILURE_LINE_MAX - formatFailureLine({ file: clean.file, test: null, message: "" }).length;
+  const testRoom = room - Math.min(clean.message.length, FAILURE_MESSAGE_MIN) - " > ".length;
+  const test = clean.test === null || testRoom <= 0 ? null : clean.test.slice(0, testRoom);
+  const head = formatFailureLine({ file: clean.file, test, message: "" });
+  const cut2 = clean.message.slice(0, Math.max(0, FAILURE_LINE_MAX - head.length));
+  return formatFailureLine({ file: clean.file, test, message: cut2 }).slice(0, FAILURE_LINE_MAX);
 }
 function summarize(header, failures, tail, budget) {
   const lines = [];
@@ -548,6 +570,8 @@ async function runCheck(args, deps) {
 `);
     }
     let logBroken = false;
+    let logOpen = log !== null;
+    const written = [];
     const tail = new Tail();
     const started = deps.now();
     const result = await new Promise((resolve2) => {
@@ -559,12 +583,15 @@ async function runCheck(args, deps) {
           {
             output: (text) => {
               tail.push(text);
-              if (log === null || logBroken) return;
+              if (log === null || !logOpen) return;
               try {
-                deps.fs.append(log, text);
+                log.file.write(text);
+                written.push(text);
               } catch (err) {
                 logBroken = true;
-                deps.err(`arbab-check: cannot write ${log} (${message(err)})
+                logOpen = false;
+                written.length = 0;
+                deps.err(`arbab-check: cannot write ${log.path} (${message(err)})
 `);
               }
             },
@@ -577,12 +604,19 @@ async function runCheck(args, deps) {
       }
     });
     child = null;
+    if (log !== null) {
+      logOpen = false;
+      try {
+        log.file.close();
+      } catch {
+      }
+    }
     if ("error" in result) {
       deps.err(`arbab-check: cannot run ${command[0] ?? ""}: ${result.error.message}
 `);
       if (log !== null) {
         try {
-          deps.fs.remove(log);
+          deps.fs.remove(log.path);
         } catch {
         }
       }
@@ -592,20 +626,14 @@ async function runCheck(args, deps) {
     const seconds = ((deps.now() - started) / 1e3).toFixed(1);
     let where = "none";
     if (log !== null) {
-      const rel = relative2(deps.cwd, log);
-      where = rel !== "" && !rel.startsWith("..") && !isAbsolute2(rel) ? rel : log;
+      const rel = relative2(deps.cwd, log.path);
+      where = rel !== "" && !rel.startsWith("..") && !isAbsolute2(rel) ? rel : log.path;
     }
     const header = `arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`;
     let failures = [];
     if (code !== 0) {
-      let whole = null;
-      if (log !== null && !logBroken) {
-        try {
-          whole = deps.fs.readFile(log);
-        } catch {
-        }
-      }
-      failures = parseFailures(whole ?? tail.last(TAIL_KEEP).join("\n"), COUNT_FAILURES);
+      const whole = log !== null && !logBroken ? written.join("") : tail.last(TAIL_KEEP).join("\n");
+      failures = parseFailures(whole, COUNT_FAILURES);
     }
     const last = tail.last(code === 0 ? TAIL_PASS : TAIL_FAIL).map(stripAnsi);
     out(summarize(header, failures, last, STDOUT_MAX - printed));
@@ -620,6 +648,26 @@ async function runCheck(args, deps) {
     }
   }
 }
+var LOG_OPEN = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+function createLogFile(path, mode) {
+  let fd;
+  try {
+    fd = openSync3(path, LOG_OPEN, mode);
+  } catch (err) {
+    const code = err.code;
+    if (code === "EEXIST" || code === "ELOOP") return null;
+    throw err;
+  }
+  return {
+    write: (data) => {
+      const bytes = Buffer.from(data, "utf8");
+      for (let at = 0; at < bytes.length; ) at += writeSync2(fd, bytes, at, bytes.length - at);
+    },
+    close: () => {
+      closeSync3(fd);
+    }
+  };
+}
 var nodeCheckFs = {
   ...nodeRegistryFs,
   isDir: (path) => {
@@ -629,9 +677,7 @@ var nodeCheckFs = {
       return false;
     }
   },
-  append: (path, data) => {
-    appendFileSync(path, data);
-  }
+  createLog: createLogFile
 };
 function nodeCheckSpawn(spawn = nodeSpawn) {
   return (command, args, options, handlers) => {
@@ -672,6 +718,7 @@ try {
     sleep,
     fs: nodeCheckFs,
     probe: killProbe((pid, signal) => process.kill(pid, signal)),
+    randomHex: (bytes) => randomBytes2(bytes).toString("hex"),
     out: (text) => process.stdout.write(text),
     err: (text) => process.stderr.write(text),
     onSignal: (handler) => {

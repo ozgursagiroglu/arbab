@@ -4,7 +4,7 @@
 // --json: {"ok": boolean, "checks": [{"status": "ok" | "warn" | "fail", "check": string, "detail": string}]}
 // Exit 1 when any check fails; warnings do not fail.
 import { randomBytes } from "node:crypto";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { compareVersions, findOnPath, parseVersion, resolveBinary } from "../binary";
 import { defaultConfig, loadConfig } from "../config";
@@ -18,6 +18,7 @@ import {
   checkHook,
   checkIgnored,
   checkMachineCap,
+  checkPrepareTime,
   checkTestConfigs,
   type DoctorCheck,
 } from "../doctor";
@@ -123,6 +124,20 @@ function diskCheck(ctx: CommandContext, root: string, config: ProjectConfig): Do
   });
 }
 
+/** How long worktrees took to prepare lately, and what would make it faster (DESIGN.md §23). */
+function prepareTimeCheck(ctx: CommandContext, root: string, config: ProjectConfig): DoctorCheck[] | null {
+  const worktreeRoot = confine(root, config.worktreeRoot);
+  const runsRoot = confine(root, config.runsRoot);
+  // The runs root exists whenever there are times to read.
+  return checkPrepareTime({
+    root,
+    runsRoot,
+    dependencies: config.dependencies,
+    nowMs: ctx.clock.now(),
+    scratchParent: existsSync(worktreeRoot) ? worktreeRoot : runsRoot,
+  });
+}
+
 /** The checks of DESIGN.md §21: what made real projects fail after launch, named before it. */
 export function projectChecks(ctx: CommandContext, root: string, config: ProjectConfig): DoctorCheck[] {
   return [
@@ -132,6 +147,7 @@ export function projectChecks(ctx: CommandContext, root: string, config: Project
     ...guarded("gates", () => checkGates(root, config.gates)),
     ...guarded("env", () => checkEnvTemplates(ctx.git, root, config.fence.readableEnvFiles)),
     ...guarded("dependencies", () => checkClone(root, config.dependencies, ctx.platform, ctx.runCommand)),
+    ...guarded("dependencies", () => prepareTimeCheck(ctx, root, config)),
     ...guarded("disk", () => diskCheck(ctx, root, config)),
     ...guarded("machine", () => checkMachineCap(ctx.home, root, config.maxParallel)),
   ];

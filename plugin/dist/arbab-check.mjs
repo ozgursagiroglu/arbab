@@ -192,6 +192,12 @@ import { isAbsolute as isAbsolute2, join as join3, relative as relative2 } from 
 var CHECKS_ENV = "ARBAB_CHECKS";
 var CHECK_POLICY_ENV = "ARBAB_CHECK_POLICY";
 
+// src/util/shell.ts
+var NEEDS_QUOTES = /[^A-Za-z0-9_./:@%+=,-]|^$/;
+function commandLine(argv) {
+  return argv.map((arg) => NEEDS_QUOTES.test(arg) ? `'${arg.replace(/'/g, "'\\''")}'` : arg).join(" ");
+}
+
 // src/check/command.ts
 var CHECK_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/;
 function isCheckName(name) {
@@ -249,7 +255,128 @@ function readChecksEnv(env) {
   if (!isRecord(rawPolicy) || !positiveInt(rawPolicy.cpus, 1) || !positiveInt(rawPolicy.concurrent, 1) || !positiveInt(rawPolicy.waitSec, 0)) {
     throw new ArbabError("usage", `${CHECK_POLICY_ENV} must be {"cpus": n \u2265 1, "concurrent": n \u2265 1, "waitSec": n \u2265 0}`);
   }
-  return { checks, policy: { cpus: rawPolicy.cpus, concurrent: rawPolicy.concurrent, waitSec: rawPolicy.waitSec } };
+  const suites = rawPolicy.suites === void 0 ? "whole" : rawPolicy.suites;
+  if (suites !== "targeted" && suites !== "whole") throw new ArbabError("usage", `${CHECK_POLICY_ENV}.suites must be "targeted" or "whole"`);
+  return { checks, policy: { cpus: rawPolicy.cpus, concurrent: rawPolicy.concurrent, waitSec: rawPolicy.waitSec, suites } };
+}
+var PACKAGE_MANAGERS = /* @__PURE__ */ new Set(["pnpm", "npm", "yarn", "bun", "npx", "bunx"]);
+var PM_SUBCOMMANDS = /* @__PURE__ */ new Set(["run", "exec", "dlx", "x", "run-script"]);
+var PM_VALUE_FLAGS = /* @__PURE__ */ new Set(["-F", "--filter", "-C", "--dir", "--prefix", "--cwd", "-w", "--workspace"]);
+var PNPM_SWITCHES = /* @__PURE__ */ new Set(["-w", "--workspace"]);
+var TASK_VALUE_FLAGS = {
+  turbo: /* @__PURE__ */ new Set(["-F", "--filter", "--cwd", "--cache-dir", "--concurrency", "--output-logs", "--log-order", "--env-mode", "--log-prefix"]),
+  nx: /* @__PURE__ */ new Set(["-p", "--projects", "-c", "--configuration", "--exclude", "--base", "--head", "--output-style"]),
+  lerna: /* @__PURE__ */ new Set(["--scope", "--ignore", "--concurrency"]),
+  moon: /* @__PURE__ */ new Set(["--log", "--log-file", "--cache", "--concurrency", "--status"]),
+  make: /* @__PURE__ */ new Set(["-C", "--directory", "-f", "--file", "--makefile", "-I", "--include-dir", "-o", "--old-file", "-W", "--what-if"])
+};
+var NODE_VALUE_FLAGS = /* @__PURE__ */ new Set(["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions"]);
+var TEST_RUNNERS = /* @__PURE__ */ new Set(["vitest", "jest", "mocha", "ava", "playwright", "cypress"]);
+var base = (p) => p.replace(/\\/g, "/").split("/").at(-1) ?? p;
+function unwrapPackageManager(argv) {
+  const program = base(argv[0] ?? "").toLowerCase();
+  if (!PACKAGE_MANAGERS.has(program)) return argv;
+  let rest = argv.slice(1);
+  while (rest.length > 0) {
+    const t = rest[0] ?? "";
+    if (program === "yarn" && t === "workspace") rest = rest.slice(2);
+    else if (t.startsWith("-")) {
+      const takesValue = !t.includes("=") && PM_VALUE_FLAGS.has(t) && !(program === "pnpm" && PNPM_SWITCHES.has(t));
+      rest = rest.slice(takesValue ? 2 : 1);
+    } else if (PM_SUBCOMMANDS.has(t)) rest = rest.slice(1);
+    else break;
+  }
+  return rest;
+}
+function positionals(runner, args) {
+  const valueFlags = TASK_VALUE_FLAGS[runner] ?? /* @__PURE__ */ new Set();
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--") break;
+    if (a.startsWith("-")) {
+      const next = args[i + 1];
+      const numeric = runner === "make" && (a === "-j" || a === "-l") && next !== void 0 && /^\d+(\.\d+)?$/.test(next);
+      if (!a.includes("=") && valueFlags.has(a) || numeric) i++;
+      continue;
+    }
+    if (runner === "make" && a.includes("=")) continue;
+    out.push(a);
+  }
+  return out;
+}
+function nxTargetFlag(args) {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--") break;
+    const eq = /^(?:-t|--targets?)=(.*)$/.exec(a);
+    const value = eq !== null ? eq[1] : a === "-t" || a === "--target" || a === "--targets" ? args[i + 1] : void 0;
+    if (value !== void 0) return value.split(",")[0];
+  }
+  return void 0;
+}
+var targetTask = (t) => t.includes(":") ? t.split(":")[1] ?? "" : t;
+function taskOf(runner, args) {
+  const pos = positionals(runner, args);
+  switch (runner) {
+    case "turbo": {
+      const task = pos[0] === "run" ? pos[1] : pos[0];
+      return task?.split("#").at(-1);
+    }
+    case "nx": {
+      if (pos[0] === "run") return pos[1] === void 0 ? void 0 : targetTask(pos[1]);
+      if (pos[0] === "run-many" || pos[0] === "affected") return nxTargetFlag(args);
+      return pos[0];
+    }
+    case "lerna":
+      return pos[0] === "run" ? pos[1] : void 0;
+    case "moon":
+      if (pos[0] === "run") return pos[1] === void 0 ? void 0 : targetTask(pos[1]);
+      return pos[0]?.includes(":") ? targetTask(pos[0]) : void 0;
+    case "make":
+      return pos[0];
+    default:
+      return void 0;
+  }
+}
+function runWord(argv) {
+  const inner = unwrapPackageManager(argv);
+  if (inner.length === 0) return "";
+  const program = base(inner[0] ?? "").toLowerCase();
+  const rest = inner.slice(1);
+  if (program === "node" && rest[0] !== void 0 && !rest[0].startsWith("-")) {
+    return base(rest[0]).replace(/\.(m?js|cjs|ts)$/, "").toLowerCase();
+  }
+  const task = taskOf(program, rest);
+  return task === void 0 || task === "" ? program : task.toLowerCase();
+}
+function isNodeTest(argv) {
+  if (base(argv[0] ?? "").toLowerCase() !== "node") return false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i] ?? "";
+    if (!a.startsWith("-")) return false;
+    if (a === "--test") return true;
+    if (!a.includes("=") && NODE_VALUE_FLAGS.has(a)) i++;
+  }
+  return false;
+}
+function isSuiteArgv(argv) {
+  if (isNodeTest(unwrapPackageManager(argv))) return true;
+  const word = runWord(argv);
+  return TEST_RUNNERS.has(word) || word === "test" || /^test[:_-]/.test(word) || /[:_-]test$/.test(word);
+}
+var looksLikePath = (a) => a.includes("/") || /\.(test|spec|itest|e2e)\b|\.[cm]?[jt]sx?$/.test(a);
+function hasTargets(extra) {
+  for (let i = 0; i < extra.length; i++) {
+    const a = extra[i] ?? "";
+    if (a.startsWith("-")) {
+      const next = extra[i + 1];
+      if (!a.includes("=") && next !== void 0 && !next.startsWith("-") && !looksLikePath(next)) i++;
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 // src/check/digest.ts
@@ -360,6 +487,7 @@ var TAIL_PASS = 15;
 var TAIL_FAIL = 60;
 var MAX_FAILURES = 30;
 var COUNT_FAILURES = 1e3;
+var KEPT_BYTES = 8 * 1024 * 1024;
 var STDOUT_MAX = 3800;
 var HEADER_MAX = 1e3;
 var FAILURES_CHARS = 2e3;
@@ -422,6 +550,50 @@ var Tail = class {
   last(n) {
     const all = this.partial === "" ? this.lines : [...this.lines, this.partial.replace(/\r$/, "")];
     return all.slice(Math.max(0, all.length - n));
+  }
+};
+var KeptOutput = class {
+  constructor(max = KEPT_BYTES) {
+    this.max = max;
+  }
+  max;
+  chunks = [];
+  sizes = [];
+  total = 0;
+  first = 0;
+  push(text) {
+    let size = Buffer.byteLength(text, "utf8");
+    if (size > this.max) {
+      const bytes = Buffer.from(text, "utf8");
+      let start = size - this.max;
+      while (start < size && ((bytes[start] ?? 0) & 192) === 128) start += 1;
+      text = bytes.subarray(start).toString("utf8");
+      size -= start;
+    }
+    this.chunks.push(text);
+    this.sizes.push(size);
+    this.total += size;
+    while (this.total > this.max && this.first < this.chunks.length) {
+      this.total -= this.sizes[this.first] ?? 0;
+      this.first += 1;
+    }
+    if (this.first > 1024 && this.first * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.first);
+      this.sizes = this.sizes.slice(this.first);
+      this.first = 0;
+    }
+  }
+  bytes() {
+    return this.total;
+  }
+  text() {
+    return this.chunks.slice(this.first).join("");
+  }
+  clear() {
+    this.chunks = [];
+    this.sizes = [];
+    this.total = 0;
+    this.first = 0;
   }
 };
 function shortFailureLine(failure) {
@@ -492,6 +664,12 @@ async function runCheck(args, deps) {
   const argv = isCheckName(name) && Object.hasOwn(checks, name) ? checks[name] : void 0;
   if (argv === void 0) {
     deps.err(`arbab-check: unknown check ${JSON.stringify(name)}; configured checks: ${names}
+`);
+    return 2;
+  }
+  if (policy.suites === "targeted" && isSuiteArgv(argv) && !hasTargets(extra)) {
+    const usage = `${commandLine(["node", deps.script, name])} <files>`;
+    deps.err(`arbab-check: ${name} runs the whole suite, which verify runs for the batch; pass the test files you changed: ${usage}
 `);
     return 2;
   }
@@ -571,7 +749,7 @@ async function runCheck(args, deps) {
     }
     let logBroken = false;
     let logOpen = log !== null;
-    const written = [];
+    const written = new KeptOutput();
     const tail = new Tail();
     const started = deps.now();
     const result = await new Promise((resolve2) => {
@@ -590,7 +768,7 @@ async function runCheck(args, deps) {
               } catch (err) {
                 logBroken = true;
                 logOpen = false;
-                written.length = 0;
+                written.clear();
                 deps.err(`arbab-check: cannot write ${log.path} (${message(err)})
 `);
               }
@@ -632,8 +810,18 @@ async function runCheck(args, deps) {
     const header = `arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`;
     let failures = [];
     if (code !== 0) {
-      const whole = log !== null && !logBroken ? written.join("") : tail.last(TAIL_KEEP).join("\n");
-      failures = parseFailures(whole, COUNT_FAILURES);
+      const fromTail = () => parseFailures(tail.last(TAIL_KEEP).join("\n"), COUNT_FAILURES);
+      try {
+        failures = log !== null && !logBroken ? parseFailures(written.text(), COUNT_FAILURES) : fromTail();
+      } catch (err) {
+        deps.err(`arbab-check: cannot parse the output (${message(err)}); failures from the last ${TAIL_KEEP} lines only
+`);
+        try {
+          failures = fromTail();
+        } catch {
+          failures = [];
+        }
+      }
     }
     const last = tail.last(code === 0 ? TAIL_PASS : TAIL_FAIL).map(stripAnsi);
     out(summarize(header, failures, last, STDOUT_MAX - printed));
@@ -713,6 +901,7 @@ try {
     cwd: process.cwd(),
     tmpdir: tmpdir(),
     pid: process.pid,
+    script: process.argv[1] ?? "arbab-check.mjs",
     spawn: nodeCheckSpawn(),
     now: () => Date.now(),
     sleep,

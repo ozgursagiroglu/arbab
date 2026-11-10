@@ -153,16 +153,19 @@ Then:
      age), of finished lanes and unlanded integrations unused for that many days, and of landed integrations. Branches
      and records stay, except generated lanes' and landed integrations' branches once merged. Its log is
      `.arbab/sweep.log`, moved to `sweep.log.1` once over 1 MiB.
-   - `checks` names heavy checks (`{"typecheck": ["pnpm", "typecheck"]}`) that workers run through `arbab-check`
-     ([Share the machine](#share-the-machine)).
-   - `dependencies`: `command` runs an install in each new worktree; `clone` clones the main checkout's
-     `node_modules` copy-on-write while its manifests match, with an install `fallback` (npm and yarn, not pnpm).
+   - `checks` is optional: without it, workers get one heavy check per gate that is not a build, run through
+     `arbab-check` ([Share the machine](#share-the-machine)). Set it only to rename or narrow them; `{}` turns them
+     off.
+   - `dependencies`: `command` runs an install in each new worktree (a command that only copies directories of the
+     main checkout runs as copy-on-write clones); `clone` clones the main checkout's `node_modules` copy-on-write
+     while its manifests match, with an install `fallback` (npm and yarn, not pnpm).
    - Also: `preflight.steps`, `env`, `passEnv`, `credentialPaths`, `resources`, `semaphores`, `quota.holdAbove`,
      `review.lenses`, `review.maxParallel`, `review.install`, `roles`, `minClaudeVersion`, `worktreeRoot`, `runsRoot`.
 
    A repository that should carry no arbab file can keep the config at `.arbab/config.json` instead; arbab excludes
    `.arbab/` from git as a whole. `~/.arbab/machine.json` (`{"maxParallel": 6}`) caps parallel workers for every
-   project on the machine; its `checks` and `admission` fields bound heavy checks and launches by machine load. The skill's "Before the first launch" section explains the fields that matter first.
+   project on the machine; its `checks` and `admission` fields bound heavy checks and launches by machine load, and
+   their defaults need no file. The skill's "Before the first launch" section explains the fields that matter first.
    [arbab.config.json](arbab.config.json) is this repository's own.
 2. **Run the skill.** Open Claude Code in the project and type `/arbab`. Ask it to check the setup first; it runs
    `arbab doctor` (node, git, the claude binary, the sandbox, the config, the ignored roots).
@@ -463,26 +466,36 @@ clink as a finished worker takes its pay.
 ## Share the machine
 
 Several orchestrators on one laptop used to fight over its CPUs: a test suite that took 193 s alone took 543–680 s
-while three or four other heavy checks ran. Since 0.3.0 arbab shares the machine:
+while three or four other heavy checks ran. Since 0.3.0 arbab shares the machine, and since 0.3.1 it does so without
+config: upgrade the plugin and nothing else needs editing. The orchestrator runs `arbab doctor` before it launches
+and applies its dependency advice itself.
 
-- **Heavy checks wait their turn.** Workers run config `checks` through `arbab-check`, which waits for one of a few
+- **Heavy checks wait their turn.** Workers run heavy checks through `arbab-check`, which waits for one of a few
   machine-wide places (a quarter of the CPUs by default, for at most 60 s), gives each run a fair share of the CPUs,
   and prints a short summary with the failures and the log's path, so a worker never re-runs a suite to read it.
-- **Lanes test what they change; verify tests the batch.** `verify` runs the gates once for the whole integration,
+  Without config `checks`, the checks come from the gates: one per gate that is not a build.
+- **Lanes test what they change; verify tests the batch.** A lane's test-suite check runs only with the test files
+  the lane changed; without them `arbab-check` refuses. `verify` runs the gates once for the whole integration,
   through `arbab-check` too. When it fails, it writes a fix draft: a lane file and brief naming the failures and the
   merged lanes that may explain them, for the orchestrator to review and launch.
 - **A review window.** At most `review.maxParallel` review lanes (4 by default) run at once, and skeptic lanes, which
   only read, skip the dependency install.
-- **Copy-on-write installs.** The `clone` dependency strategy clones `node_modules` instead of copying it: 2.7 s
-  instead of 55.5 s for an 85,091-entry tree on macOS.
+- **Copy-on-write installs.** Cloning `node_modules` instead of copying it took 2.7 s instead of 55.5 s for an
+  85,091-entry tree on macOS. A dependency command that only copies directories of the main checkout (`cp -cR`,
+  `ditto`, `rsync -a`) now runs as clones by itself. When worktree preparation still takes more than 30 s per lane
+  (the median over the last 14 days), `arbab doctor` names the lines of a dependency script that copy the main
+  checkout's `node_modules` with `cp`, to replace with
+  `node "$ARBAB_RUNNER" clone-dir "$ARBAB_PROJECT_ROOT/node_modules" node_modules`, or the `clone` strategy to set for
+  npm and yarn projects. The orchestrator checks that each source is the main checkout's `node_modules`, then makes
+  that edit. pnpm projects get the median only, no `cp` lines and no clone advice: their install is offline already.
 - **Admission by load.** A launch is held, without taking a slot, while the one-minute load is 3 or more per CPU or
-  memory pressure is critical; `status` shows why.
+  memory pressure is critical, for at most 10 minutes; then it goes ahead. `status` shows why, and how long is left.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `doctor` | Checks node, git, the claude binary, the sandbox, the config, the ignored roots, `~/.arbab`, the plugin hook, the gates against the repository's scripts and CI, env templates, lint and test configs that would scan `.arbab/`, the `clone` strategy's prerequisites, disk and the machine cap. |
+| `doctor` | Checks node, git, the claude binary, the sandbox, the config, the ignored roots, `~/.arbab`, the plugin hook, the gates against the repository's scripts and CI, env templates, lint and test configs that would scan `.arbab/`, the `clone` strategy's prerequisites, how long worktrees take to prepare and what would make it faster, disk and the machine cap. |
 | `lint <lane.json>` | Lints the profile, brief and schema. Exit 1 on errors. |
 | `launch <lane.json>` | Lints the lane, then starts its shepherd. |
 | `plan check <plan.json>` | Validates a plan, lints every phase and prints the waves. Exit 1 on errors. |
@@ -508,10 +521,11 @@ while three or four other heavy checks ran. Since 0.3.0 arbab shares the machine
 | `host-check <name>` | Runs config `hostGates` on the integration head, on the host. Terminal only. |
 | `land <name> [--squash] [--message <file>] [--keep-worktrees]` | Merges a ready integration into the base, or as one commit with `--squash` (config `landing.squash`). The `--message` file must be inside the project and no credential file, checked as for `--lens-file`. Never pushes. Then removes its worktrees unless `--keep-worktrees`. |
 | `ui [--port N] [--hours N] [--no-open]` | Serves the live pyramid scene on 127.0.0.1, read-only, until stopped. |
+| `clone-dir <src> <dst>` | Clones a directory of the main checkout's own content (not `.arbab/`, `.arbab-tmp/` or the worktree root) into the current directory, copy-on-write where it can. Runs only from inside the worktree root. For dependency scripts, which call it as `node "$ARBAB_RUNNER" clone-dir <src> <dst>`; never approved by the hook. |
 | `help [<command>]`, `--help` | Prints the command list, or one command's options (as does `arbab <command> --help`). |
 | `version`, `--version` | Prints the arbab version. |
 
-Every command except `help`, `version` and `host-check` also takes `--json`, which prints JSON instead of text. A
+Every command except `help`, `version`, `host-check` and `clone-dir` also takes `--json`, which prints JSON instead of text. A
 leading `-C <dir>` finds the project from `<dir>` instead of the working directory. arbab refuses a lane worktree as
 a project, from `-C` or the working directory, whether it lies under `.arbab/worktrees` or the configured
 `worktreeRoot` (also when that is a link elsewhere in the project and the lane is reached by its real path), in any
@@ -520,7 +534,8 @@ spelling of case.
 The skill runs these as `node "${CLAUDE_PLUGIN_ROOT}/dist/arbab.mjs" <command>`, bare. The plugin's PreToolUse hook
 approves that form, with these limits:
 
-- It never approves `land`, which the skill asks you about first anyway, nor `help` and `version`.
+- It never approves `land`, which the skill asks you about first anyway, nor `help` and `version`, nor `clone-dir`,
+  which only dependency scripts run.
 - It approves `-C <dir>` only when `<dir>` is the absolute path of a project that has launched a lane on this
   machine, outside lane worktrees and temporary directories.
 - A call wrapped in `cd`, `&&` or a pipe waits for your approval.

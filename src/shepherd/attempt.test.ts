@@ -117,7 +117,14 @@ describe("profileInput", () => {
 });
 
 describe("laneChecks", () => {
-  const config = { checks: { typecheck: ["pnpm", "typecheck"], lint: ["pnpm", "lint"] } };
+  const config = { checks: { typecheck: ["pnpm", "typecheck"], lint: ["pnpm", "lint"] }, gates: [["pnpm", "test"]] };
+
+  it("derives an implementer's checks from the gates when config checks are unset (DESIGN.md §23)", () => {
+    const gates = [["pnpm", "typecheck"], ["pnpm", "test"], ["pnpm", "build"]];
+    expect(laneChecks({ role: "implementer" }, { checks: null, gates })).toEqual({ typecheck: ["pnpm", "typecheck"], test: ["pnpm", "test"] });
+    expect(laneChecks({ role: "reviewer" }, { checks: null, gates })).toEqual({});
+    expect(laneChecks({ role: "implementer" }, { checks: {}, gates })).toEqual({});
+  });
 
   it.each(["implementer", "verifier"] as const)("gives a %s lane config checks", (role) => {
     expect(laneChecks({ role }, config)).toEqual(config.checks);
@@ -177,19 +184,19 @@ describe("installCheckScript", () => {
 describe("checkPolicy", () => {
   it("defaults concurrent to a quarter of the CPUs and waitSec to the default", () => {
     expect(DEFAULT_CHECK_WAIT_SEC).toBe(60);
-    expect(checkPolicy(dir, 8, "implementer")).toEqual({ cpus: 8, concurrent: 2, waitSec: DEFAULT_CHECK_WAIT_SEC });
-    expect(checkPolicy(dir, 2, "verifier")).toEqual({ cpus: 2, concurrent: 1, waitSec: DEFAULT_CHECK_WAIT_SEC });
+    expect(checkPolicy(dir, 8, "implementer")).toEqual({ cpus: 8, concurrent: 2, waitSec: DEFAULT_CHECK_WAIT_SEC, suites: "targeted" });
+    expect(checkPolicy(dir, 2, "verifier")).toEqual({ cpus: 2, concurrent: 1, waitSec: DEFAULT_CHECK_WAIT_SEC, suites: "targeted" });
   });
 
   it("takes machine.json's values", () => {
     writeFileSync(join(dir, MACHINE_CONFIG_FILE), JSON.stringify({ checks: { concurrent: 3, waitSec: 0 } }));
-    expect(checkPolicy(dir, 8, "implementer")).toEqual({ cpus: 8, concurrent: 3, waitSec: 0 });
+    expect(checkPolicy(dir, 8, "implementer")).toEqual({ cpus: 8, concurrent: 3, waitSec: 0, suites: "targeted" });
   });
 
   it("never makes a probe wait, whatever machine.json says, and still gives it the fair share", () => {
-    expect(checkPolicy(dir, 8, "probe")).toEqual({ cpus: 8, concurrent: 2, waitSec: 0 });
+    expect(checkPolicy(dir, 8, "probe")).toEqual({ cpus: 8, concurrent: 2, waitSec: 0, suites: "whole" });
     writeFileSync(join(dir, MACHINE_CONFIG_FILE), JSON.stringify({ checks: { concurrent: 3, waitSec: 300 } }));
-    expect(checkPolicy(dir, 8, "probe")).toEqual({ cpus: 8, concurrent: 3, waitSec: 0 });
+    expect(checkPolicy(dir, 8, "probe")).toEqual({ cpus: 8, concurrent: 3, waitSec: 0, suites: "whole" });
     for (const role of ["implementer", "verifier", "reviewer", "researcher"] as const) {
       expect(checkPolicy(dir, 8, role).waitSec).toBe(300);
     }
@@ -197,14 +204,14 @@ describe("checkPolicy", () => {
 
   it("falls back to the checks' defaults when machine.json cannot be read or its checks are invalid", () => {
     writeFileSync(join(dir, MACHINE_CONFIG_FILE), "{");
-    expect(checkPolicy(dir, 16, "implementer")).toEqual({ cpus: 16, concurrent: 4, waitSec: DEFAULT_CHECK_WAIT_SEC });
+    expect(checkPolicy(dir, 16, "implementer")).toEqual({ cpus: 16, concurrent: 4, waitSec: DEFAULT_CHECK_WAIT_SEC, suites: "targeted" });
     writeFileSync(join(dir, MACHINE_CONFIG_FILE), JSON.stringify({ checks: { concurrent: 0 } }));
-    expect(checkPolicy(dir, 16, "implementer")).toEqual({ cpus: 16, concurrent: 4, waitSec: DEFAULT_CHECK_WAIT_SEC });
+    expect(checkPolicy(dir, 16, "implementer")).toEqual({ cpus: 16, concurrent: 4, waitSec: DEFAULT_CHECK_WAIT_SEC, suites: "targeted" });
   });
 
   it("keeps machine.json's checks when another field is invalid", () => {
     writeFileSync(join(dir, MACHINE_CONFIG_FILE), JSON.stringify({ maxParallel: 0, checks: { concurrent: 3, waitSec: 10 }, admission: [] }));
-    expect(checkPolicy(dir, 16, "implementer")).toEqual({ cpus: 16, concurrent: 3, waitSec: 10 });
+    expect(checkPolicy(dir, 16, "implementer")).toEqual({ cpus: 16, concurrent: 3, waitSec: 10, suites: "targeted" });
   });
 });
 
@@ -249,12 +256,12 @@ describe("prepareChecks and the fence", () => {
     const c = ctx("implementer", { runner });
     const prepared = prepareChecks(c);
     const script = checkScriptPath(runsRoot, "m1-a");
-    expect(prepared).toEqual({ script, checks, policy: { cpus: 8, concurrent: 2, waitSec: DEFAULT_CHECK_WAIT_SEC } });
+    expect(prepared).toEqual({ script, checks, policy: { cpus: 8, concurrent: 2, waitSec: DEFAULT_CHECK_WAIT_SEC, suites: "targeted" } });
     expect(readFileSync(script, "utf8")).toBe("// check\n");
     const { input, profile, lint } = compiled(c);
     expect(input).toMatchObject({ checkScript: script, checkNames: ["lint", "typecheck"] });
     expect(profile.settings.env[CHECKS_ENV]).toBe(JSON.stringify(checks));
-    expect(profile.settings.env[CHECK_POLICY_ENV]).toBe(JSON.stringify({ cpus: 8, concurrent: 2, waitSec: DEFAULT_CHECK_WAIT_SEC }));
+    expect(profile.settings.env[CHECK_POLICY_ENV]).toBe(JSON.stringify({ cpus: 8, concurrent: 2, waitSec: DEFAULT_CHECK_WAIT_SEC, suites: "targeted" }));
     expect(profile.settings.permissions.allow).toContain(`Bash(node ${script} typecheck)`);
     expect(profile.settings.permissions.allow).toContain(`Bash(node ${script} lint *)`);
     expect(lint).toEqual([]);

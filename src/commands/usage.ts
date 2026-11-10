@@ -144,4 +144,5 @@ export const USAGE: Readonly<Record<string, string>> = {
   report: block(["report <lane> [--attempt <n>] [--json]"], [["--attempt <n>", "this attempt instead of the latest"], JSON_OPT]),
   hook: block(["hook <pre-tool-use|stop|user-prompt-submit|session-start>"]),
   "host-check": block(["host-check <name>"]),
+  "clone-dir": block(["clone-dir <src> <dst>"]),
 };

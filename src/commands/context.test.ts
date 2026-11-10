@@ -17,6 +17,7 @@ import {
   SWEEP_LOG_MAX_BYTES,
   shepherdArgv,
   sweepArgv,
+  withRunnerEnv,
   type NotifyExec,
 } from "./context";
 import { makeProject, type TestProject } from "./testkit";
@@ -222,6 +223,24 @@ describe("makeReadStdin", () => {
   });
 });
 
+describe("withRunnerEnv", () => {
+  it("sets ARBAB_RUNNER unless the caller's env does, and keeps the rest of it", () => {
+    const seen: Array<Record<string, string> | undefined> = [];
+    const run = withRunnerEnv((_argv, _cwd, env) => {
+      seen.push(env);
+      return { code: 0, output: "" };
+    }, "/r/arbab.mjs");
+    run(["x"], "/w");
+    run(["x"], "/w", { ARBAB_PROJECT_ROOT: "/p" });
+    run(["x"], "/w", { ARBAB_RUNNER: "/other.mjs" });
+    expect(seen).toEqual([
+      { ARBAB_RUNNER: "/r/arbab.mjs" },
+      { ARBAB_RUNNER: "/r/arbab.mjs", ARBAB_PROJECT_ROOT: "/p" },
+      { ARBAB_RUNNER: "/other.mjs" },
+    ]);
+  });
+});
+
 describe("defaultContext", () => {
   it("builds the real effects without side effects", () => {
     const ctx = defaultContext({ scriptPath: "/x/arbab.mjs", version: "1.2.3" });
@@ -236,6 +255,8 @@ describe("defaultContext", () => {
     expect(ctx.pid).toBe(process.pid);
     expect(ctx.alive(process.pid)).toBe(true);
     expect(ctx.runCommand([process.execPath, "-e", "process.stdout.write('ran')"], process.cwd())).toEqual({ code: 0, output: "ran" });
+    // A runner file that does not exist stays as given.
+    expect(ctx.runCommand([process.execPath, "-e", "process.stdout.write(process.env.ARBAB_RUNNER)"], process.cwd())).toEqual({ code: 0, output: "/x/arbab.mjs" });
     // ps is setuid on macOS and fails inside a sandbox; then the answer is "no such process", never a throw.
     const command = ctx.processCommand(process.pid);
     if (command !== null) expect(command).toContain("node");

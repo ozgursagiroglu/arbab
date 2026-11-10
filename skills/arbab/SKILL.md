@@ -31,9 +31,10 @@ urgent small fixes, even inside an arbab session. A lane pays for a worktree, a 
 
 ## Before the first launch
 
-1. Run `arbab doctor`. It checks the claude binary and version, node, git, sandbox availability, the config, the
-   ignored roots, the plugin hook, the gates against the repository's check scripts and CI, env templates, lint and
-   test configs that would scan `.arbab/`, disk and the machine cap. Fix every failure; read every warning.
+1. Run `arbab doctor` (binary, node, git, sandbox, config, ignored roots, plugin hook, gates against check scripts
+   and CI, env templates, configs scanning `.arbab/`, disk, machine cap, preparation time). Fix every failure; read
+   every warning. **Apply its dependency advice yourself, never the human**: check that each source it names is the
+   main checkout's `node_modules`, then use its `clone-dir` lines (dependency scripts only, never your own shell) or `dependencies`.
 2. Write `arbab.config.json` at the project root, or `.arbab/config.json` in a client repository that should carry
    no arbab file (the root file wins when both exist). Missing means all defaults, which grant no project commands.
    The fields that matter first:
@@ -42,10 +43,11 @@ urgent small fixes, even inside an arbab session. A lane pays for a worktree, a 
    - `gates`: the repository's gates as argv arrays, e.g. `[["pnpm", "typecheck"], ["pnpm", "test"]]`.
    - `preflight.steps`: argv arrays the preflight probe runs in the lane's worktree.
    - `instructions`: files inlined into every brief, e.g. `["CLAUDE.md"]`. Workers do not load CLAUDE.md.
-   - `checks`: heavy checks by name, e.g. `{"typecheck": ["pnpm", "typecheck"]}`. Implementer and verifier lanes run
-     them through arbab-check, which waits for a machine-wide place and gives each run a share of the CPUs; the tool
-     belt tells the worker how, and a check needs no `commands` entry.
-   - `dependencies`: `{"strategy": "command", "command": [...]}` installs in each new worktree (outside the sandbox);
+   - `checks`: leave it out: implementer and verifier lanes get one heavy check per non-build gate, run through
+     arbab-check (a machine-wide place, a CPU share, a short summary); a test-suite check runs only with the test
+     files the lane changed, as verify runs whole suites. `{}` turns them off; checks need no `commands` entry.
+   - `dependencies`: `{"strategy": "command", "command": [...]}` installs in each new worktree (outside the sandbox;
+     a copy of main-checkout directories runs as clones; scripts get `node "$ARBAB_RUNNER" clone-dir <src> <dst>`);
      `{"strategy": "clone", "paths": ["node_modules"], "fallback": [...]}` clones the main checkout's directories
      copy-on-write while its manifests match, else runs `fallback` (or fails without one): npm and yarn projects,
      not pnpm (config refuses it); `none`. Never symlink the main checkout's `node_modules`.
@@ -58,9 +60,10 @@ urgent small fixes, even inside an arbab session. A lane pays for a worktree, a 
      `review.maxParallel` (review lanes at once, default 4) and `review.install` (false: reviewers skip the install).
    - `env` (non-secret values), `passEnv` (names of host variables to pass), `credentialPaths` (extra denies),
      `maxParallel` (default 4), `quota.holdAbove`, `roles.<role>` overrides, `baseBranch`, `worktrees.idleDays`.
-3. Machine-wide limits go in `~/.arbab/machine.json`: `maxParallel` caps every project's; `checks` bounds heavy
-   checks (`concurrent`, default a quarter of the CPUs; `waitSec`, default 60, then a check runs anyway); `admission`
-   holds launches (`loadPerCpu`, default 3, 0 off; `memoryPressure`: `warn`, `critical` (default) or `off`).
+3. `~/.arbab/machine.json` needs no edit. `maxParallel` caps every project's; `checks` bounds heavy checks
+   (`concurrent`, default a quarter of the CPUs; `waitSec`, default 60, then a check runs anyway); `admission` holds
+   a launch (`loadPerCpu`, default 3, 0 off; `memoryPressure`: `warn`, `critical` (default) or `off`) for at most
+   `maxHoldMin` minutes (default 10; 0: no limit), then lets it go.
 4. arbab excludes `.arbab/` and `.arbab-tmp/` in `info/exclude` and checks it, so lane files, briefs, plans and
    helpers you keep under `.arbab/` (say `.arbab/lanes/`) never dirty a client checkout; arbab writes `.arbab/plans/`.
 
@@ -70,9 +73,8 @@ urgent small fixes, even inside an arbab session. A lane pays for a worktree, a 
   writes. Shared contracts (types, interfaces, schemas) are written by you, before the wave, not by a lane.
 - **Make the design decisions now.** Workers run headless; nobody answers their questions. Every choice you leave
   open becomes a guess, a stall or a conflict at landing.
-- Order lanes into waves: a lane that needs another's output goes in the next wave (a plan does this for you;
-  see [Plans](#plans)). A verifier that may fix code
-  runs after its builder, in the builder's worktree (lane field `worktree`), under the same writer lock.
+- Order lanes into waves: a lane that needs another's output goes in the next wave ([Plans](#plans) do this). A
+  verifier that may fix code runs after its builder, in its worktree (lane field `worktree`), under its writer lock.
 - Pick the role per lane: `implementer` builds, `verifier` checks and fixes, `reviewer` reads, `researcher` reads
   the web only, `probe` is for preflights.
 
@@ -100,8 +102,8 @@ Rules:
   `||`, `;`, `$(…)`, backticks, `sleep`, `echo $?`, `| tail` and `| head`, and any command the lane's profile
   would deny. Inline code elsewhere is descriptive (a parameter name, a command in Facts, a command a test should
   reject); write it freely, but never introduce a command the worker may not run with "Run".
-- **Name the checks** the worker must run and report, e.g. `pnpm typecheck` and the tests of the files it changes.
-  **Lanes test what they change; verify tests the batch.** Do not ask a lane to run the whole suite.
+- **Name the checks** the worker must run and report: the tool belt lists the lane's checks, and a test-suite check
+  takes the files it changed. **Lanes test what they change; verify tests the batch.** Never ask for a whole suite.
 - Point at files rather than pasting them; the brief warns above 40,000 characters.
 
 A complete example: [references/brief-template.md](references/brief-template.md).
@@ -127,7 +129,7 @@ A lane file (`lanes/<name>.json`) names the brief and overrides role defaults. P
 | `checkpoint`, `autoResume`, `maxAttempts` | Commit WIP on exit; resume after usage limits; attempt cap |
 | `coordination` | Sibling lanes and their scopes, inlined into the brief |
 | `install` | `false`: no dependency install in the worktree, for a lane that only reads (default `true`) |
-| `checks` | The lane's own heavy checks (name → argv), replacing config `checks`. Implementer and verifier lanes get their check commands; other roles only the environment, not the rules to run them |
+| `checks` | The lane's own heavy checks (name → argv), replacing config's (or the gates'). Implementer and verifier lanes get their check commands; other roles only the environment, not the rules to run them |
 | `inputs` | Files or folders outside the repository the worker must read (absolute, `~/` or project-relative; at most 20, 50 MB in all). Copied afresh to `.arbab-tmp/inputs/<name>` on every run and named in the brief; credential paths are refused |
 
 Role defaults:
@@ -140,13 +142,11 @@ Role defaults:
 | researcher | WebSearch WebFetch | opus / medium | $5 / 40 / 15 min | n/a | none (no local tools) |
 | probe | Read Write Bash | haiku / low | $0.5 / 10 / 5 min | yes | worktree |
 
-Set effort explicitly when it matters; do not raise it by habit. Example:
-[references/lane-example.json](references/lane-example.json). Each role's report fields and default Bash allowlist,
-and every record arbab writes: [references/records.md](references/records.md).
+Set effort explicitly when it matters; do not raise it by habit. Example: [references/lane-example.json](references/lane-example.json).
+Each role's report fields and default Bash allowlist, and every record arbab writes: [references/records.md](references/records.md).
 
-The fence also denies writes to the repository's shared git directory (the main checkout's `.git`). Measured in
-M1: without that deny, code a worktree's worker runs can write loose refs there. Do not add an allow rule or a
-`sandbox-auto` fence to get around it; the runner, not the worker, commits, merges and creates branches.
+The fence denies writes to the shared git directory (the main checkout's `.git`), where code a worker runs could
+write loose refs (M1). Never get around it with an allow rule or `sandbox-auto`: the runner commits and merges.
 
 ## Plans
 
@@ -219,8 +219,8 @@ A merge conflict while a phase's worktree is set up fails that launch with the c
 - With its next message, a returning session hears what **other** sessions landed while it was away (its own are left
   out), here or below its folder; `summary --since <when>` (`2h`, `1d`, `YYYY-MM-DD` as midnight UTC, ISO with `Z` or an offset) lists them.
 - React to each finish while the others run: review it, fix its brief, launch its follow-up. No barrier.
-- A lane `held` for machine load or memory pressure shows that reason (`machine load 25.3 on 8 CPUs`) and starts by
-  itself once the machine has room. Nothing to do.
+- A lane `held` for machine load or memory pressure shows why (`status`: `load 25.3/8 CPUs, ahead in 7m`)
+  and starts once the machine has room, or after `maxHoldMin` minutes held (default 10). Nothing to do.
 - When the human asks where things stand, answer from `arbab summary` (lanes by state, plans, integrations by stage,
   what needs attention, quota, slots, worktrees; `--all`: every repository on this machine) and `arbab report <lane>`
   (`--attempt <n>`), never from JSON read by hand. `arbab status [--active] [--mine]`: one row per lane, not in a loop.

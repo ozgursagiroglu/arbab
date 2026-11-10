@@ -121,6 +121,17 @@ afterEach(() => {
 });
 
 describe("rebuildWorktree", () => {
+  it("gives the dependency command the runner and the main checkout (DESIGN.md §23)", () => {
+    commitOn("arbab/a", { "a.txt": "worker\n" });
+    const envs: Array<Record<string, string> | undefined> = [];
+    const runCommand: ArgvRunner = (_argv, _cwd, env) => {
+      envs.push(env);
+      return { code: 0, output: "" };
+    };
+    rebuildWorktree(input({ runCommand, runner: "/plugin/dist/arbab.mjs" }));
+    expect(envs).toEqual([{ ARBAB_RUNNER: "/plugin/dist/arbab.mjs", ARBAB_PROJECT_ROOT: repo }]);
+  });
+
   it("installs while the tree is at start, then ends on the branch at its old head, attached and verified", () => {
     const start = sha("main");
     const head = commitOn("arbab/a", { "a.txt": "worker\n" });

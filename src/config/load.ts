@@ -69,7 +69,7 @@ export function defaultConfig(): ProjectConfig {
     resources: {},
     semaphores: {},
     gates: [],
-    checks: {},
+    checks: null,
     preflight: { steps: [] },
     maxParallel: 4,
     quota: { holdAbove: { fiveHour: 0.85, sevenDay: 0.95 } },

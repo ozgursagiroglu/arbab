@@ -14,11 +14,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseFailureLine } from "./command";
+import { parseFailures } from "./digest";
 import { register, registryDir, type CheckState } from "./registry";
 import {
   createLogFile,
+  KEPT_BYTES,
+  KeptOutput,
   nodeCheckFs,
   nodeCheckSpawn,
   runCheck,
@@ -31,7 +34,14 @@ import {
   type CheckRunDeps,
 } from "./run";
 
+// The real parser, which a test can make throw once.
+vi.mock("./digest", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./digest")>();
+  return { ...actual, parseFailures: vi.fn(actual.parseFailures) };
+});
+
 const PID = 4000;
+const SCRIPT = "/runs/lane/bin/arbab-check.mjs";
 const T0 = Date.parse("2026-11-10T10:00:00.000Z");
 
 let tmp: string;
@@ -71,7 +81,7 @@ interface Harness {
 function harness(
   options: {
     checks?: Record<string, string[]>;
-    policy?: { cpus: number; concurrent: number; waitSec: number };
+    policy?: { cpus: number; concurrent: number; waitSec: number; suites?: "targeted" | "whole" };
     script?: Script;
     alive?: (pid: number, call: number) => boolean;
     fs?: Partial<CheckFs>;
@@ -98,6 +108,7 @@ function harness(
       cwd,
       tmpdir: tdir,
       pid: PID,
+      script: SCRIPT,
       spawn: (command, args, opts, handlers) => {
         spawned.push({ command, args, cwd: opts.cwd, env: opts.env });
         setImmediate(() => script(handlers, (ms) => (t += ms)));
@@ -172,6 +183,66 @@ describe("runCheck: the env and the name", () => {
     const badPolicy = harness({ env: { ARBAB_CHECKS: JSON.stringify({ test: ["vitest"] }), ARBAB_CHECK_POLICY: "{}" } });
     expect(await runCheck(["test"], badPolicy.deps)).toBe(2);
     expect(badPolicy.err()).toMatch(/ARBAB_CHECK_POLICY must be .*; configured checks: test\n$/);
+  });
+});
+
+describe("runCheck: whole suites", () => {
+  const targeted = { cpus: 8, concurrent: 2, waitSec: 120, suites: "targeted" as const };
+  const refusal = (name: string, script = SCRIPT): string =>
+    `arbab-check: ${name} runs the whole suite, which verify runs for the batch; pass the test files you changed: node ${script} ${name} <files>\n`;
+
+  it("refuses a suite without targets in a lane: one stderr line, exit 2, nothing registered, nothing spawned", async () => {
+    const h = harness({ policy: targeted });
+    expect(await runCheck(["test"], h.deps)).toBe(2);
+    expect(h.err()).toBe(refusal("test"));
+    expect(h.out()).toBe("");
+    expect(h.spawned).toEqual([]);
+    expect(registry()).toEqual([]);
+    expect(existsSync(join(cwd, ".arbab-tmp", "checks"))).toBe(false);
+  });
+
+  it("refuses options alone, whose words are their values: --project unit, -t name, --reporter=dot", async () => {
+    for (const extra of [["--project", "unit"], ["-t", "adds"], ["--reporter=dot"], ["--run"]]) {
+      const h = harness({ policy: targeted });
+      expect(await runCheck(["test", ...extra], h.deps)).toBe(2);
+      expect(h.err()).toBe(refusal("test"));
+      expect(h.spawned).toEqual([]);
+    }
+    expect(registry()).toEqual([]);
+  });
+
+  it("refuses every kind of suite, and quotes a script path the shell would split", async () => {
+    const checks = { unit: ["pnpm", "test:unit"], node: ["node", "--test"], jest: ["npx", "jest"] };
+    for (const name of Object.keys(checks)) {
+      const h = harness({ checks, policy: targeted });
+      h.deps.script = "/runs/my lane/arbab-check.mjs";
+      expect(await runCheck([name], h.deps)).toBe(2);
+      expect(h.err()).toBe(refusal(name, "'/runs/my lane/arbab-check.mjs'"));
+    }
+  });
+
+  it("runs a suite with targets: a path, a bare filter word, a path after a boolean flag", async () => {
+    for (const extra of [["src/a.test.ts"], ["adds"], ["--run", "src/a.test.ts"], ["--project", "unit", "src/b.test.ts"]]) {
+      const h = harness({ policy: targeted });
+      expect(await runCheck(["test", ...extra], h.deps)).toBe(0);
+      expect(h.err()).toBe("");
+      expect(h.spawned.map((s) => [s.command, ...s.args])).toEqual([["vitest", "run", ...extra]]);
+    }
+  });
+
+  it("runs a check that is no suite without arguments", async () => {
+    const h = harness({ policy: targeted });
+    expect(await runCheck(["typecheck"], h.deps)).toBe(0);
+    expect(h.spawned).toHaveLength(1);
+  });
+
+  it("runs the whole suite with suites whole, and with a policy from before 0.3.1", async () => {
+    const whole = harness({ policy: { cpus: 8, concurrent: 2, waitSec: 120, suites: "whole" } });
+    expect(await runCheck(["test"], whole.deps)).toBe(0);
+    expect(whole.spawned.map((s) => s.args)).toEqual([["run"]]);
+    const old = harness({ policy: { cpus: 8, concurrent: 2, waitSec: 120 } });
+    expect(await runCheck(["test"], old.deps)).toBe(0);
+    expect(old.spawned).toHaveLength(1);
   });
 });
 
@@ -718,6 +789,120 @@ describe("runCheck: the log", () => {
     expect(await runCheck(["test"], h.deps)).toBe(0);
     expect(h.err()).toBe("arbab-check: cannot create a log (EACCES); the output is not kept\n");
     expect(h.out()).toMatch(/; log none\n/);
+  });
+});
+
+describe("runCheck: huge output", () => {
+  const MIB = 1024 * 1024;
+  /** One chunk of exactly 1 MiB: the failure line given, then padding. */
+  const chunk = (head: string): string => `${head}${"p".repeat(MIB - head.length - 1)}\n`;
+  const early = " FAIL  src/early.test.ts > first\nError: early\n";
+  const late = " FAIL  src/late.test.ts > last\nError: late\n";
+
+  it("parses only the last 8 MiB of what it wrote, dropping whole chunks from the front", async () => {
+    expect(KEPT_BYTES).toBe(8 * MIB);
+    for (const [count, keepsEarly] of [
+      [8, true],
+      [9, false],
+    ] as const) {
+      const h = harness({
+        script: (handlers) => {
+          handlers.output(chunk(early));
+          for (let i = 1; i < count - 1; i++) handlers.output(chunk(""));
+          handlers.output(chunk(late));
+          handlers.exit(1, null);
+        },
+      });
+      expect(await runCheck(["test"], h.deps)).toBe(1);
+      expect(h.out()).toContain("arbab-check failure: src/late.test.ts > last :: Error: late\n");
+      // The tail still shows the early lines, each cut to 240: only a failure line tells what was parsed.
+      expect(h.out().includes("arbab-check failure: src/early.test.ts")).toBe(keepsEarly);
+      expect(h.out().length).toBeLessThanOrEqual(STDOUT_MAX);
+      expect(h.err()).toBe("");
+    }
+  });
+
+  it("summarises from the 200-line tail, with the child's exit code, when parsing the output throws", async () => {
+    const parse = vi.mocked(parseFailures);
+    parse.mockImplementationOnce(() => {
+      throw new RangeError("Invalid string length");
+    });
+    const h = harness({
+      script: (handlers) => {
+        // The early failure is above the tail and is lost; the late one is in it.
+        handlers.output(early);
+        handlers.output(lines(300));
+        handlers.output(late);
+        handlers.exit(3, null);
+      },
+    });
+    expect(await runCheck(["test"], h.deps)).toBe(3);
+    expect(h.err()).toBe("arbab-check: cannot parse the output (Invalid string length); failures from the last 200 lines only\n");
+    const out = h.out().split("\n");
+    expect(out[0]).toMatch(/^arbab-check test: exit 3 after /);
+    expect(out[1]).toBe("arbab-check failure: src/late.test.ts > last :: Error: late");
+    expect(out[2]).toBe("--- last 60 lines ---");
+    expect(h.out()).not.toContain("early");
+    // The second parse had the tail only.
+    expect(parse.mock.lastCall?.[0].split("\n")).toHaveLength(200);
+  });
+
+  it("still prints the summary, without failures, when parsing the tail throws too", async () => {
+    vi.mocked(parseFailures)
+      .mockImplementationOnce(() => {
+        throw new RangeError("Invalid string length");
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("again");
+      });
+    const h = harness({ script: (handlers) => (handlers.output(late), handlers.exit(1, null)) });
+    expect(await runCheck(["test"], h.deps)).toBe(1);
+    expect(h.out()).toMatch(/^arbab-check test: exit 1 after .*\n--- last 2 lines ---\n FAIL {2}src\/late\.test\.ts > last\nError: late\n$/);
+    expect(registry()).toEqual([]);
+  });
+});
+
+describe("KeptOutput", () => {
+  it("keeps the newest whole chunks within the cap, an exact fit included", () => {
+    const kept = new KeptOutput(10);
+    kept.push("abcd");
+    kept.push("efgh");
+    expect(kept.text()).toBe("abcdefgh");
+    kept.push("ij");
+    expect([kept.text(), kept.bytes()]).toEqual(["abcdefghij", 10]);
+    kept.push("k");
+    expect([kept.text(), kept.bytes()]).toEqual(["efghijk", 7]);
+    kept.push("");
+    expect(kept.text()).toBe("efghijk");
+  });
+
+  it("counts UTF-8 bytes, and keeps a chunk over the cap as its last bytes without splitting a character", () => {
+    const kept = new KeptOutput(4);
+    kept.push("éé");
+    expect(kept.bytes()).toBe(4);
+    kept.push("x".repeat(9));
+    expect([kept.text(), kept.bytes()]).toEqual(["xxxx", 4]);
+    // 1 + 2 + 3 bytes: the last 4 start inside é, so the cut moves to €.
+    kept.push("aé€");
+    expect([kept.text(), kept.bytes()]).toEqual(["€", 3]);
+  });
+
+  it("stays right over many chunks, and empties on clear", () => {
+    const kept = new KeptOutput(10);
+    for (let i = 0; i < 5000; i++) kept.push(String(i % 10));
+    expect([kept.text(), kept.bytes()]).toEqual(["0123456789", 10]);
+    kept.clear();
+    expect([kept.text(), kept.bytes()]).toEqual(["", 0]);
+    kept.push("z");
+    expect(kept.text()).toBe("z");
+  });
+
+  it("defaults to KEPT_BYTES", () => {
+    const kept = new KeptOutput();
+    kept.push("a".repeat(KEPT_BYTES));
+    kept.push("b");
+    expect(kept.bytes()).toBe(1);
+    expect(kept.text()).toBe("b");
   });
 });
 

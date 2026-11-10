@@ -35,6 +35,7 @@ import {
 } from "../run";
 import { admissionDecision } from "../run/pressure";
 import type {
+  DependencyContext,
   EndState,
   LaneSpec,
   LaneState,
@@ -44,7 +45,7 @@ import type {
   ProjectConfig,
   RateLimitSnapshot,
 } from "../types";
-import { DEFAULT_LOAD_PER_CPU, DEFAULT_MEMORY_PRESSURE_HOLD, NO_FREE_SLOT_REASON } from "../types";
+import { DEFAULT_LOAD_PER_CPU, DEFAULT_MAX_HOLD_MIN, DEFAULT_MEMORY_PRESSURE_HOLD, NO_FREE_SLOT_REASON } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, writeJsonAtomic } from "../util/fs";
 import { assertValidName } from "../util/names";
@@ -102,15 +103,28 @@ export function slotCap(home: string, projectMax: number): number {
 }
 
 /**
- * The admission limits for one poll, from ~/.arbab/machine.json (DESIGN.md §22). Read on each poll so a held shepherd
- * sees an edit; an unreadable file, or an invalid admission, gives the defaults.
+ * The admission limits for one poll, from ~/.arbab/machine.json (DESIGN.md §22, §23). Read on each poll so a held
+ * shepherd sees an edit; an unreadable file, or an invalid admission, gives the defaults.
  */
-export function admissionLimits(home: string): { loadPerCpu: number; memoryPressure: MemoryPressureHold } {
+export function admissionLimits(home: string): { loadPerCpu: number; memoryPressure: MemoryPressureHold; maxHoldMin: number } {
   const admission = loadMachineConfigLenient(home).config.admission;
   return {
     loadPerCpu: admission.loadPerCpu ?? DEFAULT_LOAD_PER_CPU,
     memoryPressure: admission.memoryPressure ?? DEFAULT_MEMORY_PRESSURE_HOLD,
+    maxHoldMin: admission.maxHoldMin ?? DEFAULT_MAX_HOLD_MIN,
   };
+}
+
+/**
+ * What a worktree's install is compared against, and the runner's path, which dependency scripts get as ARBAB_RUNNER
+ * (DESIGN.md §23). Without a runner (tests, a runner that could not resolve itself) the scripts get none.
+ */
+export function dependencyContext(
+  projectRoot: string,
+  installedAt: string,
+  deps: Pick<ShepherdDeps, "git" | "runner">,
+): DependencyContext {
+  return { projectRoot, installedAt, git: deps.git, ...(deps.runner !== undefined && { runner: deps.runner }) };
 }
 
 /** What a lane holds machine-wide, released together when the lane finishes. */
@@ -210,28 +224,66 @@ export async function runShepherd(
     held.slot = null;
     releaseSlot(deps.home, slot, holder);
   };
-  // The machine is read on every poll, as slotCap reads it: a held shepherd sees an edit to machine.json.
-  const awaitMachine = async (): Promise<void> => {
+  // The machine is read on every poll, as slotCap reads it: a held shepherd sees an edit to machine.json. A hold lasts
+  // at most maxHoldMin minutes in one awaitSlot (0: no limit), then the lane goes ahead, so a busy machine delays a
+  // launch but never starves it (DESIGN.md §23). `hold` is the awaitSlot's: only the time the machine actually held
+  // counts, from the first poll that holds, so the slot and quota waits between two passes do not; the next awaitSlot
+  // (after a usage-limit reset) starts a new one.
+  const awaitMachine = async (hold: { heldMs: number; wentAhead: boolean }): Promise<void> => {
+    // When this pass's hold began: its first poll that held.
+    let sinceMs: number | null = null;
     for (;;) {
       checkStop();
+      const { loadPerCpu, memoryPressure, maxHoldMin } = admissionLimits(deps.home);
       const decision = admissionDecision({
         cpus: deps.cpus(),
         loadAvg: deps.loadAvg(),
         pressure: deps.memoryPressure(),
-        ...admissionLimits(deps.home),
+        loadPerCpu,
+        memoryPressure,
       });
-      if (!decision.hold) return;
-      setState("held", { reason: decision.reason ?? "machine load" });
-      await pause(deps.slotPollMs);
+      const now = deps.clock.now();
+      if (!decision.hold) {
+        if (sinceMs !== null) hold.heldMs += now - sinceMs;
+        return;
+      }
+      sinceMs ??= now;
+      const reason = decision.reason ?? "machine load";
+      if (maxHoldMin <= 0) {
+        setState("held", { reason });
+        await pause(deps.slotPollMs);
+        continue;
+      }
+      const heldMs = hold.heldMs + now - sinceMs;
+      const leftMs = maxHoldMin * 60_000 - heldMs;
+      if (leftMs <= 0) {
+        hold.heldMs = heldMs;
+        if (!hold.wentAhead) {
+          hold.wentAhead = true;
+          const minutes = Math.floor(heldMs / 60_000);
+          appendLaneEvent(runsRoot, laneName, {
+            at: isoAt(deps.clock),
+            shepherdPid: pid,
+            state: current?.state ?? "held",
+            attempt,
+            reason: `went ahead after ${minutes} min of machine load`,
+          });
+        }
+        return;
+      }
+      const minutesLeft = Math.max(1, Math.ceil(leftMs / 60_000));
+      setState("held", { reason: `${reason} (goes ahead in ${minutesLeft} min)` });
+      await pause(Math.min(deps.slotPollMs, leftMs));
     }
   };
   // The quota first, then the machine, then a slot, then the quota again (it may have filled while the lane waited for
   // the slot): a lane held for quota or for the machine never holds a slot, so "no free slot" means what it says
   // (DESIGN.md §21, §22).
   const awaitSlot = async (): Promise<void> => {
+    const hold = { heldMs: 0, wentAhead: false };
     for (;;) {
       await awaitQuota();
-      await awaitMachine();
+      await awaitMachine(hold);
       for (;;) {
         checkStop();
         held.slot = acquireSlot(deps.home, slotCap(deps.home, config.maxParallel), holder, deps.alive);
@@ -473,6 +525,8 @@ async function prepare(
       runCommand: deps.runCommand,
       manifests: "refuse",
       git: deps.git,
+      // As for a new worktree (dependencyContext): a script that calls clone-dir needs ARBAB_RUNNER.
+      ...(deps.runner !== undefined && { runner: deps.runner }),
     });
     note(undefined);
     wt = { path: r.path, branch: r.branch, created: false, gitCommonDir: r.gitCommonDir };
@@ -521,7 +575,7 @@ async function prepare(
     }
     // A lane that only reads (install: false) starts without the install; the tree is checked and merged all the same.
     if (lane.install !== false) {
-      const dependencies = prepareDependencies(config.dependencies, worktree, deps.runCommand, { projectRoot: root, installedAt, git: deps.git });
+      const dependencies = prepareDependencies(config.dependencies, worktree, deps.runCommand, dependencyContext(root, installedAt, deps));
       if (!dependencies.ok) {
         const tail = dependencies.output.trim().split("\n").slice(-5).join("\n");
         throw new ArbabError("runtime", `dependencies failed (${dependencies.code}): ${tail}`);

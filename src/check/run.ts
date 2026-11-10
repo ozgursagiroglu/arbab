@@ -4,8 +4,18 @@ import { spawn as nodeSpawn } from "node:child_process";
 import { closeSync, constants as fsConstants, openSync, statSync, writeSync } from "node:fs";
 import { constants } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
-import { CHECKS_ENV, type CheckFailure } from "../types";
-import { FAILURE_FIELD_MAX, failureFieldText, formatFailureLine, isCheckName, parseFailureLine, readChecksEnv } from "./command";
+import { CHECKS_ENV, type CheckFailure, type CheckPolicy } from "../types";
+import { commandLine } from "../util/shell";
+import {
+  FAILURE_FIELD_MAX,
+  failureFieldText,
+  formatFailureLine,
+  hasTargets,
+  isCheckName,
+  isSuiteArgv,
+  parseFailureLine,
+  readChecksEnv,
+} from "./command";
 import { parseFailures, stripAnsi } from "./digest";
 import {
   liveEntries,
@@ -26,6 +36,8 @@ const TAIL_FAIL = 60;
 const MAX_FAILURES = 30;
 // Parsed beyond what is printed, so the more-failures line can count them.
 const COUNT_FAILURES = 1000;
+/** The most written output kept in memory for the failures (DESIGN.md §23): a run's output can outgrow any string. */
+export const KEPT_BYTES = 8 * 1024 * 1024;
 
 /**
  * All arbab-check prints to stdout, under the smallest fence.bashOutputMaxChars (4000): longer output is saved where
@@ -78,6 +90,8 @@ export interface CheckRunDeps {
   cwd: string;
   tmpdir: string;
   pid: number;
+  /** The script's own path as the worker typed it, for the line that refuses a whole suite. */
+  script: string;
   spawn: CheckSpawn;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
@@ -170,6 +184,59 @@ class Tail {
 }
 
 /**
+ * The newest chunks of a stream, at most `max` UTF-8 bytes in all: whole chunks drop from the front as new ones come.
+ * A single chunk larger than `max` keeps only its last `max` bytes.
+ */
+export class KeptOutput {
+  private chunks: string[] = [];
+  private sizes: number[] = [];
+  private total = 0;
+  private first = 0;
+
+  constructor(private readonly max: number = KEPT_BYTES) {}
+
+  push(text: string): void {
+    let size = Buffer.byteLength(text, "utf8");
+    if (size > this.max) {
+      const bytes = Buffer.from(text, "utf8");
+      let start = size - this.max;
+      // Never start inside a character: its continuation bytes would decode larger than they are.
+      while (start < size && ((bytes[start] ?? 0) & 0xc0) === 0x80) start += 1;
+      text = bytes.subarray(start).toString("utf8");
+      size -= start;
+    }
+    this.chunks.push(text);
+    this.sizes.push(size);
+    this.total += size;
+    while (this.total > this.max && this.first < this.chunks.length) {
+      this.total -= this.sizes[this.first] ?? 0;
+      this.first += 1;
+    }
+    // Compact now and then, so dropping stays cheap and the dropped chunks can be collected.
+    if (this.first > 1024 && this.first * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.first);
+      this.sizes = this.sizes.slice(this.first);
+      this.first = 0;
+    }
+  }
+
+  bytes(): number {
+    return this.total;
+  }
+
+  text(): string {
+    return this.chunks.slice(this.first).join("");
+  }
+
+  clear(): void {
+    this.chunks = [];
+    this.sizes = [];
+    this.total = 0;
+    this.first = 0;
+  }
+}
+
+/**
  * A failure line of at most FAILURE_LINE_MAX characters that reads back with parseFailureLine. The file stays whole,
  * since verify attributes the failure by it; when the line is too long the test gives way first, then the message,
  * down to FAILURE_MESSAGE_MIN characters. A file longer than the field cap would read back as a path that does not
@@ -236,7 +303,7 @@ export function summarize(header: string, failures: CheckFailure[], tail: string
 export async function runCheck(args: string[], deps: CheckRunDeps): Promise<number> {
   // 1. Read the env.
   let checks: Record<string, string[]>;
-  let policy: { cpus: number; concurrent: number; waitSec: number };
+  let policy: CheckPolicy;
   try {
     ({ checks, policy } = readChecksEnv(deps.env));
   } catch (err) {
@@ -252,6 +319,12 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
   const argv = isCheckName(name) && Object.hasOwn(checks, name) ? checks[name] : undefined;
   if (argv === undefined) {
     deps.err(`arbab-check: unknown check ${JSON.stringify(name)}; configured checks: ${names}\n`);
+    return 2;
+  }
+  // DESIGN.md §23: a lane runs the suite on what it changed; the whole suite is verify's, once for the batch.
+  if (policy.suites === "targeted" && isSuiteArgv(argv) && !hasTargets(extra)) {
+    const usage = `${commandLine(["node", deps.script, name])} <files>`;
+    deps.err(`arbab-check: ${name} runs the whole suite, which verify runs for the batch; pass the test files you changed: ${usage}\n`);
     return 2;
   }
 
@@ -337,7 +410,7 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
     let logBroken = false;
     let logOpen = log !== null;
     // What went into the log, for the failures: the file read back by path could be another file by then.
-    const written: string[] = [];
+    const written = new KeptOutput();
     const tail = new Tail();
 
     // 6. Run.
@@ -358,7 +431,7 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
               } catch (err) {
                 logBroken = true;
                 logOpen = false;
-                written.length = 0;
+                written.clear();
                 deps.err(`arbab-check: cannot write ${log.path} (${message(err)})\n`);
               }
             },
@@ -404,8 +477,18 @@ export async function runCheck(args: string[], deps: CheckRunDeps): Promise<numb
     const header = `arbab-check ${name}: exit ${code} after ${seconds}s on ${share} CPUs; log ${where}`;
     let failures: CheckFailure[] = [];
     if (code !== 0) {
-      const whole = log !== null && !logBroken ? written.join("") : tail.last(TAIL_KEEP).join("\n");
-      failures = parseFailures(whole, COUNT_FAILURES);
+      const fromTail = (): CheckFailure[] => parseFailures(tail.last(TAIL_KEEP).join("\n"), COUNT_FAILURES);
+      try {
+        failures = log !== null && !logBroken ? parseFailures(written.text(), COUNT_FAILURES) : fromTail();
+      } catch (err) {
+        // The summary and the child's exit code matter more than the failures above the tail.
+        deps.err(`arbab-check: cannot parse the output (${message(err)}); failures from the last ${TAIL_KEEP} lines only\n`);
+        try {
+          failures = fromTail();
+        } catch {
+          failures = [];
+        }
+      }
     }
     const last = tail.last(code === 0 ? TAIL_PASS : TAIL_FAIL).map(stripAnsi);
     out(summarize(header, failures, last, STDOUT_MAX - printed));

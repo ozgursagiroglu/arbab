@@ -1,11 +1,12 @@
 import { realpathSync } from "node:fs";
 import { isAbsolute, relative } from "node:path";
 import { assembleBrief, parseBriefSource, toolBelt, type BeltWork } from "../brief";
+import { isSuiteArgv } from "../check/command";
 import { headStart, renderDigest } from "../digest";
 import { FIXED_ENV } from "../profile";
 import { attemptFiles, listAttempts, readAttempt, runPaths } from "../registry";
 import { parseStream } from "../stream";
-import type { BriefContext, CompiledProfile, JsonSchema, LaneSpec, Lease, ProjectConfig } from "../types";
+import type { BriefContext, CheckPolicy, CompiledProfile, JsonSchema, LaneSpec, Lease, ProjectConfig } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, readJson, readText } from "../util/fs";
 
@@ -112,12 +113,25 @@ export interface BriefInput {
   profile: CompiledProfile;
   leases: Lease[];
   schema: JsonSchema;
-  /** The lane's arbab-check script and check names, for the tool belt; absent when it has no checks (DESIGN.md §22). */
-  checks?: { script: string; names: string[] };
+  /**
+   * The lane's arbab-check script, its checks (name → argv) and the policy's suites, for the tool belt; absent when it
+   * has no checks (DESIGN.md §22, §23).
+   */
+  checks?: { script: string; checks: Record<string, string[]>; policy: Pick<CheckPolicy, "suites"> };
   /** A `## Head start` section (digestHeadStart) for a fresh session seeded with a digest. */
   headStart?: string;
   /** Names of the lane inputs copied into `.arbab-tmp/inputs/` (DESIGN.md §21). */
   inputs?: string[];
+}
+
+/**
+ * What the tool belt says about a lane's checks: their names, sorted, and under a targeted policy the suites among
+ * them, which run only on the test files given (DESIGN.md §23).
+ */
+export function beltChecks(checks: NonNullable<BriefInput["checks"]>): NonNullable<BeltWork["checks"]> {
+  const names = Object.keys(checks.checks).sort();
+  const suites = checks.policy.suites === "targeted" ? names.filter((name) => isSuiteArgv(checks.checks[name] ?? [])) : [];
+  return { script: checks.script, names, suites };
 }
 
 /** The assembled prompt of a start or fresh attempt (DESIGN.md §5). */
@@ -143,7 +157,7 @@ export function buildBrief(input: BriefInput): string {
     bashMaxTimeoutMin: Number.isFinite(maxMs) ? Math.round(maxMs / 60_000) : 15,
     ...(input.inputs === undefined || input.inputs.length === 0 ? {} : { inputs: [...input.inputs] }),
   };
-  const work: BeltWork = { role: lane.role, gates: config.gates, ...(input.checks === undefined ? {} : { checks: input.checks }) };
+  const work: BeltWork = { role: lane.role, gates: config.gates, ...(input.checks === undefined ? {} : { checks: beltChecks(input.checks) }) };
   const prompt = assembleBrief(source, ctx, work);
   if (input.headStart === undefined) return prompt;
   const belt = `## Tool belt\n\n${toolBelt(ctx.profile, ctx.leases, ctx.bashMaxTimeoutMin, work)}`;

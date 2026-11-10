@@ -136,9 +136,10 @@ export interface ProjectConfig {
   gates: string[][];
   /**
    * Heavy checks implementer and verifier lanes run through their arbab-check script, name → argv (DESIGN.md §22): a
-   * typecheck, a lint. Each run waits for one of a few machine-wide places and gets a fair share of the CPUs.
+   * typecheck, a lint. Each run waits for one of a few machine-wide places and gets a fair share of the CPUs. null (the
+   * key absent) derives them from `gates` (`deriveChecks`, DESIGN.md §23); `{}` gives lanes none.
    */
-  checks: Record<string, string[]>;
+  checks: Record<string, string[]> | null;
   preflight: { steps: string[][] };
   maxParallel: number;
   quota: { holdAbove: { fiveHour: number; sevenDay: number } };
@@ -214,11 +215,12 @@ export interface MachineConfig {
    */
   checks: { concurrent: number | null; waitSec: number | null };
   /**
-   * Launch admission (DESIGN.md §22): a lane is held, before it takes a slot, while the one-minute load average per CPU
-   * is at or above `loadPerCpu` (0 = never) or the memory pressure is at or above `memoryPressure`. null = the
-   * default: loadPerCpu 3, memoryPressure "critical".
+   * Launch admission (DESIGN.md §22, §23): a lane is held, before it takes a slot, while the one-minute load average
+   * per CPU is at or above `loadPerCpu` (0 = never) or the memory pressure is at or above `memoryPressure`, for at most
+   * `maxHoldMin` minutes per launch (0 = no limit); then it goes ahead. null = the default: loadPerCpu 3,
+   * memoryPressure "critical", maxHoldMin 10.
    */
-  admission: { loadPerCpu: number | null; memoryPressure: MemoryPressureHold | null };
+  admission: { loadPerCpu: number | null; memoryPressure: MemoryPressureHold | null; maxHoldMin: number | null };
 }
 export const MACHINE_CONFIG_FILE = "machine.json";
 
@@ -230,8 +232,16 @@ export const MEMORY_PRESSURE_HOLDS: readonly MemoryPressureHold[] = ["warn", "cr
 export const DEFAULT_CHECK_WAIT_SEC = 60;
 export const DEFAULT_LOAD_PER_CPU = 3;
 export const DEFAULT_MEMORY_PRESSURE_HOLD: MemoryPressureHold = "critical";
+/** machine.json admission.maxHoldMin when unset: a busy machine delays a launch, never starves it (DESIGN.md §23). */
+export const DEFAULT_MAX_HOLD_MIN = 10;
 /** config review.maxParallel when unset. */
 export const DEFAULT_REVIEW_MAX_PARALLEL = 4;
+/**
+ * The environment a dependency command gets besides the shepherd's (DESIGN.md §23): the runner's absolute path, so a
+ * script can call `node "$ARBAB_RUNNER" clone-dir <src> <dst>`, and the main checkout's root.
+ */
+export const DEPS_RUNNER_ENV = "ARBAB_RUNNER";
+export const DEPS_PROJECT_ENV = "ARBAB_PROJECT_ROOT";
 
 /** The environment arbab-check reads (DESIGN.md §22): the lane's checks, and the machine's policy, both as JSON. */
 export const CHECKS_ENV = "ARBAB_CHECKS";
@@ -249,6 +259,11 @@ export interface CheckPolicy {
   concurrent: number;
   /** How long a check waits for a place before it runs anyway. */
   waitSec: number;
+  /**
+   * "targeted": a suite check (`isSuiteArgv`) runs only with targets (`hasTargets`), because verify runs whole suites
+   * for the batch; "whole": it runs as given (the verify lane). DESIGN.md §23.
+   */
+  suites: "targeted" | "whole";
 }
 
 /** One failure arbab-check read from a failed check's output (DESIGN.md §22). Worker-written text: data only. */
@@ -284,6 +299,8 @@ export interface DependencyContext {
   /** The trusted commit the worktree's tree is at when the install runs. */
   installedAt: string;
   git: (args: string[], cwd: string) => { code: number; stdout: string; stderr: string };
+  /** The runner's absolute real path, given to dependency commands as ARBAB_RUNNER (DESIGN.md §23); unset in tests. */
+  runner?: string;
 }
 
 export interface RoleDefaults {

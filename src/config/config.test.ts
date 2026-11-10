@@ -147,7 +147,7 @@ describe("loadConfig", () => {
       resources: {},
       semaphores: {},
       gates: [],
-      checks: {},
+      checks: null,
       preflight: { steps: [] },
       maxParallel: 4,
       quota: { holdAbove: { fiveHour: 0.85, sevenDay: 0.95 } },
@@ -620,7 +620,8 @@ describe("effectiveRole", () => {
 describe("loadConfig: 0.3.0 fields (DESIGN.md §22)", () => {
   it("defaults checks to none, review.maxParallel to 4 and review.install to true", () => {
     const config = defaultConfig();
-    expect(config.checks).toEqual({});
+    // Unset: derived from the gates at launch (DESIGN.md §23).
+    expect(config.checks).toBeNull();
     expect(config.review).toEqual({ lenses: {}, maxParallel: 4, install: true });
   });
 

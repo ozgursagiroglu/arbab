@@ -4,10 +4,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { loadConfig } from "../config";
 import { volumeFreeBytes } from "../doctor";
-import { runPaths } from "../registry";
+import { runnerPath, runPaths } from "../registry";
 import { nodeGit, runArgv, type ArgvRunner, type GitRunner } from "../run";
 import { defaultDeps, runShepherd, type ShepherdDeps, type ShepherdMode } from "../shepherd";
-import { SWEEP_LOG_FILE, type EndState } from "../types";
+import { DEPS_RUNNER_ENV, SWEEP_LOG_FILE, type EndState } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, ensureDir } from "../util/fs";
 import { isAlive, sendSignal, sleep, systemClock, type Clock } from "../util/proc";
@@ -227,6 +227,15 @@ export function makeSpawnSweep(execPath: string, scriptPath: string, env: NodeJS
   };
 }
 
+/**
+ * `run` with ARBAB_RUNNER set to `runner` unless the caller's env sets it (DESIGN.md §23): ctx.runCommand runs the
+ * dependency commands, and a script there may call `node "$ARBAB_RUNNER" clone-dir …` whatever context its caller
+ * passed.
+ */
+export function withRunnerEnv(run: ArgvRunner, runner: string): ArgvRunner {
+  return (argv, cwd, env) => run(argv, cwd, { [DEPS_RUNNER_ENV]: runner, ...env });
+}
+
 function processCommand(pid: number): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
   try {
@@ -268,7 +277,7 @@ export function defaultContext(opts: { scriptPath: string; version: string }): C
     runShepherd,
     trapSignals,
     git: nodeGit,
-    runCommand: runArgv,
+    runCommand: withRunnerEnv(runArgv, runnerPath(opts.scriptPath)),
     processCommand,
     platform: process.platform,
     nodeVersion: process.versions.node,

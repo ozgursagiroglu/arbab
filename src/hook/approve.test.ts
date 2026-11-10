@@ -24,7 +24,7 @@ beforeEach(() => {
   mkdirSync(spaced);
   opts = {
     scriptPath: runner,
-    commands: ["status", "wait", "launch", "land", "hook", "__shepherd"],
+    commands: ["status", "wait", "launch", "land", "hook", "__shepherd", "clone-dir"],
     realpath: realpathSync,
     projectRoots: () => [repo, spaced],
     // The test dirs live under the OS temp dir, which may itself be under /tmp; temp dirs get their own tests.
@@ -117,6 +117,11 @@ describe("isRunnerCall", () => {
     expect(isRunnerCall(call("land rel"), opts)).toBe(false);
     expect(isRunnerCall(call("land rel --squash"), opts)).toBe(false);
     expect(isRunnerCall(call(`-C ${repo} land rel`), opts)).toBe(false);
+  });
+
+  it("refuses clone-dir, with and without -C: it is a dependency script's helper, not an orchestrator's", () => {
+    expect(isRunnerCall(call("clone-dir node_modules node_modules"), opts)).toBe(false);
+    expect(isRunnerCall(call(`-C ${repo} clone-dir .arbab/worktrees/a/x x`), opts)).toBe(false);
   });
 });
 
@@ -261,5 +266,6 @@ describe("approves", () => {
     expect(approves(input({ tool_input: { command: call(`-C ${repo} status`) } }), opts)).toBe(true);
     expect(approves(input({ tool_input: { command: call(`-C ${repo} status`) } }), { ...opts, projectRoots: () => [] })).toBe(false);
     expect(approves(input({ tool_input: { command: call("land rel") } }), opts)).toBe(false);
+    expect(approves(input({ tool_input: { command: call("clone-dir node_modules node_modules") } }), opts)).toBe(false);
   });
 });

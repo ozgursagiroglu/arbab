@@ -92,6 +92,31 @@ describe("chronicleDiff", () => {
     expect(chronicleDiff(next, next)).toEqual([]);
   });
 
+  it("adds a machine hold mid-session as a waiting entry, once, and not a slot hold", () => {
+    const prev = snapshot({
+      lanes: [lane({ name: "m", state: "queued" }), lane({ name: "s", state: "queued" }), lane({ name: "q", state: "held", hold: "quota", since: "2026-10-19T10:01:00.000Z" })],
+    });
+    const next = snapshot({
+      now: "2026-10-19T10:06:00.000Z",
+      lanes: [
+        lane({ name: "m", state: "held", hold: "machine", since: "2026-10-19T10:05:50.000Z" }),
+        lane({ name: "s", state: "held", hold: "slot", since: "2026-10-19T10:05:50.000Z" }),
+        // Same since: the hold changed kind, which is news.
+        lane({ name: "q", state: "held", hold: "machine", since: "2026-10-19T10:01:00.000Z" }),
+      ],
+    });
+    const added = chronicleDiff(prev, next);
+    expect(added.map((e) => [e.kind, e.text])).toEqual([
+      ["waiting", "m waits for the machine"],
+      ["waiting", "q waits for the machine"],
+    ]);
+    expect(added[0]?.at).toBe(at("2026-10-19T10:05:50.000Z"));
+    expect(chronicleDiff(next, next)).toEqual([]);
+    const seeded = seedChronicle(prev);
+    expect(mergeChronicle(seeded, added).map((e) => e.text)).toContain("q waits for the machine");
+    expect(mergeChronicle(seeded, added).map((e) => e.text)).toContain("q held for the quota");
+  });
+
   it("tells a new head's verify again", () => {
     const prev = snapshot({ integrations: [integration({ name: "i", verify: "failed", headSha: "a".repeat(40) })] });
     const next = snapshot({ integrations: [integration({ name: "i", verify: "failed", headSha: "b".repeat(40) })] });

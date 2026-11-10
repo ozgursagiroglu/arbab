@@ -48,7 +48,11 @@ function runCheckBundle(cwd: string, env: Record<string, string>, ...args: strin
   });
 }
 
-const checkEnv = (d: CheckDir, checks: Record<string, string[]>, policy: { cpus: number; concurrent: number; waitSec: number }): Record<string, string> => ({
+const checkEnv = (
+  d: CheckDir,
+  checks: Record<string, string[]>,
+  policy: { cpus: number; concurrent: number; waitSec: number; suites?: "targeted" | "whole" },
+): Record<string, string> => ({
   PATH: process.env["PATH"] ?? "",
   ARBAB_CHECKS: JSON.stringify(checks),
   ARBAB_CHECK_POLICY: JSON.stringify(policy),
@@ -208,6 +212,37 @@ describe("arbab-check by itself", () => {
     }
   }, 60_000);
 
+  it("refuses a whole suite in a lane, runs it on a file, and runs it whole under verify's policy (DESIGN.md §23)", async () => {
+    const d = checkDir();
+    try {
+      // Named like the runner, so the check is a suite; it prints its argv.
+      writeFileSync(join(d.scripts, "vitest"), PASSING);
+      const checks = { unit: [process.execPath, join(d.scripts, "vitest"), "run"] };
+      const lane = checkEnv(d, checks, { cpus: 3, concurrent: 2, waitSec: 120, suites: "targeted" });
+      const refused = await runCheckBundle(d.work, lane, "unit");
+      expect(refused.code).toBe(2);
+      expect(refused.stdout).toBe("");
+      expect(refused.stderr).toBe(
+        `arbab-check: unit runs the whole suite, which verify runs for the batch; pass the test files you changed: ${commandLine(["node", bundle.checkBundle, "unit"])} <files>\n`,
+      );
+      expect(existsSync(join(d.registry, "arbab-checks"))).toBe(false);
+      expect(existsSync(join(d.work, ".arbab-tmp", "checks"))).toBe(false);
+
+      const targeted = await runCheckBundle(d.work, lane, "unit", "src/a.test.ts");
+      expect(targeted.code, targeted.stderr).toBe(0);
+      expect(targeted.stdout).toContain("\nargv=run src/a.test.ts\n");
+      expect(readdirSync(join(d.registry, "arbab-checks"))).toEqual([]);
+
+      const verify = checkEnv(d, checks, { cpus: 3, concurrent: 2, waitSec: 120, suites: "whole" });
+      const whole = await runCheckBundle(d.work, verify, "unit");
+      expect(whole.code, whole.stderr).toBe(0);
+      expect(whole.stdout).toContain("\nargv=run\n");
+      expect(readdirSync(join(d.work, ".arbab-tmp", "checks")).sort()).toEqual(["unit-1.log", "unit-2.log"]);
+    } finally {
+      d.dispose();
+    }
+  }, 60_000);
+
   it("refuses an unknown name with exit 2, listing the names", async () => {
     const d = checkDir();
     try {
@@ -261,14 +296,19 @@ describe("arbab-check's wiring end to end", () => {
     expect(readFileSync(script, "utf8")).toBe(readFileSync(bundle.checkBundle, "utf8"));
     const settings = project.json<Settings>(join(project.attemptDir("impl", 1), "settings.json"));
     expect(JSON.parse(settings.env?.["ARBAB_CHECKS"] ?? "null")).toEqual(CHECKS);
-    expect(JSON.parse(settings.env?.["ARBAB_CHECK_POLICY"] ?? "null")).toEqual({ cpus: availableParallelism(), concurrent: 3, waitSec: 30 });
+    expect(JSON.parse(settings.env?.["ARBAB_CHECK_POLICY"] ?? "null")).toEqual({ cpus: availableParallelism(), concurrent: 3, waitSec: 30, suites: "targeted" });
     for (const name of Object.keys(CHECKS)) {
       const line = checkCommandLine(script, name);
       expect(line).toBe(`node ${script} ${name}`);
       expect(settings.permissions.allow).toEqual(expect.arrayContaining([`Bash(${line})`, `Bash(${line} *)`]));
     }
     const brief = readFileSync(join(project.attemptDir("impl", 1), "brief.md"), "utf8");
-    expect(brief).toContain(`- Heavy checks: run each one once, before you report, with \`${commandLine(["node", script])} <name>\` (names: \`test\`, \`typecheck\`).`);
+    const node = commandLine(["node", script]);
+    expect(brief).toContain(
+      `- Heavy checks: before you report, run each of these once with \`${node} <name>\`: \`typecheck\`. Run tests through ` +
+        `\`${node} <name> <files>\` with the test files you changed: \`test\`; without files it is refused, because the ` +
+        "integration's verify runs whole suites.",
+    );
 
     await launchAndWait(project, project.lane("rev", undefined, { role: "reviewer" }), "rev");
     const reviewer = project.json<Settings>(join(project.attemptDir("rev", 1), "settings.json"));
@@ -301,7 +341,7 @@ describe("launch admission by machine load end to end", () => {
       30_000,
       "the lane to be held",
     );
-    expect(held.reason).toMatch(new RegExp(`^machine load \\d+\\.\\d on ${availableParallelism()} CPUs$`));
+    expect(held.reason).toMatch(new RegExp(`^machine load \\d+\\.\\d on ${availableParallelism()} CPUs( \\(goes ahead in \\d+ min\\))?$`));
     const status = await project.cli("status", "--json");
     expect(status.code, status.stderr).toBe(0);
     expect((JSON.parse(status.stdout) as { lanes: unknown[] }).lanes).toEqual([expect.objectContaining({ lane: "busy", state: "held" })]);

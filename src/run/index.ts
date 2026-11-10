@@ -15,9 +15,9 @@ export {
 export type { DiscardInput, GitRunner, Worktree, WorktreeGitInput, WorktreeInput } from "./git";
 export { manifestsSince, rebuildWorktree } from "./rebuild";
 export type { RebuildInput, Rebuilt } from "./rebuild";
-export { DEPENDENCY_MANIFESTS, isDependencyManifest, manifestDrift, prepareDependencies, runArgv } from "./deps";
+export { copyCommandDirs, DEPENDENCY_MANIFESTS, dependencyEnv, isDependencyManifest, manifestDrift, prepareDependencies, runArgv } from "./deps";
 export type { ArgvRunner } from "./deps";
-export { CLONEFILE_PY, cloneDirectory, defaultCloneDeps } from "./clone";
+export { CLONEFILE_PY, cloneDirectory, defaultCloneDeps, missingRoot } from "./clone";
 export type { CloneDeps } from "./clone";
 export {
   acquireFromPool,

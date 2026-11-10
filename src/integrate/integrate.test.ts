@@ -131,6 +131,34 @@ function ignoreNodeModules(): void {
   mkdirSync(join(project.root, "node_modules", "left-pad"), { recursive: true });
 }
 
+describe("integrate's dependency environment (DESIGN.md §23)", () => {
+  it("gives the dependency command the runner and the main checkout", () => {
+    const envs: Array<Record<string, string> | undefined> = [];
+    const runCommand: ArgvRunner = (_argv, _cwd, env) => {
+      envs.push(env);
+      return { code: 0, output: "" };
+    };
+    const cfg = config({ dependencies: { strategy: "command", command: ["pnpm", "install"] } });
+    integrate({ projectRoot: project.root, config: cfg, name: "m3", lanes: [], git: project.git, runCommand, clock, runner: "/plugin/dist/arbab.mjs" });
+    expect(envs).toEqual([{ ARBAB_RUNNER: "/plugin/dist/arbab.mjs", ARBAB_PROJECT_ROOT: project.root }]);
+  });
+
+  it("gives the runner to a rebuilt worktree's command too", () => {
+    lane("a", { "a.txt": "a\n" });
+    run(["a"]).result();
+    const paths = integrationPaths(project.root, config(), "m3");
+    rmSync(paths.worktree, { recursive: true, force: true });
+    const envs: Array<Record<string, string> | undefined> = [];
+    const runCommand: ArgvRunner = (_argv, _cwd, env) => {
+      envs.push(env);
+      return { code: 0, output: "" };
+    };
+    const cfg = config({ dependencies: { strategy: "command", command: ["pnpm", "install"] } });
+    ensureIntegrationWorktree({ projectRoot: project.root, config: cfg, git: project.git, runCommand, runner: "/r.mjs" }, paths);
+    expect(envs).toEqual([{ ARBAB_RUNNER: "/r.mjs", ARBAB_PROJECT_ROOT: project.root }]);
+  });
+});
+
 describe("integrate's dependency clone", () => {
   it("clones the main checkout's directories into a new worktree, compared with the base it was created at", () => {
     ignoreNodeModules();

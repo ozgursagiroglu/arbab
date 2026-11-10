@@ -70,7 +70,7 @@ describe("loadMachineConfig: checks and admission (DESIGN.md §22)", () => {
     expect(defaultMachineConfig()).toEqual({
       maxParallel: null,
       checks: { concurrent: null, waitSec: null },
-      admission: { loadPerCpu: null, memoryPressure: null },
+      admission: { loadPerCpu: null, memoryPressure: null, maxHoldMin: null },
     });
   });
 
@@ -79,7 +79,7 @@ describe("loadMachineConfig: checks and admission (DESIGN.md §22)", () => {
     expect(loadMachineConfig(home)).toEqual({
       maxParallel: null,
       checks: { concurrent: 3, waitSec: 0 },
-      admission: { loadPerCpu: 2.5, memoryPressure: "warn" },
+      admission: { loadPerCpu: 2.5, memoryPressure: "warn", maxHoldMin: null },
     });
   });
 
@@ -87,12 +87,12 @@ describe("loadMachineConfig: checks and admission (DESIGN.md §22)", () => {
     write(JSON.stringify({ checks: { waitSec: 30 }, admission: { loadPerCpu: null } }));
     const config = loadMachineConfig(home);
     expect(config.checks).toEqual({ concurrent: null, waitSec: 30 });
-    expect(config.admission).toEqual({ loadPerCpu: null, memoryPressure: null });
+    expect(config.admission).toEqual({ loadPerCpu: null, memoryPressure: null, maxHoldMin: null });
   });
 
   it("accepts loadPerCpu 0 (never hold) and memoryPressure off", () => {
     write(JSON.stringify({ admission: { loadPerCpu: 0, memoryPressure: "off" } }));
-    expect(loadMachineConfig(home).admission).toEqual({ loadPerCpu: 0, memoryPressure: "off" });
+    expect(loadMachineConfig(home).admission).toEqual({ loadPerCpu: 0, memoryPressure: "off", maxHoldMin: null });
   });
 
   it("refuses out-of-range values, unknown keys and unknown levels", () => {
@@ -118,7 +118,7 @@ describe("loadMachineConfig: checks and admission (DESIGN.md §22)", () => {
 });
 
 describe("loadMachineConfigLenient", () => {
-  const full = { maxParallel: 3, checks: { concurrent: 2, waitSec: 30 }, admission: { loadPerCpu: 1.5, memoryPressure: "warn" } };
+  const full = { maxParallel: 3, checks: { concurrent: 2, waitSec: 30 }, admission: { loadPerCpu: 1.5, memoryPressure: "warn", maxHoldMin: 5 } };
 
   it("gives every default and no error when the file is missing", () => {
     expect(loadMachineConfigLenient(home)).toEqual({ config: defaultMachineConfig(), errors: [] });
@@ -157,7 +157,7 @@ describe("loadMachineConfigLenient", () => {
   it("keeps an invalid admission's default and maxParallel with it", () => {
     write(JSON.stringify({ ...full, admission: { loadPerCpu: 1, memoryPresure: "warn" } }));
     const r = loadMachineConfigLenient(home);
-    expect(r.config).toEqual({ ...full, admission: { loadPerCpu: null, memoryPressure: null } });
+    expect(r.config).toEqual({ ...full, admission: { loadPerCpu: null, memoryPressure: null, maxHoldMin: null } });
     expect(r.errors).toHaveLength(1);
     expect(r.errors[0]).toContain("admission.memoryPresure");
   });
@@ -174,5 +174,18 @@ describe("loadMachineConfigLenient", () => {
     const r = loadMachineConfigLenient(home);
     expect(r.config).toEqual(defaultMachineConfig());
     expect(r.errors).toHaveLength(3);
+  });
+});
+
+describe("loadMachineConfig: admission.maxHoldMin (DESIGN.md §23)", () => {
+  it("reads 0 to 1440 and refuses the rest", () => {
+    write(JSON.stringify({ admission: { maxHoldMin: 0 } }));
+    expect(loadMachineConfig(home).admission.maxHoldMin).toBe(0);
+    write(JSON.stringify({ admission: { maxHoldMin: 1440 } }));
+    expect(loadMachineConfig(home).admission.maxHoldMin).toBe(1440);
+    for (const bad of [-1, 1441, 2.5, "10"]) {
+      write(JSON.stringify({ admission: { maxHoldMin: bad } }));
+      expect(errorOf(() => loadMachineConfig(home)).message).toContain("admission.maxHoldMin");
+    }
   });
 });

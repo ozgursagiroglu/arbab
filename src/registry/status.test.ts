@@ -238,4 +238,16 @@ describe("formatWhy", () => {
     expect(formatWhy("x".repeat(40))).toBe("x".repeat(40));
     expect(formatWhy("x".repeat(41))).toBe(`${"x".repeat(39)}…`);
   });
+
+  it("writes a machine hold too long for the column compactly, keeping its countdown", () => {
+    expect(formatWhy("machine load 34.2 on 8 CPUs (goes ahead in 7 min)")).toBe("load 34.2/8 CPUs, ahead in 7m");
+    expect(formatWhy("memory pressure critical (goes ahead in 7 min)")).toBe("memory critical, ahead in 7m");
+    expect(formatWhy("memory pressure warn (goes ahead in 10 min)")).toBe("memory warn, ahead in 10m");
+    // A hold without a countdown fits, and stays whole.
+    expect(formatWhy("machine load 34.2 on 8 CPUs")).toBe("machine load 34.2 on 8 CPUs");
+    // Anything else long is cut as before.
+    expect(formatWhy("machine load is high everywhere, so the lane waits (goes ahead in 7 min)")).toBe(
+      "machine load is high everywhere, so the…",
+    );
+  });
 });

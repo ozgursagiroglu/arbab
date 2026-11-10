@@ -15,7 +15,7 @@ import {
   projectChecks,
   runDoctor,
 } from "./doctor";
-import { fakeDeps, makeProject, writeLaneRun, type TestProject } from "./testkit";
+import { DEFAULT_CONFIG, fakeDeps, makeProject, writeLaneRun, type TestProject } from "./testkit";
 
 let p: TestProject;
 afterEach(() => p?.dispose());
@@ -153,6 +153,23 @@ describe("doctorChecks", () => {
     expect(deps()).toEqual([{ status: "ok", check: "dependencies", detail: "clone node_modules with cp -a --reflink=auto" }]);
     // Other strategies add no line.
     expect(projectChecks(p.ctx, p.root, defaultConfig()).some((c) => c.check === "dependencies")).toBe(false);
+  });
+
+  it("advises on a slow dependency script from the project's attempts and the context's clock (DESIGN.md §23)", () => {
+    p = makeProject({
+      config: { ...DEFAULT_CONFIG, dependencies: { strategy: "command", command: ["/bin/sh", ".arbab/deps.sh"] } },
+      files: { ".arbab/deps.sh": 'MAIN="$ARBAB_PROJECT_ROOT"\ncp -cR "$MAIN/node_modules" node_modules\n' },
+    });
+    for (const [lane, prepareMs] of [["a", 55_000], ["b", 69_000]] as const) writeLaneRun(p.runsRoot, lane, { state: "finished", started: { prepareMs } });
+    const deps = (): DoctorCheck[] => projectChecks(p.ctx, p.root, loadConfig(p.root)).filter((c) => c.check === "dependencies");
+    expect(deps()).toEqual([
+      { status: "warn", check: "dependencies", detail: "worktree preparation takes 62s per lane (median of 2)" },
+      { status: "warn", check: "dependencies", detail: '.arbab/deps.sh:2: use node "$ARBAB_RUNNER" clone-dir "$ARBAB_PROJECT_ROOT/node_modules" node_modules' },
+      { status: "warn", check: "dependencies", detail: "check that each source above is the main checkout's node_modules before you change it" },
+    ]);
+    // Fifteen days on, those attempts are too old to count.
+    p.now.ms += 15 * 24 * 3600 * 1000;
+    expect(deps()).toEqual([]);
   });
 
   it("reports a project check that throws as a warning and goes on", () => {

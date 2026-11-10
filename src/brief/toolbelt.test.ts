@@ -110,37 +110,47 @@ describe("toolBelt, heavy checks and gates", () => {
   // Compiled with the lane's checks, as a launch compiles them: implementer and verifier get the check rules.
   const withChecks = (input: Partial<ProfileInput>, names: string[], script = SCRIPT): CompiledProfile =>
     compileProfile({ ...STRICT_INPUT, ...input, checkScript: script, checkNames: names });
-  const CHECKS_LINE =
-    `- Heavy checks: run each one once, before you report, with \`node ${SCRIPT} <name>\` (names: \`typecheck\`, ` +
-    "`lint`). Run it with the Bash timeout parameter set to 15 minutes: the wait for a place counts against it. It " +
-    "waits for a machine-wide place, runs on a fair share of the CPUs and prints a short summary: the failures and " +
-    "the path of the full log, which you can read with Read. Do not run these commands any other way, and do not " +
-    "re-run a check to see more of its output: read the log.";
+  const ONCE = `before you report, run each of these once with \`node ${SCRIPT} <name>\`: \`typecheck\`, \`eslint\`.`;
+  const TARGETED = `tests through \`node ${SCRIPT} <name> <files>\` with the test files you changed: \`test-unit\`; ` +
+    "without files it is refused, because the integration's verify runs whole suites.";
+  const WAIT = "Each check waits for a machine-wide place, runs on a fair share of the CPUs and prints a short summary " +
+    "with the failures and the path of its full log, which you can read with Read. Run it with the Bash timeout " +
+    "parameter set to 15 minutes: the wait counts against it.";
+  const CHECKS_LINE = `- Heavy checks: ${ONCE} Run ${TARGETED} ${WAIT}`;
+  const ALL = ["eslint", "test-unit", "typecheck"];
   const GATES_LINE =
     "- The integration's verify runs the repository gates for every lane together: `pnpm typecheck`, `pnpm test`. " +
     "Do not run a whole-repository suite yourself: run the tests of the files you change, one file per call when the " +
     "output is long.";
 
-  it("names the lane's check command and its names, and the gates, before the leases", () => {
-    const profile = withChecks({}, ["typecheck", "lint"]);
-    const belt = toolBelt(profile, LEASES, 15, { role: "implementer", gates: GATES, checks: { script: SCRIPT, names: ["typecheck", "lint"] } });
-    expect(belt).toContain(`run everything in the foreground.\n${CHECKS_LINE}\n${GATES_LINE}\n- Leased resources`);
+  it("names the checks to run once and the suites to run on test files, and the gates, before the leases", () => {
+    const profile = withChecks({}, ALL);
+    const work = { role: "implementer" as const, gates: GATES, checks: { script: SCRIPT, names: ["typecheck", "eslint", "test-unit"], suites: ["test-unit"] } };
+    expect(toolBelt(profile, LEASES, 15, work)).toContain(`run everything in the foreground.\n${CHECKS_LINE}\n${GATES_LINE}\n- Leased resources`);
+  });
+
+  it("leaves out the sentence of a kind the lane has no checks of", () => {
+    const profile = withChecks({}, ALL);
+    const once = toolBelt(profile, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["typecheck", "eslint"] } });
+    expect(once).toContain(`\n- Heavy checks: ${ONCE} ${WAIT}\n`);
+    const suites = toolBelt(profile, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["test-unit"], suites: ["test-unit"] } });
+    expect(suites).toContain(`\n- Heavy checks: run ${TARGETED} ${WAIT}\n`);
+    expect(suites).not.toContain("run each of these once");
   });
 
   it("sets the Bash timeout to the maximum, in minutes", () => {
     const profile = withChecks({ role: "verifier" }, ["lint"]);
     const work = { role: "verifier" as const, gates: [], checks: { script: SCRIPT, names: ["lint"] } };
-    expect(toolBelt(profile, [], 10, work)).toContain(
-      "(names: `lint`). Run it with the Bash timeout parameter set to 10 minutes: the wait for a place counts against it. It waits",
-    );
+    expect(toolBelt(profile, [], 10, work)).toContain("Run it with the Bash timeout parameter set to 10 minutes: the wait counts against it.");
     expect(toolBelt(profile, [], 1, work)).toContain("Bash timeout parameter set to 1 minute: the wait");
   });
 
   it("quotes a script path that needs it, as the command line does", () => {
     const script = "/work/my repo/bin/arbab-check.mjs";
-    const profile = withChecks({ role: "verifier", fence: "sandbox-auto" }, ["lint"], script);
-    const belt = toolBelt(profile, [], 15, { role: "verifier", gates: [], checks: { script, names: ["lint"] } });
-    expect(belt).toContain(`with \`node '${script}' <name>\` (names: \`lint\`).`);
+    const profile = withChecks({ role: "verifier", fence: "sandbox-auto" }, ["lint", "test"], script);
+    const belt = toolBelt(profile, [], 15, { role: "verifier", gates: [], checks: { script, names: ["lint", "test"], suites: ["test"] } });
+    expect(belt).toContain(`with \`node '${script}' <name>\`: \`lint\`.`);
+    expect(belt).toContain(`through \`node '${script}' <name> <files>\` with`);
     expect(belt).not.toContain("The integration's verify");
   });
 
@@ -162,7 +172,10 @@ describe("toolBelt, heavy checks and gates", () => {
     expect(toolBelt(STRICT, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["lint"] } })).not.toContain("Heavy checks");
     const profile = withChecks({}, ["lint"]);
     const belt = toolBelt(profile, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["lint", "typecheck"] } });
-    expect(belt).toContain("(names: `lint`). Run it");
+    expect(belt).toContain("<name>`: `lint`. Each check");
+    // A suite the fence refuses leaves its sentence out too.
+    const suites = toolBelt(profile, [], 15, { role: "implementer", gates: [], checks: { script: SCRIPT, names: ["lint", "test"], suites: ["test"] } });
+    expect(suites).not.toContain("<files>");
   });
 
   it("gives a reviewer with lane checks neither a checks line nor a gates line", () => {
@@ -177,7 +190,7 @@ describe("toolBelt, heavy checks and gates", () => {
     const profile = withChecks({ role: "reviewer", fence: "sandbox-auto", tools: ["Read", "Glob", "Grep", "Bash"], loopback: false }, ["gate-1"]);
     expect(profile.settings.permissions.allow.some((rule) => rule.startsWith("Bash("))).toBe(false);
     const belt = toolBelt(profile, [], 15, { role: "reviewer", gates: [], checks: { script: SCRIPT, names: ["gate-1"] } });
-    expect(belt).toContain("(names: `gate-1`)");
+    expect(belt).toContain("<name>`: `gate-1`.");
   });
 
   it("gives a researcher with lane checks no checks line: it has no shell", () => {
@@ -194,7 +207,22 @@ describe("toolBelt, heavy checks and gates", () => {
       ["gate-1"],
     );
     const belt = toolBelt(verify, [], 15, work);
-    expect(belt).toContain("(names: `gate-1`)");
+    expect(belt).toContain("<name>`: `gate-1`.");
     expect(belt).not.toContain("The integration's verify");
+  });
+
+  it("gives the probe a single plain list that does not say its checks wait", () => {
+    const names = ["test", "typecheck"];
+    const verify = withChecks(
+      { role: "probe", tools: ["Read", "Glob", "Grep", "Bash"], loopback: false, laneAllow: names.map((n) => `Bash(${checkCommandLine(SCRIPT, n)})`) },
+      names,
+    );
+    const belt = toolBelt(verify, [], 15, { role: "probe", gates: GATES, checks: { script: SCRIPT, names } });
+    expect(belt).toContain(
+      `\n- Heavy checks: before you report, run each of these once with \`node ${SCRIPT} <name>\`: \`test\`, \`typecheck\`. ` +
+        "Each check runs on a fair share of the CPUs and prints a short summary with the failures and the path of its " +
+        "full log, which you can read with Read. Run it with the Bash timeout parameter set to 15 minutes.\n",
+    );
+    expect(belt).not.toContain("machine-wide place");
   });
 });

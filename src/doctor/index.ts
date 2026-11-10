@@ -1,4 +1,5 @@
-export { checkClone } from "./deps";
+export { checkClone, checkPrepareTime, PREPARE_WINDOW_DAYS, preparationTimes, scriptCopyLines, SLOW_PREPARE_MS } from "./deps";
+export type { PrepareTimeInput } from "./deps";
 export { checkEnvTemplates, ENV_TEMPLATES, trackedEnvTemplates } from "./env";
 export { checkGates, coveredScripts, isCheckScript, scriptCalls, scriptOf, workflowRunLines } from "./gates";
 export { checkHook, HOOK_MISSING, hookFile } from "./hook";

@@ -6,7 +6,11 @@ import { fail, integerIn, knownKeys, readJsonFile, record } from "./check";
 
 /** Every machine limit unset: each field's default applies (DESIGN.md §21, §22). */
 export function defaultMachineConfig(): MachineConfig {
-  return { maxParallel: null, checks: { concurrent: null, waitSec: null }, admission: { loadPerCpu: null, memoryPressure: null } };
+  return {
+    maxParallel: null,
+    checks: { concurrent: null, waitSec: null },
+    admission: { loadPerCpu: null, memoryPressure: null, maxHoldMin: null },
+  };
 }
 
 const MACHINE_KEYS = ["maxParallel", "checks", "admission"] as const;
@@ -28,8 +32,9 @@ const parsers: { [K in (typeof MACHINE_KEYS)[number]]: (v: unknown, config: Mach
   },
   admission(v, config) {
     const a = record(v, field("admission"));
-    knownKeys(a, ["loadPerCpu", "memoryPressure"], field("admission"));
-    const admission: MachineConfig["admission"] = { loadPerCpu: null, memoryPressure: null };
+    knownKeys(a, ["loadPerCpu", "memoryPressure", "maxHoldMin"], field("admission"));
+    const admission: MachineConfig["admission"] = { loadPerCpu: null, memoryPressure: null, maxHoldMin: null };
+    if (set(a.maxHoldMin)) admission.maxHoldMin = integerIn(a.maxHoldMin, 0, 1440, field("admission.maxHoldMin"));
     if (set(a.loadPerCpu)) {
       const n = a.loadPerCpu;
       if (typeof n !== "number" || !Number.isFinite(n) || n < 0 || n > 64) fail(field("admission.loadPerCpu"), "must be a number from 0 (never hold) to 64");

@@ -2,7 +2,7 @@ import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CLONEFILE_PY, cloneDirectory, defaultCloneDeps, type CloneDeps } from "./clone";
+import { CLONEFILE_PY, cloneDirectory, defaultCloneDeps, missingRoot, type CloneDeps } from "./clone";
 import { runArgv, type ArgvRunner } from "./deps";
 
 let dir: string;
@@ -126,5 +126,17 @@ describe("cloneDirectory", () => {
   it("reads the real platform", () => {
     const run: ArgvRunner = () => ({ code: 0, output: "" });
     expect(defaultCloneDeps(run)).toEqual({ platform: process.platform, run });
+  });
+});
+
+describe("missingRoot", () => {
+  it("names the outermost missing ancestor, the path itself when only it is missing, and null when it exists", () => {
+    expect(missingRoot(dst)).toBe(join(dir, "wt"));
+    mkdirSync(join(dir, "wt", "sub"), { recursive: true });
+    expect(missingRoot(dst)).toBe(dst);
+    expect(missingRoot(src)).toBeNull();
+    // A dangling link is something there.
+    symlinkSync(join(dir, "nowhere"), dst);
+    expect(missingRoot(dst)).toBeNull();
   });
 });

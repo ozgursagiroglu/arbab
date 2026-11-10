@@ -100,9 +100,26 @@ function formatCost(row: StatusRow): string {
 
 const WHY_MAX = 40;
 
-/** The state's reason on one line, cut to WHY_MAX characters; empty without one. */
+// A machine hold's reason runs past WHY_MAX, and its countdown comes last, where the cut would drop it.
+const MACHINE_REASONS: ReadonlyArray<[RegExp, string]> = [
+  [/^machine load (\S+) on (\d+) CPUs? \(goes ahead in (\d+) min\)$/, "load $1/$2 CPUs, ahead in $3m"],
+  [/^memory pressure (\S+) \(goes ahead in (\d+) min\)$/, "memory $1, ahead in $2m"],
+];
+
+/**
+ * The state's reason on one line, cut to WHY_MAX characters; empty without one. A machine hold's reason too long for
+ * the column is written compactly first, so its countdown survives.
+ */
 export function formatWhy(reason: string | null | undefined): string {
-  const text = (reason ?? "").trim().replace(/\s+/g, " ");
+  let text = (reason ?? "").trim().replace(/\s+/g, " ");
+  if (text.length > WHY_MAX) {
+    for (const [pattern, compact] of MACHINE_REASONS) {
+      if (pattern.test(text)) {
+        text = text.replace(pattern, compact);
+        break;
+      }
+    }
+  }
   return text.length > WHY_MAX ? `${text.slice(0, WHY_MAX - 1)}…` : text;
 }
 

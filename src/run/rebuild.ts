@@ -24,6 +24,8 @@ export interface RebuildInput {
    */
   manifests: "refuse" | "flag";
   git: GitRunner;
+  /** The runner's absolute real path, for the dependency command's ARBAB_RUNNER (DESIGN.md §23). */
+  runner?: string;
 }
 
 export interface Rebuilt {
@@ -137,7 +139,12 @@ export function rebuildWorktree(input: RebuildInput): Rebuilt {
     const wt = (args: string[]): ReturnType<GitRunner> => git([...explicitGit(gitDir, path), ...untrustedTree(), ...args], path);
 
     // The tree is at `start` here, and nowhere else does the dependency command run.
-    const deps = prepareDependencies(input.dependencies, path, input.runCommand, { projectRoot, installedAt: start, git });
+    const deps = prepareDependencies(input.dependencies, path, input.runCommand, {
+      projectRoot,
+      installedAt: start,
+      git,
+      ...(input.runner !== undefined && { runner: input.runner }),
+    });
     if (!deps.ok) {
       const tail = deps.output.trim().split("\n").slice(-5).join("\n");
       throw new ArbabError("runtime", `dependencies failed in ${path} (${deps.code}): ${tail}`);

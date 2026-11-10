@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { resolveBinary } from "../binary";
-import { checkScriptPath, checksEnv, defaultCheckConcurrency } from "../check/command";
+import { checkScriptPath, checksEnv, defaultCheckConcurrency, deriveChecks } from "../check/command";
 import { loadMachineConfigLenient } from "../config";
 import { buildClaudeArgs, compileProfile, envFileAllowReads, lintProfile, workerEnv } from "../profile";
 import { updateQuota } from "../quota";
@@ -189,9 +189,11 @@ export function previousSession(runsRoot: string, lane: string): PreviousSession
 }
 
 /** The heavy checks a lane may run (DESIGN.md §22): its own, else config's for implementer and verifier, else none. */
-export function laneChecks(lane: Pick<LaneSpec, "role" | "checks">, config: Pick<ProjectConfig, "checks">): Record<string, string[]> {
+export function laneChecks(lane: Pick<LaneSpec, "role" | "checks">, config: Pick<ProjectConfig, "checks" | "gates">): Record<string, string[]> {
   if (lane.checks !== undefined) return lane.checks;
-  return lane.role === "implementer" || lane.role === "verifier" ? config.checks : {};
+  if (lane.role !== "implementer" && lane.role !== "verifier") return {};
+  // Unset config checks come from the gates (DESIGN.md §23), so a project needs no config for its lanes to share.
+  return config.checks ?? deriveChecks(config.gates);
 }
 
 /**
@@ -228,6 +230,8 @@ export function checkPolicy(home: string, cpus: number, role: Role): CheckPolicy
     cpus,
     concurrent: machine.checks.concurrent ?? defaultCheckConcurrency(cpus),
     waitSec: role === "probe" ? 0 : (machine.checks.waitSec ?? DEFAULT_CHECK_WAIT_SEC),
+    // verify (the probe) runs whole suites for the batch; every other lane runs its suites on targets (§23).
+    suites: role === "probe" ? "whole" : "targeted",
   };
 }
 
@@ -358,7 +362,7 @@ export async function runAttempt(ctx: AttemptContext, request: AttemptRequest): 
     profile,
     leases: ctx.leases,
     schema,
-    ...(checks === null ? {} : { checks: { script: checks.script, names: Object.keys(checks.checks).sort() } }),
+    ...(checks === null ? {} : { checks }),
     ...(request.headStart === undefined ? {} : { headStart: request.headStart }),
     ...(request.inputs === undefined || request.inputs.length === 0 ? {} : { inputs: request.inputs }),
   };

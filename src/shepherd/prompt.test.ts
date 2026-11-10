@@ -6,7 +6,8 @@ import { defaultConfig } from "../config";
 import { compileProfile } from "../profile";
 import { DEFAULT_SCHEMAS } from "../report";
 import type { CompiledProfile } from "../types";
-import { buildBrief, CONTINUATION_PROMPT, digestHeadStart, insertBeforeToolBelt, resumePrompt, upstreamSummary } from "./prompt";
+import { laneChecks } from "./attempt";
+import { beltChecks, buildBrief, CONTINUATION_PROMPT, digestHeadStart, insertBeforeToolBelt, resumePrompt, upstreamSummary } from "./prompt";
 
 let dir: string;
 let runs: string;
@@ -46,6 +47,19 @@ describe("upstreamSummary", () => {
     attempt("up", 2, {});
     expect(upstreamSummary(runs, "up")).toBe("done");
     expect(upstreamSummary(runs, "none")).toBe("(no finished attempt yet)");
+  });
+});
+
+describe("beltChecks", () => {
+  const checks = { lint: ["pnpm", "lint"], test: ["pnpm", "test"], e2e: ["pnpm", "exec", "playwright", "test"] };
+
+  it("sorts the names and flags the suites under a targeted policy", () => {
+    expect(beltChecks({ script: "/s", checks, policy: { suites: "targeted" } })).toEqual({ script: "/s", names: ["e2e", "lint", "test"], suites: ["e2e", "test"] });
+  });
+
+  it("flags none under a whole policy (verify) or without checks", () => {
+    expect(beltChecks({ script: "/s", checks, policy: { suites: "whole" } }).suites).toEqual([]);
+    expect(beltChecks({ script: "/s", checks: {}, policy: { suites: "targeted" } })).toEqual({ script: "/s", names: [], suites: [] });
   });
 });
 
@@ -154,17 +168,46 @@ describe("buildBrief", () => {
       leases: [],
       schema: DEFAULT_SCHEMAS.implementer,
     };
-    const checks = { script: join(runs, "x", "bin", "arbab-check.mjs"), names: ["lint"] };
+    const script = join(runs, "x", "bin", "arbab-check.mjs");
+    const checks = { script, checks: { lint: ["pnpm", "lint"] }, policy: { suites: "targeted" as const } };
     const gates = "- The integration's verify runs the repository gates for every lane together: `pnpm typecheck`, `pnpm test`.";
-    const withChecks = { ...input, profile: profile(worktree, checks), checks };
+    const withChecks = { ...input, profile: profile(worktree, { script, names: ["lint"] }), checks };
     for (const text of [buildBrief(withChecks), buildBrief({ ...withChecks, headStart: "## Head start\n\nh\n" })]) {
-      expect(text).toContain(`with \`node ${checks.script} <name>\` (names: \`lint\`).`);
+      expect(text).toContain(`run each of these once with \`node ${script} <name>\`: \`lint\`.`);
       expect(text).toContain(gates);
     }
     // Without the check rules in its profile, the lane is not told to run them.
     expect(buildBrief({ ...input, checks })).not.toContain("Heavy checks");
     expect(buildBrief(input)).not.toContain("Heavy checks");
     expect(buildBrief({ ...input, lane: { ...input.lane, role: "reviewer" } })).not.toContain(gates);
+  });
+
+  it("gives the tool belt the checks derived from the gates, suites to run on test files", () => {
+    writeFileSync(join(dir, "brief.md"), "# Lane x\n\n## Task\n\nDo it.\n");
+    const worktree = join(dir, "wt");
+    const gates = [["pnpm", "typecheck"], ["pnpm", "exec", "eslint", "."], ["pnpm", "test:unit"], ["pnpm", "build"]];
+    const config = { ...defaultConfig(), checks: null, gates };
+    const lane = { name: "x", role: "implementer" as const, brief: "brief.md" };
+    const derived = laneChecks(lane, config);
+    expect(Object.keys(derived).sort()).toEqual(["eslint", "test-unit", "typecheck"]);
+    const script = join(runs, "x", "bin", "arbab-check.mjs");
+    const text = buildBrief({
+      projectRoot: dir,
+      runsRoot: runs,
+      config,
+      lane,
+      branch: "arbab/x",
+      worktree,
+      profile: profile(worktree, { script, names: Object.keys(derived) }),
+      leases: [],
+      schema: DEFAULT_SCHEMAS.implementer,
+      checks: { script, checks: derived, policy: { suites: "targeted" } },
+    });
+    expect(text).toContain(
+      `- Heavy checks: before you report, run each of these once with \`node ${script} <name>\`: \`eslint\`, \`typecheck\`. ` +
+        `Run tests through \`node ${script} <name> <files>\` with the test files you changed: \`test-unit\`; without ` +
+        "files it is refused, because the integration's verify runs whole suites. Each check waits",
+    );
   });
 
   it("fails when the brief or an instruction file is missing", () => {

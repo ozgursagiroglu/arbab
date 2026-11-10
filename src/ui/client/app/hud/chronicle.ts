@@ -60,7 +60,8 @@ function waiting(lane: UiLane, fallback: number): ChronicleEntry {
   if (lane.state === "held") {
     // Only a quota hold is a "held" entry: a slot or the machine frees up by itself.
     const hold = lane.hold ?? "quota";
-    return { id: `held:${lane.name}:${at}`, at, kind: hold === "quota" ? "held" : "waiting", text: `${lane.name} ${holdWording(hold)}` };
+    // The kind in the id: a quota hold that turns into a machine hold keeps its since, and is still news.
+    return { id: `held:${lane.name}:${hold}:${at}`, at, kind: hold === "quota" ? "held" : "waiting", text: `${lane.name} ${holdWording(hold)}` };
   }
   const what = lane.state === "waiting-reset" ? "asleep until the quota resets" : "queued";
   return { id: `waiting:${lane.name}:${lane.state}:${at}`, at, kind: "waiting", text: `${lane.name} ${what}` };
@@ -106,7 +107,7 @@ export function seedChronicle(snapshot: UiSnapshot): ChronicleEntry[] {
   return mergeChronicle([], out);
 }
 
-/** What changed from one snapshot to the next: starts, finishes, landings, verify results and quota holds. */
+/** What changed from one snapshot to the next: starts, finishes, landings, verify results, quota and machine holds. */
 export function chronicleDiff(prev: UiSnapshot, next: UiSnapshot): ChronicleEntry[] {
   const now = snapshotMs(next);
   const out: ChronicleEntry[] = [];
@@ -116,7 +117,9 @@ export function chronicleDiff(prev: UiSnapshot, next: UiSnapshot): ChronicleEntr
     // A lane back from its usage-limit sleep already started.
     if (startedSince(lane, was)) out.push(started(lane, now));
     if (lane.state === "finished" && was && was.state !== "finished") out.push(finished(lane, now));
-    if (lane.state === "held" && lane.hold === "quota" && !(was && was.state === "held" && was.hold === "quota")) out.push(waiting(lane, now));
+    // A slot hold is routine; the quota and the machine are worth telling (DESIGN.md §23).
+    const hold = lane.state === "held" ? lane.hold : null;
+    if ((hold === "quota" || hold === "machine") && !(was && was.state === "held" && was.hold === hold)) out.push(waiting(lane, now));
   }
   const old = new Map(prev.integrations.map((i) => [i.name, i]));
   for (const integration of next.integrations) {

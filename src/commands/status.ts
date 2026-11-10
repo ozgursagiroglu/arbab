@@ -2,7 +2,7 @@
 //
 // Text: formatStatusTable (lane, state, attempt, elapsed, turns, calls, last tool, effort, failed, cost, quota, why),
 // then a `quota: <formatQuota>` line. The cost column shows tokens when a run has no cost; `why` is state.json's
-// reason, cut short.
+// reason, cut short (a machine hold's compactly, keeping its countdown; formatWhy).
 // --json: {"lanes": StatusRow[], "quota": {"snapshot": RateLimitSnapshot | null, "hold": HoldDecision}}
 // StatusRow and the others are the types of src/types.ts; `state` is the effective state (a dead shepherd's lane
 // is "orphaned").

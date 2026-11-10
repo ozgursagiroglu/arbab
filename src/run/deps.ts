@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { lstatSync, realpathSync, statSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import type { DependencyContext, DependencyStrategy } from "../types";
+import { lstatSync, realpathSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { DEPS_PROJECT_ENV, DEPS_RUNNER_ENV, type DependencyContext, type DependencyStrategy } from "../types";
 import { ArbabError } from "../util/errors";
 import { readText } from "../util/fs";
-import { cloneDirectory, defaultCloneDeps, type CloneDeps } from "./clone";
+import { cloneDirectory, defaultCloneDeps, missingRoot, type CloneDeps } from "./clone";
 import type { GitRunner } from "./git";
 
-export type ArgvRunner = (argv: string[], cwd: string) => { code: number; output: string };
+/** `env` is merged over the process environment; without it the command gets the process environment as it is. */
+export type ArgvRunner = (argv: string[], cwd: string, env?: Record<string, string>) => { code: number; output: string };
 
 /**
  * Files a package manager reads as code or as install instructions: lifecycle scripts, hooks, registries. A tree a
@@ -176,10 +177,15 @@ export function installRelevantPaths(git: (args: string[]) => ReturnType<GitRunn
 }
 
 /** Runs an argv without a shell; stdout and stderr are concatenated in that order. */
-export const runArgv: ArgvRunner = (argv, cwd) => {
+export const runArgv: ArgvRunner = (argv, cwd, env) => {
   const [command, ...args] = argv;
   if (command === undefined) return { code: 127, output: "empty command" };
-  const r = spawnSync(command, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    ...(env !== undefined && { env: { ...process.env, ...env } }),
+  });
   if (r.error) return { code: 127, output: r.error.message };
   return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
 };
@@ -227,12 +233,167 @@ export function manifestDrift(context: DependencyContext): string[] {
 
 type Prepared = { ok: boolean; code: number; output: string };
 
-function runInstall(argv: unknown, field: string, worktree: string, run: ArgvRunner): Prepared {
+function installArgv(argv: unknown, field: string): string[] {
   if (!Array.isArray(argv) || argv.length === 0 || !argv.every((a) => typeof a === "string") || argv[0] === "") {
     throw new ArbabError("config", `${field} must be a non-empty argv array of strings`);
   }
-  const r = run(argv as string[], worktree);
+  return argv as string[];
+}
+
+function runInstall(argv: unknown, field: string, worktree: string, run: ArgvRunner, env: Record<string, string>): Prepared {
+  const r = run(installArgv(argv, field), worktree, env);
   return { ok: r.code === 0, code: r.code, output: r.output };
+}
+
+/**
+ * What every dependency command gets in its environment (DESIGN.md §23): the main checkout, and the runner when the
+ * caller knows it, so a script can call `node "$ARBAB_RUNNER" clone-dir <src> <dst>`.
+ */
+export function dependencyEnv(context: DependencyContext | undefined): Record<string, string> {
+  if (context === undefined) return {};
+  return {
+    [DEPS_PROJECT_ENV]: context.projectRoot,
+    ...(context.runner !== undefined && context.runner !== "" && { [DEPS_RUNNER_ENV]: context.runner }),
+  };
+}
+
+/** `name` bare, or by its path in a system directory: another `cp` on PATH need not behave like the system's. */
+function isTool(word: string | undefined, name: string): boolean {
+  return word === name || word === `/bin/${name}` || word === `/usr/bin/${name}`;
+}
+
+/**
+ * The copy a command argv makes, before any file is looked at: its sources, its destination, and where each source
+ * lands. Null for anything but the three shapes of DESIGN.md §23.
+ */
+function parseCopy(argv: string[]): { sources: string[]; dest: string; tool: "cp" | "ditto" | "rsync" } | null {
+  const [command, ...words] = argv;
+  let tool: "cp" | "ditto" | "rsync";
+  let operands: string[];
+  if (isTool(command, "cp")) {
+    let i = 0;
+    let recursive = false;
+    for (; i < words.length && (words[i] ?? "").startsWith("-"); i++) {
+      const flags = words[i] ?? "";
+      if (!/^-[RcapP]+$/.test(flags)) return null;
+      if (flags.includes("R")) recursive = true;
+    }
+    if (!recursive) return null;
+    tool = "cp";
+    operands = words.slice(i);
+  } else if (isTool(command, "ditto")) {
+    tool = "ditto";
+    operands = words;
+  } else if (isTool(command, "rsync")) {
+    let i = 0;
+    const flags = new Set<string>();
+    for (; i < words.length && (words[i] ?? "").startsWith("-"); i++) {
+      const flag = words[i] ?? "";
+      if ((flag !== "-a" && flag !== "--delete") || flags.has(flag)) return null;
+      flags.add(flag);
+    }
+    if (!flags.has("-a")) return null;
+    // host:path is a remote copy unless a slash comes before the colon; no such source or destination is ours.
+    if (words.slice(i).some((w) => w.includes(":"))) return null;
+    tool = "rsync";
+    operands = words.slice(i);
+  } else {
+    return null;
+  }
+  // An option after the operands, or before them in ditto: something this parser does not know.
+  if (operands.length < 2 || operands.some((w) => w === "" || w.startsWith("-"))) return null;
+  return { sources: operands.slice(0, -1), dest: operands.at(-1) ?? "", tool };
+}
+
+/**
+ * The directories a `command` dependency strategy only copies from the main checkout (DESIGN.md §23), as clone pairs,
+ * or null when the argv is anything else. Recognised: `cp` whose short-flag words hold `R` and nothing but `R`, `c`,
+ * `a`, `p`, `P`, with one source and a destination whose parent directory exists, as cp requires; `ditto` with no flags
+ * and one source; `rsync` with exactly `-a`, and optionally `--delete`. Each source, relative to the worktree (the
+ * command's directory) or absolute, must not be a link itself, and its real path must be an existing directory inside
+ * the real project root that does not hold the destination. The destination is a relative path inside the worktree
+ * that does not exist yet: cp into an existing directory copies into it. Where a source lands follows the tool: the
+ * destination itself for a cp or ditto source, or an rsync source ending in `/`; `<dst>/<name>` for an rsync source
+ * without one. A shape whose result differs from that (several sources merged by ditto or by a trailing `/`, two
+ * sources of one name) is not recognised.
+ */
+export function copyCommandDirs(argv: string[], projectRoot: string, worktree: string): Array<{ src: string; dst: string }> | null {
+  const copy = parseCopy(argv);
+  if (copy === null || isAbsolute(copy.dest)) return null;
+  const several = copy.sources.length > 1;
+  if (several && copy.tool === "ditto") return null;
+  let root: string;
+  let worktreeReal: string;
+  try {
+    root = realpathSync(projectRoot);
+    worktreeReal = realpathSync(worktree);
+  } catch {
+    return null;
+  }
+  const base = resolve(worktree);
+  const dest = resolve(base, copy.dest);
+  if (!inside(base, dest) || present(dest)) return null;
+  // cp copies several sources only into an existing directory, and makes no parent: anything else it would refuse.
+  if (copy.tool === "cp" && (several || !isDirectory(dirname(dest)))) return null;
+  const pairs: Array<{ src: string; dst: string }> = [];
+  for (const source of copy.sources) {
+    const abs = resolve(base, source);
+    let src: string;
+    try {
+      if (lstatSync(abs).isSymbolicLink()) return null;
+      src = realpathSync(abs);
+      if (!statSync(src).isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    if (!inside(root, src)) return null;
+    const contents = source.endsWith("/");
+    let dst: string;
+    if (copy.tool === "rsync") dst = contents ? dest : join(dest, basename(abs));
+    else dst = dest;
+    // Merged into one destination: not one clone per source.
+    if (contents && several) return null;
+    if (pairs.some((p) => p.dst === dst)) return null;
+    const at = realAncestor(dirname(dst));
+    if (at === null || (at !== worktreeReal && !inside(worktreeReal, at))) return null;
+    // A source that holds its own destination would be cloned into itself.
+    if (at === src || inside(src, at)) return null;
+    pairs.push({ src, dst });
+  }
+  return pairs;
+}
+
+/**
+ * The command strategy. A command that only copies directories of the main checkout (copyCommandDirs) is cloned
+ * instead, with the same result; when any clone fails, what this call made is removed and the command runs as given.
+ * No manifest check: the command copies whatever the main checkout holds, and so does the clone.
+ */
+function commandDependencies(command: unknown, worktree: string, run: ArgvRunner, context: DependencyContext | undefined, deps: CloneDeps): Prepared {
+  const argv = installArgv(command, "dependencies.command");
+  const env = dependencyEnv(context);
+  const pairs = context === undefined ? null : copyCommandDirs(argv, context.projectRoot, worktree);
+  if (pairs === null) return runInstall(argv, "dependencies.command", worktree, run, env);
+  const made: string[] = [];
+  const lines: string[] = [];
+  for (const { src, dst } of pairs) {
+    const label = relative(resolve(worktree), dst);
+    const top = missingRoot(dst);
+    if (top !== null) made.push(top);
+    let failure: string | null;
+    try {
+      const r = cloneDirectory(src, dst, deps);
+      failure = r.ok ? null : `cloning ${label} failed (${r.how}): ${r.output.trim()}`;
+      if (r.ok) lines.push(`cloned ${label} (${r.how})`);
+    } catch (err) {
+      failure = `cloning ${label} failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    if (failure !== null) {
+      for (const path of made.reverse()) rmSync(path, { recursive: true, force: true });
+      const r = runInstall(argv, "dependencies.command", worktree, run, env);
+      return { ...r, output: `dependencies.command: ${failure}; running the command\n${r.output}` };
+    }
+  }
+  return { ok: true, code: 0, output: lines.join("\n") };
 }
 
 /** Whether `path` lies inside `root` (both real paths), the root itself excluded. */
@@ -269,7 +430,7 @@ function cloneDependencies(
     if (strategy.fallback === null) {
       return { ok: false, code: 1, output: `dependencies.clone: ${reason}; set dependencies.fallback to install instead` };
     }
-    const r = runInstall(strategy.fallback, "dependencies.fallback", worktree, run);
+    const r = runInstall(strategy.fallback, "dependencies.fallback", worktree, run, dependencyEnv(context));
     return { ...r, output: `dependencies.clone: ${reason}; running dependencies.fallback\n${r.output}` };
   };
   const refuse = (reason: string): Prepared => ({ ok: false, code: 1, output: `dependencies.clone: ${reason}` });
@@ -326,10 +487,19 @@ function present(path: string): boolean {
   }
 }
 
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Prepares a worktree's dependencies before the worker starts (DESIGN.md §9, §22). `context` is what the clone
- * strategy compares against (the main checkout and the install point); every caller passes it. `cloneDeps` is the
- * clone's platform and runner, `run` with the real platform unless a test injects them.
+ * Prepares a worktree's dependencies before the worker starts (DESIGN.md §9, §22, §23). `context` is what the clone
+ * strategy compares against (the main checkout and the install point), and what every dependency command gets in its
+ * environment (dependencyEnv); every caller passes it. `cloneDeps` is the clone's platform and runner, `run` with the
+ * real platform unless a test injects them.
  */
 export function prepareDependencies(
   strategy: DependencyStrategy,
@@ -339,7 +509,7 @@ export function prepareDependencies(
   cloneDeps: CloneDeps = defaultCloneDeps(run),
 ): Prepared {
   if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
-  if (strategy.strategy === "command") return runInstall(strategy.command, "dependencies.command", worktree, run);
+  if (strategy.strategy === "command") return commandDependencies(strategy.command, worktree, run, context, cloneDeps);
   if (strategy.strategy === "clone") return cloneDependencies(strategy, worktree, run, context, cloneDeps);
   throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify((strategy as { strategy: unknown }).strategy)}`);
 }

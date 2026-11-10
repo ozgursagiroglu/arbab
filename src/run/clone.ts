@@ -37,6 +37,17 @@ function present(path: string): boolean {
 }
 
 /**
+ * The outermost of `path` and its ancestors that does not exist: what creating `path` with its parents creates, and so
+ * what removing undoes it. Null when `path` exists.
+ */
+export function missingRoot(path: string): string | null {
+  if (present(path)) return null;
+  let top = path;
+  for (let p = dirname(path); p !== top && !present(p); p = dirname(p)) top = p;
+  return top;
+}
+
+/**
  * Clones the directory `src` to `dst`, which must not exist (its parent is created). macOS: one clonefile(2) call
  * through `python3 -I -c <CLONEFILE_PY> <src> <dst>`; when that fails, a partial `dst` is removed and `cp -cR <src>
  * <dst>` runs. Linux and others: `cp -a --reflink=auto <src> <dst>`.

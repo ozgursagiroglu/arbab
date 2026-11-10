@@ -167,6 +167,19 @@ describe("runStatus", () => {
     expect(row).toMatch(/^demo\s+finished \(killed:wall\).*\s41\.2k tok\s+—\s+wall clock 60 min$/);
   });
 
+  it("shows a machine hold's countdown in the why column, and the full reason in --json", async () => {
+    p = makeProject();
+    const reason = "machine load 34.2 on 8 CPUs (goes ahead in 7 min)";
+    p.alive.add(SHEPHERD_PID);
+    writeLaneRun(p.runsRoot, "demo", { state: "held" });
+    writeState(p.runsRoot, { ...readState(p.runsRoot, "demo")!, reason });
+    expect(await runStatus(["--json"], p.ctx)).toBe(0);
+    expect((JSON.parse(p.stdout()) as { lanes: StatusRow[] }).lanes[0]?.reason).toBe(reason);
+    p.out.length = 0;
+    expect(await runStatus([], p.ctx)).toBe(0);
+    expect(p.stdout().split("\n")[1]).toMatch(/^demo\s+held\s.*\s+load 34\.2\/8 CPUs, ahead in 7m$/);
+  });
+
   it("--active leaves finished lanes out and keeps orphaned ones", async () => {
     p = makeProject();
     p.alive.add(SHEPHERD_PID);

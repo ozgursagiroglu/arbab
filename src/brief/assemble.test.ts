@@ -81,7 +81,7 @@ describe("assembleBrief", () => {
     const work = { role: "implementer" as const, gates: [["pnpm", "test"]], checks: { script: "/r/bin/arbab-check.mjs", names: ["lint"] } };
     const profile = compileProfile({ ...STRICT_INPUT, checkScript: work.checks.script, checkNames: work.checks.names });
     const text = assembleBrief(SOURCE, ctx({ profile }), work);
-    expect(text).toContain("- Heavy checks: run each one once, before you report, with `node /r/bin/arbab-check.mjs <name>` (names: `lint`).");
+    expect(text).toContain("- Heavy checks: before you report, run each of these once with `node /r/bin/arbab-check.mjs <name>`: `lint`.");
     expect(text).toContain("- The integration's verify runs the repository gates for every lane together: `pnpm test`.");
     expect(assembleBrief(SOURCE, ctx())).not.toMatch(/Heavy checks|The integration's verify/);
   });

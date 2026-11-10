@@ -14,6 +14,7 @@ try {
     cwd: process.cwd(),
     tmpdir: tmpdir(),
     pid: process.pid,
+    script: process.argv[1] ?? "arbab-check.mjs",
     spawn: nodeCheckSpawn(),
     now: () => Date.now(),
     sleep,

@@ -61,8 +61,11 @@ export interface BeltWork {
   role: Role;
   /** The repository gates (config `gates`), as argv arrays. */
   gates: string[][];
-  /** The lane's arbab-check script and its check names; absent when the lane has no checks. */
-  checks?: { script: string; names: string[] };
+  /**
+   * The lane's arbab-check script and its check names; absent when the lane has no checks. `suites` names the checks
+   * that run only on the test files given (a suite under a targeted policy, DESIGN.md §23); absent means none.
+   */
+  checks?: { script: string; names: string[]; suites?: string[] };
 }
 
 /**
@@ -76,19 +79,38 @@ function checkAllowed(profile: CompiledProfile, script: string, name: string): b
   return profile.settings.permissions.allow.some((rule) => rules.has(rule.trim()));
 }
 
-function checksLine(checks: BeltWork["checks"], profile: CompiledProfile, bashMaxTimeoutMin: number): string | null {
+function checksLine(work: BeltWork, profile: CompiledProfile, bashMaxTimeoutMin: number): string | null {
+  const { checks } = work;
   if (checks === undefined || !profile.tools.includes("Bash")) return null;
   // Only the checks the fence lets it run: a lane whose role gets no check rule (reviewer, researcher, a probe
   // without them in its allow) still has the env and the script, but must not be told to run what is refused.
   const names = checks.names.filter((name) => checkAllowed(profile, checks.script, name));
   if (names.length === 0) return null;
-  // The real command line, with the name left as a placeholder word.
-  const command = `${commandLine(["node", checks.script])} <name>`;
-  return `- Heavy checks: run each one once, before you report, with ${code(command)} (names: ` +
-    `${names.map(code).join(", ")}). Run it with the Bash timeout parameter set to ${minutes(bashMaxTimeoutMin)}: ` +
-    "the wait for a place counts against it. It waits for a machine-wide place, runs on a fair share of the CPUs and " +
-    "prints a short summary: the failures and the path of the full log, which you can read with Read. Do not run " +
-    "these commands any other way, and do not re-run a check to see more of its output: read the log.";
+  const suites = new Set(checks.suites ?? []);
+  const once = names.filter((name) => !suites.has(name));
+  const targeted = names.filter((name) => suites.has(name));
+  // The real command line, with the name and files left as placeholder words.
+  const node = commandLine(["node", checks.script]);
+  const sentences: string[] = [];
+  if (once.length > 0) {
+    sentences.push(`before you report, run each of these once with ${code(`${node} <name>`)}: ${once.map(code).join(", ")}.`);
+  }
+  if (targeted.length > 0) {
+    sentences.push(`${sentences.length > 0 ? "Run" : "run"} tests through ${code(`${node} <name> <files>`)} with the test ` +
+      `files you changed: ${targeted.map(code).join(", ")}; without files it is refused, because the integration's ` +
+      "verify runs whole suites.");
+  }
+  const timeout = `Run it with the Bash timeout parameter set to ${minutes(bashMaxTimeoutMin)}`;
+  // A probe's checks never wait for a place (verify's gates, DESIGN.md §23), so it is not told they do.
+  if (work.role === "probe") {
+    sentences.push("Each check runs on a fair share of the CPUs and prints a short summary with the failures and the " +
+      `path of its full log, which you can read with Read. ${timeout}.`);
+  } else {
+    sentences.push("Each check waits for a machine-wide place, runs on a fair share of the CPUs and prints a short " +
+      `summary with the failures and the path of its full log, which you can read with Read. ${timeout}: the wait ` +
+      "counts against it.");
+  }
+  return `- Heavy checks: ${sentences.join(" ")}`;
 }
 
 function gatesLine(work: BeltWork): string | null {
@@ -150,7 +172,7 @@ export function toolBelt(profile: CompiledProfile, leases: Lease[], bashMaxTimeo
     );
   }
   if (work !== undefined) {
-    for (const line of [checksLine(work.checks, profile, bashMaxTimeoutMin), gatesLine(work)]) if (line !== null) lines.push(line);
+    for (const line of [checksLine(work, profile, bashMaxTimeoutMin), gatesLine(work)]) if (line !== null) lines.push(line);
   }
 
   const lease = leaseLine(leases);

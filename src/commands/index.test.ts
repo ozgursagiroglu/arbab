@@ -83,6 +83,14 @@ describe("dispatch", () => {
     expect(p.stderr()).toContain("TypeError: oops");
   });
 
+  it("registers clone-dir, with its help in the overview and its own block", async () => {
+    p = makeProject();
+    expect(Object.hasOwn(COMMANDS, "clone-dir")).toBe(true);
+    expect(HELP).toContain('dependency scripts: node "$ARBAB_RUNNER" clone-dir <src> <dst>');
+    expect(await dispatch(["clone-dir", "--help"], p.ctx)).toBe(0);
+    expect(p.stdout()).toBe("usage: arbab clone-dir <src> <dst>\n");
+  });
+
   it("registers summary, report, hook and host-check", async () => {
     p = makeProject();
     for (const name of ["summary", "report", "hook", "host-check"]) expect(Object.hasOwn(COMMANDS, name), name).toBe(true);

@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { ArbabError, exitCodeFor } from "../util/errors";
 import { runCleanup } from "./cleanup";
+import { runCloneDir } from "./clone-dir";
 import type { CommandContext } from "./context";
 import { runDoctor } from "./doctor";
 import { runHook } from "./hook";
@@ -54,6 +55,7 @@ export const COMMANDS: Readonly<Record<string, Command>> = {
   report: runReport,
   hook: runHook,
   "host-check": runHostCheck,
+  "clone-dir": runCloneDir,
   __shepherd: runShepherdProcess,
 };
 
@@ -129,6 +131,8 @@ export const HELP = `usage: arbab [-C <dir>] <command> [options]
                                           as midnight UTC, or an ISO date-time with Z or an offset)
   report <lane> [--attempt <n>] [--json]  an attempt's summary and report, the latest unless --attempt
   host-check <name>                       run hostGates on the integration head from a terminal
+  clone-dir <src> <dst>                   clone a directory of the main checkout into the current directory; for
+                                          dependency scripts: node "$ARBAB_RUNNER" clone-dir <src> <dst>
   help [<command>], --help                this text, or a command's options
   version, --version                      the arbab version
 

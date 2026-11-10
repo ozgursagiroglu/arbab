@@ -16,7 +16,7 @@ import {
 import type { ArgvRunner, GitRunner } from "../run";
 import { installRelevantPaths } from "../run/deps";
 import { confirmedHeads, installPlan, isTrustedInstallPoint } from "../shepherd/trust";
-import { INTEGRATIONS_DIR, type IntegrationRecord, type ProjectConfig } from "../types";
+import { INTEGRATIONS_DIR, type DependencyContext, type IntegrationRecord, type ProjectConfig } from "../types";
 import { ArbabError } from "../util/errors";
 import { confine, ensureDir, readJson, writeJsonAtomic } from "../util/fs";
 import { assertValidName, isValidName } from "../util/names";
@@ -90,6 +90,8 @@ export interface IntegrateInput {
   git: GitRunner;
   runCommand: ArgvRunner;
   clock: Clock;
+  /** The runner's absolute real path, for the dependency command's ARBAB_RUNNER (DESIGN.md §23). */
+  runner?: string;
 }
 
 const SHA = /^[0-9a-f]{40,64}$/;
@@ -216,7 +218,12 @@ function supersedeRecord(paths: IntegrationPaths): void {
 }
 
 /** What setting up an integration worktree needs. */
-export type IntegrationWorktreeInput = Pick<IntegrateInput, "projectRoot" | "config" | "git" | "runCommand">;
+export type IntegrationWorktreeInput = Pick<IntegrateInput, "projectRoot" | "config" | "git" | "runCommand" | "runner">;
+
+/** What a dependency command here compares against and gets in its environment. */
+function dependencyContext(input: Pick<IntegrateInput, "projectRoot" | "git" | "runner">, installedAt: string): DependencyContext {
+  return { projectRoot: input.projectRoot, installedAt, git: input.git, ...(input.runner !== undefined && { runner: input.runner }) };
+}
 
 /**
  * Creates the worktree from the base, or on the existing branch when that is still part of the base, and prepares
@@ -258,6 +265,7 @@ function createIntegrationWorktree(input: IntegrationWorktreeInput, paths: Integ
         runCommand: input.runCommand,
         manifests: "flag",
         git,
+        ...(input.runner !== undefined && { runner: input.runner }),
       });
       return;
     }
@@ -268,7 +276,7 @@ function createIntegrationWorktree(input: IntegrationWorktreeInput, paths: Integ
 
   let deps: ReturnType<typeof prepareDependencies>;
   try {
-    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand, { projectRoot, installedAt, git });
+    deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand, dependencyContext(input, installedAt));
   } catch (err) {
     removeWorktree(git, paths);
     throw err;
@@ -554,7 +562,7 @@ export function adoptIntegration(input: AdoptInput): IntegrateResult {
   ensureDir(dirname(paths.worktree));
   must(git, ["worktree", "add", "-b", paths.branch, paths.worktree, start], projectRoot);
   try {
-    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand, { projectRoot, installedAt: start, git });
+    const deps = prepareDependencies(input.config.dependencies, paths.worktree, input.runCommand, dependencyContext(input, start));
     if (!deps.ok) {
       const tail = deps.output.trim().split("\n").slice(-5).join("\n");
       throw new ArbabError("runtime", `dependencies failed in ${paths.worktree} (${deps.code}): ${tail}`);

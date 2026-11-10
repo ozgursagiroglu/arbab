@@ -9,9 +9,11 @@ export const APPROVAL = JSON.stringify({
 
 /**
  * Commands never approved: the shepherd is the runner's own child, the hook is Claude Code's to call, and `land`
- * merges into the base branch and removes worktrees, which the human confirms first.
+ * merges into the base branch and removes worktrees, which the human confirms first. `clone-dir` is a dependency
+ * script's helper, run by the shepherd on the host; an orchestrator never needs it, and approving it would hand any
+ * shell a host copy primitive.
  */
-const NEVER = new Set(["__shepherd", "hook", "land"]);
+const NEVER = new Set(["__shepherd", "hook", "land", "clone-dir"]);
 
 /** Temporary directories `-C` is never approved into, besides the hook's TMPDIR: anyone on the machine writes there. */
 export const TEMP_DIRS: readonly string[] = ["/tmp", "/private/tmp"];
@@ -67,7 +69,7 @@ function knownProject(dir: string, opts: ApproveOptions): boolean {
 /**
  * Whether `command` is a bare runner call: `node <runner> [-C <dir>] <command> [words…]`, where <runner> is an
  * absolute path to the same file as `scriptPath`, <dir> a registered project root outside lane worktrees and temp
- * dirs, and <command> a runner command other than `__shepherd`, `hook` and `land`.
+ * dirs, and <command> a runner command other than `__shepherd`, `hook`, `land` and `clone-dir`.
  */
 export function isRunnerCall(command: string, opts: ApproveOptions): boolean {
   const words = tokenize(command);

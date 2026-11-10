@@ -40,7 +40,8 @@ the skill. Every record lives in `.arbab/integrations/<name>/`.
       run worker-written tests.
 - [ ] Every command shows `exit 0` in `verify.json`. A command whose call is missing from the stream counts as a
       failure. Lane-level green is not repo-level green: every lane's tests have passed while the integration
-      branch failed the repository's boot-smoke gate. Lanes test what they change; verify tests the batch.
+      branch failed the repository's boot-smoke gate. Lanes test what they change (their test-suite checks refuse
+      to run without files); verify runs the whole suites for the batch.
 - [ ] After a failed verify: read the failure lines it printed (all of them are in `verify.json` `failures`, worker
       output kept as data) and the fix draft it named on stderr, `fix/fix-<k>.json` and `fix/fix-<k>.md`. The draft
       is lane `<name>-fix-<k>` on `integrate/<name>`, with the failures, the merged lanes that may explain them and

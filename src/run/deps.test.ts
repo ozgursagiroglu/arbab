@@ -6,7 +6,9 @@ import type { DependencyContext, DependencyStrategy } from "../types";
 import { ArbabError } from "../util/errors";
 import type { CloneDeps } from "./clone";
 import {
+  copyCommandDirs,
   DEPENDENCY_MANIFESTS,
+  dependencyEnv,
   installRelevantChange,
   installRelevantPaths,
   isDependencyManifest,
@@ -309,6 +311,249 @@ describe("prepareDependencies: clone (DESIGN.md §22)", () => {
   it("validates the fallback argv when it runs", () => {
     const bad = { strategy: "clone", paths: ["node_modules"], fallback: [""] } as DependencyStrategy;
     expect(() => prepareDependencies(bad, wt, runner([]), undefined, linux(runner([])))).toThrow(/dependencies.fallback must be/);
+  });
+});
+
+describe("copyCommandDirs (DESIGN.md §23)", () => {
+  let root: string;
+  let wt: string;
+  beforeEach(() => {
+    root = join(dir, "main");
+    mkdirSync(join(root, "node_modules", "a"), { recursive: true });
+    mkdirSync(join(root, "web", "node_modules"), { recursive: true });
+    mkdirSync(join(root, "api", "node_modules"), { recursive: true });
+    writeFileSync(join(root, "README.md"), "x\n");
+    wt = join(root, ".arbab", "worktrees", "lane");
+    mkdirSync(join(wt, "web"), { recursive: true });
+  });
+  const nm = (): string => join(root, "node_modules");
+
+  it("recognises cp with R among R, c, a, p and P, in one or several short-flag words", () => {
+    for (const flags of [["-R"], ["-Rc"], ["-cR"], ["-R", "-c"], ["-a", "-R"], ["-RpP"], ["-Rcap"]]) {
+      expect(copyCommandDirs(["cp", ...flags, nm(), "node_modules"], root, wt), flags.join(" ")).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+    }
+    expect(copyCommandDirs(["/bin/cp", "-Rc", nm(), "node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+  });
+
+  it("refuses cp without R, with any other flag, or with an option among the operands", () => {
+    for (const argv of [
+      ["cp", nm(), "node_modules"],
+      ["cp", "-a", nm(), "node_modules"],
+      ["cp", "-c", nm(), "node_modules"],
+      ["cp", "-r", nm(), "node_modules"],
+      ["cp", "-Rv", nm(), "node_modules"],
+      ["cp", "-R", "-n", nm(), "node_modules"],
+      ["cp", "--recursive", nm(), "node_modules"],
+      ["cp", "-R", "--", nm(), "node_modules"],
+      ["cp", "-R", nm(), "node_modules", "-v"],
+      ["cp", "-R", nm()],
+      ["cp", "-R", "", "node_modules"],
+      ["/usr/local/bin/cp", "-R", nm(), "node_modules"],
+      ["gcp", "-R", nm(), "node_modules"],
+    ]) {
+      expect(copyCommandDirs(argv, root, wt), argv.join(" ")).toBeNull();
+    }
+  });
+
+  it("recognises ditto with no flags and one source", () => {
+    expect(copyCommandDirs(["ditto", nm(), "node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+    expect(copyCommandDirs(["ditto", "--rsrc", nm(), "node_modules"], root, wt)).toBeNull();
+    // ditto merges several sources into one destination: not one clone each.
+    expect(copyCommandDirs(["ditto", nm(), join(root, "web", "node_modules"), "deps"], root, wt)).toBeNull();
+  });
+
+  it("recognises rsync with exactly -a, optionally --delete, where rsync puts each source", () => {
+    expect(copyCommandDirs(["rsync", "-a", `${nm()}/`, "node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+    expect(copyCommandDirs(["rsync", "-a", "--delete", `${nm()}/`, "node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+    expect(copyCommandDirs(["rsync", "--delete", "-a", nm(), "deps"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "deps", "node_modules") }]);
+    for (const argv of [
+      ["rsync", nm(), "node_modules"],
+      ["rsync", "-av", nm(), "node_modules"],
+      ["rsync", "-a", "-a", nm(), "node_modules"],
+      ["rsync", "-a", "--exclude=x", nm(), "node_modules"],
+      ["rsync", "-a", nm(), "host:node_modules"],
+      ["rsync", "-a", `${nm()}/`, `${join(root, "web", "node_modules")}/`, "deps"],
+    ]) {
+      expect(copyCommandDirs(argv, root, wt), argv.join(" ")).toBeNull();
+    }
+  });
+
+  it("recognises cp only with one source and a destination whose parent exists, as cp itself requires", () => {
+    const api = join(root, "api");
+    // cp refuses several sources unless the destination is an existing directory, where it copies into it.
+    expect(copyCommandDirs(["cp", "-R", nm(), api, "deps"], root, wt)).toBeNull();
+    expect(copyCommandDirs(["cp", "-R", nm(), api, "web"], root, wt)).toBeNull();
+    expect(copyCommandDirs(["cp", "-R", nm(), "web"], root, wt)).toBeNull();
+    // cp makes no parent directory.
+    expect(copyCommandDirs(["cp", "-R", nm(), "missing/node_modules"], root, wt)).toBeNull();
+    expect(copyCommandDirs(["cp", "-R", nm(), "web/node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "web", "node_modules") }]);
+    // A parent that is a file is no directory either.
+    writeFileSync(join(wt, "file"), "x\n");
+    expect(copyCommandDirs(["cp", "-R", nm(), "file/node_modules"], root, wt)).toBeNull();
+    // A trailing slash on the one source changes nothing: the destination does not exist.
+    expect(copyCommandDirs(["cp", "-R", `${nm()}/`, "node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+  });
+
+  it("takes a relative source from the worktree, the command's directory", () => {
+    expect(copyCommandDirs(["cp", "-Rc", "../../../node_modules", "node_modules"], root, wt)).toEqual([{ src: nm(), dst: join(wt, "node_modules") }]);
+    expect(copyCommandDirs(["cp", "-R", "../../../web/node_modules", "web/node_modules"], root, wt)).toEqual([
+      { src: join(root, "web", "node_modules"), dst: join(wt, "web", "node_modules") },
+    ]);
+  });
+
+  it("refuses a source outside the project, a link, a file, a missing one and the root itself", () => {
+    const outside = join(dir, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(root, "linked"));
+    symlinkSync(nm(), join(root, "inner"));
+    mkdirSync(join(root, "vendor"));
+    symlinkSync(outside, join(root, "vendor", "via"));
+    for (const src of [outside, join(root, "linked"), join(root, "inner"), join(root, "README.md"), join(root, "gone"), root]) {
+      expect(copyCommandDirs(["cp", "-R", src, "node_modules"], root, wt), src).toBeNull();
+    }
+    // A link on the way that leads out: the real path decides.
+    mkdirSync(join(outside, "node_modules"));
+    expect(copyCommandDirs(["cp", "-R", join(root, "vendor", "via", "node_modules"), "node_modules"], root, wt)).toBeNull();
+  });
+
+  it("refuses a destination that is absolute, escapes the worktree or is the worktree, or whose parent leads out", () => {
+    mkdirSync(join(dir, "elsewhere"));
+    symlinkSync(join(dir, "elsewhere"), join(wt, "out"));
+    for (const dst of [join(wt, "node_modules"), "../node_modules", "../../../x", ".", "out/node_modules"]) {
+      expect(copyCommandDirs(["cp", "-R", nm(), dst], root, wt), dst).toBeNull();
+    }
+    symlinkSync(join(dir, "nowhere"), join(wt, "dangling"));
+    expect(copyCommandDirs(["cp", "-R", nm(), "dangling"], root, wt)).toBeNull();
+  });
+
+  it("refuses a source that holds the destination", () => {
+    expect(copyCommandDirs(["cp", "-R", join(root, ".arbab"), "copy"], root, wt)).toBeNull();
+  });
+
+  it("returns null for any other command, and when the root or the worktree does not resolve", () => {
+    expect(copyCommandDirs(["npm", "ci"], root, wt)).toBeNull();
+    expect(copyCommandDirs(["sh", "-c", `cp -R ${nm()} node_modules`], root, wt)).toBeNull();
+    expect(copyCommandDirs(["cp", "-R", nm(), "node_modules"], join(dir, "missing"), wt)).toBeNull();
+    expect(copyCommandDirs(["cp", "-R", nm(), "node_modules"], root, join(dir, "missing"))).toBeNull();
+  });
+});
+
+describe("prepareDependencies: command (DESIGN.md §23)", () => {
+  interface Call {
+    argv: string[];
+    cwd: string;
+    env: Record<string, string> | undefined;
+  }
+  let m: { root: string; git: GitRunner; head: string };
+  let wt: string;
+  let ctx: DependencyContext;
+  beforeEach(() => {
+    m = mainCheckout();
+    mkdirSync(join(m.root, "node_modules", "a"), { recursive: true });
+    mkdirSync(join(m.root, "web", "node_modules"), { recursive: true });
+    wt = join(dir, "wt");
+    mkdirSync(wt);
+    ctx = { projectRoot: m.root, installedAt: m.head, git: m.git, runner: "/plugin/dist/arbab.mjs" };
+  });
+  /** Clones (cp, python3) make their destination unless `failAt` is their 1-based number; anything else "installed". */
+  const runner = (calls: Call[], failAt = 0): ArgvRunner => {
+    let clones = 0;
+    return (argv, cwd, env) => {
+      calls.push({ argv, cwd, env });
+      if (argv[0] !== "python3" && !(argv[0] === "cp" && argv[1] === "-a")) return { code: 0, output: "installed" };
+      if (++clones === failAt) {
+        mkdirSync(join(argv.at(-1) ?? "", "partial"), { recursive: true });
+        return { code: 1, output: "cp: No space left on device\n" };
+      }
+      mkdirSync(argv.at(-1) ?? "", { recursive: true });
+      return { code: 0, output: "" };
+    };
+  };
+  const linux = (run: ArgvRunner): CloneDeps => ({ platform: "linux", run });
+
+  it("clones what a recognised copy would copy, without running it, and says how", () => {
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const command = ["rsync", "-a", join(m.root, "node_modules"), join(m.root, "web"), "deps"];
+    const r = prepareDependencies({ strategy: "command", command }, wt, run, ctx, linux(run));
+    expect(r).toEqual({ ok: true, code: 0, output: "cloned deps/node_modules (cp)\ncloned deps/web (cp)" });
+    expect(calls.map((c) => c.argv)).toEqual([
+      ["cp", "-a", "--reflink=auto", join(m.root, "node_modules"), join(wt, "deps", "node_modules")],
+      ["cp", "-a", "--reflink=auto", join(m.root, "web"), join(wt, "deps", "web")],
+    ]);
+  });
+
+  it("clones a single copy with clonefile on macOS, with no manifest check", () => {
+    // A manifest that differs from the install point stops the clone strategy, not a copy the command would make.
+    writeFileSync(join(m.root, "yarn.lock"), "# yarn\n");
+    const calls: Call[] = [];
+    const run = runner(calls);
+    const r = prepareDependencies({ strategy: "command", command: ["cp", "-Rc", join(m.root, "node_modules"), "node_modules"] }, wt, run, ctx, { platform: "darwin", run });
+    expect(r).toEqual({ ok: true, code: 0, output: "cloned node_modules (clonefile)" });
+    expect(calls.map((c) => c.argv[0])).toEqual(["python3"]);
+    expect(existsSync(join(wt, "node_modules"))).toBe(true);
+  });
+
+  it("removes what it made when a clone fails, then runs the command itself", () => {
+    const calls: Call[] = [];
+    const run = runner(calls, 2);
+    const command = ["rsync", "-a", join(m.root, "node_modules"), join(m.root, "web"), "deps"];
+    const r = prepareDependencies({ strategy: "command", command }, wt, run, ctx, linux(run));
+    expect(r).toEqual({
+      ok: true,
+      code: 0,
+      output: "dependencies.command: cloning deps/web failed (cp): cp: No space left on device; running the command\ninstalled",
+    });
+    expect(calls.map((c) => c.argv[0])).toEqual(["cp", "cp", "rsync"]);
+    expect(calls.at(-1)?.argv).toEqual(command);
+    expect(existsSync(join(wt, "deps"))).toBe(false);
+  });
+
+  it("keeps what was there before a failed clone", () => {
+    mkdirSync(join(wt, "web"));
+    writeFileSync(join(wt, "web", "keep.ts"), "x\n");
+    const calls: Call[] = [];
+    const run = runner(calls, 1);
+    const r = prepareDependencies({ strategy: "command", command: ["cp", "-R", join(m.root, "web", "node_modules"), "web/node_modules"] }, wt, run, ctx, linux(run));
+    expect(r.output).toMatch(/^dependencies\.command: cloning web\/node_modules failed \(cp\): .*; running the command\ninstalled$/);
+    expect(existsSync(join(wt, "web", "node_modules"))).toBe(false);
+    expect(existsSync(join(wt, "web", "keep.ts"))).toBe(true);
+  });
+
+  it("runs any other command as given, and passes on its failure", () => {
+    const calls: Call[] = [];
+    const r = prepareDependencies({ strategy: "command", command: ["/bin/sh", "deps.sh"] }, wt, runner(calls), ctx, linux(runner([])));
+    expect(r).toEqual({ ok: true, code: 0, output: "installed" });
+    expect(calls.map((c) => [c.argv, c.cwd])).toEqual([[["/bin/sh", "deps.sh"], wt]]);
+    expect(prepareDependencies({ strategy: "command", command: ["x"] }, wt, () => ({ code: 3, output: "boom" }), ctx)).toEqual({ ok: false, code: 3, output: "boom" });
+  });
+
+  it("gives every dependency command ARBAB_RUNNER and ARBAB_PROJECT_ROOT", () => {
+    const calls: Call[] = [];
+    prepareDependencies({ strategy: "command", command: ["npm", "ci"] }, wt, runner(calls), ctx);
+    // The clone strategy's fallback too.
+    writeFileSync(join(m.root, "yarn.lock"), "# yarn\n");
+    const run = runner(calls);
+    prepareDependencies({ strategy: "clone", paths: ["node_modules"], fallback: ["npm", "ci"] }, wt, run, ctx, linux(run));
+    const env = { ARBAB_RUNNER: "/plugin/dist/arbab.mjs", ARBAB_PROJECT_ROOT: m.root };
+    expect(calls).toEqual([
+      { argv: ["npm", "ci"], cwd: wt, env },
+      { argv: ["npm", "ci"], cwd: wt, env },
+    ]);
+    // Without a runner, the project root alone; without a context, nothing.
+    const { runner: _, ...bare } = ctx;
+    expect(dependencyEnv(bare)).toEqual({ ARBAB_PROJECT_ROOT: m.root });
+    expect(dependencyEnv(undefined)).toEqual({});
+  });
+
+  it("reaches a real command's environment, over the process environment", () => {
+    const r = prepareDependencies(
+      { strategy: "command", command: [process.execPath, "-e", "process.stdout.write([process.env.ARBAB_RUNNER, process.env.ARBAB_PROJECT_ROOT, typeof process.env.PATH].join('|'))"] },
+      wt,
+      runArgv,
+      ctx,
+    );
+    expect(r).toEqual({ ok: true, code: 0, output: `/plugin/dist/arbab.mjs|${m.root}|string` });
   });
 });
 

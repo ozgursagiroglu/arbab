@@ -119,5 +119,198 @@ export function readChecksEnv(env: Record<string, string | undefined>): { checks
   if (!isRecord(rawPolicy) || !positiveInt(rawPolicy.cpus, 1) || !positiveInt(rawPolicy.concurrent, 1) || !positiveInt(rawPolicy.waitSec, 0)) {
     throw new ArbabError("usage", `${CHECK_POLICY_ENV} must be {"cpus": n ≥ 1, "concurrent": n ≥ 1, "waitSec": n ≥ 0}`);
   }
-  return { checks, policy: { cpus: rawPolicy.cpus, concurrent: rawPolicy.concurrent, waitSec: rawPolicy.waitSec } };
+  // A policy written before 0.3.1 has no `suites`: it ran every check whole.
+  const suites = rawPolicy.suites === undefined ? "whole" : rawPolicy.suites;
+  if (suites !== "targeted" && suites !== "whole") throw new ArbabError("usage", `${CHECK_POLICY_ENV}.suites must be "targeted" or "whole"`);
+  return { checks, policy: { cpus: rawPolicy.cpus, concurrent: rawPolicy.concurrent, waitSec: rawPolicy.waitSec, suites } };
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Checks without config (DESIGN.md §23): derived from the gates, suites told apart from the rest.
+
+const PACKAGE_MANAGERS = new Set(["pnpm", "npm", "yarn", "bun", "npx", "bunx"]);
+const PM_SUBCOMMANDS = new Set(["run", "exec", "dlx", "x", "run-script"]);
+// Package-manager options that take a value: their value is not the script. In pnpm `-w` is `--workspace-root` and
+// `--workspace` a switch; in npm, yarn and bun both name a workspace.
+const PM_VALUE_FLAGS = new Set(["-F", "--filter", "-C", "--dir", "--prefix", "--cwd", "-w", "--workspace"]);
+const PNPM_SWITCHES = new Set(["-w", "--workspace"]);
+// Task-runner options that take a value, so it is not read as the task. Make's `-j`/`-l` take one only when it is a
+// number, handled apart.
+const TASK_VALUE_FLAGS: Record<string, Set<string>> = {
+  turbo: new Set(["-F", "--filter", "--cwd", "--cache-dir", "--concurrency", "--output-logs", "--log-order", "--env-mode", "--log-prefix"]),
+  nx: new Set(["-p", "--projects", "-c", "--configuration", "--exclude", "--base", "--head", "--output-style"]),
+  lerna: new Set(["--scope", "--ignore", "--concurrency"]),
+  moon: new Set(["--log", "--log-file", "--cache", "--concurrency", "--status"]),
+  make: new Set(["-C", "--directory", "-f", "--file", "--makefile", "-I", "--include-dir", "-o", "--old-file", "-W", "--what-if"]),
+};
+const NODE_VALUE_FLAGS = new Set(["-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions"]);
+const TEST_RUNNERS = new Set(["vitest", "jest", "mocha", "ava", "playwright", "cypress"]);
+const BUILD_TOOLS = new Set(["tsup", "esbuild", "webpack", "rollup", "parcel"]);
+const BUILDS_WITH_ARG = new Set(["next", "vite", "nest", "astro", "nuxt", "remix"]);
+
+const base = (p: string): string => p.replace(/\\/g, "/").split("/").at(-1) ?? p;
+
+/** The argv a package manager runs, from the script or binary on (`pnpm -F web exec eslint .` → `eslint .`). */
+function unwrapPackageManager(argv: string[]): string[] {
+  const program = base(argv[0] ?? "").toLowerCase();
+  if (!PACKAGE_MANAGERS.has(program)) return argv;
+  let rest = argv.slice(1);
+  while (rest.length > 0) {
+    const t = rest[0] ?? "";
+    if (program === "yarn" && t === "workspace") rest = rest.slice(2);
+    else if (t.startsWith("-")) {
+      const takesValue = !t.includes("=") && PM_VALUE_FLAGS.has(t) && !(program === "pnpm" && PNPM_SWITCHES.has(t));
+      rest = rest.slice(takesValue ? 2 : 1);
+    } else if (PM_SUBCOMMANDS.has(t)) rest = rest.slice(1);
+    else break;
+  }
+  return rest;
+}
+
+/** The positional arguments of a task runner's argv, without its options and their values. */
+function positionals(runner: string, args: string[]): string[] {
+  const valueFlags = TASK_VALUE_FLAGS[runner] ?? new Set<string>();
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--") break;
+    if (a.startsWith("-")) {
+      const next = args[i + 1];
+      const numeric = runner === "make" && (a === "-j" || a === "-l") && next !== undefined && /^\d+(\.\d+)?$/.test(next);
+      if ((!a.includes("=") && valueFlags.has(a)) || numeric) i++;
+      continue;
+    }
+    // Make's variable assignments are no targets.
+    if (runner === "make" && a.includes("=")) continue;
+    out.push(a);
+  }
+  return out;
+}
+
+/** The value of nx's `-t`/`--target`/`--targets`, its first task when it lists several. */
+function nxTargetFlag(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    if (a === "--") break;
+    const eq = /^(?:-t|--targets?)=(.*)$/.exec(a);
+    const value = eq !== null ? eq[1] : a === "-t" || a === "--target" || a === "--targets" ? args[i + 1] : undefined;
+    if (value !== undefined) return value.split(",")[0];
+  }
+  return undefined;
+}
+
+// `project:task[:configuration]` → `task`; a word without `:` is the task itself.
+const targetTask = (t: string): string => (t.includes(":") ? (t.split(":")[1] ?? "") : t);
+
+/** The first task a task runner's argv runs, or undefined when `runner` is none (or names no task). */
+function taskOf(runner: string, args: string[]): string | undefined {
+  const pos = positionals(runner, args);
+  switch (runner) {
+    case "turbo": {
+      // `web#test` runs one package's task.
+      const task = pos[0] === "run" ? pos[1] : pos[0];
+      return task?.split("#").at(-1);
+    }
+    case "nx": {
+      if (pos[0] === "run") return pos[1] === undefined ? undefined : targetTask(pos[1]);
+      if (pos[0] === "run-many" || pos[0] === "affected") return nxTargetFlag(args);
+      return pos[0];
+    }
+    case "lerna":
+      return pos[0] === "run" ? pos[1] : undefined;
+    case "moon":
+      if (pos[0] === "run") return pos[1] === undefined ? undefined : targetTask(pos[1]);
+      return pos[0]?.includes(":") ? targetTask(pos[0]) : undefined;
+    case "make":
+      return pos[0];
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The word an argv runs: the script or binary after a package manager and its options (`pnpm -F web typecheck` →
+ * `typecheck`, `pnpm exec eslint` → `eslint`, `yarn workspace web test` → `test`), the script a bare `node` runs
+ * (without its extension), the first task a task runner runs (`turbo run test`, `nx run web:test`, `nx test web`,
+ * `nx run-many -t test`, `lerna run test`, `moon run web:test`, `make test` → `test`; a bare `make` → `make`), or the
+ * program's own name. Lowercased; "" when there is none.
+ */
+export function runWord(argv: string[]): string {
+  const inner = unwrapPackageManager(argv);
+  if (inner.length === 0) return "";
+  const program = base(inner[0] ?? "").toLowerCase();
+  const rest = inner.slice(1);
+  if (program === "node" && rest[0] !== undefined && !rest[0].startsWith("-")) {
+    return base(rest[0]).replace(/\.(m?js|cjs|ts)$/, "").toLowerCase();
+  }
+  const task = taskOf(program, rest);
+  return task === undefined || task === "" ? program : task.toLowerCase();
+}
+
+/** Whether a `node` argv has `--test` among the options before its script. */
+function isNodeTest(argv: string[]): boolean {
+  if (base(argv[0] ?? "").toLowerCase() !== "node") return false;
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i] ?? "";
+    if (!a.startsWith("-")) return false;
+    if (a === "--test") return true;
+    if (!a.includes("=") && NODE_VALUE_FLAGS.has(a)) i++;
+  }
+  return false;
+}
+
+/**
+ * Whether an argv runs a test suite, judged only by what it runs (`runWord`): a test runner (vitest, jest, mocha,
+ * ava, playwright, cypress), `node --test`, or a script or task named `test`, `test:*`, `test-*`, `test_*`, `*:test`,
+ * `*-test` or `*_test`. A runner's name elsewhere (`eslint --plugin jest`) makes no suite.
+ */
+export function isSuiteArgv(argv: string[]): boolean {
+  if (isNodeTest(unwrapPackageManager(argv))) return true;
+  const word = runWord(argv);
+  return TEST_RUNNERS.has(word) || word === "test" || /^test[:_-]/.test(word) || /[:_-]test$/.test(word);
+}
+
+/** Whether an argv builds rather than checks (a `build` script, `next build`, tsup…): such a gate is no lane check. */
+export function isBuildArgv(argv: string[]): boolean {
+  const word = runWord(argv);
+  if (word === "build" || /^build[:_-]/.test(word) || /[:_-]build$/.test(word) || BUILD_TOOLS.has(word)) return true;
+  return BUILDS_WITH_ARG.has(word) && argv.slice(1).some((a) => a === "build");
+}
+
+const looksLikePath = (a: string): boolean => a.includes("/") || /\.(test|spec|itest|e2e)\b|\.[cm]?[jt]sx?$/.test(a);
+
+/**
+ * Whether the extra arguments of a suite check name what to run: at least one positional argument that is not the
+ * value of an option. A word right after an option without `=` is taken as its value (`--project unit` names a
+ * project, `-t name` filters test names: both still collect every file) unless it looks like a path.
+ */
+export function hasTargets(extra: string[]): boolean {
+  for (let i = 0; i < extra.length; i++) {
+    const a = extra[i] ?? "";
+    if (a.startsWith("-")) {
+      const next = extra[i + 1];
+      if (!a.includes("=") && next !== undefined && !next.startsWith("-") && !looksLikePath(next)) i++;
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The checks a project gets without config `checks` (DESIGN.md §23): one per gate that is not a build, named by
+ * `runWord` (lowercase, every other character `-`, at most 32; `gate-<i>` when nothing is left), a repeat getting `-2`,
+ * `-3`…, in gate order.
+ */
+export function deriveChecks(gates: string[][]): Record<string, string[]> {
+  const out: Record<string, string[]> = {};
+  gates.forEach((argv, i) => {
+    if (argv.length === 0 || isBuildArgv(argv)) return;
+    let name = runWord(argv).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32).replace(/-+$/, "");
+    if (!isCheckName(name)) name = `gate-${i + 1}`;
+    let unique = name;
+    for (let n = 2; Object.hasOwn(out, unique); n++) unique = `${name.slice(0, 29)}-${n}`;
+    out[unique] = [...argv];
+  });
+  return out;
 }

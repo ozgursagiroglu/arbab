@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import type { DependencyStrategy } from "../types";
+import type { DependencyContext, DependencyStrategy } from "../types";
 import { ArbabError } from "../util/errors";
 import type { GitRunner } from "./git";
 
@@ -180,20 +180,31 @@ export const runArgv: ArgvRunner = (argv, cwd) => {
   return { code: r.status ?? 128, output: `${r.stdout}${r.stderr}` };
 };
 
-/** Prepares a worktree's dependencies before the worker starts (DESIGN.md §9). */
+function runInstall(argv: unknown, field: string, worktree: string, run: ArgvRunner): { ok: boolean; code: number; output: string } {
+  if (!Array.isArray(argv) || argv.length === 0 || !argv.every((a) => typeof a === "string") || argv[0] === "") {
+    throw new ArbabError("config", `${field} must be a non-empty argv array of strings`);
+  }
+  const r = run(argv as string[], worktree);
+  return { ok: r.code === 0, code: r.code, output: r.output };
+}
+
+/**
+ * Prepares a worktree's dependencies before the worker starts (DESIGN.md §9, §22). `context` is what the clone
+ * strategy compares against (the main checkout and the install point); every caller passes it.
+ */
 export function prepareDependencies(
   strategy: DependencyStrategy,
   worktree: string,
   run: ArgvRunner,
+  context?: DependencyContext,
 ): { ok: boolean; code: number; output: string } {
   if (strategy.strategy === "none") return { ok: true, code: 0, output: "" };
-  if (strategy.strategy === "command") {
-    const argv: unknown = strategy.command;
-    if (!Array.isArray(argv) || argv.length === 0 || !argv.every((a) => typeof a === "string") || argv[0] === "") {
-      throw new ArbabError("config", "dependencies.command must be a non-empty argv array of strings");
-    }
-    const r = run(argv as string[], worktree);
-    return { ok: r.code === 0, code: r.code, output: r.output };
+  if (strategy.strategy === "command") return runInstall(strategy.command, "dependencies.command", worktree, run);
+  if (strategy.strategy === "clone") {
+    // The clone itself comes with 0.3.0's ld-clone lane (DESIGN.md §22); until then the fallback install runs.
+    void context;
+    if (strategy.fallback !== null) return runInstall(strategy.fallback, "dependencies.fallback", worktree, run);
+    throw new ArbabError("config", "dependencies.strategy clone is not available in this build and no dependencies.fallback is set");
   }
   throw new ArbabError("config", `unknown dependencies strategy ${JSON.stringify((strategy as { strategy: unknown }).strategy)}`);
 }

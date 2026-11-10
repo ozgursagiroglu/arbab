@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { defaultMachineConfig } from "../config";
 import { effectiveCap, quotaOverview, slotsInUse } from "./slots";
 import { writeQuota, writeSlot } from "./testkit";
 
@@ -39,9 +40,9 @@ describe("slotsInUse", () => {
 
 describe("effectiveCap", () => {
   it("caps the project's maxParallel by the machine's", () => {
-    expect(effectiveCap(4, { maxParallel: 2 })).toBe(2);
-    expect(effectiveCap(2, { maxParallel: 6 })).toBe(2);
-    expect(effectiveCap(4, { maxParallel: null })).toBe(4);
+    expect(effectiveCap(4, { ...defaultMachineConfig(), maxParallel: 2 })).toBe(2);
+    expect(effectiveCap(2, { ...defaultMachineConfig(), maxParallel: 6 })).toBe(2);
+    expect(effectiveCap(4, { ...defaultMachineConfig(), maxParallel: null })).toBe(4);
   });
 });
 
@@ -49,14 +50,14 @@ describe("quotaOverview", () => {
   it("carries the snapshot, the hold decision and the slots against the cap", () => {
     writeQuota(home, 0.9, 0.5, NOW_SEC + 3600);
     writeSlot(home, 0, holder(11, "a"));
-    const q = quotaOverview({ home, config: CONFIG, machine: { maxParallel: 3 }, alive: alive([11]), nowSec: NOW_SEC });
+    const q = quotaOverview({ home, config: CONFIG, machine: { ...defaultMachineConfig(), maxParallel: 3 }, alive: alive([11]), nowSec: NOW_SEC });
     expect(q.snapshot?.fiveHour?.utilization).toBe(0.9);
     expect(q.hold).toMatchObject({ hold: true, until: NOW_SEC + 3600 });
     expect(q.slots).toEqual({ inUse: [{ slot: 0, pid: 11, lane: "a", project: "/work/repo" }], cap: 3, projectMaxParallel: 4, machineMaxParallel: 3 });
   });
 
   it("holds nothing without a snapshot", () => {
-    const q = quotaOverview({ home, config: CONFIG, machine: { maxParallel: null }, alive: alive([]), nowSec: NOW_SEC });
+    const q = quotaOverview({ home, config: CONFIG, machine: { ...defaultMachineConfig(), maxParallel: null }, alive: alive([]), nowSec: NOW_SEC });
     expect(q).toEqual({
       snapshot: null,
       hold: { hold: false, reason: null, until: null },

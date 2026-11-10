@@ -147,13 +147,14 @@ describe("loadConfig", () => {
       resources: {},
       semaphores: {},
       gates: [],
+      checks: {},
       preflight: { steps: [] },
       maxParallel: 4,
       quota: { holdAbove: { fiveHour: 0.85, sevenDay: 0.95 } },
       roles: {},
       minClaudeVersion: "2.1.290",
       verify: { smoke: null },
-      review: { lenses: {} },
+      review: { lenses: {}, maxParallel: 4, install: true },
       landing: { tier: "medium", squash: false },
       fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
       hostGates: [],
@@ -278,7 +279,7 @@ describe("loadConfig", () => {
     configError({ env: [] }, "env");
     configError({ credentialPaths: [1] }, "credentialPaths[0]");
     configError({ maxParallel: "4" }, "maxParallel");
-    configError({ dependencies: { strategy: "clone" } }, "dependencies.strategy");
+    configError({ dependencies: { strategy: "copy" } }, "dependencies.strategy");
     configError({ dependencies: { strategy: "command" } }, "dependencies.command");
     configError({ dependencies: { strategy: "none", command: ["x"] } }, "dependencies.command");
     configError({ env: { CI: 1 } }, "env.CI");
@@ -613,5 +614,77 @@ describe("effectiveRole", () => {
     expect(() => effectiveRole(defaultConfig(), { name: "x", role: "probe", brief: "b.md", tools: ["Edit"] })).toThrow(
       /lane x: tools Edit name none of role probe's tools \(Read, Write, Bash\)/,
     );
+  });
+});
+
+describe("loadConfig: 0.3.0 fields (DESIGN.md §22)", () => {
+  it("defaults checks to none, review.maxParallel to 4 and review.install to true", () => {
+    const config = defaultConfig();
+    expect(config.checks).toEqual({});
+    expect(config.review).toEqual({ lenses: {}, maxParallel: 4, install: true });
+  });
+
+  it("reads named checks", () => {
+    const config = loadWith({ checks: { typecheck: ["pnpm", "typecheck"], "lint-web": ["pnpm", "exec", "eslint", "apps/web"] } });
+    expect(config.checks).toEqual({ typecheck: ["pnpm", "typecheck"], "lint-web": ["pnpm", "exec", "eslint", "apps/web"] });
+  });
+
+  it("refuses an invalid check name or argv", () => {
+    configError({ checks: { Typecheck: ["x"] } }, "checks.Typecheck");
+    configError({ checks: { "a b": ["x"] } }, "checks.a b");
+    configError({ checks: { test: [] } }, "checks.test");
+    configError({ checks: { test: "pnpm test" } }, "checks.test");
+    configError({ checks: { test: ["pnpm", "a\u0000b"] } }, "checks.test[1]");
+    configError({ checks: [] }, "checks");
+  });
+
+  it("reads review.maxParallel and review.install beside the lenses", () => {
+    const config = loadWith({ review: { lenses: { docs: "accuracy" }, maxParallel: 2, install: false } });
+    expect(config.review).toEqual({ lenses: { docs: "accuracy" }, maxParallel: 2, install: false });
+    expect(loadWith({ review: { maxParallel: 16 } }).review).toEqual({ lenses: {}, maxParallel: 16, install: true });
+  });
+
+  it("refuses review.maxParallel outside 1–16 and a non-boolean review.install", () => {
+    configError({ review: { maxParallel: 0 } }, "review.maxParallel");
+    configError({ review: { maxParallel: 17 } }, "review.maxParallel");
+    configError({ review: { install: "no" } }, "review.install");
+    configError({ review: { window: 2 } }, "review.window");
+  });
+
+  it("reads a clone strategy with or without a fallback", () => {
+    expect(loadWith({ dependencies: { strategy: "clone", paths: ["node_modules", "./apps/web/node_modules/"] } }).dependencies).toEqual({
+      strategy: "clone",
+      paths: ["node_modules", "apps/web/node_modules"],
+      fallback: null,
+    });
+    expect(loadWith({ dependencies: { strategy: "clone", paths: ["node_modules"], fallback: ["npm", "ci"] } }).dependencies).toEqual({
+      strategy: "clone",
+      paths: ["node_modules"],
+      fallback: ["npm", "ci"],
+    });
+  });
+
+  it("refuses clone paths that are absolute, escape, glob, touch git or arbab, repeat, or are missing", () => {
+    const clone = (paths: unknown, extra: Record<string, unknown> = {}): unknown => ({ dependencies: { strategy: "clone", paths, ...extra } });
+    configError(clone(["/abs/node_modules"]), "dependencies.paths[0]");
+    configError(clone(["~/node_modules"]), "dependencies.paths[0]");
+    configError(clone(["../node_modules"]), "dependencies.paths[0]");
+    configError(clone(["apps/*/node_modules"]), "dependencies.paths[0]");
+    configError(clone([".git/x"]), "dependencies.paths[0]");
+    configError(clone([".arbab/runs"]), "dependencies.paths[0]");
+    configError(clone([".ARBAB-tmp/x"]), "dependencies.paths[0]");
+    configError(clone(["."]), "dependencies.paths[0]");
+    configError(clone(["node_modules", "./node_modules"]), "dependencies.paths[1]");
+    configError(clone([]), "dependencies.paths");
+    configError(clone(Array.from({ length: 21 }, (_, i) => `d${i}`)), "dependencies.paths");
+    configError({ dependencies: { strategy: "clone" } }, "dependencies.paths");
+    configError(clone(["node_modules"], { fallback: [] }), "dependencies.fallback");
+    configError(clone(["node_modules"], { command: ["x"] }), "dependencies.command");
+    configError({ dependencies: { strategy: "copy" } }, "dependencies.strategy");
+  });
+
+  it("refuses clone in a pnpm project", () => {
+    writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    configError({ dependencies: { strategy: "clone", paths: ["node_modules"] } }, "dependencies.strategy");
   });
 });

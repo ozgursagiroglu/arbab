@@ -1,12 +1,13 @@
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { INTEGRATIONS_DIR, TIERS } from "../types";
+import { DEFAULT_REVIEW_MAX_PARALLEL, INTEGRATIONS_DIR, TIERS } from "../types";
 import type { DependencyStrategy, ProjectConfig, Role, RoleDefaults, Tier } from "../types";
 import { isForbiddenWorkerEnv, isReservedEnv } from "../util/env-policy";
 import { foldPath, sameOrInside } from "../util/pathcase";
 import {
   argv,
   boolean,
+  checkMap,
   confined,
   existingFile,
   fail,
@@ -39,6 +40,7 @@ const TOP_LEVEL_KEYS: readonly (keyof ProjectConfig)[] = [
   "resources",
   "semaphores",
   "gates",
+  "checks",
   "preflight",
   "maxParallel",
   "quota",
@@ -67,13 +69,14 @@ export function defaultConfig(): ProjectConfig {
     resources: {},
     semaphores: {},
     gates: [],
+    checks: {},
     preflight: { steps: [] },
     maxParallel: 4,
     quota: { holdAbove: { fiveHour: 0.85, sevenDay: 0.95 } },
     roles: {},
     minClaudeVersion: "2.1.290",
     verify: { smoke: null },
-    review: { lenses: {} },
+    review: { lenses: {}, maxParallel: DEFAULT_REVIEW_MAX_PARALLEL, install: true },
     landing: { tier: "medium", squash: false },
     fence: { readableEnvFiles: [], bashOutputMaxChars: 100000 },
     hostGates: [],
@@ -122,13 +125,14 @@ export function loadConfig(projectRoot: string): ProjectConfig {
       existingFile(projectRoot, p, `instructions[${i}]`, config.credentialPaths),
     );
   }
-  if (obj.dependencies !== undefined) config.dependencies = dependencies(obj.dependencies);
+  if (obj.dependencies !== undefined) config.dependencies = dependencies(projectRoot, obj.dependencies);
   if (obj.commands !== undefined) config.commands = commands(obj.commands);
   if (obj.env !== undefined) config.env = env(obj.env);
   if (obj.passEnv !== undefined) config.passEnv = passEnv(obj.passEnv);
   if (obj.resources !== undefined) config.resources = resources(obj.resources);
   if (obj.semaphores !== undefined) config.semaphores = semaphores(obj.semaphores);
   if (obj.gates !== undefined) config.gates = argvList(obj.gates, "gates");
+  if (obj.checks !== undefined) config.checks = checkMap(obj.checks, "checks");
   if (obj.preflight !== undefined) {
     const pre = record(obj.preflight, "preflight");
     knownKeys(pre, ["steps"], "preflight");
@@ -149,8 +153,10 @@ export function loadConfig(projectRoot: string): ProjectConfig {
   }
   if (obj.review !== undefined) {
     const r = record(obj.review, "review");
-    knownKeys(r, ["lenses"], "review");
-    if (r.lenses !== undefined) config.review = { lenses: lenses(r.lenses) };
+    knownKeys(r, ["lenses", "maxParallel", "install"], "review");
+    if (r.lenses !== undefined) config.review = { ...config.review, lenses: lenses(r.lenses) };
+    if (r.maxParallel !== undefined) config.review = { ...config.review, maxParallel: integerIn(r.maxParallel, 1, 16, "review.maxParallel") };
+    if (r.install !== undefined) config.review = { ...config.review, install: boolean(r.install, "review.install") };
   }
   if (obj.landing !== undefined) {
     const l = record(obj.landing, "landing");
@@ -266,7 +272,10 @@ function realExisting(path: string): string | null {
   }
 }
 
-function dependencies(v: unknown): DependencyStrategy {
+/** At most this many directories per clone strategy: each is one clone at every worktree's setup. */
+const MAX_CLONE_PATHS = 20;
+
+function dependencies(projectRoot: string, v: unknown): DependencyStrategy {
   const obj = record(v, "dependencies");
   if (obj.strategy === "none") {
     knownKeys(obj, ["strategy"], "dependencies");
@@ -276,7 +285,40 @@ function dependencies(v: unknown): DependencyStrategy {
     knownKeys(obj, ["strategy", "command"], "dependencies");
     return { strategy: "command", command: argv(obj.command, "dependencies.command") };
   }
-  return fail("dependencies.strategy", 'must be "none" or "command"');
+  if (obj.strategy === "clone") {
+    knownKeys(obj, ["strategy", "paths", "fallback"], "dependencies");
+    // pnpm's .bin shims export the main checkout's absolute NODE_PATH (measured): a clone would resolve into it.
+    if (existsSync(join(projectRoot, "pnpm-lock.yaml"))) {
+      fail("dependencies.strategy", 'clone does not work for a pnpm project (its bin shims hold the main checkout\'s paths); use "command"');
+    }
+    const paths = clonePaths(projectRoot, obj.paths);
+    const fallback = obj.fallback === undefined || obj.fallback === null ? null : argv(obj.fallback, "dependencies.fallback");
+    return { strategy: "clone", paths, fallback };
+  }
+  return fail("dependencies.strategy", 'must be "none", "command" or "clone"');
+}
+
+// Each path names a directory of the main checkout cloned into the same place of a new worktree: project-relative,
+// plain segments, nothing of git's or arbab's.
+function clonePaths(projectRoot: string, v: unknown): string[] {
+  const list = stringArray(v, "dependencies.paths");
+  if (list.length === 0 || list.length > MAX_CLONE_PATHS) fail("dependencies.paths", `must list 1 to ${MAX_CLONE_PATHS} directories`);
+  const seen = new Set<string>();
+  return list.map((p, i) => {
+    const field = `dependencies.paths[${i}]`;
+    if (isAbsolute(p) || p.startsWith("~")) fail(field, `${JSON.stringify(p)} must be project-relative`);
+    if (/[\0\n\r*?[\]{}]/.test(p)) fail(field, "must be a plain path: no NUL, newline or glob characters");
+    const segments = p.split(/[\\/]/).filter((s) => s !== "" && s !== ".");
+    if (segments.length === 0) fail(field, "must name a directory below the project root");
+    if (segments.includes("..")) fail(field, `${JSON.stringify(p)} must not contain a .. segment`);
+    const first = (segments[0] ?? "").toLowerCase();
+    if (first === ".git" || first === ".arbab" || first === ".arbab-tmp") fail(field, `${JSON.stringify(p)} must not be inside ${segments[0]}`);
+    confined(projectRoot, p, field);
+    const normal = segments.join("/");
+    if (seen.has(normal)) fail(field, `${p} is listed twice`);
+    seen.add(normal);
+    return normal;
+  });
 }
 
 function commands(v: unknown): Partial<Record<Role, string[]>> {

@@ -15,7 +15,7 @@
 // `landedSince` (LandingSince[], oldest first) to each. Its `worktrees` is WorktreeOverview (src/summary/worktrees.ts).
 // Read-only: it writes nothing and reclaims no stale entry.
 import { existsSync } from "node:fs";
-import { loadConfig, loadMachineConfig } from "../config";
+import { defaultMachineConfig, loadConfig, loadMachineConfig } from "../config";
 import { listProjects } from "../registry";
 import { formatSummary, projectSummary, type ProjectSummary } from "../summary";
 import type { MachineConfig } from "../types";
@@ -30,7 +30,7 @@ function machineConfig(ctx: CommandContext, errors: string[]): MachineConfig {
   } catch (err) {
     if (!(err instanceof ArbabError)) throw err;
     errors.push(`machine config: ${err.message}`);
-    return { maxParallel: null };
+    return defaultMachineConfig();
   }
 }
 

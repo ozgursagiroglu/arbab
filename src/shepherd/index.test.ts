@@ -11,6 +11,10 @@ describe("defaultDeps", () => {
     expect(deps.nodeDir).toBe(dirname(process.execPath));
     expect(deps.pnpmDir === undefined || isAbsolute(deps.pnpmDir)).toBe(true);
     expect(deps).toMatchObject({ tickMs: 10_000, holdPollMs: 60_000, slotPollMs: 15_000, reapGraceMs: 10_000 });
+    // The machine readings the admission and arbab-check use (DESIGN.md §22).
+    expect(deps.cpus()).toBeGreaterThanOrEqual(1);
+    expect(deps.loadAvg()).toBeGreaterThanOrEqual(0);
+    expect(deps.memoryPressure()).toBeNull();
     expect(deps.alive(process.pid)).toBe(true);
     expect(deps.clock.now()).toBeGreaterThan(0);
     const r = deps.random();

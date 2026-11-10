@@ -334,6 +334,42 @@ describe("runVerify", () => {
     expect(second.sections.Acceptance).toContain("- [ ] Gate 2 exits 0 again (pnpm typecheck).");
   });
 
+  it("prints failures through formatFailureLine only, and drafts a Scope of plain relative paths and the record's absolute path", async () => {
+    p = await twoLanes();
+    // Worker-written failure lines, raw: terminal escapes, and files outside the tree or with backticks.
+    const raw = [
+      "arbab-check failure: src/a/x.test.ts > works :: \u001b]0;owned\u0007\u001b[2JMARK-1",
+      "arbab-check failure: /etc/passwd :: MARK-2",
+      "arbab-check failure: ../outside.ts :: MARK-3",
+      "arbab-check failure: src/a`b`.ts :: MARK-4 \u001b[31mred",
+    ];
+    const output = ["arbab-check gate-1: exit 1 after 2s on 3 CPUs; log .arbab-tmp/checks/gate-1-1.log", ...raw, "--- last 0 lines ---"].join("\n");
+    simulateWithMerges(p, { "rel-verify": finished(bashStream([["gate-1", 1, output], ["gate-2", 0]])) });
+    expect(await runVerify(["rel"], p.ctx)).toBe(1);
+
+    const integration = readRecord<IntegrationRecord>(join(dir(p), "integration.json"));
+    const record = readRecord<VerifyRecord>(join(dir(p), "verify.json"));
+    const failures = record.failures ?? [];
+    expect(failures.map((f) => f.file)).toEqual(["src/a/x.test.ts", "/etc/passwd", "../outside.ts", "src/a`b`.ts"]);
+    expect(p.stdout()).toBe(
+      "exit 1    gate   pnpm test\nexit 0    gate   pnpm typecheck\n" +
+        failures.map((f) => formatFailureLine(f) + "\n").join("") +
+        `verify rel: failed at ${integration.headSha} (lane rel-verify success)\n`,
+    );
+    // stderr says where the draft is, and nothing of the failures.
+    expect(p.stderr()).not.toMatch(/MARK|passwd|outside|\u001b/);
+
+    const brief = parseBriefSource(readFileSync(join(dir(p), "fix", "fix-1.md"), "utf8"));
+    expect(brief.sections.Scope).toBe(
+      ["- `docs/b.md`", "- `src/a/x.test.ts`", "- `src/a/x.ts`", "- `src/b/y.ts`", "", "3 named files are not plain relative paths and are left out of Scope."].join("\n"),
+    );
+    expect(brief.sections.Task).toContain('"file": "/etc/passwd"');
+    expect(brief.sections.Facts).toContain(`- The verify record, with every result and failure: \`${join(dir(p), "verify.json")}\`.`);
+    // The check log was in the verify worktree, which is gone.
+    expect(existsSync(join(p.worktreeRoot, "rel-verify"))).toBe(false);
+    expect(Object.values(brief.sections).join("\n")).not.toMatch(/\blogs?\b|\.arbab-tmp/i);
+  });
+
   it("prints at most 10 failure lines, and --json carries them all", async () => {
     p = await twoLanes();
     const failures = Array.from({ length: 12 }, (_, i) => ({ file: `src/a/t${i}.test.ts`, test: null, message: `boom ${i}` }));

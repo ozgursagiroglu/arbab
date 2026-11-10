@@ -1,20 +1,44 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WIDTH } from "../model";
+import type { createScene as CreateScene } from "../scene";
 import { pyramidLayout } from "../scene/layout";
 import type { EventSourceLike, FetchLike, MessageEventLike, PageEnv } from "./browser";
 import { integration, lane, snapshot } from "./fixtures";
 import type { FakeCanvas, FakeDocument, FakeElement } from "./hud/fake-dom";
 import { fakeDocument } from "./hud/fake-dom";
-import { CLOSED_MESSAGE, NO_TOKEN_MESSAGE, NOT_RUNNING_MESSAGE, startPage, TITLE_CARD_MS, TOO_MANY_MESSAGE } from "./main";
+import { CLOSED_MESSAGE, FRAME_MS, NO_TOKEN_MESSAGE, NOT_RUNNING_MESSAGE, startPage, TITLE_CARD_MS, TOO_MANY_MESSAGE } from "./main";
 import { PAGE_IDS } from "./page";
+
+// Every scene the page creates records the dt of each step; the real scene still runs.
+const steps = vi.hoisted((): number[] => []);
+vi.mock("../scene", async (importOriginal) => {
+  const actual = await importOriginal<{ createScene: typeof CreateScene }>();
+  return {
+    ...actual,
+    createScene: (...args: Parameters<typeof CreateScene>) => {
+      const scene = actual.createScene(...args);
+      const step = scene.step;
+      scene.step = (dt) => {
+        steps.push(dt);
+        step(dt);
+      };
+      return scene;
+    },
+  };
+});
 
 class FakeEventSource implements EventSourceLike {
   static last: FakeEventSource | null = null;
+  static all: FakeEventSource[] = [];
   closed = false;
   readyState = 0;
   private readonly listeners = new Map<string, ((event: MessageEventLike) => void)[]>();
   constructor(readonly url: string) {
     FakeEventSource.last = this;
+    FakeEventSource.all.push(this);
+  }
+  types(): string[] {
+    return [...this.listeners.keys()];
   }
   addEventListener(type: string, listener: (event: MessageEventLike) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
@@ -37,6 +61,11 @@ interface Page {
   fetched: string[];
   clock: { now: number };
   timers: { callback: () => void; ms: number }[];
+  visibility: { state: string; listeners: Set<() => void> };
+  /** Sets the visibility state and fires visibilitychange. */
+  setVisibility: (state: string) => void;
+  /** The newest frame callback, run at `time`. */
+  runFrame: (time: number) => void;
 }
 
 const CANVAS_IDS = [PAGE_IDS.canvas, PAGE_IDS.logo, PAGE_IDS.titleCardLogo];
@@ -60,6 +89,7 @@ function page(hash = "#token=00112233445566778899aabbccddeeff", fetch: FetchLike
   const fetched: string[] = [];
   const clock = { now: Date.parse("2026-10-19T10:05:00.000Z") };
   const timers: { callback: () => void; ms: number }[] = [];
+  const visibility = { state: "visible", listeners: new Set<() => void>() };
   const env: PageEnv = {
     document: doc,
     window: win,
@@ -76,10 +106,24 @@ function page(hash = "#token=00112233445566778899aabbccddeeff", fetch: FetchLike
     matchMedia: () => ({ matches: false }),
     requestAnimationFrame: (callback) => frames.push(callback),
     setTimeout: (callback, ms) => timers.push({ callback, ms }),
+    visibilityState: () => visibility.state,
+    onVisibilityChange: (listener) => {
+      visibility.listeners.add(listener);
+      return () => visibility.listeners.delete(listener);
+    },
     devicePixelRatio: 1,
     now: () => clock.now,
   };
-  return { env, el, canvas, frames, doc, window: win, fetched, clock, timers };
+  const setVisibility = (state: string): void => {
+    visibility.state = state;
+    for (const l of [...visibility.listeners]) l();
+  };
+  const runFrame = (time: number): void => {
+    const callback = frames.at(-1);
+    if (!callback) throw new Error("no frame requested");
+    callback(time);
+  };
+  return { env, el, canvas, frames, doc, window: win, fetched, clock, timers, visibility, setVisibility, runFrame };
 }
 
 function emit(s: unknown): void {
@@ -91,6 +135,8 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 
 beforeEach(() => {
   FakeEventSource.last = null;
+  FakeEventSource.all = [];
+  steps.length = 0;
 });
 
 describe("startPage", () => {
@@ -183,7 +229,7 @@ describe("startPage", () => {
     expect(Number(number())).toBeGreaterThan(0);
     expect(Number(number())).toBeLessThan(4);
     p.clock.now += 500;
-    p.frames[1]?.(32);
+    p.frames[1]?.(66);
     expect(number()).toBe("4");
   });
 
@@ -316,7 +362,7 @@ describe("startPage", () => {
     });
   });
 
-  it("draws every animation frame and asks for the next", () => {
+  it("draws the first animation frame and asks for the next", () => {
     const p = page();
     startPage(p.env);
     expect(p.frames).toHaveLength(1);
@@ -325,6 +371,175 @@ describe("startPage", () => {
     expect(p.canvas.width).toBe(480);
     expect(p.canvas.height).toBe(270);
     expect(p.frames).toHaveLength(2);
+  });
+
+  describe("costs little while open and nothing while hidden", () => {
+    it("draws at most every FRAME_MS, stepping by the whole time since the last step", () => {
+      expect(FRAME_MS).toBe(50);
+      const p = page();
+      startPage(p.env);
+      const fills = (): number => p.canvas.fills.length;
+      p.runFrame(1000);
+      expect(steps).toEqual([16]);
+      let drawn = fills();
+      // Closer than 50 ms to the last drawn frame: no step, no draw, but the next frame is still requested.
+      for (const time of [1001, 1030, 1049.9]) {
+        const requested = p.frames.length;
+        p.runFrame(time);
+        expect(p.frames).toHaveLength(requested + 1);
+      }
+      expect(steps).toEqual([16]);
+      expect(fills()).toBe(drawn);
+      p.runFrame(1070);
+      expect(steps).toEqual([16, 70]);
+      expect(fills()).toBeGreaterThan(drawn);
+      drawn = fills();
+      p.runFrame(1120);
+      expect(steps).toEqual([16, 70, 50]);
+      // A long frame passes the whole gap; the scene clamps it.
+      p.runFrame(1500);
+      expect(steps).toEqual([16, 70, 50, 380]);
+      expect(fills()).toBeGreaterThan(drawn);
+    });
+
+    it("keeps the once-a-second ticker on its own timing, between drawn frames too", () => {
+      const p = page();
+      startPage(p.env);
+      emit(snapshot({ lanes: [lane({ name: "ui-art" })] }));
+      p.el(PAGE_IDS.crew).children[0]?.children[0]?.dispatch("focus");
+      const tooltip = p.el(PAGE_IDS.tooltip);
+      p.runFrame(1000);
+      tooltip.replaceChildren();
+      // Drawn, but less than a second since the last tick.
+      p.runFrame(1980);
+      expect(steps).toHaveLength(2);
+      expect(tooltip.children).toHaveLength(0);
+      // 20 ms after the last drawn frame, so nothing is drawn, but a second has passed since the last tick.
+      p.runFrame(2000);
+      expect(steps).toHaveLength(2);
+      expect(tooltip.children.length).toBeGreaterThan(0);
+    });
+
+    it("hidden: requests no frame and closes the stream; shown: reopens it and resumes without a jump", () => {
+      const p = page("#token=deadbeefdeadbeef");
+      startPage(p.env);
+      const first = FakeEventSource.last;
+      if (!first) throw new Error("no event source");
+      first.emit("open");
+      emit(snapshot());
+      expect(p.el(PAGE_IDS.connection).text()).toBe("LIVE");
+      p.runFrame(1000);
+      p.runFrame(1050);
+      expect(steps).toEqual([16, 50]);
+      const pending = p.frames.at(-1);
+      if (!pending) throw new Error("no frame");
+
+      p.setVisibility("hidden");
+      expect(first.closed).toBe(true);
+      const requested = p.frames.length;
+      // The frame requested before hiding ends the loop when the browser runs it.
+      pending(1100);
+      expect(p.frames).toHaveLength(requested);
+      expect(steps).toEqual([16, 50]);
+
+      p.setVisibility("visible");
+      expect(FakeEventSource.all).toHaveLength(2);
+      const second = FakeEventSource.last;
+      if (!second || second === first) throw new Error("no new event source");
+      expect(second.url).toBe("/events?token=deadbeefdeadbeef");
+      expect(second.types()).toEqual(first.types());
+      expect(second.closed).toBe(false);
+      expect(p.el(PAGE_IDS.connection).text()).toBe("CONNECTING");
+      expect(p.frames).toHaveLength(requested + 1);
+      // The old pending frame, run late, starts no second loop.
+      pending(61_000);
+      expect(p.frames).toHaveLength(requested + 1);
+      // A minute hidden: the first frame back steps like a fresh start, not by the minute.
+      p.runFrame(61_000);
+      expect(steps).toEqual([16, 50, 16]);
+      p.runFrame(61_060);
+      expect(steps).toEqual([16, 50, 16, 60]);
+      // The new stream drives the page.
+      second.emit("snapshot", JSON.stringify(snapshot({ lanes: [lane({ name: "back" })] })));
+      expect(p.el(PAGE_IDS.connection).text()).toBe("LIVE");
+      expect(p.el(PAGE_IDS.table).children).toHaveLength(1);
+    });
+
+    it("ignores a repeated visible, and a hidden page hidden again", () => {
+      const p = page();
+      startPage(p.env);
+      p.setVisibility("visible");
+      expect(FakeEventSource.all).toHaveLength(1);
+      expect(p.frames).toHaveLength(1);
+      p.setVisibility("hidden");
+      p.setVisibility("hidden");
+      expect(FakeEventSource.all).toHaveLength(1);
+      expect(p.frames).toHaveLength(1);
+    });
+
+    it("a page that starts hidden opens nothing until it is shown", () => {
+      const p = page();
+      p.visibility.state = "hidden";
+      startPage(p.env);
+      expect(FakeEventSource.last).toBeNull();
+      expect(p.frames).toHaveLength(0);
+      p.setVisibility("visible");
+      expect(FakeEventSource.all).toHaveLength(1);
+      expect(p.frames).toHaveLength(1);
+      p.runFrame(5000);
+      expect(steps).toEqual([16]);
+    });
+
+    it("clears a closed stream's notice when shown again, and a late answer for it says nothing", async () => {
+      const p = page("#token=deadbeefdeadbeef", () => Promise.resolve({ status: 401 }));
+      startPage(p.env);
+      const first = FakeEventSource.last;
+      if (!first) throw new Error("no event source");
+      first.readyState = 2;
+      first.emit("error");
+      // Hidden before the probe answers: the answer is about a stream that is gone.
+      p.setVisibility("hidden");
+      await settle();
+      expect(p.el(PAGE_IDS.notice).hidden).toBe(true);
+      p.setVisibility("visible");
+      const second = FakeEventSource.last;
+      if (!second) throw new Error("no event source");
+      second.readyState = 2;
+      second.emit("error");
+      await settle();
+      expect(p.el(PAGE_IDS.notice).textContent).toBe(CLOSED_MESSAGE);
+      p.setVisibility("hidden");
+      p.setVisibility("visible");
+      expect(p.el(PAGE_IDS.notice).hidden).toBe(true);
+      expect(p.el(PAGE_IDS.notice).textContent).toBe("");
+    });
+
+    it("stop closes the stream, ends the loop and removes the visibility listener", () => {
+      const p = page();
+      const handle = startPage(p.env);
+      expect(p.visibility.listeners.size).toBe(1);
+      p.runFrame(16);
+      const requested = p.frames.length;
+      handle?.stop();
+      expect(FakeEventSource.last?.closed).toBe(true);
+      expect(p.visibility.listeners.size).toBe(0);
+      p.runFrame(100);
+      expect(p.frames).toHaveLength(requested);
+      p.setVisibility("hidden");
+      p.setVisibility("visible");
+      expect(FakeEventSource.all).toHaveLength(1);
+      expect(p.frames).toHaveLength(requested);
+    });
+
+    it("stop while hidden removes the listener too", () => {
+      const p = page();
+      const handle = startPage(p.env);
+      p.setVisibility("hidden");
+      handle?.stop();
+      expect(p.visibility.listeners.size).toBe(0);
+      p.setVisibility("visible");
+      expect(FakeEventSource.all).toHaveLength(1);
+    });
   });
 
   it("scales the canvas by whole device pixels to fit the stage and the first screen, on resize too", () => {

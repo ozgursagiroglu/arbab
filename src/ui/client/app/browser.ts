@@ -169,6 +169,10 @@ export interface PageEnv {
   matchMedia: (query: string) => MediaQueryListLike;
   requestAnimationFrame: (callback: (time: number) => void) => unknown;
   setTimeout: (callback: () => void, ms: number) => unknown;
+  /** document.visibilityState, read when asked: "hidden" stops the loop and the stream. */
+  visibilityState: () => string;
+  /** Listens for visibilitychange on the document; returns a function that stops listening. */
+  onVisibilityChange: (listener: () => void) => () => void;
   devicePixelRatio: number;
   /** The client's clock, epoch ms. */
   now: () => number;

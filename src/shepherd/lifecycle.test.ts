@@ -996,6 +996,27 @@ describe("runShepherd", () => {
       expect(lockEntries()).toEqual([]);
     });
 
+    it("is rebuilt without an install for an install: false lane", async () => {
+      const seen = recordingProject();
+      project.scenario({ fixture: fixture("success-report"), touch: "src/a.ts" });
+      project.lane({ name: "m1-a", install: false });
+      expect(await runShepherd(project.root, "m1-a", { kind: "start" }, testDeps(project), never())).toBe("success");
+      const first = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 1)).started);
+      expect(existsSync(seen)).toBe(false);
+
+      rmSync(first.cwd, { recursive: true, force: true });
+      expect(await runShepherd(project.root, "m1-a", { kind: "fresh" }, testDeps(project), never())).toBe("success");
+      expect(existsSync(seen)).toBe(false);
+      const second = readJsonFile<AttemptStarted>(attemptFiles(attemptDir("m1-a", 2)).started);
+      expect(second.cwd).toBe(first.cwd);
+      expect(mustGit(project.git, ["rev-parse", "--abbrev-ref", "HEAD"], second.cwd).trim()).toBe("arbab/m1-a");
+      const reasons = readLaneEvents(join(project.root, ".arbab", "runs"), "m1-a")
+        .filter((e) => e.state === "preparing")
+        .map((e) => e.reason);
+      expect(reasons.some((r) => r?.startsWith("rebuilding the worktree from "))).toBe(true);
+      expect(lockEntries()).toEqual([]);
+    });
+
     it("is rebuilt for a borrower once its owner has run", async () => {
       const seen = recordingProject();
       project.scenario({ fixture: fixture("success-report"), touch: "src/a.ts" });
@@ -1743,6 +1764,11 @@ describe("admissionLimits", () => {
     machine(JSON.stringify({ admission: { memoryPressure: "always" } }));
     expect(admissionLimits(home)).toEqual({ loadPerCpu: 3, memoryPressure: "critical" });
   });
+
+  it("keeps machine.json's admission when another field is invalid", () => {
+    machine(JSON.stringify({ maxParallel: 0, checks: [], admission: { loadPerCpu: 1.5, memoryPressure: "warn" } }));
+    expect(admissionLimits(home)).toEqual({ loadPerCpu: 1.5, memoryPressure: "warn" });
+  });
 });
 
 describe("slotCap", () => {
@@ -1769,10 +1795,22 @@ describe("slotCap", () => {
     expect(slotCap(home, 4)).toBe(4);
   });
 
-  it("keeps the project's value when machine.json does not parse or is invalid", () => {
-    for (const text of ["{", "[]", JSON.stringify({ maxParallel: 0 }), JSON.stringify({ maxParallel: 2, other: 1 })]) {
+  it("keeps the project's value when machine.json does not parse, or its maxParallel is invalid", () => {
+    for (const text of ["{", "[]", JSON.stringify({ maxParallel: 0 }), JSON.stringify({ maxParallel: "2" })]) {
       machine(text);
       expect(slotCap(home, 4), text).toBe(4);
+    }
+  });
+
+  it("keeps the machine's cap when another field is invalid or unknown", () => {
+    for (const other of [
+      { admission: { memoryPressure: "always" } },
+      { admission: { loadPerCpu: 1, memoryPresure: "warn" } },
+      { checks: { waitSec: 901 } },
+      { other: 1 },
+    ]) {
+      machine(JSON.stringify({ maxParallel: 2, ...other }));
+      expect(slotCap(home, 4), JSON.stringify(other)).toBe(2);
     }
   });
 });

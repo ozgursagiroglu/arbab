@@ -1,7 +1,7 @@
 // The chronicle (DESIGN.md §19): what happened, newest first. Seeded from the first snapshot, then grown by each
 // snapshot's changes. Pure: the panel only draws these entries.
 import type { UiIntegration, UiLane, UiSnapshot } from "../../../protocol";
-import { formatUsd, startedSince } from "../hud";
+import { formatUsd, holdWording, startedSince } from "../hud";
 
 export const CHRONICLE_MAX = 60;
 
@@ -58,8 +58,9 @@ function finished(lane: UiLane, fallback: number): ChronicleEntry {
 function waiting(lane: UiLane, fallback: number): ChronicleEntry {
   const at = epochMs(lane.since, fallback);
   if (lane.state === "held") {
-    const why = lane.hold === "slot" ? "a free slot" : "the quota";
-    return { id: `held:${lane.name}:${at}`, at, kind: lane.hold === "slot" ? "waiting" : "held", text: `${lane.name} held for ${why}` };
+    // Only a quota hold is a "held" entry: a slot or the machine frees up by itself.
+    const hold = lane.hold ?? "quota";
+    return { id: `held:${lane.name}:${at}`, at, kind: hold === "quota" ? "held" : "waiting", text: `${lane.name} ${holdWording(hold)}` };
   }
   const what = lane.state === "waiting-reset" ? "asleep until the quota resets" : "queued";
   return { id: `waiting:${lane.name}:${lane.state}:${at}`, at, kind: "waiting", text: `${lane.name} ${what}` };

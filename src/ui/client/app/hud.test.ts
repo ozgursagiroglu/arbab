@@ -8,6 +8,7 @@ import {
   formatState,
   formatUsd,
   header,
+  holdWording,
   laneCounts,
   laneElapsedMs,
   parseProblem,
@@ -226,6 +227,16 @@ describe("tooltip", () => {
     expect(tooltipLines(done, 0, 0)).toContain("elapsed 45s");
     expect(tooltipLines(done, 0, 0)[2]).toBe("finished (success)");
     expect(tooltipLines(lane({ name: "x", since: "garbage" }), 0, 0)).toContain("elapsed —");
+  });
+
+  it("words each hold kind on its own, the machine's apart from the quota's", () => {
+    expect(holdWording("slot")).toBe("held for a free slot");
+    expect(holdWording("quota")).toBe("held for the quota");
+    expect(holdWording("machine")).toBe("waits for the machine");
+    const held = lane({ name: "m", state: "held", hold: "machine", reason: "memory pressure critical" });
+    const lines = tooltipLines(held, 0, 0);
+    expect(lines[2]).toBe("held (machine)");
+    expect(lines.slice(-2)).toEqual(["waits for the machine", "memory pressure critical"]);
   });
 
   it("never counts elapsed below zero", () => {

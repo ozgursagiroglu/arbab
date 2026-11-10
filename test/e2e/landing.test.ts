@@ -24,7 +24,7 @@ async function confirmAsHuman(project: E2eProject, sha: string): Promise<Integra
   return confirmDeps(paths, sha, makeGitRunner(), { now: () => Date.now() });
 }
 
-let bundle: { bundle: string; dispose(): void };
+let bundle: { bundle: string; checkBundle: string; dispose(): void };
 let p: E2eProject | undefined;
 
 beforeAll(async () => {
@@ -199,6 +199,8 @@ describe("arbab landing end to end", () => {
     expect(existsSync(join(project.worktreeRoot, "rel-verify"))).toBe(false);
     expect(project.git(["branch", "--list", "arbab/rel-verify"])).toBe("");
     expect(project.json<VerifyRecord>(join(integrationDir(project), "verify.json")).passed).toBe(true);
+    // The script its check lines name: the shepherd copied the built bundle into the lane's run directory.
+    expect(readFileSync(checkScriptPath(project.runsRoot, "rel-verify"), "utf8")).toBe(readFileSync(bundle.checkBundle, "utf8"));
 
     const readiness = await project.cli("readiness", "rel", "--tier", "low");
     expect(readiness.code, readiness.stderr).toBe(0);

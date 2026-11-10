@@ -1,25 +1,36 @@
 // End-to-end scaffolding: the real bundle, built into a temporary directory, run with node against a temporary
 // project, a temporary HOME (so ~/.arbab and ~/.claude are temporary) and the fake claude as the binary.
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
-import { bundleOptions, packageVersion } from "../../scripts/build.mjs";
+import { bundleOptions, checkBundleOptions, packageVersion } from "../../scripts/build.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const FAKE_CLAUDE = join(REPO, "test", "fake-claude", "fake-claude.mjs");
 export const fakeFixture = (name: string): string => join(REPO, "test", "fake-claude", "fixtures", `${name}.jsonl`);
 export const streamFixture = (name: string): string => join(REPO, "test", "fixtures", "stream", `${name}.jsonl`);
 
-/** Builds dist/arbab.mjs into a temporary directory with scripts/build.mjs's options (the version compiled in). */
-export async function buildBundle(): Promise<{ bundle: string; dispose(): void }> {
+/**
+ * Builds dist/arbab.mjs and dist/arbab-check.mjs into a temporary directory with scripts/build.mjs's options (the
+ * version compiled in). The check bundle sits next to the runner, where a shepherd copies it from (DESIGN.md §22).
+ */
+export async function buildBundle(): Promise<{ bundle: string; checkBundle: string; dispose(): void }> {
   const dir = mkdtempSync(join(tmpdir(), "arbab-e2e-bundle-"));
   const bundle = join(dir, "dist", "arbab.mjs");
+  const checkBundle = join(dir, "dist", "arbab-check.mjs");
   await build({ ...bundleOptions({ version: packageVersion(REPO), outfile: bundle }), absWorkingDir: REPO });
-  return { bundle, dispose: () => rmSync(dir, { recursive: true, force: true }) };
+  await build({ ...checkBundleOptions({ outfile: checkBundle }), absWorkingDir: REPO });
+  return { bundle, checkBundle, dispose: () => rmSync(dir, { recursive: true, force: true }) };
 }
+
+/**
+ * Admission off: e2e shepherds are real and read the real machine's load, which a loaded full run pushes past the
+ * default hold (DESIGN.md §22). A test about admission writes its own.
+ */
+export const MACHINE_ADMISSION_OFF = { admission: { loadPerCpu: 0, memoryPressure: "off" } };
 
 export interface Scenario {
   fixture: string;
@@ -54,12 +65,16 @@ export interface E2eProject {
   dir: string;
   root: string;
   home: string;
+  /** `<home>/.arbab`: machine.json, slots, the shepherd registry. */
+  arbabHome: string;
   runsRoot: string;
   worktreeRoot: string;
   scenarioFile: string;
   logFile: string;
   env: NodeJS.ProcessEnv;
   scenario(s: Scenario): void;
+  /** Replaces `<arbabHome>/machine.json`, atomically: a held shepherd reads it on every poll. */
+  machine(config: Record<string, unknown>): void;
   /** Writes lanes/<name>.json (with `fields` added) and lanes/<name>.md, and commits them. */
   lane(name: string, brief?: string, fields?: Record<string, unknown>): string;
   /** Runs `node <bundle> …args` in the project root, without a shell. */
@@ -84,10 +99,17 @@ export function makeE2eProject(bundle: string): E2eProject {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "arbab-e2e-")));
   const root = join(dir, "repo");
   const home = join(dir, "home");
+  const arbabHome = join(home, ".arbab");
   const scenarioFile = join(dir, "scenario.json");
   const logFile = join(dir, "fake-claude.log");
   mkdirSync(root);
-  mkdirSync(home);
+  mkdirSync(arbabHome, { recursive: true });
+  const machine = (config: Record<string, unknown>): void => {
+    const tmp = join(arbabHome, "machine.json.tmp");
+    writeFileSync(tmp, JSON.stringify(config));
+    renameSync(tmp, join(arbabHome, "machine.json"));
+  };
+  machine(MACHINE_ADMISSION_OFF);
 
   // Built from scratch: the host's own Claude Code and editor markers are set on purpose, to prove the worker never
   // sees them.
@@ -156,12 +178,14 @@ export function makeE2eProject(bundle: string): E2eProject {
     dir,
     root,
     home,
+    arbabHome,
     runsRoot,
     worktreeRoot: join(root, ".arbab", "worktrees"),
     scenarioFile,
     logFile,
     env,
     scenario: (s) => writeFileSync(scenarioFile, JSON.stringify(s)),
+    machine,
     lane: (name, brief = BRIEF, fields = {}) => {
       mkdirSync(join(root, "lanes"), { recursive: true });
       writeFileSync(join(root, "lanes", `${name}.md`), brief);
